@@ -17,9 +17,8 @@ use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 
-use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{AwakeableIdentifier, ExternalSignalIdentifier, InvocationId};
 use restate_types::invocation::{
     InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType, SpanRelation,
 };
@@ -32,6 +31,7 @@ use restate_types::journal::{
     CompleteAwakeableEntry, Entry, GetInvocationOutputEntry, InvokeEntry, OneWayCallEntry,
 };
 use restate_types::journal::{EntryType, InvokeRequest};
+use restate_types::journal_v2::SignalId;
 use restate_types::live::Live;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 
@@ -247,14 +247,26 @@ where
                         .map_err(InvocationError::internal)?;
                 let_assert!(Entry::CompleteAwakeable(CompleteAwakeableEntry { id, .. }) = entry);
 
-                let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&id)
-                    .map_err(|e| {
-                        InvocationError::new(
+                let (invocation_id, entry_index) = if let Ok(old_awk_id) =
+                    AwakeableIdentifier::from_str(&id)
+                {
+                    old_awk_id.into_inner()
+                } else if let Ok(new_awk_id) = ExternalSignalIdentifier::from_str(&id) {
+                    let (invocation_id, signal_id) = new_awk_id.into_inner();
+                    if let SignalId::Index(idx) = signal_id {
+                        (invocation_id, idx)
+                    } else {
+                        return Err(InvocationError::new(
                             codes::BAD_REQUEST,
-                            format!("Invalid awakeable identifier: {e}"),
-                        )
-                    })?
-                    .into_inner();
+                            "Unsupported awakeable signal identifier. Only signals with auto generated id can be completed using service protocol <= v3.".to_string(),
+                        ));
+                    }
+                } else {
+                    return Err(InvocationError::new(
+                        codes::BAD_REQUEST,
+                        "Invalid awakeable identifier. The identifier doesn't start with `awk_1`, neither with `sign_1`".to_string(),
+                    ));
+                };
 
                 EnrichedEntryHeader::CompleteAwakeable {
                     enrichment_result: AwakeableEnrichmentResult {

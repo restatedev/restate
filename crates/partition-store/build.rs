@@ -19,6 +19,6 @@ fn main() -> std::io::Result<()> {
         )
         .compile_protos(
             &["proto/dev/restate/storage/v1/domain.proto"],
-            &["proto", "../types/service-protocol"],
+            &["proto", "../../service-protocol"],
         )
 }

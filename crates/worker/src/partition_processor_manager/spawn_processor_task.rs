@@ -155,7 +155,7 @@ impl SpawnPartitionProcessorTask {
                     .map_err(|e| ProcessorError::from(anyhow::anyhow!(e)))?;
 
                     pp_builder
-                        .build::<ProtobufRawEntryCodec>(bifrost, partition_store)
+                        .build(bifrost, partition_store)
                         .await
                         .map_err(ProcessorError::from)?
                         .run()

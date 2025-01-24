@@ -10,9 +10,11 @@
 
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::EntryIndex;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::EntryIndex;
+use restate_types::journal_v2;
+use restate_types::journal_v2::CommandIndex;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +27,8 @@ pub struct Effect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EffectKind {
-    /// This is sent before any new entry is created by the invoker. This won't be sent if the deployment_id is already set.
+    /// This is sent before any new entry is created by the invoker.
+    /// This won't be sent if the deployment_id is already set.
     PinnedDeployment(PinnedDeployment),
     JournalEntry {
         entry_index: EntryIndex,
@@ -33,6 +36,14 @@ pub enum EffectKind {
     },
     Suspended {
         waiting_for_completed_entries: HashSet<EntryIndex>,
+    },
+    JournalEntryV2 {
+        entry: journal_v2::raw::RawEntry,
+        /// This is used by the invoker to establish when it's safe to retry
+        command_index_to_ack: Option<CommandIndex>,
+    },
+    SuspendedV2 {
+        waiting_for_notifications: HashSet<journal_v2::NotificationId>,
     },
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,

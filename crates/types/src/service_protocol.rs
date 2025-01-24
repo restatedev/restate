@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! TODO(slinkydeveloper) this file will need a cleanup when we remove protocol version <= 3
+
 use crate::errors::InvocationError;
 use std::ops::RangeInclusive;
 
 // Range of supported service protocol versions by this server
 pub const MIN_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V1;
-pub const MAX_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V3;
+pub const MAX_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V4;
 
 pub const MAX_SERVICE_PROTOCOL_VERSION_VALUE: i32 = i32::MAX;
 
@@ -93,7 +95,10 @@ mod pb_into {
         type Error = &'static str;
 
         fn try_from(msg: InputEntryMessage) -> Result<Self, Self::Error> {
-            Ok(Self::Input(InputEntry { value: msg.value }))
+            Ok(Self::Input(InputEntry {
+                value: msg.value,
+                headers: msg.headers.into_iter().map(Into::into).collect(),
+            }))
         }
     }
 

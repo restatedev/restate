@@ -11,7 +11,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [features]
-default = ["lua51"]
+default = ["lua54"]
 
 lua54 = ["mlua/lua54"]
 lua53 = ["mlua/lua53"]
@@ -21,7 +21,7 @@ luajit = ["mlua/luajit"]
 
 [dependencies]
 # Dependencies needed to decode packets
-restate-service-protocol = { workspace = true, features = ["codec", "message"] }
+restate-service-protocol-v4 = { workspace = true, features = ["message-codec"] }
 restate-types = { workspace = true }
 
 bytes = { workspace = true }

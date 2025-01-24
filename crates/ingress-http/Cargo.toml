@@ -17,7 +17,6 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
-restate-service-protocol = { workspace = true, features = ["awakeable-id"] }
 restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
 

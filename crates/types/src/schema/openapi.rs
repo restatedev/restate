@@ -388,7 +388,7 @@ fn infer_handler_request_body(
                 content_type,
                 schema,
             } => {
-                let schema = Schema::new(schema.clone());
+                let schema = Schema::new(schema.clone().unwrap_or(Value::Bool(false)));
 
                 schemas_collector.push((request_schema_name(operation_id), schema));
 

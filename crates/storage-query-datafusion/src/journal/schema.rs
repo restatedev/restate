@@ -52,4 +52,13 @@ define_table!(sys_journal(
     /// Raw binary representation of the entry. Check the [service protocol](https://github.com/restatedev/service-protocol)
     /// for more details to decode it.
     raw: DataType::LargeBinary,
+
+    /// The journal version.
+    version: DataType::UInt32,
+
+    /// The entry serialized as a JSON string (only relevant for journal version 2)
+    entry_json: DataType::LargeUtf8,
+
+    /// When the entry was appended to the journal
+    appended_at: TimestampMillisecond,
 ));
