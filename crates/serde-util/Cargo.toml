@@ -16,7 +16,7 @@ proto = ["dep:prost", "dep:bytes"]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 bytes = { workspace = true, optional = true }
-bytesize = { version = "1.3.0" }
+bytesize = { workspace = true }
 http = { workspace = true }
 http-serde = { workspace = true }
 humantime = { workspace = true }

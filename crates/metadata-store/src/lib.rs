@@ -19,6 +19,7 @@ use crate::grpc::metadata_store_svc_server::MetadataStoreSvcServer;
 use assert2::let_assert;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
+use raft_proto::eraftpb::Snapshot;
 use restate_core::metadata_store::VersionedValue;
 pub use restate_core::metadata_store::{
     MetadataStoreClient, Precondition, ReadError, ReadModifyWriteError, WriteError,
@@ -459,8 +460,8 @@ type JoinClusterReceiver = mpsc::Receiver<JoinClusterRequest>;
 enum JoinClusterError {
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
-    #[error("cannot accept new members since I am not active.")]
-    NotActive(Option<KnownLeader>),
+    #[error("cannot accept new members since I am not a member.")]
+    NotMember(Option<KnownLeader>),
     #[error("cannot accept new members since I am not the leader.")]
     NotLeader(Option<KnownLeader>),
     #[error("pending reconfiguration")]
@@ -475,8 +476,8 @@ enum JoinClusterError {
     UnknownNode(PlainNodeId),
     #[error("node '{0}' does not have the 'metadata-server' role")]
     InvalidRole(PlainNodeId),
-    #[error("node '{0}' is an outsider")]
-    Outsider(PlainNodeId),
+    #[error("node '{0}' is a standby node")]
+    Standby(PlainNodeId),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -601,11 +602,40 @@ enum MetadataStoreSummary {
     #[default]
     Starting,
     Provisioning,
-    Passive,
-    Active {
+    Standby,
+    Member {
         leader: Option<MemberId>,
         configuration: MetadataStoreConfiguration,
+        raft: RaftSummary,
+        snapshot: Option<SnapshotSummary>,
     },
+}
+
+#[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
+#[prost(target = "crate::grpc::RaftSummary")]
+struct RaftSummary {
+    term: u64,
+    committed: u64,
+    applied: u64,
+    first_index: u64,
+    last_index: u64,
+}
+
+#[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
+#[prost(target = "crate::grpc::SnapshotSummary")]
+struct SnapshotSummary {
+    index: u64,
+    // size in bytes
+    size: u64,
+}
+
+impl SnapshotSummary {
+    fn from_snapshot(snapshot: &Snapshot) -> Self {
+        SnapshotSummary {
+            size: u64::try_from(snapshot.get_data().len()).expect("snapshot size to fit into u64"),
+            index: snapshot.get_metadata().get_index(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]

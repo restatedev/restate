@@ -98,7 +98,7 @@ impl From<JoinClusterError> for Status {
     fn from(err: JoinClusterError) -> Self {
         match &err {
             JoinClusterError::Shutdown(_) => Status::aborted(err.to_string()),
-            JoinClusterError::NotActive(known_leader) => {
+            JoinClusterError::NotMember(known_leader) => {
                 let mut status = Status::failed_precondition(err.to_string());
 
                 if let Some(known_leader) = known_leader {
@@ -123,7 +123,7 @@ impl From<JoinClusterError> for Status {
             }
             JoinClusterError::UnknownNode(_)
             | JoinClusterError::InvalidRole(_)
-            | JoinClusterError::Outsider(_) => Status::invalid_argument(err.to_string()),
+            | JoinClusterError::Standby(_) => Status::invalid_argument(err.to_string()),
         }
     }
 }

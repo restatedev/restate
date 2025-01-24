@@ -44,7 +44,19 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
     let nodes_configuration = StorageCodec::decode::<NodesConfiguration, _>(&mut response.encoded)?;
 
     let mut metadata_nodes_table = Table::new_styled();
-    let header = vec!["NODE", "STATUS", "CONFIG-ID", "LEADER", "MEMBERS"];
+    let header = vec![
+        "NODE",
+        "STATUS",
+        "CONFIG-ID",
+        "LEADER",
+        "MEMBERS",
+        "APPLIED",
+        "COMMITTED",
+        "TERM",
+        "LOG-LENGTH",
+        "SNAP-INDEX",
+        "SNAP-SIZE",
+    ];
     metadata_nodes_table.set_styled_header(header);
 
     let mut unreachable_nodes = BTreeMap::default();
@@ -97,6 +109,29 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
                         })
                         .unwrap_or("[]".to_owned()),
                 ),
+                Cell::new(status.raft.map(|raft| raft.applied).unwrap_or_default()),
+                Cell::new(status.raft.map(|raft| raft.committed).unwrap_or_default()),
+                Cell::new(status.raft.map(|raft| raft.term).unwrap_or_default()),
+                // first and last index are inclusive
+                Cell::new(
+                    status
+                        .raft
+                        .map(|raft| (raft.last_index + 1) - raft.first_index)
+                        .unwrap_or_default(),
+                ),
+                Cell::new(
+                    status
+                        .snapshot
+                        .map(|snapshot| snapshot.index)
+                        .unwrap_or_default(),
+                ),
+                Cell::new(bytesize::to_string(
+                    status
+                        .snapshot
+                        .map(|snapshot| snapshot.size)
+                        .unwrap_or_default(),
+                    true,
+                )),
             ]);
         }
     }
@@ -124,7 +159,7 @@ fn render_metadata_server_status(metadata_server_status: MetadataServerStatus) -
         MetadataServerStatus::Unknown => Cell::new("UNKNOWN").fg(Color::Red),
         MetadataServerStatus::StartingUp => Cell::new("Starting").fg(Color::Yellow),
         MetadataServerStatus::AwaitingProvisioning => Cell::new("Provisioning"),
-        MetadataServerStatus::Active => Cell::new("Active").fg(Color::Green),
-        MetadataServerStatus::Passive => Cell::new("Passive"),
+        MetadataServerStatus::Member => Cell::new("Member").fg(Color::Green),
+        MetadataServerStatus::Standby => Cell::new("Standby"),
     }
 }

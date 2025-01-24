@@ -117,10 +117,10 @@ impl LocalMetadataStore {
 
     pub async fn run(mut self) {
         debug!("Running LocalMetadataStore");
-        self.health_status.update(MetadataServerStatus::Active);
+        self.health_status.update(MetadataServerStatus::Member);
 
         // Only needed if we resume from a Restate version that has not properly set the
-        // MetadataServerState to Active in the NodesConfiguration.
+        // MetadataServerState to Member in the NodesConfiguration.
         if let Err(err) = self.patch_metadata_server_state().await {
             info!("Failed to patch MetadataServerState: {err}");
         }

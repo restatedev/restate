@@ -137,6 +137,8 @@ pub mod pb_conversions {
                         .into(),
                     configuration: None,
                     leader: None,
+                    raft: None,
+                    snapshot: None,
                 },
                 MetadataStoreSummary::Provisioning => grpc::StatusResponse {
                     status:
@@ -144,19 +146,27 @@ pub mod pb_conversions {
                             .into(),
                     configuration: None,
                     leader: None,
+                    raft: None,
+                    snapshot: None,
                 },
-                MetadataStoreSummary::Passive => grpc::StatusResponse {
-                    status: restate_types::protobuf::common::MetadataServerStatus::Passive.into(),
+                MetadataStoreSummary::Standby => grpc::StatusResponse {
+                    status: restate_types::protobuf::common::MetadataServerStatus::Standby.into(),
                     configuration: None,
                     leader: None,
+                    raft: None,
+                    snapshot: None,
                 },
-                MetadataStoreSummary::Active {
+                MetadataStoreSummary::Member {
                     configuration,
                     leader,
+                    raft,
+                    snapshot,
                 } => grpc::StatusResponse {
-                    status: restate_types::protobuf::common::MetadataServerStatus::Active.into(),
+                    status: restate_types::protobuf::common::MetadataServerStatus::Member.into(),
                     configuration: Some(grpc::MetadataStoreConfiguration::from(configuration)),
                     leader: leader.map(grpc::MemberId::from),
+                    raft: Some(grpc::RaftSummary::from(raft)),
+                    snapshot: snapshot.map(grpc::SnapshotSummary::from),
                 },
             }
         }

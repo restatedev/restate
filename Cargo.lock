@@ -407,7 +407,8 @@ dependencies = [
 [[package]]
 name = "arrow_convert"
 version = "0.7.3"
-source = "git+https://github.com/jackkleeman/arrow-convert?rev=9878358dd38cf4a2a6c8367541be3cd374fbb2c6#9878358dd38cf4a2a6c8367541be3cd374fbb2c6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba5584435cad2be1ac9505b33052599e77c176d6520502204853ded2c05b2e8b"
 dependencies = [
  "arrow",
  "arrow_convert_derive",
@@ -419,7 +420,8 @@ dependencies = [
 [[package]]
 name = "arrow_convert_derive"
 version = "0.7.3"
-source = "git+https://github.com/jackkleeman/arrow-convert?rev=9878358dd38cf4a2a6c8367541be3cd374fbb2c6#9878358dd38cf4a2a6c8367541be3cd374fbb2c6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f41ef3794174d2ebdc75c9601d06dc3badafd2539541bdd0eda185192e0c6fe4"
 dependencies = [
  "proc-macro-error2",
  "proc-macro2",
@@ -4381,15 +4383,16 @@ dependencies = [
 
 [[package]]
 name = "mlua"
-version = "0.9.9"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d111deb18a9c9bd33e1541309f4742523bfab01d276bfa9a27519f6de9c11dc7"
+checksum = "9ea43c3ffac2d0798bd7128815212dd78c98316b299b7a902dabef13dc7b6b8d"
 dependencies = [
  "bstr",
+ "either",
  "mlua-sys",
  "mlua_derive",
  "num-traits",
- "once_cell",
+ "parking_lot",
  "rustc-hash 2.1.0",
 ]
 
@@ -4406,13 +4409,13 @@ dependencies = [
 
 [[package]]
 name = "mlua_derive"
-version = "0.9.3"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09697a6cec88e7f58a02c7ab5c18c611c6907c8654613df9cc0192658a4fb859"
+checksum = "870d71c172fcf491c6b5fb4c04160619a2ee3e5a42a1402269c66bcbf1dd4deb"
 dependencies = [
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "once_cell",
- "proc-macro-error",
+ "proc-macro-error2",
  "proc-macro2",
  "quote",
  "regex",
@@ -6300,6 +6303,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "serde_with",
  "strum",
  "sync_wrapper",
  "tempfile",
@@ -7388,6 +7392,7 @@ version = "1.1.6"
 dependencies = [
  "anyhow",
  "bytes",
+ "bytesize",
  "bytestring",
  "chrono",
  "clap",

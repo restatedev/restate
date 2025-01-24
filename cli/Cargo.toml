@@ -25,7 +25,7 @@ restate-types = { workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 arrow = { version = "53.1.0", features = ["ipc", "prettyprint", "json"] }
-arrow_convert = {git = "https://github.com/jackkleeman/arrow-convert", rev = "9878358dd38cf4a2a6c8367541be3cd374fbb2c6"}
+arrow_convert = { version = "0.7.2" }
 axum = { workspace = true, default-features = false, features = ["http1", "http2", "query", "tokio"] }
 bytes = { workspace = true }
 base62 = { version = "2.0.2" }
@@ -62,6 +62,7 @@ reqwest = { workspace = true, default-features = false, features = ["json", "rus
 ring = { version = "0.17.8" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_with = { workspace = true }
 strum = { workspace = true }
 sync_wrapper = { workspace = true, features = ["futures"] }
 termcolor = { version = "1.4.0" }

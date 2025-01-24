@@ -17,8 +17,9 @@ use crate::{
     prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError, JoinClusterHandle,
     JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, JoinError, KnownLeader, MemberId,
     MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest, MetadataStoreSummary,
-    ProvisionError, ProvisionReceiver, ProvisionSender, Request, RequestError, RequestKind,
-    RequestReceiver, RequestSender, StatusSender, StatusWatch, StorageId, WriteRequest,
+    ProvisionError, ProvisionReceiver, ProvisionSender, RaftSummary, Request, RequestError,
+    RequestKind, RequestReceiver, RequestSender, SnapshotSummary, StatusSender, StatusWatch,
+    StorageId, WriteRequest,
 };
 use arc_swap::ArcSwapOption;
 use bytes::BytesMut;
@@ -228,13 +229,13 @@ impl RaftMetadataStore {
 
         loop {
             match provisioned {
-                Provisioned::Active(active) => {
-                    health_status.update(MetadataServerStatus::Active);
-                    provisioned = Provisioned::Passive(active.run().await?);
+                Provisioned::Member(member) => {
+                    health_status.update(MetadataServerStatus::Member);
+                    provisioned = Provisioned::Standby(member.run().await?);
                 }
-                Provisioned::Passive(passive) => {
-                    health_status.update(MetadataServerStatus::Passive);
-                    provisioned = Provisioned::Active(passive.run().await?);
+                Provisioned::Standby(standby) => {
+                    health_status.update(MetadataServerStatus::Standby);
+                    provisioned = Provisioned::Member(standby.run().await?);
                 }
             }
         }
@@ -246,7 +247,7 @@ impl RaftMetadataStore {
 
         let result = if let Some(configuration) = self.storage.get_raft_configuration()? {
             debug!(member_id = %configuration.my_member_id, "Found existing metadata store configuration.");
-            Provisioned::Active(self.become_active(configuration)?)
+            Provisioned::Member(self.become_member(configuration)?)
         } else {
             let mut nodes_config_watcher =
                 Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
@@ -255,7 +256,7 @@ impl RaftMetadataStore {
                 // The metadata store must have been provisioned if there exists a
                 // NodesConfiguration. So let's move on.
                 debug!("Detected a valid NodesConfiguration. This indicates that the metadata store cluster has been provisioned.");
-                Provisioned::Passive(self.become_passive())
+                Provisioned::Standby(self.become_standby())
             } else {
                 info!("Cluster has not been provisioned, yet. Awaiting the provision signal.");
                 loop {
@@ -266,16 +267,16 @@ impl RaftMetadataStore {
                             request.fail(RequestError::Unavailable("Metadata store has not been provisioned yet.".into(), None))
                         },
                         Some(request) = self.join_cluster_rx.recv() => {
-                            let _ = request.response_tx.send(Err(JoinClusterError::NotActive(None)));
+                            let _ = request.response_tx.send(Err(JoinClusterError::NotMember(None)));
                         },
                         Some(request) = provision_rx.recv() => {
                             match self.initialize_storage(request.nodes_configuration).await {
                                 Ok(raft_configuration) => {
                                     let _ = request.result_tx.send(Ok(true));
                                     debug!(member_id = %raft_configuration.my_member_id, "Successfully provisioned the metadata store.");
-                                    let mut active = self.become_active(raft_configuration)?;
-                                    active.campaign_immediately()?;
-                                    break Provisioned::Active(active);
+                                    let mut member = self.become_member(raft_configuration)?;
+                                    member.campaign_immediately()?;
+                                    break Provisioned::Member(member);
                                 },
                                 Err(err) => {
                                     warn!("Failed to provision the metadata store: {err}");
@@ -288,7 +289,7 @@ impl RaftMetadataStore {
                                 // The metadata store must have been provisioned if there exists a
                                 // NodesConfiguration. So let's move on.
                                 debug!("Detected a valid NodesConfiguration. This indicates that the metadata store cluster has been provisioned.");
-                                break Provisioned::Passive(self.become_passive())
+                                break Provisioned::Standby(self.become_standby())
                             }
                         }
                     }
@@ -373,7 +374,7 @@ impl RaftMetadataStore {
         Ok(RaftConfiguration { my_member_id })
     }
 
-    fn become_passive(self) -> Passive {
+    fn become_standby(self) -> Standby {
         let Self {
             connection_manager,
             storage,
@@ -385,7 +386,7 @@ impl RaftMetadataStore {
             ..
         } = self;
 
-        Passive::new(
+        Standby::new(
             storage,
             connection_manager,
             request_rx,
@@ -396,7 +397,7 @@ impl RaftMetadataStore {
         )
     }
 
-    fn become_active(self, raft_configuration: RaftConfiguration) -> Result<Active, Error> {
+    fn become_member(self, raft_configuration: RaftConfiguration) -> Result<Member, Error> {
         let Self {
             connection_manager,
             storage,
@@ -407,7 +408,7 @@ impl RaftMetadataStore {
             ..
         } = self;
 
-        Active::create(
+        Member::create(
             raft_configuration,
             connection_manager,
             storage,
@@ -437,16 +438,16 @@ impl MetadataStoreBackend for RaftMetadataStore {
     }
 }
 
-/// States of a provisioned metadata store. The metadata store can be either active or passive.
+/// States of a provisioned metadata store. The metadata store can be either a member or a stand by.
 enum Provisioned {
     /// Being an active member of the metadata store cluster
-    Active(Active),
+    Member(Member),
     /// Not being a member of the metadata store cluster
-    Passive(Passive),
+    Standby(Standby),
 }
 
 #[allow(dead_code)]
-struct Active {
+struct Member {
     _logger: slog::Logger,
 
     raw_node: RawNode<RocksDbStorage>,
@@ -458,6 +459,7 @@ struct Active {
     is_leader: bool,
     pending_join_requests: HashMap<MemberId, oneshot::Sender<Result<(), JoinClusterError>>>,
     read_index_to_request_id: VecDeque<(u64, Ulid)>,
+    snapshot_summary: Option<SnapshotSummary>,
 
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
     metadata_writer: Option<MetadataWriter>,
@@ -467,7 +469,7 @@ struct Active {
     status_tx: StatusSender,
 }
 
-impl Active {
+impl Member {
     fn create(
         raft_configuration: RaftConfiguration,
         connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
@@ -503,6 +505,7 @@ impl Active {
         let logger = slog::Logger::root(drain, o!());
 
         let mut kv_storage = KvMemoryStorage::new(metadata_writer.clone());
+        let mut snapshot_summary = None;
 
         if let Ok(snapshot) = storage.snapshot(0, to_raft_id(my_member_id.node_id)) {
             config.applied = snapshot.get_metadata().get_index();
@@ -511,13 +514,15 @@ impl Active {
                 let mut data = snapshot.get_data();
                 kv_storage.restore(&mut data)?;
             }
+
+            snapshot_summary = Some(SnapshotSummary::from_snapshot(&snapshot));
         }
 
         config.validate()?;
 
         let raw_node = RawNode::new(&config, storage, &logger)?;
 
-        Ok(Active {
+        Ok(Member {
             _logger: logger,
             is_leader: false,
             my_member_id,
@@ -532,6 +537,7 @@ impl Active {
             status_tx,
             pending_join_requests: HashMap::default(),
             read_index_to_request_id: VecDeque::default(),
+            snapshot_summary,
         })
     }
 
@@ -542,8 +548,8 @@ impl Active {
     }
 
     #[instrument(level = "info", skip_all, fields(member_id = %self.my_member_id))]
-    pub async fn run(mut self) -> Result<Passive, Error> {
-        debug!("Run as active metadata store node");
+    pub async fn run(mut self) -> Result<Standby, Error> {
+        debug!("Run as a member of the metadata store cluster");
         self.update_status();
 
         let mut tick_interval = time::interval(Duration::from_millis(100));
@@ -687,9 +693,9 @@ impl Active {
         if joining_node_config
             .metadata_server_config
             .metadata_server_state
-            == MetadataServerState::Outsider
+            == MetadataServerState::Standby
         {
-            let _ = response_tx.send(Err(JoinClusterError::Outsider(joining_member_id.node_id)));
+            let _ = response_tx.send(Err(JoinClusterError::Standby(joining_member_id.node_id)));
             return;
         }
 
@@ -740,7 +746,9 @@ impl Active {
             self.raw_node
                 .mut_store()
                 .apply_snapshot(ready.snapshot())
-                .await?
+                .await?;
+
+            self.snapshot_summary = Some(SnapshotSummary::from_snapshot(ready.snapshot()));
         }
 
         // handle read states
@@ -971,6 +979,7 @@ impl Active {
         debug!(%index, %term, "Created snapshot: '{}' bytes", snapshot.get_data().len());
 
         self.raw_node.mut_store().apply_snapshot(&snapshot).await?;
+        self.snapshot_summary = Some(SnapshotSummary::from_snapshot(&snapshot));
 
         Ok(())
     }
@@ -982,7 +991,7 @@ impl Active {
         for (node_id, node_config) in new_nodes_configuration.iter_mut() {
             if !self.is_member_plain_node_id(node_id) {
                 node_config.metadata_server_config.metadata_server_state =
-                    MetadataServerState::Outsider;
+                    MetadataServerState::Standby;
             }
         }
 
@@ -1055,7 +1064,7 @@ impl Active {
     }
 
     fn update_status(&self) {
-        self.status_tx.send_if_modified(|current_status| {
+        self.status_tx.send_modify(|current_status| {
             // todo fix member id to contain correct storage id
             let current_leader = if self.raw_node.raft.leader_id == INVALID_ID {
                 None
@@ -1066,37 +1075,39 @@ impl Active {
                 ))
             };
 
-            if let MetadataStoreSummary::Active {
+            if let MetadataStoreSummary::Member {
                 leader,
                 configuration,
+                raft,
+                snapshot,
             } = current_status
             {
-                let mut modified = false;
-
-                let members = self.current_members();
-                if configuration.members != members {
-                    // todo track the configuration id
-                    configuration.members = members;
-                    modified = true;
-                }
-
-                if *leader != current_leader {
-                    *leader = current_leader;
-                    modified = true;
-                }
-
-                modified
+                *leader = current_leader;
+                configuration.members = self.current_members();
+                *raft = self.raft_summary();
+                *snapshot = self.snapshot_summary.clone();
             } else {
                 let members = self.current_members();
+                let raft = self.raft_summary();
 
-                *current_status = MetadataStoreSummary::Active {
+                *current_status = MetadataStoreSummary::Member {
                     leader: current_leader,
                     configuration: MetadataStoreConfiguration { id: 0, members },
+                    raft,
+                    snapshot: self.snapshot_summary.clone(),
                 };
-
-                true
             }
         });
+    }
+
+    fn raft_summary(&self) -> RaftSummary {
+        RaftSummary {
+            term: self.raw_node.raft.term,
+            committed: self.raw_node.raft.raft_log.committed,
+            applied: self.raw_node.raft.raft_log.applied,
+            last_index: self.raw_node.store().get_last_index(),
+            first_index: self.raw_node.store().get_first_index(),
+        }
     }
 
     fn current_members(&self) -> Vec<MemberId> {
@@ -1177,7 +1188,7 @@ impl Active {
 }
 
 #[allow(dead_code)]
-struct Passive {
+struct Standby {
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
     storage: RocksDbStorage,
     request_rx: RequestReceiver,
@@ -1187,7 +1198,7 @@ struct Passive {
     status_tx: StatusSender,
 }
 
-impl Passive {
+impl Standby {
     fn new(
         storage: RocksDbStorage,
         connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
@@ -1199,7 +1210,7 @@ impl Passive {
     ) -> Self {
         connection_manager.store(None);
 
-        Passive {
+        Standby {
             connection_manager,
             storage,
             request_rx,
@@ -1211,10 +1222,10 @@ impl Passive {
     }
 
     #[instrument(level = "info", skip_all, fields(member_id = tracing::field::Empty))]
-    async fn run(self) -> Result<Active, Error> {
-        debug!("Run as passive metadata store node.");
+    async fn run(self) -> Result<Member, Error> {
+        debug!("Run as standby metadata store node.");
 
-        let Passive {
+        let Standby {
             connection_manager,
             mut storage,
             mut request_rx,
@@ -1224,7 +1235,7 @@ impl Passive {
             status_tx,
         } = self;
 
-        let _ = status_tx.send(MetadataStoreSummary::Passive);
+        let _ = status_tx.send(MetadataStoreSummary::Standby);
 
         // todo make configurable
         let mut join_retry_policy = RetryPolicy::exponential(
@@ -1255,11 +1266,11 @@ impl Passive {
                     let request = request.into_request();
                     request.fail(RequestError::Unavailable(
                         "Not being part of the metadata store cluster.".into(),
-                        Active::random_member(),
+                        Member::random_member(),
                     ))
                 },
                 Some(request) = join_cluster_rx.recv() => {
-                    let _ = request.response_tx.send(Err(JoinClusterError::NotActive(Active::random_member())));
+                    let _ = request.response_tx.send(Err(JoinClusterError::NotMember(Member::random_member())));
                 }
                 Some(join_result) = &mut join_cluster => {
                     match join_result {
@@ -1269,7 +1280,7 @@ impl Passive {
                             };
                             storage.store_raft_configuration(&raft_configuration).await?;
 
-                            return Active::create(
+                            return Member::create(
                                 raft_configuration,
                                 connection_manager,
                                 storage,
@@ -1337,21 +1348,21 @@ impl Passive {
             known_leader.address
         } else {
             // pick random metadata store member node
-            let active_metadata_store_node = nodes_config.iter().filter_map(|(node, config)| {
+            let member_node = nodes_config.iter().filter_map(|(node, config)| {
                 if config.has_role(Role::MetadataServer) && node != my_node_id && matches!(config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
                     Some(node)
                 } else {
                     None
                 }
-            }).choose(&mut thread_rng()).ok_or(JoinError::Other("No other active metadata store present in the cluster. This indicates a misconfiguration.".into()))?;
+            }).choose(&mut thread_rng()).ok_or(JoinError::Other("No other metadata store member present in the cluster. This indicates a misconfiguration.".into()))?;
 
             debug!(
                 "Trying to join metadata store cluster at randomly chosen node '{}'",
-                active_metadata_store_node
+                member_node
             );
 
             nodes_config
-                .find_node_by_id(active_metadata_store_node)
+                .find_node_by_id(member_node)
                 .expect("must be present")
                 .address
                 .clone()

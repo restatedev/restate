@@ -26,7 +26,7 @@ macro_rules! set_table_values {
     };
 }
 
-fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Table<'lua>> {
+fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
     let result_messages = lua.create_table()?;
 
     // We should store it somewhere, but right now wireshark doesn't support conversations in lua api
