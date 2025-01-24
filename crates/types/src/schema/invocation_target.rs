@@ -8,16 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::str::FromStr;
-use std::time::Duration;
-use std::{cmp, fmt};
-
 use super::Schema;
 use crate::invocation::InvocationTargetType;
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+use std::time::Duration;
+use std::{cmp, fmt};
 
 pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 pub const DEFAULT_WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
@@ -116,7 +116,7 @@ impl InputRules {
     pub fn json_schema(&self) -> Option<serde_json::Value> {
         for rule in &self.input_validation_rules {
             if let InputValidationRule::JsonValue { schema, .. } = rule {
-                return Some(schema.clone());
+                return schema.clone();
             }
         }
         None
@@ -190,7 +190,7 @@ pub enum InputValidationRule {
         content_type: InputContentType,
         // Right now we don't use this schema for anything except printing,
         // so no need to use a more specialized type (we validate the schema is valid inside the schema registry updater)
-        schema: serde_json::Value,
+        schema: Option<serde_json::Value>,
     },
 }
 
@@ -204,7 +204,7 @@ impl fmt::Display for InputValidationRule {
             InputValidationRule::JsonValue {
                 content_type,
                 schema,
-            } => try_display_json_detailed_info(f, schema, || content_type),
+            } => try_display_json_detailed_info(f, schema.as_ref(), || content_type),
         }
     }
 }
@@ -383,13 +383,7 @@ impl OutputRules {
 
 impl fmt::Display for OutputRules {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        try_display_json_detailed_info(
-            f,
-            self.json_schema
-                .as_ref()
-                .unwrap_or(&serde_json::Value::Null),
-            || &self.content_type_rule,
-        )
+        try_display_json_detailed_info(f, self.json_schema.as_ref(), || &self.content_type_rule)
     }
 }
 
@@ -439,12 +433,12 @@ impl fmt::Display for OutputContentTypeRule {
 
 fn try_display_json_detailed_info<D: fmt::Display>(
     f: &mut fmt::Formatter<'_>,
-    schema: &serde_json::Value,
+    schema: Option<&serde_json::Value>,
     default: impl FnOnce() -> D,
 ) -> fmt::Result {
-    if let Some(serde_json::Value::String(title)) = schema.get("title") {
+    if let Some(serde_json::Value::String(title)) = schema.and_then(|s| s.get("title")) {
         write!(f, "JSON '{title}'")
-    } else if let Some(serde_json::Value::String(ty)) = schema.get("type") {
+    } else if let Some(serde_json::Value::String(ty)) = schema.and_then(|s| s.get("type")) {
         write!(f, "JSON {ty}")
     } else {
         write!(f, "{}", default())
