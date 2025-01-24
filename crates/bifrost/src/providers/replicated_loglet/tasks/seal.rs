@@ -17,7 +17,8 @@ use restate_core::{TaskCenter, TaskKind};
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
-use restate_types::replicated_loglet::{LogNodeSetExt, NodeSet, ReplicatedLogletParams};
+use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
+use restate_types::replication::NodeSet;
 use restate_types::retries::RetryPolicy;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 

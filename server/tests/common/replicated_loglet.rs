@@ -34,7 +34,8 @@ use restate_types::{
     logs::{metadata::ProviderKind, LogId},
     net::{AdvertisedAddress, BindAddress},
     nodes_config::Role,
-    replicated_loglet::{ReplicatedLogletParams, ReplicationProperty},
+    replicated_loglet::ReplicatedLogletParams,
+    replication::ReplicationProperty,
     GenerationalNodeId, PlainNodeId,
 };
 

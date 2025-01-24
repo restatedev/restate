@@ -16,7 +16,8 @@ use parking_lot::Mutex;
 use rand::prelude::*;
 
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::replicated_loglet::{NodeSet, ReplicationProperty, Spread};
+use restate_types::replicated_loglet::Spread;
+use restate_types::replication::{NodeSet, ReplicationProperty};
 
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
 

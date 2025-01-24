@@ -23,7 +23,8 @@ use restate_cli_util::{c_eprintln, c_println};
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, LogletId};
 use restate_types::protobuf::common::Version;
-use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty};
+use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 

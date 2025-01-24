@@ -22,7 +22,7 @@ use restate_local_cluster_runner::{
 use restate_types::config::MetadataStoreClient;
 use restate_types::logs::metadata::{ProviderConfiguration, ReplicatedLogletConfig};
 use restate_types::partition_table::PartitionReplication;
-use restate_types::replicated_loglet::ReplicationProperty;
+use restate_types::replication::ReplicationProperty;
 use restate_types::{config::Configuration, nodes_config::Role, PlainNodeId};
 use test_log::test;
 

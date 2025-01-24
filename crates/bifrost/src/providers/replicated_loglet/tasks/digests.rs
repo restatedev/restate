@@ -22,7 +22,8 @@ use restate_types::net::log_server::{
     Digest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
 };
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::replicated_loglet::{NodeSet, ReplicatedLogletParams};
+use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replication::NodeSet;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use crate::loglet::util::TailOffsetWatch;

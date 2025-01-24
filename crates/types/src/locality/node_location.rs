@@ -14,7 +14,7 @@ use itertools::Itertools;
 
 use crate::PlainNodeId;
 
-use super::NodeLocationScope;
+use super::LocationScope;
 
 type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
@@ -30,7 +30,7 @@ const NODE_DELIMITER: &str = ":";
 
 /// Stores location information of non-special scopes in range (Node, Root) exclusively.
 ///
-/// Identifies some domain, by giving a path from [`NodeLocationScope::Root`] to the domain.
+/// Identifies some domain, by giving a path from [`LocationScope::Root`] to the domain.
 ///
 /// It's a vector of labels for scopes from biggest to smallest. For instance,
 /// {"us-east-2", "use2-az3"} identifies zone "use2-az3" in region "us-east-2".
@@ -52,7 +52,7 @@ pub struct NodeLocation {
     /// Internal storage for labels of all scopes, the order of scopes in the array
     /// is the reverse order of their type value: largest scope (i.e. Region) gets
     /// stored at index 0, and so on...
-    labels: [SmartString; NodeLocationScope::num_scopes()],
+    labels: [SmartString; LocationScope::num_scopes()],
     /// number of (non-empty) scope labels specified
     num_defined_scopes: u8,
 }
@@ -61,7 +61,7 @@ impl NodeLocation {
     /// Creates a new empty NodeLocation
     pub const fn new() -> Self {
         Self {
-            labels: [const { SmartString::new_const() }; NodeLocationScope::num_scopes()],
+            labels: [const { SmartString::new_const() }; LocationScope::num_scopes()],
             num_defined_scopes: 0,
         }
     }
@@ -70,16 +70,16 @@ impl NodeLocation {
     ///  name for the specified scope as well as names for all parent scopes.
     ///  E.g. a possible output for scope `Region` is "us-east1".
     ///
-    ///  If `node_id` is `None` and scope [`NodeLocationScope::Node`] is treated differently:
+    ///  If `node_id` is `None` and scope [`LocationScope::Node`] is treated differently:
     ///  it's equivalent to `Zone`; i.e. the returned string will identify a zone,
-    ///  not the node. If `node_id` is given, and `scope` is [`NodeLocationScope::Node`],
+    ///  not the node. If `node_id` is given, and `scope` is [`LocationScope::Node`],
     ///  the returned string will be identify a node, e.g. "us-east-2.use2-az3:N4"
     ///  or ":N4" if no location was supplied.
     ///
     ///  ## Panics
-    ///  if `scope` is [`NodeLocationScope::Root`]
-    pub fn domain_string(&self, scope: NodeLocationScope, node_id: Option<PlainNodeId>) -> String {
-        debug_assert!(scope != NodeLocationScope::Root);
+    ///  if `scope` is [`LocationScope::Root`]
+    pub fn domain_string(&self, scope: LocationScope, node_id: Option<PlainNodeId>) -> String {
+        debug_assert!(scope != LocationScope::Root);
         if self.is_empty() && node_id.is_none() {
             return String::new();
         }
@@ -92,7 +92,7 @@ impl NodeLocation {
             .take(effective_scopes)
             .join(SCOPE_DELIMITER);
 
-        if scope == NodeLocationScope::Node {
+        if scope == LocationScope::Node {
             if let Some(node_id) = node_id {
                 result += NODE_DELIMITER;
                 result += &node_id.to_string();
@@ -105,7 +105,7 @@ impl NodeLocation {
     /// Node location label at the given `scope`.
     ///
     /// Note that on special scopes (Root, Node), the label is an empty string.
-    pub fn label_at(&self, scope: NodeLocationScope) -> &str {
+    pub fn label_at(&self, scope: LocationScope) -> &str {
         static EMPTY_LABEL: &str = "";
         if scope.is_special() {
             return EMPTY_LABEL;
@@ -115,7 +115,7 @@ impl NodeLocation {
     }
 
     /// Returns true if a label is assigned at this scope
-    pub fn is_scope_defined(&self, scope: NodeLocationScope) -> bool {
+    pub fn is_scope_defined(&self, scope: LocationScope) -> bool {
         !scope.is_special() && scope_to_index(scope) < self.num_defined_scopes as usize
     }
 
@@ -130,12 +130,12 @@ impl NodeLocation {
     }
 
     /// Returns the smallest (narrowest) defined location scope
-    pub fn smallest_defined_scope(&self) -> NodeLocationScope {
+    pub fn smallest_defined_scope(&self) -> LocationScope {
         if self.num_defined_scopes == 0 {
-            return NodeLocationScope::Root;
+            return LocationScope::Root;
         }
 
-        NodeLocationScope::from_u8(NodeLocationScope::Root as u8 - self.num_defined_scopes).unwrap()
+        LocationScope::from_u8(LocationScope::Root as u8 - self.num_defined_scopes).unwrap()
     }
 
     /// Checks if this location is a prefix match for the input. In other words, the input location
@@ -154,7 +154,7 @@ impl NodeLocation {
         //
         // The previous case will be prefix=`region.us-east.` which is not a prefix of
         // `region.us-east1.`
-        let domain_str = self.domain_string(NodeLocationScope::Node, None) + SCOPE_DELIMITER;
+        let domain_str = self.domain_string(LocationScope::Node, None) + SCOPE_DELIMITER;
         if prefix.ends_with(SCOPE_DELIMITER) {
             domain_str.starts_with(prefix)
         } else {
@@ -170,13 +170,13 @@ impl NodeLocation {
     /// This is a little more efficient that `matches_prefix` if the location has been already
     /// parsed.
     ///
-    /// * Input scope [`NodeLocationScope::Root`] always yields `true` since Root is always shared.
-    /// * Input scope [`NodeLocationScope::Node`] always yields `false` since Node is implicit and is never shared.
-    pub fn shares_domain_with(&self, location: &NodeLocation, scope: NodeLocationScope) -> bool {
-        if scope == NodeLocationScope::Root {
+    /// * Input scope [`LocationScope::Root`] always yields `true` since Root is always shared.
+    /// * Input scope [`LocationScope::Node`] always yields `false` since Node is implicit and is never shared.
+    pub fn shares_domain_with(&self, location: &NodeLocation, scope: LocationScope) -> bool {
+        if scope == LocationScope::Root {
             return true;
         }
-        if scope == NodeLocationScope::Node {
+        if scope == LocationScope::Node {
             return false;
         }
 
@@ -191,7 +191,7 @@ impl NodeLocation {
 }
 impl std::fmt::Display for NodeLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.domain_string(NodeLocationScope::Node, None))
+        write!(f, "{}", self.domain_string(LocationScope::Node, None))
     }
 }
 
@@ -213,8 +213,8 @@ impl FromStr for NodeLocation {
     ///  Label:           part of the location domain string that belongs to
     ///                   one location scope.
     ///
-    ///  Notes: the location domain string must have all [`NodeLocationScope::num_scopes()`] separated by
-    ///         [`DELIMITER`]. The left most scope must be the biggest scope defined [`NodeLocationScope::MAX`].
+    ///  Notes: the location domain string must have all [`LocationScope::num_scopes()`] separated by
+    ///         [`DELIMITER`]. The left most scope must be the biggest scope defined [`LocationScope::MAX`].
     ///         An empty label is allowed, meaning that location for the scope and
     ///         all subscopes are not specified.
     ///
@@ -234,20 +234,20 @@ impl FromStr for NodeLocation {
             .map(|token| validate_token(s, token))
             .try_collect()?;
 
-        if tokens.len() > NodeLocationScope::num_scopes() {
+        if tokens.len() > LocationScope::num_scopes() {
             return Err(InvalidNodeLocationError(format!(
                 "Wrong number of scopes in location string '{}'. Got {}, maximum {}",
                 s,
                 tokens.len(),
-                NodeLocationScope::num_scopes(),
+                LocationScope::num_scopes(),
             )));
         }
 
         let mut n_tokens: usize = 0;
-        let mut labels = [const { SmartString::new_const() }; NodeLocationScope::num_scopes()];
+        let mut labels = [const { SmartString::new_const() }; LocationScope::num_scopes()];
         let mut tokens = tokens.into_iter();
 
-        while n_tokens < NodeLocationScope::num_scopes() {
+        while n_tokens < LocationScope::num_scopes() {
             match tokens.next() {
                 None => break,
                 Some("") => break,
@@ -275,7 +275,7 @@ impl FromStr for NodeLocation {
 /// Converts a non-special scope into the label-index.
 ///
 /// **Requires scope to be non-special**
-const fn scope_to_index(scope: NodeLocationScope) -> usize {
+const fn scope_to_index(scope: LocationScope) -> usize {
     assert!(!scope.is_special());
     // 0 - Node -- excluded
     // 1 - Zone
@@ -285,17 +285,17 @@ const fn scope_to_index(scope: NodeLocationScope) -> usize {
     //
     // zone = 2 - 1 == labels[1]
     // region = 2 - 2 == labels[0]
-    NodeLocationScope::num_scopes() - (scope as usize)
+    LocationScope::num_scopes() - (scope as usize)
 }
 
 /// How many scopes actual (non-special) scopes are equal or greater than this scope.
 ///
 /// For instance, for a Node scope, we have 2 greater "non-special" scopes (Zone, Region),
 /// for Region, it's "1", and for Root, it's 0.
-const fn effective_scopes(scope: NodeLocationScope) -> usize {
+const fn effective_scopes(scope: LocationScope) -> usize {
     match scope {
-        NodeLocationScope::Root => 0,
-        NodeLocationScope::Node => NodeLocationScope::num_scopes(),
+        LocationScope::Root => 0,
+        LocationScope::Node => LocationScope::num_scopes(),
         scope => scope_to_index(scope) + 1,
     }
 }
@@ -320,34 +320,31 @@ mod tests {
     fn node_location_parsing_simple() {
         // valid case 1
         let location = NodeLocation::from_str("us-east2.use2-az3").unwrap();
-        assert_that!(
-            location.smallest_defined_scope(),
-            eq(NodeLocationScope::Zone)
-        );
-        assert_that!(location.label_at(NodeLocationScope::Region), eq("us-east2"));
-        assert_that!(location.label_at(NodeLocationScope::Zone), eq("use2-az3"));
-        assert_that!(location.label_at(NodeLocationScope::Node), eq(""));
-        assert_that!(location.label_at(NodeLocationScope::Root), eq(""));
+        assert_that!(location.smallest_defined_scope(), eq(LocationScope::Zone));
+        assert_that!(location.label_at(LocationScope::Region), eq("us-east2"));
+        assert_that!(location.label_at(LocationScope::Zone), eq("use2-az3"));
+        assert_that!(location.label_at(LocationScope::Node), eq(""));
+        assert_that!(location.label_at(LocationScope::Root), eq(""));
         assert_that!(location.num_defined_scopes(), eq(2));
         assert_that!(
-            location.domain_string(NodeLocationScope::Region, None),
+            location.domain_string(LocationScope::Region, None),
             eq("us-east2")
         );
         assert_that!(
-            location.domain_string(NodeLocationScope::Zone, None),
+            location.domain_string(LocationScope::Zone, None),
             eq("us-east2.use2-az3")
         );
         assert_that!(
-            location.domain_string(NodeLocationScope::Node, None),
+            location.domain_string(LocationScope::Node, None),
             eq("us-east2.use2-az3")
         );
         assert_that!(
-            location.domain_string(NodeLocationScope::Node, Some(PlainNodeId::new(4))),
+            location.domain_string(LocationScope::Node, Some(PlainNodeId::new(4))),
             eq("us-east2.use2-az3:N4")
         );
         // node-id is ignored unless we are printing the Node scope.
         assert_that!(
-            location.domain_string(NodeLocationScope::Zone, Some(PlainNodeId::new(4))),
+            location.domain_string(LocationScope::Zone, Some(PlainNodeId::new(4))),
             eq("us-east2.use2-az3")
         );
 
@@ -355,28 +352,25 @@ mod tests {
 
         // valid case 2
         let location = NodeLocation::from_str("us-east2.").unwrap();
-        assert_that!(
-            location.smallest_defined_scope(),
-            eq(NodeLocationScope::Region)
-        );
-        assert_that!(location.label_at(NodeLocationScope::Region), eq("us-east2"));
-        assert_that!(location.label_at(NodeLocationScope::Zone), eq(""));
-        assert_that!(location.label_at(NodeLocationScope::Node), eq(""));
+        assert_that!(location.smallest_defined_scope(), eq(LocationScope::Region));
+        assert_that!(location.label_at(LocationScope::Region), eq("us-east2"));
+        assert_that!(location.label_at(LocationScope::Zone), eq(""));
+        assert_that!(location.label_at(LocationScope::Node), eq(""));
         assert_that!(location.num_defined_scopes(), eq(1));
         assert_that!(
-            location.domain_string(NodeLocationScope::Region, None),
+            location.domain_string(LocationScope::Region, None),
             eq("us-east2")
         );
         assert_that!(
-            location.domain_string(NodeLocationScope::Zone, None),
+            location.domain_string(LocationScope::Zone, None),
             eq("us-east2")
         );
         assert_that!(
-            location.domain_string(NodeLocationScope::Node, None),
+            location.domain_string(LocationScope::Node, None),
             eq("us-east2")
         );
         assert_that!(
-            location.domain_string(NodeLocationScope::Node, Some(PlainNodeId::new(4))),
+            location.domain_string(LocationScope::Node, Some(PlainNodeId::new(4))),
             eq("us-east2:N4")
         );
 
@@ -385,20 +379,20 @@ mod tests {
 
         // valid case 3
         let location = NodeLocation::from_str("us-east1").unwrap();
-        assert_that!(location.label_at(NodeLocationScope::Region), eq("us-east1"));
-        assert_that!(location.label_at(NodeLocationScope::Zone), eq(""));
-        assert_that!(location.label_at(NodeLocationScope::Node), eq(""));
+        assert_that!(location.label_at(LocationScope::Region), eq("us-east1"));
+        assert_that!(location.label_at(LocationScope::Zone), eq(""));
+        assert_that!(location.label_at(LocationScope::Node), eq(""));
         assert_that!(location.num_defined_scopes(), eq(1));
         assert_that!(
-            location.domain_string(NodeLocationScope::Region, None),
+            location.domain_string(LocationScope::Region, None),
             eq("us-east1")
         );
         assert_that!(
-            location.domain_string(NodeLocationScope::Node, None),
+            location.domain_string(LocationScope::Node, None),
             eq("us-east1")
         );
         assert_that!(
-            location.domain_string(NodeLocationScope::Node, Some(5.into())),
+            location.domain_string(LocationScope::Node, Some(5.into())),
             eq("us-east1:N5")
         );
     }
@@ -407,24 +401,15 @@ mod tests {
     fn node_location_parsing_with_empty_labels() {
         // valid case 1 -- empty str
         let location = NodeLocation::from_str("").unwrap();
-        assert_that!(
-            location.smallest_defined_scope(),
-            eq(NodeLocationScope::Root)
-        );
-        assert_that!(location.label_at(NodeLocationScope::Region), eq(""));
-        assert_that!(location.label_at(NodeLocationScope::Zone), eq(""));
-        assert_that!(location.label_at(NodeLocationScope::Node), eq(""));
+        assert_that!(location.smallest_defined_scope(), eq(LocationScope::Root));
+        assert_that!(location.label_at(LocationScope::Region), eq(""));
+        assert_that!(location.label_at(LocationScope::Zone), eq(""));
+        assert_that!(location.label_at(LocationScope::Node), eq(""));
         assert_that!(location.num_defined_scopes(), eq(0));
+        assert_that!(location.domain_string(LocationScope::Region, None), eq(""));
+        assert_that!(location.domain_string(LocationScope::Node, None), eq(""));
         assert_that!(
-            location.domain_string(NodeLocationScope::Region, None),
-            eq("")
-        );
-        assert_that!(
-            location.domain_string(NodeLocationScope::Node, None),
-            eq("")
-        );
-        assert_that!(
-            location.domain_string(NodeLocationScope::Node, Some(5.into())),
+            location.domain_string(LocationScope::Node, Some(5.into())),
             eq(":N5")
         );
 
@@ -470,28 +455,28 @@ mod tests {
 
         let location2 = NodeLocation::from_str("us-east2.use2").unwrap();
         assert_that!(
-            location.shares_domain_with(&location2, NodeLocationScope::Root),
+            location.shares_domain_with(&location2, LocationScope::Root),
             eq(true)
         );
 
         assert_that!(
-            location.shares_domain_with(&location2, NodeLocationScope::Region),
+            location.shares_domain_with(&location2, LocationScope::Region),
             eq(true)
         );
 
         assert_that!(
-            location.shares_domain_with(&location2, NodeLocationScope::Zone),
+            location.shares_domain_with(&location2, LocationScope::Zone),
             eq(false)
         );
 
         assert_that!(
-            location.shares_domain_with(&location2, NodeLocationScope::Node),
+            location.shares_domain_with(&location2, LocationScope::Node),
             eq(false)
         );
 
         // even identical locations can't match on node scope
         assert_that!(
-            location.shares_domain_with(&location, NodeLocationScope::Node),
+            location.shares_domain_with(&location, LocationScope::Node),
             eq(false)
         );
 
@@ -499,42 +484,42 @@ mod tests {
         //
         let location2 = NodeLocation::from_str("us-east2").unwrap();
         assert_that!(
-            location.shares_domain_with(&location2, NodeLocationScope::Root),
+            location.shares_domain_with(&location2, LocationScope::Root),
             eq(true)
         );
 
         assert_that!(
-            location.shares_domain_with(&location2, NodeLocationScope::Region),
+            location.shares_domain_with(&location2, LocationScope::Region),
             eq(true)
         );
 
         assert_that!(
-            location.shares_domain_with(&location2, NodeLocationScope::Zone),
+            location.shares_domain_with(&location2, LocationScope::Zone),
             eq(false)
         );
 
         assert_that!(
-            location.shares_domain_with(&location2, NodeLocationScope::Node),
+            location.shares_domain_with(&location2, LocationScope::Node),
             eq(false)
         );
         // same if the check is flipped over
         assert_that!(
-            location2.shares_domain_with(&location, NodeLocationScope::Root),
+            location2.shares_domain_with(&location, LocationScope::Root),
             eq(true)
         );
 
         assert_that!(
-            location2.shares_domain_with(&location, NodeLocationScope::Region),
+            location2.shares_domain_with(&location, LocationScope::Region),
             eq(true)
         );
 
         assert_that!(
-            location2.shares_domain_with(&location, NodeLocationScope::Zone),
+            location2.shares_domain_with(&location, LocationScope::Zone),
             eq(false)
         );
 
         assert_that!(
-            location2.shares_domain_with(&location, NodeLocationScope::Node),
+            location2.shares_domain_with(&location, LocationScope::Node),
             eq(false)
         );
     }

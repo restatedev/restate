@@ -31,7 +31,8 @@ use restate_types::{
     live::Live,
     logs::{LogletOffset, Record, SequenceNumber, TailState},
     net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
-    replicated_loglet::{NodeSet, Spread},
+    replicated_loglet::Spread,
+    replication::NodeSet,
     time::MillisSinceEpoch,
     PlainNodeId,
 };

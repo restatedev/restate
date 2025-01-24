@@ -16,9 +16,9 @@ use std::hash::{Hash, Hasher};
 use itertools::Itertools;
 use tracing::warn;
 
-use restate_types::locality::{NodeLocation, NodeLocationScope};
+use restate_types::locality::{LocationScope, NodeLocation};
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
-use restate_types::replicated_loglet::{NodeSet, ReplicationProperty};
+use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::Merge;
 use restate_types::PlainNodeId;
 
@@ -117,7 +117,7 @@ pub struct NodeSetChecker<Attr> {
     // This is a btree-map to leverage its great cache-locality on small sets like this one.
     // this could also be Box<[(PlainNodeId, LocationScopeState<Attr>)]> but btreemap is nicer to
     // use.
-    scopes: BTreeMap<NodeLocationScope, LocationScopeState<Attr>>,
+    scopes: BTreeMap<LocationScope, LocationScopeState<Attr>>,
     node_to_attr: HashMap<PlainNodeId, Attr>,
     /// Mapping between node-id and its log-server storage state. Note that we keep all nodes even
     /// unreadable ones here because they might become readable after a nodes configuration
@@ -134,7 +134,7 @@ impl<Attr: Eq + Hash + Clone + std::fmt::Debug> NodeSetChecker<Attr> {
         nodes_config: &NodesConfiguration,
         replication_property: &ReplicationProperty,
     ) -> Self {
-        let mut scope = NodeLocationScope::Root;
+        let mut scope = LocationScope::Root;
         let mut scopes = BTreeMap::new();
         while let Some(current_scope) = scope.next_smaller_scope() {
             // we are not interested in the scope if replication property doesn't
@@ -200,7 +200,7 @@ impl<Attr: Eq + Hash + Clone + std::fmt::Debug> NodeSetChecker<Attr> {
         // count complete domains
         let node_scope = self
             .scopes
-            .get(&NodeLocationScope::Node)
+            .get(&LocationScope::Node)
             .expect("node scope must be set");
 
         // A shortcut to get the number of authoritative nodes that have this attribute matching
@@ -416,7 +416,7 @@ impl<Attr: Eq + Hash + Clone + std::fmt::Debug> NodeSetChecker<Attr> {
         }
 
         for (scope, scope_state) in self.scopes.iter_mut() {
-            let domain_name = if *scope == NodeLocationScope::Node {
+            let domain_name = if *scope == LocationScope::Node {
                 // We don't use `domain_string(*scope, Some(node_id))` to avoid allocating long
                 // strings at this scope (the node scope has the most number of domains)
                 node_id.to_string()
@@ -1338,15 +1338,15 @@ mod tests {
         let nodeset: NodeSet = (1..=11).collect();
         let replication = ReplicationProperty::from_str("{region: 2, zone: 3}").unwrap();
         assert_that!(
-            replication.copies_at_scope(NodeLocationScope::Node),
+            replication.copies_at_scope(LocationScope::Node),
             some(eq(3))
         );
         assert_that!(
-            replication.copies_at_scope(NodeLocationScope::Zone),
+            replication.copies_at_scope(LocationScope::Zone),
             some(eq(3))
         );
         assert_that!(
-            replication.copies_at_scope(NodeLocationScope::Region),
+            replication.copies_at_scope(LocationScope::Region),
             some(eq(2))
         );
         let mut checker: NodeSetChecker<bool> =

@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use restate_core::network::{NetworkError, Networking, TransportConnect, WeakConnection};
 use restate_types::{
     logs::{LogletOffset, SequenceNumber, TailState},
-    replicated_loglet::NodeSet,
+    replication::NodeSet,
     PlainNodeId,
 };
 
