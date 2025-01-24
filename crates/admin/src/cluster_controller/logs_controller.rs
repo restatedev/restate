@@ -1106,8 +1106,8 @@ impl LogsController {
                     .await
                 {
                     return match err {
-                        WriteError::FailedPrecondition(_) => {
-                            debug!("Detected a concurrent modification of logs. Fetching the latest logs now.");
+                        WriteError::FailedPrecondition(err) => {
+                            debug!("Detected a concurrent modification of logs. Fetching the latest logs now. {err}");
                             // There was a concurrent modification of the logs. Fetch the latest version.
                             match metadata_writer.metadata_store_client()
                                 .get::<Logs>(BIFROST_CONFIG_KEY.clone())
