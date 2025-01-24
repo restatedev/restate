@@ -152,7 +152,6 @@ pub struct Leader<T> {
     scheduler: Scheduler<T>,
     cluster_state_watcher: ClusterStateWatcher,
     log_trim_check_interval: Option<Interval>,
-    log_trim_threshold: Lsn,
     snapshots_repository_configured: bool,
 }
 
@@ -168,7 +167,7 @@ where
         let logs_controller =
             LogsController::new(service.bifrost.clone(), service.metadata_writer.clone())?;
 
-        let (log_trim_check_interval, log_trim_threshold) = log_trim_options(&configuration.admin);
+        let log_trim_check_interval = create_log_trim_check_interval(&configuration.admin);
 
         let mut find_logs_tail_interval =
             time::interval(configuration.admin.log_tail_update_interval.into());
@@ -184,7 +183,6 @@ where
             scheduler,
             cluster_state_watcher: service.cluster_state_refresher.cluster_state_watcher(),
             log_trim_check_interval,
-            log_trim_threshold,
             snapshots_repository_configured: configuration.worker.snapshots.destination.is_some(),
         };
 
@@ -219,8 +217,7 @@ where
     }
 
     fn reconfigure(&mut self, configuration: &Configuration) {
-        (self.log_trim_check_interval, self.log_trim_threshold) =
-            log_trim_options(&configuration.admin);
+        self.log_trim_check_interval = create_log_trim_check_interval(&configuration.admin);
     }
 
     async fn run(&mut self) -> anyhow::Result<LeaderEvent> {
@@ -337,16 +334,16 @@ where
     }
 }
 
-fn log_trim_options(options: &AdminOptions) -> (Option<Interval>, Lsn) {
-    let log_trim_interval = options.log_trim_interval.map(|interval| {
+fn create_log_trim_check_interval(options: &AdminOptions) -> Option<Interval> {
+    options
+        .log_trim_threshold
+        .inspect(|_| info!("The log trim threshold setting is deprecated and will be ignored"));
+
+    options.log_trim_interval.map(|interval| {
         let mut interval = tokio::time::interval(interval.into());
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         interval
-    });
-
-    let log_trim_threshold = Lsn::new(options.log_trim_threshold);
-
-    (log_trim_interval, log_trim_threshold)
+    })
 }
 
 enum TrimMode {
@@ -851,68 +848,6 @@ mod tests {
                 (LogId::from(p4), (Lsn::new(40), p4)),
             ]),
             "presence of dead or suspect nodes does not block trimming when archived LSN is reported"
-        );
-    }
-
-    // To avoid asking the cluster for the current trim points, we ignore the min log trim threshold
-    // setting. To control the frequency of trimming, operators should configure the trim log
-    // interval to a suitable value since we don't impose a minimum number of records to trim.
-    #[test]
-    fn trim_points_min_trim_threshold_ignored() {
-        let p1 = PartitionId::from(0);
-        let n1 = GenerationalNodeId::new(1, 0);
-        let n1_partitions = [(
-            p1,
-            ProcessorStatus {
-                mode: Leader,
-                applied: Some(Lsn::new(101)),
-                persisted: Some(Lsn::new(100)),
-                archived: None,
-            }
-            .into(),
-        )]
-        .into_iter()
-        .collect();
-
-        let cluster_state = Arc::new(ClusterState {
-            last_refreshed: None,
-            nodes_config_version: Version::MIN,
-            partition_table_version: Version::MIN,
-            logs_metadata_version: Version::MIN,
-            nodes: [(n1.as_plain(), alive_node(n1, n1_partitions))].into(),
-        });
-
-        let trim_mode = TrimMode::from(false, &cluster_state);
-
-        assert!(matches!(trim_mode, TrimMode::PersistedLsn { .. }));
-        assert_eq!(
-            trim_mode.calculate_safe_trim_points(),
-            [(LogId::from(p1), (Lsn::new(100), p1))].into(),
-        );
-
-        let n1_partitions = [(
-            p1,
-            ProcessorStatus {
-                mode: Leader,
-                applied: Some(Lsn::new(101)),
-                persisted: Some(Lsn::new(100)),
-                archived: Some(Lsn::new(90)),
-            }
-            .into(),
-        )]
-        .into_iter()
-        .collect();
-
-        let cluster_state = Arc::new(ClusterState {
-            nodes: [(n1.as_plain(), alive_node(n1, n1_partitions))].into(),
-            ..*cluster_state
-        });
-        let trim_mode = TrimMode::from(true, &cluster_state);
-
-        assert!(matches!(trim_mode, TrimMode::ArchivedLsn { .. }));
-        assert_eq!(
-            trim_mode.calculate_safe_trim_points(),
-            [(LogId::from(p1), (Lsn::new(90), p1))].into(),
         );
     }
 

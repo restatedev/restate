@@ -878,7 +878,6 @@ mod tests {
         const LOG_ID: LogId = LogId::new(0);
 
         let mut admin_options = AdminOptions::default();
-        admin_options.log_trim_threshold = 5;
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
         let config = Configuration {
@@ -946,11 +945,10 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn auto_log_trim_zero_threshold() -> anyhow::Result<()> {
+    async fn auto_trim_log() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let mut admin_options = AdminOptions::default();
-        admin_options.log_trim_threshold = 0;
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
         let config = Configuration {
@@ -1022,7 +1020,6 @@ mod tests {
         const LOG_ID: LogId = LogId::new(0);
 
         let mut admin_options = AdminOptions::default();
-        admin_options.log_trim_threshold = 0;
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
         let mut bifrost_options = BifrostOptions::default();
@@ -1082,7 +1079,6 @@ mod tests {
         let interval_duration = Duration::from_secs(10);
 
         let mut config: Configuration = Default::default();
-        config.admin.log_trim_threshold = 0;
         config.admin.log_trim_interval = Some(interval_duration.into());
         config.bifrost.default_provider = ProviderKind::InMemory;
         config.worker.snapshots.destination = Some("a-repository-somewhere".to_string());
@@ -1158,7 +1154,6 @@ mod tests {
         const LOG_ID: LogId = LogId::new(0);
 
         let mut admin_options = AdminOptions::default();
-        admin_options.log_trim_threshold = 0;
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
         let mut bifrost_options = BifrostOptions::default();
@@ -1236,7 +1231,6 @@ mod tests {
         const LOG_ID: LogId = LogId::new(0);
 
         let mut admin_options = AdminOptions::default();
-        admin_options.log_trim_threshold = 0;
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
         let mut bifrost_options = BifrostOptions::default();

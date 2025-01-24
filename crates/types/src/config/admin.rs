@@ -53,10 +53,10 @@ pub struct AdminOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub log_trim_interval: Option<humantime::Duration>,
 
-    /// # Log trim threshold (Deprecated)
+    /// # Log trim threshold (deprecated)
     ///
     /// This configuration option is deprecated and ignored in Restate >= 1.2.
-    pub log_trim_threshold: u64,
+    pub log_trim_threshold: Option<u64>,
 
     /// # Log Tail Update interval
     ///
@@ -109,7 +109,7 @@ impl Default for AdminOptions {
             heartbeat_interval: Duration::from_millis(1500).into(),
             // try to trim the log every hour
             log_trim_interval: Some(Duration::from_secs(60 * 60).into()),
-            log_trim_threshold: 1000,
+            log_trim_threshold: None,
             default_partition_replication: PartitionReplication::default(),
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
