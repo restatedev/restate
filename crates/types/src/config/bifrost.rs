@@ -19,7 +19,7 @@ use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
 use crate::logs::metadata::ProviderKind;
-use crate::replicated_loglet::ReplicationProperty;
+use crate::replication::ReplicationProperty;
 use crate::retries::RetryPolicy;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};

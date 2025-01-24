@@ -19,7 +19,7 @@ use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest;
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind, ReplicatedLogletConfig};
 use restate_types::net::AdvertisedAddress;
-use restate_types::replicated_loglet::ReplicationProperty;
+use restate_types::replication::ReplicationProperty;
 use std::num::NonZeroU16;
 use tonic::codec::CompressionEncoding;
 use tonic::Code;

@@ -15,7 +15,3 @@ mod spread;
 pub use log_nodeset::*;
 pub use params::*;
 pub use spread::*;
-
-// re-export to avoid mass-refactoring
-pub use super::locality::NodeLocationScope as LocationScope;
-pub use super::replication::{NodeSet, ReplicationProperty, ReplicationPropertyError};

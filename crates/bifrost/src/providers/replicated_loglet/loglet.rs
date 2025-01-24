@@ -347,7 +347,7 @@ mod tests {
     use restate_types::health::HealthStatus;
     use restate_types::live::Live;
     use restate_types::logs::{Keys, LogletId};
-    use restate_types::replicated_loglet::{NodeSet, ReplicationProperty};
+    use restate_types::replication::{NodeSet, ReplicationProperty};
     use restate_types::{GenerationalNodeId, PlainNodeId};
 
     use crate::loglet::{AppendError, Loglet};

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-/// [`NodeLocationScope`] specifies the location of a node in the cluster. The location
+/// [`LocationScope`] specifies the location of a node in the cluster. The location
 /// is expressed by a set of hierarchical scopes. Restate assumes the cluster topology
 /// to be a tree-like structure.
 #[derive(
@@ -29,7 +29,7 @@
 #[serde(rename_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]
 #[repr(u8)]
-pub enum NodeLocationScope {
+pub enum LocationScope {
     /// Special; Indicating the smallest scope (an individual node)
     Node = 0,
 
@@ -42,7 +42,7 @@ pub enum NodeLocationScope {
     Root,
 }
 
-impl NodeLocationScope {
+impl LocationScope {
     /// Returns None if self is already the largest scope, i.e. `Root`
     pub const fn next_greater_scope(self) -> Option<Self> {
         // we know `self + 1` won't overflow
@@ -60,12 +60,12 @@ impl NodeLocationScope {
     }
 
     pub const fn is_special(self) -> bool {
-        matches!(self, NodeLocationScope::Root | NodeLocationScope::Node)
+        matches!(self, LocationScope::Root | LocationScope::Node)
     }
 
     // Returns the number of non-special scopes.
     pub const fn num_scopes() -> usize {
-        NodeLocationScope::Root as usize - 1
+        LocationScope::Root as usize - 1
     }
 
     #[inline]

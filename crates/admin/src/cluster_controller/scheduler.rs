@@ -24,6 +24,7 @@ use restate_core::{
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;
+use restate_types::locality::LocationScope;
 use restate_types::logs::LogId;
 use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
 use restate_types::net::partition_processor_manager::{
@@ -33,7 +34,6 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::{
     Partition, PartitionPlacement, PartitionReplication, PartitionTable,
 };
-use restate_types::replicated_loglet::LocationScope;
 use restate_types::{NodeId, PlainNodeId, Version};
 
 use crate::cluster_controller::logs_controller;
@@ -540,6 +540,11 @@ impl<'a> Drop for TargetPartitionPlacementState<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::iter;
+    use std::num::NonZero;
+    use std::time::Duration;
+
     use futures::StreamExt;
     use googletest::assert_that;
     use googletest::matcher::{Matcher, MatcherResult};
@@ -547,20 +552,10 @@ mod tests {
     use itertools::Itertools;
     use rand::prelude::ThreadRng;
     use rand::Rng;
-    use restate_types::replicated_loglet::ReplicationProperty;
-    use std::collections::BTreeMap;
-    use std::iter;
-    use std::num::NonZero;
-    use std::time::Duration;
     use test_log::test;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
 
-    use crate::cluster_controller::logs_controller::tests::MockNodes;
-    use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-    use crate::cluster_controller::scheduler::{
-        PartitionProcessorPlacementHints, Scheduler, TargetPartitionPlacementState,
-    };
     use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
     use restate_core::{Metadata, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{
@@ -579,8 +574,15 @@ mod tests {
         PartitionPlacement, PartitionReplication, PartitionTable, PartitionTableBuilder,
     };
     use restate_types::replication::NodeSet;
+    use restate_types::replication::ReplicationProperty;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+
+    use crate::cluster_controller::logs_controller::tests::MockNodes;
+    use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+    use crate::cluster_controller::scheduler::{
+        PartitionProcessorPlacementHints, Scheduler, TargetPartitionPlacementState,
+    };
 
     struct NoPlacementHints;
 

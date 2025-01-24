@@ -28,7 +28,8 @@ use restate_types::{
     config::Configuration,
     logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber},
     net::log_server::Store,
-    replicated_loglet::{NodeSet, ReplicatedLogletParams, ReplicationProperty},
+    replicated_loglet::ReplicatedLogletParams,
+    replication::{NodeSet, ReplicationProperty},
     GenerationalNodeId,
 };
 

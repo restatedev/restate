@@ -10,9 +10,8 @@
 
 use std::fmt::Display;
 
+use crate::replication::NodeSet;
 use crate::PlainNodeId;
-
-use super::NodeSet;
 
 #[derive(
     Debug,
