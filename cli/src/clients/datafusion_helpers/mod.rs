@@ -5,9 +5,8 @@ use bytes::Bytes;
 use chrono::{DateTime, Duration, Local};
 use clap::ValueEnum;
 use restate_admin_rest_model::version::AdminApiVersion;
-use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::{
-    identifiers::{DeploymentId, ServiceId},
+    identifiers::{AwakeableIdentifier, DeploymentId, ServiceId},
     invocation::ServiceType,
 };
 use serde::Deserialize;
