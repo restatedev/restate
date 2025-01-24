@@ -570,31 +570,22 @@ where
             deployment_changed,
         ));
 
-        match chosen_service_protocol_version {
-            ServiceProtocolVersion::V1
-            | ServiceProtocolVersion::V2
-            | ServiceProtocolVersion::V3 => {
-                // create a correctly versioned service protocol runner
-                let service_protocol_runner =
-                    ServiceProtocolRunner::new(self, chosen_service_protocol_version);
-
-                service_protocol_runner
-                    .run(journal_metadata, deployment, journal_stream, state_iter)
-                    .await
-            }
-            ServiceProtocolVersion::V4 => {
-                // create a correctly versioned service protocol runner
-                let service_protocol_runner =
-                    service_protocol_runner_v4::ServiceProtocolRunner::new(
-                        self,
-                        chosen_service_protocol_version,
-                    );
-
-                service_protocol_runner
-                    .run(journal_metadata, deployment, journal_stream, state_iter)
-                    .await
-            }
-            ServiceProtocolVersion::Unspecified => panic!("Unexpected"),
+        if chosen_service_protocol_version <= ServiceProtocolVersion::V3 {
+            // Protocol runner for service protocol <= v3
+            let service_protocol_runner =
+                ServiceProtocolRunner::new(self, chosen_service_protocol_version);
+            service_protocol_runner
+                .run(journal_metadata, deployment, journal_stream, state_iter)
+                .await
+        } else {
+            // Protocol runner for service protocol v4+
+            let service_protocol_runner = service_protocol_runner_v4::ServiceProtocolRunner::new(
+                self,
+                chosen_service_protocol_version,
+            );
+            service_protocol_runner
+                .run(journal_metadata, deployment, journal_stream, state_iter)
+                .await
         }
     }
 }
