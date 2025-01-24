@@ -28,6 +28,7 @@ use crate::retries::RetryPolicy;
 use crate::PlainNodeId;
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
+const DEFAULT_ADVERTISED_ADDRESS: &str = "http://127.0.0.1:5122/";
 
 static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
     hostname::get()
@@ -392,7 +393,7 @@ impl Default for CommonOptions {
             base_dir: None,
             metadata_store_client: MetadataStoreClientOptions::default(),
             bind_address: None,
-            advertised_address: AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap(),
+            advertised_address: AdvertisedAddress::from_str(DEFAULT_ADVERTISED_ADDRESS).unwrap(),
             bootstrap_num_partitions: NonZeroU16::new(24).expect("is not zero"),
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
@@ -542,7 +543,8 @@ pub enum ObjectStoreCredentials {
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
-    rename_all_fields = "kebab-case"
+    rename_all_fields = "kebab-case",
+    try_from = "MetadataStoreClientShadow"
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
@@ -574,11 +576,66 @@ pub enum MetadataStoreClient {
     },
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "kebab-case"
+)]
+// TODO(azmy): Remove this Shadow struct once we no longer support
+// the `address` configuration param.
+enum MetadataStoreClientShadow {
+    /// Connects to an embedded metadata store that is run by nodes that run with the MetadataStore role.
+    Embedded {
+        address: Option<AdvertisedAddress>,
+        addresses: Vec<AdvertisedAddress>,
+    },
+    /// Uses external etcd as metadata store.
+    /// The addresses are formatted as `host:port`
+    Etcd { addresses: Vec<String> },
+    /// Uses an object store as a metadata store.
+    ObjectStore {
+        credentials: ObjectStoreCredentials,
+        /// # The bucket name to use for storage
+        bucket: String,
+    },
+}
+
+impl TryFrom<MetadataStoreClientShadow> for MetadataStoreClient {
+    type Error = &'static str;
+    fn try_from(value: MetadataStoreClientShadow) -> Result<Self, Self::Error> {
+        let result = match value {
+            MetadataStoreClientShadow::ObjectStore {
+                credentials,
+                bucket,
+            } => Self::ObjectStore {
+                credentials,
+                bucket,
+            },
+            MetadataStoreClientShadow::Etcd { addresses } => Self::Etcd { addresses },
+            MetadataStoreClientShadow::Embedded { address, addresses } => {
+                let default_address: AdvertisedAddress =
+                    DEFAULT_ADVERTISED_ADDRESS.parse().unwrap();
+
+                Self::Embedded {
+                    addresses: match address {
+                        Some(address) if addresses == vec![default_address] => vec![address],
+                        Some(_) => return Err("Conflicting configuration, embedded metadata-store-client cannot have both `address` and `addresses`"),
+                        None => addresses,
+                    },
+                }
+            }
+        };
+
+        Ok(result)
+    }
+}
+
 impl Default for MetadataStoreClientOptions {
     fn default() -> Self {
         Self {
             metadata_store_client: MetadataStoreClient::Embedded {
-                addresses: vec!["http://127.0.0.1:5122"
+                addresses: vec![DEFAULT_ADVERTISED_ADDRESS
                     .parse()
                     .expect("valid metadata store address")],
             },
