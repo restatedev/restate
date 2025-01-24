@@ -153,6 +153,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
         .await?;
 
     let replicated_loglet_config = ReplicatedLogletConfig {
+        target_nodeset_size: 0,
         replication_property: ReplicationProperty::new(NonZeroU8::new(2).expect("to be non-zero")),
     };
 

@@ -1446,6 +1446,7 @@ pub mod tests {
     fn logs_configuration(replication_factor: u8) -> LogsConfiguration {
         LogsConfiguration {
             default_provider: ProviderConfiguration::Replicated(ReplicatedLogletConfig {
+                target_nodeset_size: 0,
                 replication_property: ReplicationProperty::new(
                     NonZeroU8::new(replication_factor).expect("must be non zero"),
                 ),
