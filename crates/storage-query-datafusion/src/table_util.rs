@@ -11,7 +11,7 @@
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_expr::expressions::col;
-use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use std::fmt::Write;
 use tracing::error;
 
@@ -28,11 +28,11 @@ macro_rules! log_data_corruption_error {
     };
 }
 
-pub(crate) fn compute_ordering(schema: SchemaRef) -> Option<Vec<PhysicalSortExpr>> {
-    let ordering = vec![PhysicalSortExpr {
+pub(crate) fn compute_ordering(schema: SchemaRef) -> Option<LexOrdering> {
+    let ordering = LexOrdering::new(vec![PhysicalSortExpr {
         expr: col("partition_key", &schema).ok()?,
         options: Default::default(),
-    }];
+    }]);
 
     Some(ordering)
 }

@@ -17,13 +17,12 @@ use codederror::CodedError;
 use datafusion::catalog::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SQLOptions;
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
-
 use restate_core::Metadata;
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
@@ -34,6 +33,7 @@ use restate_types::live::Live;
 use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
+use tracing::warn;
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::ScanPartition;
@@ -224,11 +224,13 @@ impl QueryContext {
         //
         // build the runtime
         //
-        let mut runtime_config = RuntimeConfig::default().with_memory_limit(memory_limit, 1.0);
+        let mut runtime_config = RuntimeEnvBuilder::default();
+        runtime_config = runtime_config.with_memory_limit(memory_limit, 1.0);
+
         if let Some(folder) = temp_folder {
             runtime_config = runtime_config.with_temp_file_path(folder);
         }
-        let runtime = Arc::new(RuntimeEnv::new(runtime_config).expect("runtime"));
+        let runtime = runtime_config.build_arc().expect("runtime");
         //
         // build the session
         //
@@ -290,7 +292,15 @@ impl QueryContext {
             state_builder.with_physical_optimizer_rules(default_physical_optimizer_rules);
 
         let state = state_builder.build();
-        let ctx = SessionContext::new_with_state(state);
+
+        let mut ctx = SessionContext::new_with_state(state);
+
+        match datafusion_functions_json::register_all(&mut ctx) {
+            Ok(_) => {}
+            Err(err) => {
+                warn!("Unable to register json functions {}", err);
+            }
+        };
 
         let sql_options = SQLOptions::new()
             .with_allow_ddl(false)

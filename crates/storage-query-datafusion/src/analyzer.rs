@@ -15,6 +15,7 @@ use datafusion::logical_expr::{Join, LogicalPlan};
 use datafusion::optimizer::analyzer::AnalyzerRule;
 use datafusion::prelude::Expr;
 
+#[derive(Debug)]
 pub(crate) struct UseSymmetricHashJoinWhenPartitionKeyIsPresent;
 
 impl UseSymmetricHashJoinWhenPartitionKeyIsPresent {

@@ -13,12 +13,14 @@ use datafusion::common::ScalarValue;
 use datafusion::logical_expr::{col, BinaryExpr, Expr, Operator};
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
+use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
 
-pub trait PartitionKeyExtractor: Send + Sync + 'static {
+pub trait PartitionKeyExtractor: Send + Sync + 'static + Debug {
     fn try_extract(&self, filters: &[Expr]) -> anyhow::Result<Option<PartitionKey>>;
 }
 
+#[derive(Debug)]
 pub struct FirstMatchingPartitionKeyExtractor {
     extractors: Vec<Box<dyn PartitionKeyExtractor>>,
 }
@@ -72,6 +74,12 @@ pub(crate) struct MatchingColumnExtractor<F> {
     extractor: F,
 }
 
+impl<F> Debug for MatchingColumnExtractor<F> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("MatchingColumnExtractor{:?}", self.column))
+    }
+}
+
 impl<F> MatchingColumnExtractor<F> {
     pub(crate) fn new(column_name: impl Into<String>, extractor: F) -> Self {
         let column = col(column_name.into());
@@ -103,6 +111,7 @@ where
     }
 }
 
+#[derive(Debug)]
 struct IdentityPartitionKeyExtractor(Expr);
 
 impl IdentityPartitionKeyExtractor {
