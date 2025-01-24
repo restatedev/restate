@@ -279,6 +279,17 @@ pub struct ReplicatedLogletOptions {
     // hide the configuration option by excluding it from the Json schema
     #[cfg_attr(feature = "schemars", schemars(skip, with = "String"))]
     pub default_replication_property: ReplicationProperty,
+
+    /// # Default nodeset size
+    ///
+    /// Configures the target nodeset size used by the replicated loglet when generating new
+    /// nodesets for logs. Setting this to 0 will let the system choose a reasonable value based on
+    /// the effective replication_property at the time of logs reconfiguration.
+    // hide the configuration option from serialization if it is the default
+    #[serde(default, skip_serializing_if = "u16_is_zero")]
+    // hide the configuration option by excluding it from the Json schema
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub default_nodeset_size: u16,
 }
 
 /// Helper struct to support deserializing the ReplicationProperty from a [`NonZeroU8`].
@@ -291,6 +302,10 @@ impl<'de> DeserializeAs<'de, ReplicationProperty> for ReplicationPropertyFromNon
     {
         NonZeroU8::deserialize(deserializer).map(ReplicationProperty::new)
     }
+}
+
+fn u16_is_zero(i: &u16) -> bool {
+    *i == 0
 }
 
 fn default_replication_property() -> ReplicationProperty {
@@ -322,6 +337,7 @@ impl Default for ReplicatedLogletOptions {
             readahead_records: NonZeroUsize::new(100).unwrap(),
             readahead_trigger_ratio: 0.5,
             default_replication_property: default_replication_property(),
+            default_nodeset_size: 0,
         }
     }
 }

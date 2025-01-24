@@ -40,9 +40,14 @@ pub struct ConfigSetOpts {
     #[clap(long)]
     bifrost_provider: Option<ProviderKind>,
 
-    /// Replication property for `replicated` bifrost provider.
+    /// Replication property of bifrost logs if using replicated as log provider
     #[clap(long, required_if_eq("bifrost_provider", "replicated"))]
-    replication_property: Option<ReplicationProperty>,
+    log_replication: Option<ReplicationProperty>,
+
+    /// The nodeset size used for replicated log, this is an advanced feature.
+    /// It's recommended to leave it unset (defaults to 0)
+    #[clap(long, required_if_eq("bifrost_provider", "replicated"))]
+    log_default_nodeset_size: Option<u16>,
 }
 
 async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> anyhow::Result<()> {
@@ -63,8 +68,18 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
     current.partition_replication = set_opts.partition_replication.clone().map(Into::into);
 
     if let Some(provider) = set_opts.bifrost_provider {
-        let default_provider =
-            extract_default_provider(provider, set_opts.replication_property.clone());
+        let current_nodeset_size = current
+            .bifrost_provider
+            .map(|p| p.target_nodeset_size)
+            .unwrap_or(0) as u16;
+
+        let default_provider = extract_default_provider(
+            provider,
+            set_opts.log_replication.clone(),
+            set_opts
+                .log_default_nodeset_size
+                .unwrap_or(current_nodeset_size),
+        );
 
         match default_provider {
             ProviderConfiguration::InMemory | ProviderConfiguration::Local => {
