@@ -8,12 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+use std::num::NonZeroU8;
 use std::sync::Arc;
 
 use itertools::Itertools;
 use rand::seq::IteratorRandom;
-use tracing::debug;
+use restate_types::replication::{
+    NodeSet, NodeSetSelector, NodeSetSelectorOptions, ReplicationProperty,
+};
+use tracing::{debug, warn};
 
 use restate_core::metadata_store::{Precondition, ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
@@ -23,18 +27,17 @@ use restate_core::{
 };
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::identifiers::PartitionId;
-use restate_types::live::Pinned;
 use restate_types::locality::LocationScope;
 use restate_types::logs::LogId;
 use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
-use restate_types::nodes_config::NodesConfiguration;
+use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::partition_table::{
     Partition, PartitionPlacement, PartitionReplication, PartitionTable,
 };
-use restate_types::{NodeId, PlainNodeId, Version};
+use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
 use crate::cluster_controller::logs_controller;
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
@@ -60,13 +63,13 @@ pub enum Error {
 /// Placement hints for the [`Scheduler`]. The hints can specify which nodes should be chosen for
 /// the partition processor placement and on which node the leader should run.
 pub trait PartitionProcessorPlacementHints {
-    fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = &PlainNodeId>;
+    fn preferred_nodes(&self, partition_id: &PartitionId) -> Option<&NodeSet>;
 
     fn preferred_leader(&self, partition_id: &PartitionId) -> Option<PlainNodeId>;
 }
 
 impl<T: PartitionProcessorPlacementHints> PartitionProcessorPlacementHints for &T {
-    fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = &PlainNodeId> {
+    fn preferred_nodes(&self, partition_id: &PartitionId) -> Option<&NodeSet> {
         (*self).preferred_nodes(partition_id)
     }
 
@@ -121,21 +124,20 @@ impl<T: TransportConnect> Scheduler<T> {
 
     async fn update_partition_placement(
         &mut self,
-        alive_workers: &HashSet<PlainNodeId>,
+        alive_workers: &NodeSet,
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
         let logs = Metadata::with_current(|m| m.logs_ref());
         let partition_table = Metadata::with_current(|m| m.partition_table_ref());
 
-        if logs.num_logs() != partition_table.num_partitions() as usize {
-            // either the partition table or the logs are not fully initialized
+        let version = partition_table.version();
+        if logs.version() == Version::INVALID || version == Version::INVALID {
+            // either the partition table or the logs are not initialized
             // hence there is nothing we can do atm.
             // we need to wait until both partitions and logs are created
             return Ok(());
         }
-
-        let version = partition_table.version();
 
         // todo(azmy): avoid cloning the partition table every time by keeping
         // the latest built always available as a field
@@ -143,17 +145,14 @@ impl<T: TransportConnect> Scheduler<T> {
         let partition_replication = builder.partition_replication().clone();
 
         builder.for_each(|partition_id, placement| {
-            let mut target_state = TargetPartitionPlacementState::new(placement);
             self.ensure_replication(
                 partition_id,
-                &mut target_state,
+                placement,
                 alive_workers,
                 &partition_replication,
                 nodes_config,
                 &placement_hints,
             );
-
-            self.ensure_leadership(partition_id, &mut target_state, &placement_hints);
         });
 
         if let Some(partition_table) = builder.build_if_modified() {
@@ -233,158 +232,77 @@ impl<T: TransportConnect> Scheduler<T> {
     fn ensure_replication<H: PartitionProcessorPlacementHints>(
         &self,
         partition_id: &PartitionId,
-        target_state: &mut TargetPartitionPlacementState,
-        alive_workers: &HashSet<PlainNodeId>,
+        target_nodeset: &mut PartitionPlacement,
+        alive_workers: &NodeSet,
         partition_replication: &PartitionReplication,
         nodes_config: &NodesConfiguration,
         placement_hints: &H,
     ) {
-        let mut rng = rand::thread_rng();
-        target_state
-            .node_set
-            .retain(|node_id| alive_workers.contains(node_id));
-
-        match partition_replication {
+        let partition_replication = match partition_replication {
             PartitionReplication::Everywhere => {
                 // The extend will only add the new nodes that
                 // don't exist in the node set.
                 // the retain done above will make sure alive nodes in the set
                 // will keep there initial order.
-                target_state.node_set.extend(alive_workers.iter().cloned());
+                let num_workers = nodes_config.iter_role(Role::Worker).count();
+                if num_workers == 0 {
+                    warn!(
+                        "No worker nodes have been started yet, we will not configure partitions \
+                    until we see at least one node with role=worker"
+                    );
+                    return;
+                }
+                &ReplicationProperty::new(
+                    NonZeroU8::new(num_workers.try_into().expect("workers < u8::MAX")).unwrap(),
+                )
             }
-            PartitionReplication::Limit(replication_factor) => {
+            PartitionReplication::Limit(replication) => {
+                // todo: remove once we can replicate partitions in a domain-aware setup.
                 assert_eq!(
-                    replication_factor.greatest_defined_scope(),
+                    replication.greatest_defined_scope(),
                     LocationScope::Node,
                     "Location aware partition replication is not supported yet"
                 );
+                replication
+            }
+        };
 
-                let replication_factor = usize::from(replication_factor.num_copies());
-
-                if target_state.node_set.len() == replication_factor {
-                    return;
+        let preferred_leader = placement_hints
+            .preferred_leader(partition_id)
+            .and_then(|node_id| {
+                if alive_workers.contains(node_id) {
+                    Some(node_id)
+                } else {
+                    None
                 }
+            });
 
-                let preferred_worker_nodes = placement_hints
-                    .preferred_nodes(partition_id)
-                    .filter(|node_id| nodes_config.has_worker_role(node_id));
-                let preferred_leader =
-                    placement_hints
-                        .preferred_leader(partition_id)
-                        .and_then(|node_id| {
-                            if alive_workers.contains(&node_id) {
-                                Some(node_id)
-                            } else {
-                                None
-                            }
-                        });
+        let opts = NodeSetSelectorOptions::new(**partition_id as u64)
+            // todo: consider removing after experimentation and discussion
+            .with_max_target_size()
+            .with_preferred_nodes_opt(placement_hints.preferred_nodes(partition_id))
+            .with_top_priority_node_opt(preferred_leader);
 
-                // if we are under replicated and have other alive nodes available
-                if target_state.node_set.len() < replication_factor
-                    && target_state.node_set.len() < alive_workers.len()
-                {
-                    if let Some(preferred_leader) = preferred_leader {
-                        target_state.node_set.insert(preferred_leader);
-                    }
+        let selection = NodeSetSelector::select(
+            nodes_config,
+            partition_replication,
+            |_node_id, config| config.has_role(Role::Worker),
+            |node_id, _config| alive_workers.contains(node_id),
+            opts,
+        );
 
-                    // todo: Implement cleverer strategies
-                    // randomly choose from the preferred workers nodes first
-                    let new_nodes = preferred_worker_nodes
-                        .filter(|node_id| !target_state.node_set.contains(**node_id))
-                        .cloned()
-                        .choose_multiple(
-                            &mut rng,
-                            replication_factor - target_state.node_set.len(),
-                        );
-
-                    target_state.node_set.extend(new_nodes);
-
-                    if target_state.node_set.len() < replication_factor {
-                        // randomly choose from the remaining worker nodes
-                        let new_nodes = alive_workers
-                            .iter()
-                            .filter(|node| !target_state.node_set.contains(**node))
-                            .cloned()
-                            .choose_multiple(
-                                &mut rng,
-                                replication_factor - target_state.node_set.len(),
-                            );
-
-                        target_state.node_set.extend(new_nodes);
-                    }
-                } else if target_state.node_set.len() > replication_factor {
-                    let preferred_worker_nodes: HashSet<PlainNodeId> =
-                        preferred_worker_nodes.cloned().collect();
-
-                    // first remove the not preferred nodes
-                    for node_id in target_state
-                        .node_set
-                        .iter()
-                        .copied()
-                        .filter(|node_id| {
-                            !preferred_worker_nodes.contains(node_id)
-                                && Some(*node_id) != preferred_leader
-                        })
-                        .choose_multiple(&mut rng, target_state.node_set.len() - replication_factor)
-                    {
-                        target_state.node_set.remove(node_id);
-                    }
-
-                    if target_state.node_set.len() > replication_factor {
-                        for node_id in target_state
-                            .node_set
-                            .iter()
-                            .filter(|node_id| Some(**node_id) != preferred_leader)
-                            .copied()
-                            .choose_multiple(
-                                &mut rng,
-                                target_state.node_set.len() - replication_factor,
-                            )
-                        {
-                            target_state.node_set.remove(node_id);
-                        }
-                    }
-                }
+        match selection {
+            Ok(nodeset) => {
+                *target_nodeset = PartitionPlacement::from(nodeset);
+            }
+            Err(err) => {
+                warn!(
+                    %partition_id,
+                    %partition_replication,
+                    "Cannot select placement node-set for partition: {err}"
+                );
             }
         }
-
-        // check if the leader is still part of the node set; if not, then clear leader field
-        if let Some(leader) = target_state.leader.as_ref() {
-            if !target_state.node_set.contains(*leader) {
-                target_state.leader = None;
-            }
-        }
-    }
-
-    fn ensure_leadership<H: PartitionProcessorPlacementHints>(
-        &self,
-        partition_id: &PartitionId,
-        target_state: &mut TargetPartitionPlacementState,
-        placement_hints: &H,
-    ) {
-        let preferred_leader = placement_hints.preferred_leader(partition_id);
-
-        if target_state.leader.is_none() {
-            target_state.leader = self.select_leader_from(target_state, preferred_leader);
-        } else if preferred_leader
-            .is_some_and(|preferred_leader| target_state.node_set.contains(preferred_leader))
-        {
-            target_state.leader = preferred_leader;
-        }
-    }
-
-    fn select_leader_from(
-        &self,
-        leader_candidates: &TargetPartitionPlacementState,
-        preferred_leader: Option<PlainNodeId>,
-    ) -> Option<PlainNodeId> {
-        // todo: Implement leader balancing between nodes
-        preferred_leader
-            .filter(|leader| leader_candidates.contains(*leader))
-            .or_else(|| {
-                let mut rng = rand::thread_rng();
-                leader_candidates.node_set.iter().choose(&mut rng).cloned()
-            })
     }
 
     fn instruct_nodes(&self, observed_cluster_state: &ObservedClusterState) -> Result<(), Error> {
@@ -483,13 +401,13 @@ impl<T: TransportConnect> Scheduler<T> {
 }
 
 /// Placement hints for the [`logs_controller::LogsController`] based on the current
-/// [`SchedulingPlan`].
+/// [`PartitionTable`]'s placement.
 pub struct PartitionTableNodeSetSelectorHints {
-    partition_table: Pinned<PartitionTable>,
+    partition_table: Arc<PartitionTable>,
 }
 
-impl From<Pinned<PartitionTable>> for PartitionTableNodeSetSelectorHints {
-    fn from(value: Pinned<PartitionTable>) -> Self {
+impl PartitionTableNodeSetSelectorHints {
+    pub fn new(value: Arc<PartitionTable>) -> Self {
         Self {
             partition_table: value,
         }
@@ -506,42 +424,9 @@ impl logs_controller::NodeSetSelectorHints for PartitionTableNodeSetSelectorHint
     }
 }
 
-/// The target state of a partition.
-#[derive(Debug)]
-struct TargetPartitionPlacementState<'a> {
-    /// Node which is the designated leader
-    pub leader: Option<PlainNodeId>,
-    /// Set of nodes that should run a partition processor for this partition
-    pub node_set: &'a mut PartitionPlacement,
-}
-
-impl<'a> TargetPartitionPlacementState<'a> {
-    fn new(placement: &'a mut PartitionPlacement) -> Self {
-        Self {
-            leader: placement.leader(),
-            node_set: placement,
-        }
-    }
-}
-
-impl<'a> TargetPartitionPlacementState<'a> {
-    pub fn contains(&self, value: PlainNodeId) -> bool {
-        self.node_set.contains(value)
-    }
-}
-
-impl<'a> Drop for TargetPartitionPlacementState<'a> {
-    fn drop(&mut self) {
-        if let Some(node_id) = self.leader.take() {
-            self.node_set.set_leader(node_id);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::iter;
     use std::num::NonZero;
     use std::time::Duration;
 
@@ -580,18 +465,13 @@ mod tests {
 
     use crate::cluster_controller::logs_controller::tests::MockNodes;
     use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-    use crate::cluster_controller::scheduler::{
-        PartitionProcessorPlacementHints, Scheduler, TargetPartitionPlacementState,
-    };
+    use crate::cluster_controller::scheduler::{PartitionProcessorPlacementHints, Scheduler};
 
     struct NoPlacementHints;
 
     impl PartitionProcessorPlacementHints for NoPlacementHints {
-        fn preferred_nodes(
-            &self,
-            _partition_id: &PartitionId,
-        ) -> impl Iterator<Item = &PlainNodeId> {
-            iter::empty()
+        fn preferred_nodes(&self, _partition_id: &PartitionId) -> Option<&NodeSet> {
+            None
         }
 
         fn preferred_leader(&self, _partition_id: &PartitionId) -> Option<PlainNodeId> {

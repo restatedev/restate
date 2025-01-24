@@ -82,6 +82,11 @@ impl<'a> NodeSetSelectorOptions<'a> {
         self
     }
 
+    pub fn with_max_target_size(mut self) -> Self {
+        self.target_size = MAX_NODESET_SIZE as u16;
+        self
+    }
+
     pub fn target_size(&self) -> u16 {
         self.target_size
     }
@@ -123,6 +128,11 @@ impl<'a> NodeSetSelectorOptions<'a> {
     /// scanned first. The node will be picked even if it doesn't pass `is_writeable` filter.
     pub fn with_top_priority_node(mut self, node: impl Into<PlainNodeId>) -> Self {
         self.top_priority_node = Some(node.into());
+        self
+    }
+
+    pub fn with_top_priority_node_opt(mut self, node: Option<impl Into<PlainNodeId>>) -> Self {
+        self.top_priority_node = node.map(Into::into);
         self
     }
 
