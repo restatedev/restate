@@ -199,7 +199,7 @@ where
             &nodes_config,
             observed_cluster_state,
             Metadata::with_current(|m| {
-                PartitionTableNodeSetSelectorHints::from(m.partition_table_ref())
+                PartitionTableNodeSetSelectorHints::new(m.partition_table_snapshot())
             }),
         )?;
 
