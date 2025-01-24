@@ -26,8 +26,8 @@ fn main() -> std::io::Result<()> {
             "#[derive(::serde::Serialize, ::serde::Deserialize)]",
         )
         .compile_protos(
-            &["service-protocol/dev/restate/service/protocol.proto"],
-            &["service-protocol"],
+            &["service-protocol-v3/dev/restate/service/protocol.proto"],
+            &["service-protocol-v3"],
         )?;
 
     // Version enums!
@@ -52,7 +52,7 @@ fn main() -> std::io::Result<()> {
     build_restate_proto(&out_dir)?;
 
     let mut parsed_content: serde_json::Value = serde_json::from_reader(
-        File::open("./service-protocol/endpoint_manifest_schema.json").unwrap(),
+        File::open("../../service-protocol/endpoint_manifest_schema.json").unwrap(),
     )
     .unwrap();
 
