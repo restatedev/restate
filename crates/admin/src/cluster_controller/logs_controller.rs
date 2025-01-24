@@ -515,6 +515,18 @@ impl LogletConfiguration {
                     return false;
                 };
 
+                if params.replication != config.replication_property {
+                    // replication property has changed, we need to reconfigure.
+                    debug!(
+                        %log_id,
+                        loglet_id = ?params.loglet_id,
+                        current_replication = %params.replication,
+                        new_replication = %config.replication_property,
+                        "Replicated loglet default replication has can changed, will attempt reconfiguration"
+                    );
+                    return true;
+                }
+
                 // todo 1: This is an over-simplifying check, ideally we'd want to see if the new nodeset
                 // improves our safety-margin (fault-tolerance) or not by running nodeset checker with higher
                 // replication on every scope, or any other reasonable metric that let us decide
