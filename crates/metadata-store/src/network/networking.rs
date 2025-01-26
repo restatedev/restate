@@ -21,6 +21,7 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::codec::CompressionEncoding;
 use tonic::metadata::MetadataValue;
 use tonic::IntoStreamingRequest;
 use tracing::{debug, trace};
@@ -152,7 +153,8 @@ where
                 let channel = net_util::create_tonic_channel(address.clone(), networking_options);
 
                 async move {
-                    let mut network_client = crate::network::grpc_svc::metadata_store_network_svc_client::MetadataStoreNetworkSvcClient::new(channel);
+                    let mut network_client = grpc_svc::metadata_store_network_svc_client::MetadataStoreNetworkSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip)
+                        .send_compressed(CompressionEncoding::Gzip);
                     let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
 
                     let mut request = ReceiverStream::new(outgoing_rx).into_streaming_request();

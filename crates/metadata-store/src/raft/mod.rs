@@ -25,6 +25,7 @@ use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
 pub use store::RaftMetadataStore;
+use tonic::codec::CompressionEncoding;
 
 pub(crate) async fn create_store(
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
@@ -38,7 +39,9 @@ pub(crate) async fn create_store(
         MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
             store.connection_manager(),
             Some(store.join_cluster_handle()),
-        )),
+        ))
+        .accept_compressed(CompressionEncoding::Gzip)
+        .send_compressed(CompressionEncoding::Gzip),
         network::FILE_DESCRIPTOR_SET,
     );
 

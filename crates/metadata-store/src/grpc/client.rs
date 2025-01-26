@@ -32,6 +32,7 @@ use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::{Code, Status};
 use tracing::debug;
@@ -85,17 +86,22 @@ impl GrpcMetadataStoreClient {
 
     fn choose_random_endpoint(&self) {
         // let's try another endpoint
-        *self.svc_client.lock() = self
-            .channel_manager
-            .choose_random()
-            .map(MetadataStoreSvcClient::new);
+        *self.svc_client.lock() = self.channel_manager.choose_random().map(|channel| {
+            MetadataStoreSvcClient::new(channel)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip)
+        });
     }
 
     fn choose_known_leader(&self, known_leader: KnownLeader) {
         let channel = self
             .channel_manager
             .register_address(known_leader.node_id, known_leader.address);
-        *self.svc_client.lock() = Some(MetadataStoreSvcClient::new(channel));
+        *self.svc_client.lock() = Some(
+            MetadataStoreSvcClient::new(channel)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+        );
     }
 
     fn current_client(&self) -> Option<MetadataStoreSvcClient<Channel>> {

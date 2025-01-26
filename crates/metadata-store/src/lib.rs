@@ -45,6 +45,7 @@ use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 use tokio::sync::{mpsc, oneshot, watch};
+use tonic::codec::CompressionEncoding;
 use tonic::Status;
 use tracing::debug;
 use ulid::Ulid;
@@ -205,7 +206,9 @@ where
                 store.request_sender(),
                 store.provision_sender(),
                 store.status_watch(),
-            )),
+            ))
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip),
             grpc::FILE_DESCRIPTOR_SET,
         );
 

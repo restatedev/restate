@@ -65,7 +65,9 @@ async fn cluster_provision(
         .unwrap_or_else(|| connection_info.cluster_controller.clone());
     let channel = grpc_channel(node_address.clone());
 
-    let mut client = NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let mut client = NodeCtlSvcClient::new(channel)
+        .accept_compressed(CompressionEncoding::Gzip)
+        .send_compressed(CompressionEncoding::Gzip);
 
     let log_provider = provision_opts.bifrost_provider.map(|bifrost_provider| {
         extract_default_provider(

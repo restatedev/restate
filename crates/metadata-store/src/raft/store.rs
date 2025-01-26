@@ -62,6 +62,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::MissedTickBehavior;
+use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
@@ -1473,7 +1474,9 @@ impl Standby {
 
         let channel = create_tonic_channel(address, &Configuration::pinned().networking);
 
-        let mut client = MetadataStoreNetworkSvcClient::new(channel);
+        let mut client = MetadataStoreNetworkSvcClient::new(channel)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip);
 
         if let Err(status) = client
             .join_cluster(crate::network::grpc_svc::JoinClusterRequest {
