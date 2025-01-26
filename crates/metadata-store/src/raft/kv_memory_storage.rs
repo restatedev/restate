@@ -9,13 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use crate::grpc::pb_conversions::ConversionError;
+use crate::grpc::MetadataStoreSnapshot;
 use crate::{
     grpc, Callback, PreconditionViolation, ReadOnlyRequest, ReadOnlyRequestKind, RequestError,
     RequestKind, WriteRequest,
 };
-use bytes::{Buf, BytesMut};
 use bytestring::ByteString;
-use prost::Message;
 use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_core::MetadataWriter;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -170,25 +169,26 @@ impl KvMemoryStorage {
     }
 
     fn update_last_seen_nodes_configuration(&mut self) {
-        let mut data = self
+        if let Some(mut data) = self
             .kv_entries
             .get(&NODES_CONFIG_KEY)
-            .expect("to be present")
-            .value
-            .as_ref();
-        match StorageCodec::decode::<NodesConfiguration, _>(&mut data) {
-            Ok(nodes_configuration) => {
-                assert!(
-                    self.last_seen_nodes_configuration.version() <= nodes_configuration.version()
-                );
-                self.last_seen_nodes_configuration = Arc::new(nodes_configuration);
+            .map(|versioned_value| versioned_value.value.as_ref())
+        {
+            match StorageCodec::decode::<NodesConfiguration, _>(&mut data) {
+                Ok(nodes_configuration) => {
+                    assert!(
+                        self.last_seen_nodes_configuration.version()
+                            <= nodes_configuration.version()
+                    );
+                    self.last_seen_nodes_configuration = Arc::new(nodes_configuration);
 
-                if let Some(metadata_writer) = self.metadata_writer.as_mut() {
-                    metadata_writer.submit(Arc::clone(&self.last_seen_nodes_configuration));
+                    if let Some(metadata_writer) = self.metadata_writer.as_mut() {
+                        metadata_writer.submit(Arc::clone(&self.last_seen_nodes_configuration));
+                    }
                 }
-            }
-            Err(err) => {
-                debug!("Failed deserializing NodesConfiguration: {err}");
+                Err(err) => {
+                    debug!("Failed deserializing NodesConfiguration: {err}");
+                }
             }
         }
     }
@@ -224,43 +224,31 @@ impl KvMemoryStorage {
         Ok(())
     }
 
-    pub fn restore<B: Buf>(&mut self, bytes: &mut B) -> Result<(), RestoreSnapshotError> {
+    pub fn restore(&mut self, snapshot: MetadataStoreSnapshot) -> Result<(), ConversionError> {
         debug!("Restore from snapshot");
-        let kv_snapshot = grpc::KvSnapshot::decode(bytes)?;
+        self.kv_entries.clear();
 
-        let kv_snapshot: KvSnapshot = kv_snapshot.try_into()?;
-
-        self.kv_entries = kv_snapshot.kv_entries;
+        for entry in snapshot.entries {
+            let (key, versioned_value) = entry.try_into()?;
+            self.kv_entries.insert(key, versioned_value);
+        }
 
         self.update_last_seen_nodes_configuration();
 
         Ok(())
     }
 
-    pub fn snapshot(&self, buffer: &mut BytesMut) -> Result<(), CreateSnapshotError> {
+    pub fn snapshot(&self, snapshot: &mut MetadataStoreSnapshot) {
         debug!("Create snapshot");
-
-        let snapshot = grpc::KvSnapshot {
-            entries: self
-                .kv_entries
-                .iter()
-                .map(|(k, v)| grpc::KvEntry {
-                    key: k.clone().into_bytes(),
-                    value: Some(v.clone().into()),
-                })
-                .collect(),
-        };
-
-        snapshot.encode(buffer).map_err(CreateSnapshotError::from)
+        snapshot.entries = self
+            .kv_entries
+            .iter()
+            .map(|(key, value)| grpc::KvEntry {
+                key: key.clone().into_bytes(),
+                value: Some(value.clone().into()),
+            })
+            .collect();
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum RestoreSnapshotError {
-    #[error(transparent)]
-    Protobuf(#[from] prost::DecodeError),
-    #[error(transparent)]
-    Conversion(#[from] ConversionError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -276,22 +264,16 @@ struct KvSnapshot {
     kv_entries: HashMap<ByteString, VersionedValue>,
 }
 
-impl TryFrom<grpc::KvSnapshot> for KvSnapshot {
+impl TryFrom<grpc::KvEntry> for (ByteString, VersionedValue) {
     type Error = ConversionError;
 
-    fn try_from(value: grpc::KvSnapshot) -> Result<Self, Self::Error> {
-        let mut kv_entries = HashMap::with_capacity(value.entries.len());
-        for entry in value.entries {
-            kv_entries.insert(
-                ByteString::try_from(entry.key)
-                    .map_err(|_| ConversionError::invalid_data("key"))?,
-                entry
-                    .value
-                    .ok_or(ConversionError::missing_field("value"))?
-                    .try_into()?,
-            );
-        }
-
-        Ok(Self { kv_entries })
+    fn try_from(kv_entry: grpc::KvEntry) -> Result<Self, Self::Error> {
+        Ok((
+            ByteString::try_from(kv_entry.key).map_err(|_| ConversionError::invalid_data("key"))?,
+            kv_entry
+                .value
+                .ok_or(ConversionError::missing_field("value"))?
+                .try_into()?,
+        ))
     }
 }

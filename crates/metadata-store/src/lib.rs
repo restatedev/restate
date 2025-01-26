@@ -41,6 +41,7 @@ use restate_types::nodes_config::{
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -584,7 +585,7 @@ pub struct MemberId {
 }
 
 impl MemberId {
-    fn new(node_id: PlainNodeId, storage_id: StorageId) -> Self {
+    pub fn new(node_id: PlainNodeId, storage_id: StorageId) -> Self {
         MemberId {
             node_id,
             storage_id,
@@ -643,8 +644,18 @@ impl SnapshotSummary {
 #[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
 #[prost(target = "crate::grpc::MetadataStoreConfiguration")]
 struct MetadataStoreConfiguration {
-    id: u32,
-    members: Vec<MemberId>,
+    #[prost(required)]
+    version: Version,
+    members: HashMap<PlainNodeId, StorageId>,
+}
+
+impl Default for MetadataStoreConfiguration {
+    fn default() -> Self {
+        MetadataStoreConfiguration {
+            version: Version::INVALID,
+            members: HashMap::default(),
+        }
+    }
 }
 
 /// Ensures that the initial nodes configuration contains the current node and has the right

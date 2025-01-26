@@ -8,18 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::grpc::pb_conversions::ConversionError;
+use crate::grpc::MetadataStoreSnapshot;
 use crate::network::grpc_svc::metadata_store_network_svc_client::MetadataStoreNetworkSvcClient;
 use crate::network::{ConnectionManager, Networking};
 use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{storage, RaftConfiguration};
 use crate::{
-    prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError, JoinClusterHandle,
-    JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, JoinError, KnownLeader, MemberId,
-    MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest, MetadataStoreSummary,
-    ProvisionError, ProvisionReceiver, ProvisionSender, RaftSummary, Request, RequestError,
-    RequestKind, RequestReceiver, RequestSender, SnapshotSummary, StatusSender, StatusWatch,
-    StorageId, WriteRequest,
+    grpc, prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError,
+    JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, JoinError,
+    KnownLeader, MemberId, MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest,
+    MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender, RaftSummary, Request,
+    RequestError, RequestKind, RequestReceiver, RequestSender, SnapshotSummary, StatusSender,
+    StatusWatch, StorageId, WriteRequest,
 };
 use arc_swap::ArcSwapOption;
 use bytes::BytesMut;
@@ -27,6 +29,7 @@ use futures::future::{FusedFuture, OptionFuture};
 use futures::never::Never;
 use futures::FutureExt;
 use futures::TryFutureExt;
+use prost::{DecodeError, EncodeError, Message as ProstMessage};
 use protobuf::{Message as ProtobufMessage, ProtobufError};
 use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
 use raft::{
@@ -63,8 +66,6 @@ use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
 
-use super::kv_memory_storage::{CreateSnapshotError, RestoreSnapshotError};
-
 const RAFT_INITIAL_LOG_TERM: u64 = 1;
 const RAFT_INITIAL_LOG_INDEX: u64 = 1;
 
@@ -86,10 +87,8 @@ pub enum Error {
     Raft(#[from] raft::Error),
     #[error("failed deserializing raft serialized requests: {0}")]
     DecodeRequest(GenericError),
-    #[error("failed deserializing conf change: {0}")]
-    DecodeConfChange(ProtobufError),
-    #[error("failed applying conf change: {0}")]
-    ApplyConfChange(raft::Error),
+    #[error("failed changing conf: {0}")]
+    ConfChange(#[from] ConfChangeError),
     #[error("failed reading/writing from/to storage: {0}")]
     Storage(#[from] storage::Error),
     #[error("failed restoring the snapshot: {0}")]
@@ -98,6 +97,34 @@ pub enum Error {
     CreateSnapshot(#[from] CreateSnapshotError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfChangeError {
+    #[error("failed applying conf change: {0}")]
+    Apply(#[from] raft::Error),
+    #[error("failed decoding conf change: {0}")]
+    DecodeConfChange(#[from] ProtobufError),
+    #[error("failed decoding conf context: {0}")]
+    DecodeContext(#[from] DecodeError),
+    #[error("failed creating snapshot after conf change: {0}")]
+    Snapshot(#[from] CreateSnapshotError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RestoreSnapshotError {
+    #[error(transparent)]
+    Protobuf(#[from] DecodeError),
+    #[error(transparent)]
+    Conversion(#[from] ConversionError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CreateSnapshotError {
+    #[error("failed applying snapshot: {0}")]
+    ApplySnapshot(#[from] storage::Error),
+    #[error("failed encoding snapshot: {0}")]
+    Encode(#[from] EncodeError),
 }
 
 pub struct RaftMetadataStore {
@@ -327,10 +354,26 @@ impl RaftMetadataStore {
 
         // initialize storage with an initial snapshot so that newly started nodes will fetch it
         // first to start with the same initial conf state.
+        let mut members = HashMap::default();
+        members.insert(
+            raft_configuration.my_member_id.node_id,
+            raft_configuration.my_member_id.storage_id,
+        );
+        let metadata_store_snapshot = MetadataStoreSnapshot {
+            configuration: Some(grpc::MetadataStoreConfiguration::from(
+                MetadataStoreConfiguration {
+                    version: Version::MIN,
+                    members,
+                },
+            )),
+            ..MetadataStoreSnapshot::default()
+        };
+
         let mut snapshot = Snapshot::new();
         snapshot.mut_metadata().term = RAFT_INITIAL_LOG_TERM;
         snapshot.mut_metadata().index = RAFT_INITIAL_LOG_INDEX;
         snapshot.mut_metadata().set_conf_state(initial_conf_state);
+        snapshot.data = metadata_store_snapshot.encode_to_vec().into();
 
         let value = serialize_value(&nodes_configuration)?;
 
@@ -456,6 +499,7 @@ struct Member {
     raft_rx: mpsc::Receiver<Message>,
 
     my_member_id: MemberId,
+    configuration: MetadataStoreConfiguration,
     kv_storage: KvMemoryStorage,
     is_leader: bool,
     pending_join_requests: HashMap<MemberId, oneshot::Sender<Result<(), JoinClusterError>>>,
@@ -507,26 +551,22 @@ impl Member {
 
         let mut kv_storage = KvMemoryStorage::new(metadata_writer.clone());
         let mut snapshot_summary = None;
+        let mut configuration = MetadataStoreConfiguration::default();
 
         if let Ok(snapshot) = storage.snapshot(0, to_raft_id(my_member_id.node_id)) {
             config.applied = snapshot.get_metadata().get_index();
-
-            if !snapshot.get_data().is_empty() {
-                let mut data = snapshot.get_data();
-                kv_storage.restore(&mut data)?;
-            }
-
+            Self::restore_fsm_snapshot(snapshot.get_data(), &mut configuration, &mut kv_storage)?;
             snapshot_summary = Some(SnapshotSummary::from_snapshot(&snapshot));
         }
 
         config.validate()?;
-
         let raw_node = RawNode::new(&config, storage, &logger)?;
 
-        Ok(Member {
+        let member = Member {
             _logger: logger,
             is_leader: false,
             my_member_id,
+            configuration,
             raw_node,
             connection_manager,
             networking,
@@ -539,7 +579,11 @@ impl Member {
             pending_join_requests: HashMap::default(),
             read_index_to_request_id: VecDeque::default(),
             snapshot_summary,
-        })
+        };
+
+        member.validate_metadata_store_configuration();
+
+        Ok(member)
     }
 
     /// Sets the Raft node up to start right away with a leader election.
@@ -674,6 +718,13 @@ impl Member {
             return;
         }
 
+        if self.is_member_plain_node_id(joining_member_id.node_id) {
+            let warning = format!("Node '{}' has registered before with a different storage id. This indicates that this node has lost it's disk. Rejecting the join attempt.", joining_member_id);
+            warn!(warning);
+            let _ = response_tx.send(Err(JoinClusterError::Internal(warning)));
+            return;
+        }
+
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
 
         let Ok(joining_node_config) = nodes_config.find_node_by_id(joining_member_id.node_id)
@@ -709,7 +760,19 @@ impl Member {
         let mut conf_change = ConfChangeV2::new();
         conf_change.set_changes(vec![conf_change_single].into());
 
-        if let Err(err) = self.raw_node.propose_conf_change(Vec::new(), conf_change) {
+        let mut next_configuration = self.configuration.clone();
+        next_configuration.version = next_configuration.version.next();
+        next_configuration
+            .members
+            .insert(joining_member_id.node_id, joining_member_id.storage_id);
+
+        let next_configuration_bytes =
+            grpc::MetadataStoreConfiguration::from(next_configuration).encode_to_vec();
+
+        if let Err(err) = self
+            .raw_node
+            .propose_conf_change(next_configuration_bytes, conf_change)
+        {
             let response = match err {
                 RaftError::ProposalDropped => JoinClusterError::ProposalDropped,
                 err => JoinClusterError::Internal(err.to_string()),
@@ -739,17 +802,7 @@ impl Member {
 
         // apply snapshot if one was sent
         if !ready.snapshot().is_empty() {
-            if !ready.snapshot().get_data().is_empty() {
-                let mut data = ready.snapshot().get_data();
-                self.kv_storage.restore(&mut data)?;
-            }
-
-            self.raw_node
-                .mut_store()
-                .apply_snapshot(ready.snapshot())
-                .await?;
-
-            self.snapshot_summary = Some(SnapshotSummary::from_snapshot(ready.snapshot()));
+            self.apply_snapshot(ready.snapshot()).await?;
         }
 
         // handle read states
@@ -802,6 +855,41 @@ impl Member {
         self.try_trim_log().await?;
         self.check_requested_snapshot().await?;
 
+        Ok(())
+    }
+
+    async fn apply_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
+        Self::restore_fsm_snapshot(
+            snapshot.get_data(),
+            &mut self.configuration,
+            &mut self.kv_storage,
+        )?;
+
+        self.validate_metadata_store_configuration();
+
+        self.raw_node.mut_store().apply_snapshot(snapshot).await?;
+
+        self.snapshot_summary = Some(SnapshotSummary::from_snapshot(snapshot));
+
+        Ok(())
+    }
+
+    fn restore_fsm_snapshot(
+        mut data: &[u8],
+        configuration: &mut MetadataStoreConfiguration,
+        kv_storage: &mut KvMemoryStorage,
+    ) -> Result<(), RestoreSnapshotError> {
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        let mut snapshot = MetadataStoreSnapshot::decode(&mut data)?;
+        *configuration = snapshot
+            .configuration
+            .take()
+            .map(MetadataStoreConfiguration::from)
+            .expect("configuration metadata expected");
+        kv_storage.restore(snapshot)?;
         Ok(())
     }
 
@@ -893,28 +981,38 @@ impl Member {
         Ok(())
     }
 
-    async fn handle_conf_change(&mut self, entry: Entry) -> Result<(), Error> {
+    async fn handle_conf_change(&mut self, entry: Entry) -> Result<(), ConfChangeError> {
         let cc_v2 = match entry.entry_type {
             EntryType::EntryNormal => {
                 panic!("normal entries should be handled by handle_normal_entry")
             }
             EntryType::EntryConfChange => {
                 let mut cc = ConfChange::default();
-                cc.merge_from_bytes(&entry.data)
-                    .map_err(Error::DecodeConfChange)?;
+                cc.merge_from_bytes(&entry.data)?;
                 cc.into_v2()
             }
             EntryType::EntryConfChangeV2 => {
                 let mut cc = ConfChangeV2::default();
-                cc.merge_from_bytes(&entry.data)
-                    .map_err(Error::DecodeConfChange)?;
+                cc.merge_from_bytes(&entry.data)?;
                 cc
             }
         };
 
-        self.raw_node
-            .apply_conf_change(&cc_v2)
-            .map_err(Error::ApplyConfChange)?;
+        self.raw_node.apply_conf_change(&cc_v2)?;
+
+        let new_configuration = MetadataStoreConfiguration::from(
+            grpc::MetadataStoreConfiguration::decode(entry.context)?,
+        );
+
+        // sanity checks
+        assert_eq!(
+            self.configuration.version.next(),
+            new_configuration.version,
+            "new configuration version must be one higher than the current one"
+        );
+        self.configuration = new_configuration;
+
+        self.validate_metadata_store_configuration();
 
         self.update_membership_in_nodes_configuration();
 
@@ -926,6 +1024,23 @@ impl Member {
         self.update_status();
 
         Ok(())
+    }
+
+    fn validate_metadata_store_configuration(&self) {
+        assert_eq!(
+            self.configuration.members.len(),
+            self.raw_node.raft.prs().conf().voters().ids().len(),
+            "number of members in configuration doesn't match number of voters in Raft"
+        );
+        for voter in self.raw_node.raft.prs().conf().voters().ids().iter() {
+            assert!(
+                self.configuration
+                    .members
+                    .contains_key(&to_plain_node_id(voter)),
+                "voter '{}' in Raft configuration not found in MetadataStoreConfiguration",
+                voter
+            );
+        }
     }
 
     /// Checks whether it's time to snapshot the state machine and trim the Raft log.
@@ -965,9 +1080,16 @@ impl Member {
         Ok(())
     }
 
-    async fn create_snapshot(&mut self, index: u64, term: u64) -> Result<(), Error> {
+    async fn create_snapshot(&mut self, index: u64, term: u64) -> Result<(), CreateSnapshotError> {
+        let mut snapshot = MetadataStoreSnapshot {
+            configuration: Some(grpc::MetadataStoreConfiguration::from(
+                self.configuration.clone(),
+            )),
+            ..MetadataStoreSnapshot::default()
+        };
+        self.kv_storage.snapshot(&mut snapshot);
         let mut data = BytesMut::new();
-        self.kv_storage.snapshot(&mut data)?;
+        snapshot.encode(&mut data)?;
 
         let mut snapshot = Snapshot::new();
         let mut metadata = SnapshotMetadata::new();
@@ -1070,9 +1192,14 @@ impl Member {
             let current_leader = if self.raw_node.raft.leader_id == INVALID_ID {
                 None
             } else {
+                let plain_node_id = to_plain_node_id(self.raw_node.raft.leader_id);
                 Some(MemberId::new(
-                    to_plain_node_id(self.raw_node.raft.leader_id),
-                    0,
+                    plain_node_id,
+                    self.configuration
+                        .members
+                        .get(&plain_node_id)
+                        .copied()
+                        .expect("leader should be a known member"),
                 ))
             };
 
@@ -1084,16 +1211,17 @@ impl Member {
             } = current_status
             {
                 *leader = current_leader;
-                configuration.members = self.current_members();
+                if configuration.version != self.configuration.version {
+                    *configuration = self.configuration.clone();
+                }
                 *raft = self.raft_summary();
                 *snapshot = self.snapshot_summary.clone();
             } else {
-                let members = self.current_members();
                 let raft = self.raft_summary();
 
                 *current_status = MetadataStoreSummary::Member {
                     leader: current_leader,
-                    configuration: MetadataStoreConfiguration { id: 0, members },
+                    configuration: self.configuration.clone(),
                     raft,
                     snapshot: self.snapshot_summary.clone(),
                 };
@@ -1111,38 +1239,12 @@ impl Member {
         }
     }
 
-    fn current_members(&self) -> Vec<MemberId> {
-        let members = self
-            .raw_node
-            .raft
-            .prs()
-            .conf()
-            .voters()
-            .ids()
-            .iter()
-            .map(|id| MemberId::new(to_plain_node_id(id), 0))
-            .collect();
-        members
-    }
-
     fn is_member(&self, member_id: MemberId) -> bool {
-        // todo check for storage id too
-        self.raw_node
-            .raft
-            .prs()
-            .conf()
-            .voters()
-            .contains(to_raft_id(member_id.node_id))
+        self.configuration.members.get(&member_id.node_id) == Some(&member_id.storage_id)
     }
 
     fn is_member_plain_node_id(&self, node_id: PlainNodeId) -> bool {
-        // todo check for storage id too
-        self.raw_node
-            .raft
-            .prs()
-            .conf()
-            .voters()
-            .contains(to_raft_id(node_id))
+        self.configuration.members.contains_key(&node_id)
     }
 
     /// Returns the known leader from the Raft instance or a random known leader from the

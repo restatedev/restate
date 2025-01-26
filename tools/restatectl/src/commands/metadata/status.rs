@@ -24,6 +24,7 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::StorageCodec;
+use restate_types::{PlainNodeId, Version};
 use std::collections::BTreeMap;
 use tonic::codec::CompressionEncoding;
 use tonic::IntoRequest;
@@ -47,7 +48,7 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
     let header = vec![
         "NODE",
         "STATUS",
-        "CONFIG-ID",
+        "VERSION",
         "LEADER",
         "MEMBERS",
         "APPLIED",
@@ -84,8 +85,8 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
                     status
                         .configuration
                         .as_ref()
-                        .map(|config| config.id.to_string())
-                        .unwrap_or("-".to_owned()),
+                        .and_then(|config| config.version.map(Version::from))
+                        .unwrap_or(Version::INVALID),
                 ),
                 Cell::new(
                     status
@@ -102,7 +103,10 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
                                 config
                                     .members
                                     .into_iter()
-                                    .map(MemberId::from)
+                                    .map(|(node_id, storage_id)| MemberId::new(
+                                        PlainNodeId::from(node_id),
+                                        storage_id
+                                    ))
                                     .map(|member_id| member_id.to_string())
                                     .join(",")
                             )
