@@ -1113,9 +1113,12 @@ impl Member {
         let previous_version = new_nodes_configuration.version();
 
         for (node_id, node_config) in new_nodes_configuration.iter_mut() {
-            if !self.is_member_plain_node_id(node_id) {
+            if self.is_member_plain_node_id(node_id) {
+                // Should be a no-op since we currently use Member also to tell nodes to try join
+                // the cluster. This needs to change once we support removing nodes from the
+                // metadata store cluster.
                 node_config.metadata_server_config.metadata_server_state =
-                    MetadataServerState::Standby;
+                    MetadataServerState::Member;
             }
         }
 
