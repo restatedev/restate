@@ -25,7 +25,6 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration,
 };
-use restate_types::retries::RetryPolicy;
 use restate_types::PlainNodeId;
 
 #[derive(Debug, thiserror::Error)]
@@ -140,15 +139,7 @@ impl<'a> NodeInit<'a> {
     ) -> anyhow::Result<NodesConfiguration> {
         info!("Trying to join cluster '{}'", common_opts.cluster_name());
 
-        // todo make configurable
-        // Never give up trying to join the cluster. Users of this struct will set a timeout if
-        // needed.
-        let join_retry = RetryPolicy::exponential(
-            Duration::from_millis(100),
-            2.0,
-            None,
-            Some(Duration::from_secs(5)),
-        );
+        let join_retry = common_opts.join_cluster_retry_policy.clone();
 
         let join_start = Instant::now();
         let mut printed_provision_message = false;

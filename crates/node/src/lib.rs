@@ -400,18 +400,9 @@ impl Node {
             })?;
         }
 
-        let initialization_timeout = config.common.initialization_timeout.into();
-
-        tokio::time::timeout(
-            initialization_timeout,
-            NodeInit::new(
-                &self.metadata_store_client,
-                &metadata_writer,
-            )
-            .init(),
-        )
-        .await
-            .context("Giving up trying to initialize the node. Make sure that it can reach the metadata store and don't forget to provision the cluster on a fresh start.")?
+        NodeInit::new(&self.metadata_store_client, &metadata_writer)
+            .init()
+            .await
             .context("Failed initializing the node.")?;
 
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
