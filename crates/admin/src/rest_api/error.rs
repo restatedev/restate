@@ -149,3 +149,53 @@ impl From<ShutdownError> for MetaApiError {
         MetaApiError::Internal(value.to_string())
     }
 }
+
+pub(crate) struct GenericRestError {
+    status_code: StatusCode,
+    error_message: String,
+}
+
+impl GenericRestError {
+    pub fn new(status_code: StatusCode, error_message: impl Into<String>) -> Self {
+        Self {
+            status_code,
+            error_message: error_message.into(),
+        }
+    }
+}
+
+impl IntoResponse for GenericRestError {
+    fn into_response(self) -> Response {
+        (self.status_code, self.error_message).into_response()
+    }
+}
+
+impl ToResponses for GenericRestError {
+    fn generate(components: &mut Components) -> Result<Responses, Error> {
+        let error_media_type =
+            <Json<ErrorDescriptionResponse> as ToMediaTypes>::generate(components)?;
+        Ok(Responses {
+            responses: map! {
+                "400".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
+                ),
+                "403".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
+                ),
+                "404".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
+                ),
+                "409".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
+                ),
+                "500".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
+                ),
+                "503".into() => okapi::openapi3::RefOr::Object(
+                    okapi::openapi3::Response { content: error_media_type, ..Default::default() }
+                )
+            },
+            ..Default::default()
+        })
+    }
+}

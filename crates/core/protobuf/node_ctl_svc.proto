@@ -24,6 +24,9 @@ service NodeCtlSvc {
   // Provision the Restate cluster on this node.
   rpc ProvisionCluster(ProvisionClusterRequest)
       returns (ProvisionClusterResponse);
+
+  // Returns the cluster health from the point of view of this node.
+  rpc ClusterHealth(google.protobuf.Empty) returns (ClusterHealthResponse);
 }
 
 message ProvisionClusterRequest {
@@ -71,4 +74,14 @@ message GetMetadataRequest {
 message GetMetadataResponse {
   // polymorphic. The value depends on the MetadataKind requested
   bytes encoded = 1;
+}
+
+message ClusterHealthResponse {
+  string cluster_name = 1;
+  // Some value if the cluster has been configured to use the embedded metadata store
+  optional EmbeddedMetadataClusterHealth metadata_cluster_health = 2;
+}
+
+message EmbeddedMetadataClusterHealth {
+  repeated restate.common.NodeId members = 1;
 }

@@ -21,7 +21,7 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-admin-rest-model = { workspace = true, features = ["schema"] }
 restate-bifrost = { workspace = true }
-restate-core = { workspace = true }
+restate-core = { workspace = true, features = ["options_schema"] }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }

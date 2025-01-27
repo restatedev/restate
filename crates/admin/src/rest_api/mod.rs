@@ -10,6 +10,7 @@
 
 //! This module implements the Meta API endpoint.
 
+mod cluster_health;
 mod deployments;
 mod error;
 mod handlers;
@@ -101,6 +102,10 @@ where
         )
         .route("/health", get(openapi_handler!(health::health)))
         .route("/version", get(openapi_handler!(version::version)))
+        .route(
+            "/cluster-health",
+            get(openapi_handler!(cluster_health::cluster_health)),
+        )
         .finish_openapi("/openapi", "Admin API", env!("CARGO_PKG_VERSION"))
         .expect("Error when building the OpenAPI specification")
         .with_state(state)
