@@ -23,7 +23,6 @@ use crate::{
 };
 use arc_swap::ArcSwapOption;
 use bytes::BytesMut;
-use flexbuffers::{DeserializationError, SerializationError};
 use futures::future::{FusedFuture, OptionFuture};
 use futures::never::Never;
 use futures::FutureExt;
@@ -64,6 +63,8 @@ use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
 
+use super::kv_memory_storage::{CreateSnapshotError, RestoreSnapshotError};
+
 const RAFT_INITIAL_LOG_TERM: u64 = 1;
 const RAFT_INITIAL_LOG_INDEX: u64 = 1;
 
@@ -92,9 +93,9 @@ pub enum Error {
     #[error("failed reading/writing from/to storage: {0}")]
     Storage(#[from] storage::Error),
     #[error("failed restoring the snapshot: {0}")]
-    RestoreSnapshot(#[from] DeserializationError),
+    RestoreSnapshot(#[from] RestoreSnapshotError),
     #[error("failed creating snapshot: {0}")]
-    CreateSnapshot(#[from] SerializationError),
+    CreateSnapshot(#[from] CreateSnapshotError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }
