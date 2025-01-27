@@ -25,7 +25,7 @@ use super::{data_dir, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "schemars",
-    schemars(rename = "LocalMetadataStoreOptions", default)
+    schemars(rename = "MetadataStoreOptions", default)
 )]
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
