@@ -208,7 +208,7 @@ mod tests {
 
         let now = Instant::now();
 
-        TaskCenter::spawn(TaskKind::Watchdog, "persiste-log-lsn-test", watchdog.run())?;
+        TaskCenter::spawn(TaskKind::Watchdog, "persisted-log-lsn-test", watchdog.run())?;
 
         assert!(
             tokio::time::timeout(Duration::from_secs(1), watch_rx.changed())

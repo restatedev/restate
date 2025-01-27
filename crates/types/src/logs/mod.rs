@@ -119,10 +119,10 @@ impl From<Lsn> for crate::protobuf::common::Lsn {
 
 impl SequenceNumber for Lsn {
     /// The maximum possible sequence number, this is useful when creating a read stream
-    /// with an open ended tail.
+    /// with an open-ended tail.
     const MAX: Self = Lsn(u64::MAX);
     /// 0 is not a valid sequence number. This sequence number represents invalid position
-    /// in the log, or that the log has been that has been trimmed.
+    /// in the log, or that the log has been trimmed.
     const INVALID: Self = Lsn(0);
     /// Guaranteed to be less than or equal to the oldest possible sequence
     /// number in a log. This is useful when seeking to the head of a log.

@@ -58,6 +58,13 @@ impl ClusterState {
         })
     }
 
+    pub fn dead_or_suspect_nodes(&self) -> impl Iterator<Item = &PlainNodeId> {
+        self.nodes.iter().flat_map(|(node_id, state)| match state {
+            NodeState::Alive(_) => None,
+            NodeState::Dead(_) | NodeState::Suspect(_) => Some(node_id),
+        })
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn empty() -> Self {
         ClusterState {
