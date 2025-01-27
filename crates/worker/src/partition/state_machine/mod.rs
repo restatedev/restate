@@ -1931,6 +1931,13 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
         let journal_length = invocation_metadata.journal_metadata.length;
         let completion_retention_time = invocation_metadata.completion_retention_duration;
 
+        let should_remove_journal_table_v2 = invocation_metadata
+            .pinned_deployment
+            .as_ref()
+            .is_some_and(|pinned_deployment| {
+                pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
+            });
+
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention_time.is_zero() {
@@ -2003,7 +2010,13 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
         if completion_retention_time.is_zero() {
             self.do_free_invocation(invocation_id).await;
         }
-        self.do_drop_journal(invocation_id, journal_length).await?;
+
+        self.do_drop_journal(
+            invocation_id,
+            journal_length,
+            should_remove_journal_table_v2,
+        )
+        .await?;
 
         // Consume inbox and move on
         self.consume_inbox(&invocation_target).await?;
@@ -3855,6 +3868,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
+        should_remove_journal_table_v2: bool,
     ) -> Result<(), Error>
     where
         S: JournalTable + journal_table_v2::JournalTable,
@@ -3865,10 +3879,16 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             "Effect: Drop journal"
         );
 
-        // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
-        JournalTable::delete_journal(self.storage, &invocation_id, journal_length).await;
-        journal_table_v2::JournalTable::delete_journal(self.storage, invocation_id, journal_length)
+        if should_remove_journal_table_v2 {
+            journal_table_v2::JournalTable::delete_journal(
+                self.storage,
+                invocation_id,
+                journal_length,
+            )
             .await?;
+        } else {
+            JournalTable::delete_journal(self.storage, &invocation_id, journal_length).await;
+        }
         Ok(())
     }
 
