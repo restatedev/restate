@@ -27,6 +27,12 @@ use std::sync::Arc;
 use tracing::{debug, trace};
 
 #[derive(Debug, thiserror::Error)]
+pub enum RemoteError {
+    #[error("remote function unimplemented")]
+    Unimplemented,
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum ReadError {
     #[error("network error: {0}")]
     Network(GenericError),
@@ -36,6 +42,8 @@ pub enum ReadError {
     Codec(GenericError),
     #[error("store error: {0}")]
     Store(GenericError),
+    #[error("remote error: {0}")]
+    RemoteError(#[from] RemoteError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +58,8 @@ pub enum WriteError {
     Codec(GenericError),
     #[error("store error: {0}")]
     Store(GenericError),
+    #[error("remote error: {0}")]
+    RemoteError(#[from] RemoteError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -64,6 +74,8 @@ pub enum ProvisionError {
     Store(GenericError),
     #[error("provisioning is not supported: {0}")]
     NotSupported(String),
+    #[error("remote error: {0}")]
+    RemoteError(#[from] RemoteError),
 }
 
 impl MetadataStoreClientError for ProvisionError {
@@ -73,7 +85,8 @@ impl MetadataStoreClientError for ProvisionError {
             ProvisionError::Internal(_)
             | ProvisionError::Codec(_)
             | ProvisionError::Store(_)
-            | ProvisionError::NotSupported(_) => false,
+            | ProvisionError::NotSupported(_)
+            | ProvisionError::RemoteError(_) => false,
         }
     }
 }
@@ -211,6 +224,7 @@ impl<T: ProvisionedMetadataStore + Sync> MetadataStore for T {
                 WriteError::Internal(err) => Err(ProvisionError::Internal(err)),
                 WriteError::Codec(err) => Err(ProvisionError::Codec(err)),
                 WriteError::Store(err) => Err(ProvisionError::Store(err)),
+                WriteError::RemoteError(err) => Err(ProvisionError::RemoteError(err)),
             },
         }
     }
@@ -425,6 +439,8 @@ pub enum ReadWriteError {
     RetriesExhausted(ByteString),
     #[error("store error: {0}")]
     Store(GenericError),
+    #[error("remote error: {0}")]
+    RemoteError(#[from] RemoteError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -454,6 +470,7 @@ impl From<ReadError> for ReadWriteError {
             ReadError::Internal(msg) => ReadWriteError::Internal(msg),
             ReadError::Codec(err) => ReadWriteError::Codec(err),
             ReadError::Store(err) => ReadWriteError::Store(err),
+            ReadError::RemoteError(err) => ReadWriteError::RemoteError(err),
         }
     }
 }
@@ -468,6 +485,7 @@ impl From<WriteError> for ReadWriteError {
             WriteError::Internal(msg) => ReadWriteError::Internal(msg),
             WriteError::Codec(err) => ReadWriteError::Codec(err),
             WriteError::Store(err) => ReadWriteError::Store(err),
+            WriteError::RemoteError(err) => ReadWriteError::RemoteError(err),
         }
     }
 }
@@ -491,10 +509,11 @@ impl MetadataStoreClientError for ReadWriteError {
         // new errors are explicitly handled
         match self {
             ReadWriteError::Network(_) => true,
-            ReadWriteError::Internal(_) => false,
-            ReadWriteError::Codec(_) => false,
-            ReadWriteError::RetriesExhausted(_) => false,
-            ReadWriteError::Store(_) => false,
+            ReadWriteError::Internal(_)
+            | ReadWriteError::Codec(_)
+            | ReadWriteError::RetriesExhausted(_)
+            | ReadWriteError::Store(_)
+            | ReadWriteError::RemoteError(_) => false,
         }
     }
 }
@@ -503,10 +522,11 @@ impl MetadataStoreClientError for WriteError {
     fn is_network_error(&self) -> bool {
         match self {
             WriteError::Network(_) => true,
-            WriteError::FailedPrecondition(_) => false,
-            WriteError::Internal(_) => false,
-            WriteError::Codec(_) => false,
-            WriteError::Store(_) => false,
+            WriteError::FailedPrecondition(_)
+            | WriteError::Internal(_)
+            | WriteError::Codec(_)
+            | WriteError::Store(_)
+            | WriteError::RemoteError(_) => false,
         }
     }
 }
@@ -515,7 +535,10 @@ impl MetadataStoreClientError for ReadError {
     fn is_network_error(&self) -> bool {
         match self {
             ReadError::Network(_) => true,
-            ReadError::Codec(_) | ReadError::Internal(_) | ReadError::Store(_) => false,
+            ReadError::Codec(_)
+            | ReadError::Internal(_)
+            | ReadError::Store(_)
+            | ReadError::RemoteError(_) => false,
         }
     }
 }

@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use rand::prelude::IteratorRandom;
 use restate_core::metadata_store::{
     retry_on_network_error, MetadataStore, MetadataStoreClientError, Precondition, ProvisionError,
-    ReadError, VersionedValue, WriteError,
+    ReadError, RemoteError, VersionedValue, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
@@ -278,6 +278,7 @@ impl MetadataStore for GrpcMetadataStoreClient {
 fn map_status_to_read_error(status: Status) -> ReadError {
     match &status.code() {
         Code::Unavailable => ReadError::Network(status.into()),
+        Code::Unimplemented => ReadError::RemoteError(RemoteError::Unimplemented),
         _ => ReadError::Internal(status.to_string()),
     }
 }
@@ -286,6 +287,7 @@ fn map_status_to_write_error(status: Status) -> WriteError {
     match &status.code() {
         Code::Unavailable => WriteError::Network(status.into()),
         Code::FailedPrecondition => WriteError::FailedPrecondition(status.message().to_string()),
+        Code::Unimplemented => WriteError::RemoteError(RemoteError::Unimplemented),
         _ => WriteError::Internal(status.to_string()),
     }
 }
