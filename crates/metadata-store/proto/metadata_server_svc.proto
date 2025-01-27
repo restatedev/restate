@@ -12,10 +12,10 @@ syntax = "proto3";
 import "google/protobuf/empty.proto";
 import "restate/common.proto";
 
-package restate.metadata_store_svc;
+package restate.metadata_server_svc;
 
 // Grpc service definition for a MetadataStore implementation.
-service MetadataStoreSvc {
+service MetadataServerSvc {
   // Get a versioned kv-pair
   rpc Get(GetRequest) returns (GetResponse);
 
@@ -78,13 +78,13 @@ message ProvisionResponse { bool newly_provisioned = 1; }
 
 message StatusResponse {
   restate.common.MetadataServerStatus status = 1;
-  optional MetadataStoreConfiguration configuration = 2;
+  optional MetadataServerConfiguration configuration = 2;
   optional MemberId leader = 3;
   optional SnapshotSummary snapshot = 4;
   optional RaftSummary raft = 5;
 }
 
-message MetadataStoreConfiguration {
+message MetadataServerConfiguration {
   restate.common.Version version = 1;
   map<uint32, uint64> members = 2;
 }
@@ -136,7 +136,7 @@ message KvEntry {
   VersionedValue value = 2;
 }
 
-message MetadataStoreSnapshot {
-  MetadataStoreConfiguration configuration = 1;
+message MetadataServerSnapshot {
+  MetadataServerConfiguration configuration = 1;
   repeated KvEntry entries = 2;
 }

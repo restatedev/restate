@@ -15,7 +15,7 @@ pub mod raft;
 mod util;
 
 use crate::grpc::handler::MetadataStoreHandler;
-use crate::grpc::metadata_store_svc_server::MetadataStoreSvcServer;
+use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -202,7 +202,7 @@ where
 {
     pub fn new(store: S, server_builder: &mut NetworkServerBuilder) -> Self {
         server_builder.register_grpc_service(
-            MetadataStoreSvcServer::new(MetadataStoreHandler::new(
+            MetadataServerSvcServer::new(MetadataStoreHandler::new(
                 store.request_sender(),
                 store.provision_sender(),
                 store.status_watch(),
@@ -611,7 +611,7 @@ enum MetadataStoreSummary {
     Standby,
     Member {
         leader: Option<MemberId>,
-        configuration: MetadataStoreConfiguration,
+        configuration: MetadataServerConfiguration,
         raft: RaftSummary,
         snapshot: Option<SnapshotSummary>,
     },
@@ -645,16 +645,16 @@ impl SnapshotSummary {
 }
 
 #[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
-#[prost(target = "crate::grpc::MetadataStoreConfiguration")]
-struct MetadataStoreConfiguration {
+#[prost(target = "crate::grpc::MetadataServerConfiguration")]
+struct MetadataServerConfiguration {
     #[prost(required)]
     version: Version,
     members: HashMap<PlainNodeId, StorageId>,
 }
 
-impl Default for MetadataStoreConfiguration {
+impl Default for MetadataServerConfiguration {
     fn default() -> Self {
-        MetadataStoreConfiguration {
+        MetadataServerConfiguration {
             version: Version::INVALID,
             members: HashMap::default(),
         }

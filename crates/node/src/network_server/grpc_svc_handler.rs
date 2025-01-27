@@ -27,7 +27,7 @@ use restate_core::protobuf::node_ctl_svc::{
 };
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
-use restate_metadata_store::grpc::metadata_store_svc_client::MetadataStoreSvcClient;
+use restate_metadata_store::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::config::Configuration;
 use restate_types::health::Health;
 use restate_types::logs::metadata::ProviderConfiguration;
@@ -214,7 +214,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let mut max_metadata_cluster_configuration = None;
 
         for (node_id, node_config) in nodes_configuration.iter_role(Role::MetadataServer) {
-            let mut metadata_server_client = MetadataStoreSvcClient::new(create_tonic_channel(
+            let mut metadata_server_client = MetadataServerSvcClient::new(create_tonic_channel(
                 node_config.address.clone(),
                 &Configuration::pinned().networking,
             ));

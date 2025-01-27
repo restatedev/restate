@@ -12,7 +12,7 @@ mod kv_memory_storage;
 mod storage;
 mod store;
 
-use crate::network::{MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, NetworkMessage};
+use crate::network::{MetadataServerNetworkSvcServer, MetadataStoreNetworkHandler, NetworkMessage};
 use crate::raft::store::BuildError;
 use crate::{network, MemberId, MetadataStoreRunner};
 use anyhow::Context;
@@ -36,7 +36,7 @@ pub(crate) async fn create_store(
     let store = RaftMetadataStore::create(rocksdb_options, metadata_writer, health_status).await?;
 
     server_builder.register_grpc_service(
-        MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
+        MetadataServerNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
             store.connection_manager(),
             Some(store.join_cluster_handle()),
         ))

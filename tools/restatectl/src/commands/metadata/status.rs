@@ -18,7 +18,7 @@ use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::GetMetadataRequest;
-use restate_metadata_store::grpc::metadata_store_svc_client::MetadataStoreSvcClient;
+use restate_metadata_store::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_metadata_store::MemberId;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{NodesConfiguration, Role};
@@ -65,7 +65,7 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
     for (node_id, node_config) in nodes_configuration.iter() {
         if node_config.roles.contains(Role::MetadataServer) {
             let metadata_channel = grpc_channel(node_config.address.clone());
-            let mut metadata_client = MetadataStoreSvcClient::new(metadata_channel)
+            let mut metadata_client = MetadataServerSvcClient::new(metadata_channel)
                 .accept_compressed(CompressionEncoding::Gzip);
 
             let metadata_store_status = metadata_client.status(().into_request()).await;

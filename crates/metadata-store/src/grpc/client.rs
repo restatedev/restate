@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc::metadata_store_svc_client::MetadataStoreSvcClient;
+use crate::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
 use crate::KnownLeader;
@@ -41,7 +41,7 @@ use tracing::debug;
 #[derive(Debug, Clone)]
 pub struct GrpcMetadataStoreClient {
     channel_manager: ChannelManager,
-    svc_client: Arc<Mutex<Option<MetadataStoreSvcClient<Channel>>>>,
+    svc_client: Arc<Mutex<Option<MetadataServerSvcClient<Channel>>>>,
 }
 
 impl GrpcMetadataStoreClient {
@@ -53,7 +53,7 @@ impl GrpcMetadataStoreClient {
         let svc_client = Arc::new(Mutex::new(
             channel_manager
                 .choose_random()
-                .map(MetadataStoreSvcClient::new),
+                .map(MetadataServerSvcClient::new),
         ));
 
         if let Some(tc) = TaskCenter::try_with_current(|handle| handle.clone()) {
@@ -87,7 +87,7 @@ impl GrpcMetadataStoreClient {
     fn choose_random_endpoint(&self) {
         // let's try another endpoint
         *self.svc_client.lock() = self.channel_manager.choose_random().map(|channel| {
-            MetadataStoreSvcClient::new(channel)
+            MetadataServerSvcClient::new(channel)
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip)
         });
@@ -98,20 +98,20 @@ impl GrpcMetadataStoreClient {
             .channel_manager
             .register_address(known_leader.node_id, known_leader.address);
         *self.svc_client.lock() = Some(
-            MetadataStoreSvcClient::new(channel)
+            MetadataServerSvcClient::new(channel)
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip),
         );
     }
 
-    fn current_client(&self) -> Option<MetadataStoreSvcClient<Channel>> {
+    fn current_client(&self) -> Option<MetadataServerSvcClient<Channel>> {
         let mut svc_client_guard = self.svc_client.lock();
 
         if svc_client_guard.is_none() {
             *svc_client_guard = self
                 .channel_manager
                 .choose_random()
-                .map(MetadataStoreSvcClient::new);
+                .map(MetadataServerSvcClient::new);
         }
 
         svc_client_guard.clone()
@@ -256,7 +256,7 @@ impl MetadataStore for GrpcMetadataStoreClient {
             return Err(ProvisionError::NotSupported(format!("Node '{}' does not run the metadata-server role. Try to provision a different node.", config.common.advertised_address)));
         }
 
-        let mut client = MetadataStoreSvcClient::new(create_tonic_channel(
+        let mut client = MetadataServerSvcClient::new(create_tonic_channel(
             config.common.advertised_address.clone(),
             &config.networking,
         ));

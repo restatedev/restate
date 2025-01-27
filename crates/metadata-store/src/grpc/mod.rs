@@ -11,8 +11,8 @@
 pub mod client;
 pub(crate) mod handler;
 
-tonic::include_proto!("restate.metadata_store_svc");
-pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("metadata_store_svc");
+tonic::include_proto!("restate.metadata_server_svc");
+pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("metadata_server_svc");
 
 pub mod pb_conversions {
     use crate::grpc::{
@@ -165,7 +165,7 @@ pub mod pb_conversions {
                     snapshot,
                 } => grpc::StatusResponse {
                     status: restate_types::protobuf::common::MetadataServerStatus::Member.into(),
-                    configuration: Some(grpc::MetadataStoreConfiguration::from(configuration)),
+                    configuration: Some(grpc::MetadataServerConfiguration::from(configuration)),
                     leader: leader.map(grpc::MemberId::from),
                     raft: Some(grpc::RaftSummary::from(raft)),
                     snapshot: snapshot.map(grpc::SnapshotSummary::from),
