@@ -399,7 +399,8 @@ impl WriteRequest {
     }
 
     fn decode_from_bytes(bytes: Bytes) -> Result<Self, StorageDecodeError> {
-        let result = grpc::WriteRequest::decode(bytes).unwrap();
+        let result = grpc::WriteRequest::decode(bytes)
+            .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
         result
             .try_into()
             .map_err(|err: ConversionError| StorageDecodeError::DecodeValue(err.into()))
