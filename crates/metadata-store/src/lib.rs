@@ -17,8 +17,10 @@ mod util;
 use crate::grpc::handler::MetadataStoreHandler;
 use crate::grpc::metadata_store_svc_server::MetadataStoreSvcServer;
 use assert2::let_assert;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use bytestring::ByteString;
+use grpc::pb_conversions::ConversionError;
+use prost::Message;
 use raft_proto::eraftpb::Snapshot;
 use restate_core::metadata_store::VersionedValue;
 pub use restate_core::metadata_store::{
@@ -37,8 +39,8 @@ use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
 };
 use restate_types::protobuf::common::MetadataServerStatus;
-use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
-use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId, PlainNodeId, Version};
+use restate_types::storage::{StorageDecodeError, StorageEncodeError};
+use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -383,8 +385,6 @@ struct WriteRequest {
     kind: RequestKind,
 }
 
-flexbuffers_storage_encode_decode!(WriteRequest);
-
 impl WriteRequest {
     pub fn new(kind: RequestKind) -> Self {
         WriteRequest {
@@ -393,15 +393,16 @@ impl WriteRequest {
         }
     }
 
-    fn encode_to_vec(&self) -> Result<Vec<u8>, StorageEncodeError> {
-        let mut buffer = BytesMut::new();
-        // todo: Removing support for BufMut requires an extra copy from BytesMut to Vec :-(
-        StorageCodec::encode(self, &mut buffer)?;
-        Ok(buffer.to_vec())
+    fn encode_to_vec(self) -> Result<Vec<u8>, StorageEncodeError> {
+        let request = grpc::WriteRequest::from(self);
+        Ok(request.encode_to_vec())
     }
 
-    fn decode_from_bytes(mut bytes: Bytes) -> Result<Self, StorageDecodeError> {
-        StorageCodec::decode::<WriteRequest, _>(&mut bytes)
+    fn decode_from_bytes(bytes: Bytes) -> Result<Self, StorageDecodeError> {
+        let result = grpc::WriteRequest::decode(bytes).unwrap();
+        result
+            .try_into()
+            .map_err(|err: ConversionError| StorageDecodeError::DecodeValue(err.into()))
     }
 }
 
