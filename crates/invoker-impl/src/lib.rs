@@ -519,27 +519,33 @@ where
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
     ) {
-        debug_assert!(self
+        if self
             .invocation_state_machine_manager
-            .has_partition(partition));
-        debug_assert!(self
-            .invocation_state_machine_manager
-            .resolve_invocation(partition, &invocation_id)
-            .is_none());
+            .has_partition(partition)
+        {
+            debug_assert!(self
+                .invocation_state_machine_manager
+                .resolve_invocation(partition, &invocation_id)
+                .is_none());
 
-        let storage_reader = self
-            .invocation_state_machine_manager
-            .partition_storage_reader(partition)
-            .expect("partition is registered");
-        self.quota.reserve_slot();
-        self.start_invocation_task(
-            options,
-            partition,
-            storage_reader.clone(),
-            invocation_id,
-            journal,
-            InvocationStateMachine::create(invocation_target, options.retry_policy.clone()),
-        )
+            let storage_reader = self
+                .invocation_state_machine_manager
+                .partition_storage_reader(partition)
+                .expect("partition is registered");
+            self.quota.reserve_slot();
+            self.start_invocation_task(
+                options,
+                partition,
+                storage_reader.clone(),
+                invocation_id,
+                journal,
+                InvocationStateMachine::create(invocation_target, options.retry_policy.clone()),
+            )
+        } else {
+            trace!(
+                "No registered partition {partition:?} was found for the invocation {invocation_id}"
+            );
+        }
     }
 
     #[instrument(
