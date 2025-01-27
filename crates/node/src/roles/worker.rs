@@ -19,7 +19,7 @@ use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::TaskCenter;
 use restate_core::{cancellation_watcher, Metadata, MetadataKind};
 use restate_core::{ShutdownError, TaskKind};
-use restate_metadata_store::MetadataStoreClient;
+use restate_metadata_server::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;

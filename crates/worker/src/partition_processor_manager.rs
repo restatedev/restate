@@ -41,7 +41,7 @@ use restate_core::{
 use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_invoker_impl::{BuildError, ChannelStatusReader};
-use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
+use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::snapshots::PartitionSnapshotMetadata;
 use restate_partition_store::PartitionStoreManager;
 use restate_types::cluster::cluster_state::ReplayStatus;

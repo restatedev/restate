@@ -27,7 +27,7 @@ use restate_core::protobuf::node_ctl_svc::{
 };
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
-use restate_metadata_store::grpc::metadata_server_svc_client::MetadataServerSvcClient;
+use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::config::Configuration;
 use restate_types::health::Health;
 use restate_types::logs::metadata::ProviderConfiguration;

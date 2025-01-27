@@ -17,7 +17,7 @@ use tracing::{debug, info, instrument};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
-use restate_metadata_store::MetadataStoreClient;
+use restate_metadata_server::MetadataStoreClient;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;

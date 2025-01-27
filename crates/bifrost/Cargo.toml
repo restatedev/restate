@@ -21,7 +21,7 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 restate-core = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
-restate-metadata-store = { workspace = true }
+restate-metadata-server = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
@@ -54,7 +54,7 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
 restate-log-server = { workspace = true }
-restate-metadata-store = { workspace = true }
+restate-metadata-server = { workspace = true }
 restate-storage-api = { workspace = true } 
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }

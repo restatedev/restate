@@ -50,7 +50,7 @@ use tonic::Status;
 use tracing::debug;
 use ulid::Ulid;
 
-pub type BoxedMetadataStoreService = Box<dyn MetadataStoreService>;
+pub type BoxedMetadataStoreService = Box<dyn MetadataServer>;
 
 pub type RequestSender = mpsc::Sender<MetadataStoreRequest>;
 pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
@@ -119,19 +119,19 @@ enum JoinError {
 }
 
 #[async_trait::async_trait]
-pub trait MetadataStoreServiceBoxed {
+pub trait MetadataServerBoxed {
     async fn run_boxed(self: Box<Self>) -> anyhow::Result<()>;
 }
 
 #[async_trait::async_trait]
-impl<T: MetadataStoreService> MetadataStoreServiceBoxed for T {
+impl<T: MetadataServer> MetadataServerBoxed for T {
     async fn run_boxed(self: Box<Self>) -> anyhow::Result<()> {
         (*self).run().await
     }
 }
 
 #[async_trait::async_trait]
-pub trait MetadataStoreService: MetadataStoreServiceBoxed + Send {
+pub trait MetadataServer: MetadataServerBoxed + Send {
     async fn run(self) -> anyhow::Result<()>;
 
     fn boxed(self) -> BoxedMetadataStoreService
@@ -143,7 +143,7 @@ pub trait MetadataStoreService: MetadataStoreServiceBoxed + Send {
 }
 
 #[async_trait::async_trait]
-impl<T: MetadataStoreService + ?Sized> MetadataStoreService for Box<T> {
+impl<T: MetadataServer + ?Sized> MetadataServer for Box<T> {
     async fn run(self) -> anyhow::Result<()> {
         self.run_boxed().await
     }
@@ -178,7 +178,7 @@ pub struct ProvisionRequest {
     result_tx: oneshot::Sender<Result<bool, ProvisionError>>,
 }
 
-trait MetadataStoreBackend {
+trait MetadataServerBackend {
     /// Create a request sender for this backend.
     fn request_sender(&self) -> RequestSender;
 
@@ -192,13 +192,13 @@ trait MetadataStoreBackend {
     fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static;
 }
 
-struct MetadataStoreRunner<S> {
+struct MetadataServerRunner<S> {
     store: S,
 }
 
-impl<S> MetadataStoreRunner<S>
+impl<S> MetadataServerRunner<S>
 where
-    S: MetadataStoreBackend,
+    S: MetadataServerBackend,
 {
     pub fn new(store: S, server_builder: &mut NetworkServerBuilder) -> Self {
         server_builder.register_grpc_service(
@@ -217,12 +217,12 @@ where
 }
 
 #[async_trait::async_trait]
-impl<S> MetadataStoreService for MetadataStoreRunner<S>
+impl<S> MetadataServer for MetadataServerRunner<S>
 where
-    S: MetadataStoreBackend + Send,
+    S: MetadataServerBackend + Send,
 {
     async fn run(self) -> anyhow::Result<()> {
-        let MetadataStoreRunner { store } = self;
+        let MetadataServerRunner { store } = self;
 
         store.run().await?;
 
@@ -230,7 +230,7 @@ where
     }
 }
 
-pub async fn create_metadata_store(
+pub async fn create_metadata_server(
     metadata_store_options: &MetadataStoreOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataServerStatus>,
@@ -238,7 +238,7 @@ pub async fn create_metadata_store(
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<BoxedMetadataStoreService> {
     match metadata_store_options.kind {
-        MetadataStoreKind::Local => local::create_store(
+        MetadataStoreKind::Local => local::create_server(
             metadata_store_options,
             rocksdb_options,
             health_status,
@@ -247,7 +247,7 @@ pub async fn create_metadata_store(
         .await
         .map_err(anyhow::Error::from)
         .map(|store| store.boxed()),
-        MetadataStoreKind::Raft => raft::create_store(
+        MetadataStoreKind::Raft => raft::create_server(
             rocksdb_options,
             health_status,
             metadata_writer,

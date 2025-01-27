@@ -25,7 +25,7 @@ use bytestring::ByteString;
 use http::{header::ToStrError, HeaderMap, StatusCode};
 
 use restate_core::metadata_store::{MetadataStore, VersionedValue};
-use restate_metadata_store::{MetadataStoreClient, Precondition, ReadError, WriteError};
+use restate_metadata_server::{MetadataStoreClient, Precondition, ReadError, WriteError};
 use restate_types::{metadata_store::keys, Version};
 
 /// ETag header.

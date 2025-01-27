@@ -18,10 +18,10 @@ use crate::raft::{storage, RaftConfiguration};
 use crate::{
     grpc, prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError,
     JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, JoinError,
-    KnownLeader, MemberId, MetadataServerConfiguration, MetadataStoreBackend, MetadataStoreRequest,
-    MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender, RaftSummary, Request,
-    RequestError, RequestKind, RequestReceiver, RequestSender, SnapshotSummary, StatusSender,
-    StatusWatch, StorageId, WriteRequest,
+    KnownLeader, MemberId, MetadataServerBackend, MetadataServerConfiguration,
+    MetadataStoreRequest, MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender,
+    RaftSummary, Request, RequestError, RequestKind, RequestReceiver, RequestSender,
+    SnapshotSummary, StatusSender, StatusWatch, StorageId, WriteRequest,
 };
 use arc_swap::ArcSwapOption;
 use bytes::BytesMut;
@@ -128,7 +128,7 @@ pub enum CreateSnapshotError {
     Encode(#[from] EncodeError),
 }
 
-pub struct RaftMetadataStore {
+pub struct RaftMetadataServer {
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
     storage: RocksDbStorage,
 
@@ -148,7 +148,7 @@ pub struct RaftMetadataStore {
     status_tx: StatusSender,
 }
 
-impl RaftMetadataStore {
+impl RaftMetadataServer {
     pub async fn create(
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
         metadata_writer: Option<MetadataWriter>,
@@ -465,7 +465,7 @@ impl RaftMetadataStore {
     }
 }
 
-impl MetadataStoreBackend for RaftMetadataStore {
+impl MetadataServerBackend for RaftMetadataServer {
     fn request_sender(&self) -> RequestSender {
         self.request_sender()
     }

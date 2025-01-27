@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
 
-pub const PEER_METADATA_KEY: &str = "x-restate-metadata-store-peer";
+pub const PEER_METADATA_KEY: &str = "x-restate-metadata-server-peer";
 
 #[derive(Debug)]
 pub struct MetadataStoreNetworkHandler<M> {

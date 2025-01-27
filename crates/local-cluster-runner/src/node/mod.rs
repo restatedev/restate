@@ -700,8 +700,8 @@ impl StartedNode {
     /// Obtain a metadata client based on this nodes client config.
     pub async fn metadata_client(
         &self,
-    ) -> Result<restate_metadata_store::MetadataStoreClient, GenericError> {
-        restate_metadata_store::local::create_client(
+    ) -> Result<restate_metadata_server::MetadataStoreClient, GenericError> {
+        restate_metadata_server::local::create_client(
             self.config.common.metadata_store_client.clone(),
         )
         .await

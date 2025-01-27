@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::{
-    util, MetadataStoreBackend, MetadataStoreRequest, PreconditionViolation, ProvisionSender,
+    util, MetadataServerBackend, MetadataStoreRequest, PreconditionViolation, ProvisionSender,
     RequestError, RequestReceiver, RequestSender, StatusWatch,
 };
 use bytes::BytesMut;
@@ -42,7 +42,7 @@ const KV_PAIRS: &str = "kv_pairs";
 ///
 /// In order to avoid issues arising from concurrency, we run the metadata
 /// store in a single thread.
-pub struct LocalMetadataStore {
+pub struct LocalMetadataServer {
     db: Arc<DB>,
     rocksdb: Arc<RocksDb>,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
@@ -54,7 +54,7 @@ pub struct LocalMetadataStore {
     request_tx: RequestSender,
 }
 
-impl LocalMetadataStore {
+impl LocalMetadataServer {
     pub async fn create(
         options: &MetadataStoreOptions,
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
@@ -367,7 +367,7 @@ impl LocalMetadataStore {
     }
 }
 
-impl MetadataStoreBackend for LocalMetadataStore {
+impl MetadataServerBackend for LocalMetadataServer {
     fn request_sender(&self) -> RequestSender {
         self.request_sender()
     }

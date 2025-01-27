@@ -25,7 +25,7 @@ use restate_core::{
     TaskCenterBuilder,
 };
 use restate_errors::fmt::RestateCode;
-use restate_metadata_store::{MetadataStoreClient, Precondition};
+use restate_metadata_server::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_types::config::{

@@ -37,14 +37,14 @@ use tonic::transport::Channel;
 use tonic::{Code, Status};
 use tracing::debug;
 
-/// Client end to interact with the metadata store.
+/// Client end to interact with a set of metadata servers.
 #[derive(Debug, Clone)]
-pub struct GrpcMetadataStoreClient {
+pub struct GrpcMetadataServerClient {
     channel_manager: ChannelManager,
-    svc_client: Arc<Mutex<Option<MetadataServerSvcClient<Channel>>>>,
+    current_leader: Arc<Mutex<Option<MetadataServerSvcClient<Channel>>>>,
 }
 
-impl GrpcMetadataStoreClient {
+impl GrpcMetadataServerClient {
     pub fn new(
         metadata_store_addresses: Vec<AdvertisedAddress>,
         client_options: MetadataStoreClientOptions,
@@ -73,7 +73,7 @@ impl GrpcMetadataStoreClient {
 
         Self {
             channel_manager,
-            svc_client,
+            current_leader: svc_client,
         }
     }
 
@@ -86,7 +86,7 @@ impl GrpcMetadataStoreClient {
 
     fn choose_random_endpoint(&self) {
         // let's try another endpoint
-        *self.svc_client.lock() = self.channel_manager.choose_random().map(|channel| {
+        *self.current_leader.lock() = self.channel_manager.choose_random().map(|channel| {
             MetadataServerSvcClient::new(channel)
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip)
@@ -97,7 +97,7 @@ impl GrpcMetadataStoreClient {
         let channel = self
             .channel_manager
             .register_address(known_leader.node_id, known_leader.address);
-        *self.svc_client.lock() = Some(
+        *self.current_leader.lock() = Some(
             MetadataServerSvcClient::new(channel)
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip),
@@ -105,7 +105,7 @@ impl GrpcMetadataStoreClient {
     }
 
     fn current_client(&self) -> Option<MetadataServerSvcClient<Channel>> {
-        let mut svc_client_guard = self.svc_client.lock();
+        let mut svc_client_guard = self.current_leader.lock();
 
         if svc_client_guard.is_none() {
             *svc_client_guard = self
@@ -140,7 +140,7 @@ impl GrpcMetadataStoreClient {
 }
 
 #[async_trait]
-impl MetadataStore for GrpcMetadataStoreClient {
+impl MetadataStore for GrpcMetadataServerClient {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         let retry_policy = Self::retry_policy();
 
@@ -274,7 +274,7 @@ impl MetadataStore for GrpcMetadataStoreClient {
             .map_err(map_status_to_provision_error);
 
         if response.is_ok() {
-            *self.svc_client.lock() = Some(client);
+            *self.current_leader.lock() = Some(client);
         }
 
         response.map(|response| response.into_inner().newly_provisioned)
