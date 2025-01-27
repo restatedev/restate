@@ -33,6 +33,9 @@ pub enum KeyKind {
     InvocationStatusV1,
     InvocationStatus,
     Journal,
+    JournalV2,
+    JournalV2NotificationIdToNotificationIndex,
+    JournalV2CompletionIdToCommandIndex,
     Outbox,
     ServiceStatus,
     State,
@@ -73,6 +76,9 @@ impl KeyKind {
             KeyKind::InvocationStatusV1 => b"is",
             KeyKind::InvocationStatus => b"iS",
             KeyKind::Journal => b"jo",
+            KeyKind::JournalV2NotificationIdToNotificationIndex => b"jn",
+            KeyKind::JournalV2CompletionIdToCommandIndex => b"jc",
+            KeyKind::JournalV2 => b"j2",
             KeyKind::Outbox => b"ob",
             KeyKind::ServiceStatus => b"ss",
             KeyKind::State => b"st",
@@ -98,6 +104,9 @@ impl KeyKind {
             b"is" => Some(KeyKind::InvocationStatusV1),
             b"iS" => Some(KeyKind::InvocationStatus),
             b"jo" => Some(KeyKind::Journal),
+            b"j2" => Some(KeyKind::JournalV2),
+            b"jn" => Some(KeyKind::JournalV2NotificationIdToNotificationIndex),
+            b"jc" => Some(KeyKind::JournalV2CompletionIdToCommandIndex),
             b"ob" => Some(KeyKind::Outbox),
             b"ss" => Some(KeyKind::ServiceStatus),
             b"st" => Some(KeyKind::State),
@@ -321,6 +330,7 @@ use restate_storage_api::deduplication_table::ProducerId;
 use restate_storage_api::timer_table::TimerKeyKind;
 use restate_storage_api::StorageError;
 use restate_types::identifiers::InvocationUuid;
+use restate_types::journal_v2::{CompletionId, NotificationId, SignalIndex};
 
 pub(crate) trait KeyCodec: Sized {
     fn encode<B: BufMut>(&self, target: &mut B);
@@ -589,6 +599,68 @@ impl KeyCodec for TimerKeyKind {
             TimerKeyKind::CleanInvocationStatus { invocation_uuid } => {
                 KeyCodec::serialized_length(invocation_uuid)
             }
+        }
+    }
+}
+
+impl KeyCodec for NotificationId {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        assert!(
+            self.serialized_length() <= target.remaining_mut(),
+            "serialization buffer has not enough space to serialize NotificationId: '{}' bytes required",
+            self.serialized_length()
+        );
+        match self {
+            NotificationId::CompletionId(ci) => {
+                target.put_u8(0);
+                target.put_u32(*ci);
+            }
+            NotificationId::SignalIndex(si) => {
+                target.put_u8(1);
+                target.put_u32(*si);
+            }
+            NotificationId::SignalName(name) => {
+                target.put_u8(2);
+                target.put(name.clone().into_bytes());
+            }
+        }
+    }
+
+    fn decode<B: Buf>(source: &mut B) -> crate::partition_store::Result<Self> {
+        if source.remaining() < mem::size_of::<u8>() {
+            return Err(StorageError::Generic(anyhow!(
+                "NotificationId discriminator byte is missing"
+            )));
+        }
+
+        Ok(match source.get_u8() {
+            0 => {
+                let completion_index = u32::decode(source)?;
+                NotificationId::CompletionId(completion_index)
+            }
+            1 => {
+                let signal_index = u32::decode(source)?;
+                NotificationId::SignalIndex(signal_index)
+            }
+            2 => {
+                let signal_name = ByteString::try_from(source.copy_to_bytes(source.remaining()))
+                    .map_err(|err| StorageError::Generic(err.into()))?;
+                NotificationId::SignalName(signal_name)
+            }
+            i => {
+                return Err(StorageError::Generic(anyhow!(
+                    "Unknown discriminator for NotificationId: '{}'",
+                    i
+                )))
+            }
+        })
+    }
+
+    fn serialized_length(&self) -> usize {
+        1 + match self {
+            NotificationId::CompletionId(_) => size_of::<CompletionId>(),
+            NotificationId::SignalIndex(_) => size_of::<SignalIndex>(),
+            NotificationId::SignalName(n) => n.len(),
         }
     }
 }

@@ -11,7 +11,8 @@
 use crate::Result;
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationResponse, InvocationTermination, ServiceInvocation,
+    AttachInvocationRequest, InvocationResponse, InvocationTermination, NotifySignalRequest,
+    ServiceInvocation,
 };
 use std::future::Future;
 use std::ops::RangeInclusive;
@@ -30,6 +31,9 @@ pub enum OutboxMessage {
 
     /// Attach invocation
     AttachInvocation(AttachInvocationRequest),
+
+    /// Notify signal request
+    NotifySignal(NotifySignalRequest),
 }
 
 impl WithPartitionKey for OutboxMessage {
@@ -39,6 +43,7 @@ impl WithPartitionKey for OutboxMessage {
             OutboxMessage::ServiceResponse(sr) => sr.id.partition_key(),
             OutboxMessage::InvocationTermination(it) => it.invocation_id.partition_key(),
             OutboxMessage::AttachInvocation(ai) => ai.invocation_query.partition_key(),
+            OutboxMessage::NotifySignal(sig) => sig.partition_key(),
         }
     }
 }

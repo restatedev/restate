@@ -16,10 +16,6 @@ local p_service_protocol = Proto("restate_service_protocol", "Restate Service En
 
 -- Define the fields
 local f_ty = ProtoField.uint16("restate_service_protocol.message_type", "Message Type", base.HEX)
-local f_completed = ProtoField.bool("restate_service_protocol.completed", "COMPLETED", base.NONE, {
-    "Completed",
-    "Not completed"
-})
 local f_requires_ack = ProtoField.bool("restate_service_protocol.requires_ack", "REQUIRES_ACK", base.NONE, {
     "Requires ack",
     "Doesn't require ack"
@@ -51,9 +47,6 @@ function p_service_protocol.dissector(buf, pkt, tree)
         if msg.protocol_version ~= nil then
             subtree:add(f_protocol_version, msg.protocol_version)
         end
-        if msg.completed ~= nil then
-            subtree:add(f_completed, msg.completed)
-        end
         if msg.requires_ack ~= nil then
             subtree:add(f_requires_ack, msg.requires_ack)
         end
@@ -68,3 +61,9 @@ local streaming_media_types = DissectorTable.get("streaming_content_type")
 
 media_types:add("application/vnd.restate.invocation.v1", p_service_protocol)
 streaming_media_types:add("application/vnd.restate.invocation.v1", p_service_protocol)
+media_types:add("application/vnd.restate.invocation.v2", p_service_protocol)
+streaming_media_types:add("application/vnd.restate.invocation.v2", p_service_protocol)
+media_types:add("application/vnd.restate.invocation.v3", p_service_protocol)
+streaming_media_types:add("application/vnd.restate.invocation.v3", p_service_protocol)
+media_types:add("application/vnd.restate.invocation.v4", p_service_protocol)
+streaming_media_types:add("application/vnd.restate.invocation.v4", p_service_protocol)

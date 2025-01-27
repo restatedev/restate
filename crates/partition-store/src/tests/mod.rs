@@ -31,6 +31,7 @@ mod idempotency_table_test;
 mod inbox_table_test;
 mod invocation_status_table_test;
 mod journal_table_test;
+mod journal_table_v2_test;
 mod outbox_table_test;
 mod promise_table_test;
 mod snapshots_test;

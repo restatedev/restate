@@ -25,52 +25,78 @@ pub(super) struct InvocationStateMachine {
     retry_iter: retries::RetryIter<'static>,
     /// This retry count is passed in the StartMessage.
     /// For more details of when we bump it, see [`InvocationTaskError::should_bump_start_message_retry_count_since_last_stored_entry`].
-    pub(super) start_message_retry_count_since_last_stored_entry: u32,
+    pub(super) start_message_retry_count_since_last_stored_command: u32,
 }
 
-/// This struct tracks which entries the invocation task generates,
+/// This struct tracks which commands the invocation task generates,
 /// and which ones have been already stored and acked by the partition processor.
 /// This information is used to decide when it's safe to retry.
 ///
-/// Every time the invocation task generates a new entry, the index is notified to this struct with
-/// [`JournalTracker::notify_entry_sent_to_partition_processor`], and every time the invoker receives
-/// [`InputCommand::StoredEntryAck`], the index is notified to this struct with [`JournalTracker::notify_acked_entry_from_partition_processor`].
+/// Every time the invocation task generates a new command, the index is notified to this struct with
+/// [`JournalTracker::notify_command_sent_to_partition_processor`], and every time the invoker receives
+/// [`InputCommand::StoredCommandAck`], the index is notified to this struct with [`JournalTracker::notify_acked_command_from_partition_processor`].
+/// Similar story applies to notifications, because we need to wait for the self-proposed notifications from the SDK to be propagated to the
+/// partition processor before retrying.
 ///
 /// After the retry timer is fired, we can check whether we can retry immediately or not with [`JournalTracker::can_retry`].
-#[derive(Default, Debug, Copy, Clone)]
+///
+/// **Note**: For Journal V1 Command == Entry
+#[derive(Default, Debug, Clone)]
 struct JournalTracker {
-    last_acked_entry_from_partition_processor: Option<EntryIndex>,
-    last_entry_sent_to_partition_processor: Option<EntryIndex>,
+    last_acked_command_from_partition_processor: Option<CommandIndex>,
+    last_command_sent_to_partition_processor: Option<CommandIndex>,
+    last_acked_notifications_from_partition_processor: HashSet<NotificationId>,
+    last_notifications_proposed_to_partition_processor: HashSet<NotificationId>,
 }
 
 impl JournalTracker {
-    fn notify_acked_entry_from_partition_processor(&mut self, idx: EntryIndex) {
-        self.last_acked_entry_from_partition_processor =
-            cmp::max(Some(idx), self.last_acked_entry_from_partition_processor)
+    fn notify_acked_command_from_partition_processor(&mut self, idx: CommandIndex) {
+        self.last_acked_command_from_partition_processor =
+            cmp::max(Some(idx), self.last_acked_command_from_partition_processor)
     }
 
-    fn notify_entry_sent_to_partition_processor(&mut self, idx: EntryIndex) {
-        self.last_entry_sent_to_partition_processor =
-            cmp::max(Some(idx), self.last_entry_sent_to_partition_processor)
+    fn notify_command_sent_to_partition_processor(&mut self, idx: CommandIndex) {
+        self.last_command_sent_to_partition_processor =
+            cmp::max(Some(idx), self.last_command_sent_to_partition_processor)
+    }
+
+    fn notify_acked_notification_from_partition_processor(&mut self, id: NotificationId) {
+        self.last_acked_notifications_from_partition_processor
+            .insert(id);
+    }
+
+    fn notify_notification_proposed_to_partition_processor(&mut self, id: NotificationId) {
+        self.last_notifications_proposed_to_partition_processor
+            .insert(id);
     }
 
     fn can_retry(&self) -> bool {
-        match (
-            self.last_acked_entry_from_partition_processor,
-            self.last_entry_sent_to_partition_processor,
+        let commands_condition = match (
+            self.last_acked_command_from_partition_processor,
+            self.last_command_sent_to_partition_processor,
         ) {
             (_, None) => {
-                // The invocation task didn't generate new entries.
+                // The invocation task didn't generate new commands.
                 // We're always good to retry in this case.
                 true
             }
             (Some(last_acked), Some(last_sent)) => {
                 // Last acked must be higher than last sent,
-                // otherwise we'll end up retrying when not all the entries have been stored.
+                // otherwise we'll end up retrying when not all the commands have been stored.
                 last_acked >= last_sent
             }
             _ => false,
+        };
+        if !commands_condition {
+            return false;
         }
+
+        // If the notifications sent from PP to invoker contains all the ones sent from Invoker to PP, we're good to retry.
+        let notifications_condition = self
+            .last_notifications_proposed_to_partition_processor
+            .is_subset(&self.last_acked_notifications_from_partition_processor);
+
+        commands_condition && notifications_condition
     }
 }
 
@@ -84,7 +110,8 @@ enum InvocationState {
         journal_tracker: JournalTracker,
         abort_handle: AbortHandle,
 
-        entries_to_ack: HashSet<EntryIndex>,
+        // Acks that should be propagated back to the SDK
+        command_acks_to_propagate: HashSet<CommandIndex>,
 
         // If Some, we need to notify the deployment id to the partition processor
         pinned_deployment: Option<PinnedDeployment>,
@@ -138,7 +165,7 @@ impl InvocationStateMachine {
             invocation_target,
             invocation_state: InvocationState::New,
             retry_iter: retry_policy.into_iter(),
-            start_message_retry_count_since_last_stored_entry: 0,
+            start_message_retry_count_since_last_stored_command: 0,
         }
     }
 
@@ -156,7 +183,7 @@ impl InvocationStateMachine {
             notifications_tx: Some(notifications_tx),
             journal_tracker: Default::default(),
             abort_handle,
-            entries_to_ack: Default::default(),
+            command_acks_to_propagate: Default::default(),
             pinned_deployment: None,
         };
     }
@@ -200,44 +227,58 @@ impl InvocationStateMachine {
         }
     }
 
-    pub(super) fn notify_new_entry(&mut self, entry_index: EntryIndex, requires_ack: bool) {
+    pub(super) fn notify_new_command(&mut self, entry_index: CommandIndex, requires_ack: bool) {
         debug_assert!(matches!(
             &self.invocation_state,
             InvocationState::InFlight { .. }
         ));
 
-        self.start_message_retry_count_since_last_stored_entry = 0;
+        self.start_message_retry_count_since_last_stored_command = 0;
 
         if let InvocationState::InFlight {
             journal_tracker,
-            entries_to_ack,
+            command_acks_to_propagate: entries_to_ack,
             ..
         } = &mut self.invocation_state
         {
             if requires_ack {
                 entries_to_ack.insert(entry_index);
             }
-            journal_tracker.notify_entry_sent_to_partition_processor(entry_index);
+            journal_tracker.notify_command_sent_to_partition_processor(entry_index);
         }
     }
 
-    pub(super) fn notify_stored_ack(&mut self, entry_index: EntryIndex) {
+    pub(super) fn notify_new_notification_proposal(&mut self, notification_id: NotificationId) {
+        debug_assert!(matches!(
+            &self.invocation_state,
+            InvocationState::InFlight { .. }
+        ));
+
+        if let InvocationState::InFlight {
+            journal_tracker, ..
+        } = &mut self.invocation_state
+        {
+            journal_tracker.notify_notification_proposed_to_partition_processor(notification_id);
+        }
+    }
+
+    pub(super) fn notify_stored_ack(&mut self, command_index: CommandIndex) {
         match &mut self.invocation_state {
             InvocationState::InFlight {
                 journal_tracker,
-                entries_to_ack,
+                command_acks_to_propagate,
                 notifications_tx,
                 ..
             } => {
-                if entries_to_ack.remove(&entry_index) {
-                    Self::try_send_notification(notifications_tx, Notification::Ack(entry_index));
+                if command_acks_to_propagate.remove(&command_index) {
+                    Self::try_send_notification(notifications_tx, Notification::Ack(command_index));
                 }
-                journal_tracker.notify_acked_entry_from_partition_processor(entry_index);
+                journal_tracker.notify_acked_command_from_partition_processor(command_index);
             }
             InvocationState::WaitingRetry {
                 journal_tracker, ..
             } => {
-                journal_tracker.notify_acked_entry_from_partition_processor(entry_index);
+                journal_tracker.notify_acked_command_from_partition_processor(command_index);
             }
             _ => {}
         }
@@ -249,6 +290,21 @@ impl InvocationStateMachine {
         } = &mut self.invocation_state
         {
             Self::try_send_notification(notifications_tx, Notification::Completion(completion));
+        }
+    }
+
+    pub(super) fn notify_entry(&mut self, entry: RawEntry) {
+        if let InvocationState::InFlight {
+            notifications_tx,
+            journal_tracker,
+            ..
+        } = &mut self.invocation_state
+        {
+            if let journal_v2::raw::RawEntryInner::Notification(notif) = &entry.inner {
+                journal_tracker.notify_acked_notification_from_partition_processor(notif.id());
+            }
+
+            Self::try_send_notification(notifications_tx, Notification::Entry(entry));
         }
     }
 
@@ -280,12 +336,12 @@ impl InvocationStateMachine {
     pub(super) fn handle_task_error(
         &mut self,
         next_retry_interval_override: Option<Duration>,
-        should_bump_start_message_retry_count_since_last_stored_entry: bool,
+        should_bump_start_message_retry_count_since_last_stored_command: bool,
     ) -> Option<Duration> {
         let journal_tracker = match &self.invocation_state {
             InvocationState::InFlight {
                 journal_tracker, ..
-            } => *journal_tracker,
+            } => journal_tracker.clone(),
             InvocationState::New => JournalTracker::default(),
             InvocationState::WaitingRetry {
                 journal_tracker,
@@ -296,14 +352,14 @@ impl InvocationStateMachine {
                         "Restate does not support multiple retry timers yet. This would require \
                         deduplicating timers by some mean (e.g. fencing them off, overwriting \
                         old timers, not registering a new timer if an old timer has not fired yet, etc.)");
-                *journal_tracker
+                journal_tracker.clone()
             }
         };
 
         let next_timer = next_retry_interval_override.or_else(|| self.retry_iter.next());
         if next_timer.is_some() {
-            if should_bump_start_message_retry_count_since_last_stored_entry {
-                self.start_message_retry_count_since_last_stored_entry += 1;
+            if should_bump_start_message_retry_count_since_last_stored_command {
+                self.start_message_retry_count_since_last_stored_command += 1;
             }
             self.invocation_state = InvocationState::WaitingRetry {
                 timer_fired: false,
@@ -316,11 +372,11 @@ impl InvocationStateMachine {
     }
 
     pub(super) fn is_ready_to_retry(&self) -> bool {
-        match self.invocation_state {
+        match &self.invocation_state {
             InvocationState::WaitingRetry {
                 timer_fired,
                 journal_tracker,
-            } => timer_fired && journal_tracker.can_retry(),
+            } => *timer_fired && journal_tracker.can_retry(),
             _ => false,
         }
     }
@@ -384,7 +440,7 @@ mod tests {
             .handle_task_error(None, true)
             .is_some());
         assert_eq!(
-            invocation_state_machine.start_message_retry_count_since_last_stored_entry,
+            invocation_state_machine.start_message_retry_count_since_last_stored_command,
             1
         );
 
@@ -399,7 +455,7 @@ mod tests {
             .handle_task_error(None, true)
             .is_some());
         assert_eq!(
-            invocation_state_machine.start_message_retry_count_since_last_stored_entry,
+            invocation_state_machine.start_message_retry_count_since_last_stored_command,
             2
         );
 
@@ -409,14 +465,14 @@ mod tests {
             mpsc::unbounded_channel().0,
         );
         assert_eq!(
-            invocation_state_machine.start_message_retry_count_since_last_stored_entry,
+            invocation_state_machine.start_message_retry_count_since_last_stored_command,
             2
         );
 
         // Now complete the entry
-        invocation_state_machine.notify_new_entry(1, false);
+        invocation_state_machine.notify_new_command(1, false);
         assert_eq!(
-            invocation_state_machine.start_message_retry_count_since_last_stored_entry,
+            invocation_state_machine.start_message_retry_count_since_last_stored_command,
             0
         );
     }
@@ -432,9 +488,9 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         invocation_state_machine.start(abort_handle, tx);
-        invocation_state_machine.notify_new_entry(1, true);
-        invocation_state_machine.notify_new_entry(2, false);
-        invocation_state_machine.notify_new_entry(3, true);
+        invocation_state_machine.notify_new_command(1, true);
+        invocation_state_machine.notify_new_command(2, false);
+        invocation_state_machine.notify_new_command(3, true);
 
         invocation_state_machine.notify_stored_ack(1);
         invocation_state_machine.notify_stored_ack(2);

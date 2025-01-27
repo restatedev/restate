@@ -11,7 +11,7 @@
 use crate::journal::schema::SysJournalBuilder;
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_types::identifiers::{JournalEntryId, WithInvocationId, WithPartitionKey};
 use restate_types::journal::enriched::EnrichedEntryHeader;
@@ -20,6 +20,9 @@ use restate_types::journal::{CompletePromiseEntry, GetPromiseEntry, PeekPromiseE
 use crate::log_data_corruption_error;
 use crate::table_util::format_using;
 use restate_types::journal::Entry;
+use restate_types::journal_v2;
+use restate_types::journal_v2::raw::RawEntry;
+use restate_types::journal_v2::EntryMetadata;
 
 #[inline]
 pub(crate) fn append_journal_row(
@@ -29,6 +32,7 @@ pub(crate) fn append_journal_row(
     journal_entry: JournalEntry,
 ) {
     let mut row = builder.row();
+    row.version(1);
 
     row.partition_key(journal_entry_id.partition_key());
     if row.is_id_defined() {
@@ -134,4 +138,43 @@ pub(crate) fn append_journal_row(
             row.completed(true);
         }
     };
+}
+
+#[inline]
+pub(crate) fn append_journal_row_v2(
+    builder: &mut SysJournalBuilder,
+    output: &mut String,
+    journal_entry_id: JournalEntryId,
+    raw_entry: RawEntry,
+) {
+    let Ok(entry) = raw_entry.decode::<ServiceProtocolV4Codec, journal_v2::Entry>() else {
+        log_data_corruption_error!(
+            "sys_journal",
+            &journal_entry_id.invocation_id(),
+            "entry",
+            "The entry should decode correctly"
+        );
+        return;
+    };
+
+    let mut row = builder.row();
+    row.version(2);
+
+    row.partition_key(journal_entry_id.partition_key());
+    if row.is_id_defined() {
+        row.id(format_using(output, &journal_entry_id.invocation_id()));
+    }
+
+    row.index(journal_entry_id.journal_index());
+    if row.is_entry_type_defined() {
+        row.entry_type(format_using(output, &raw_entry.ty()));
+    }
+
+    if row.is_entry_json_defined() {
+        if let Ok(json) = serde_json::to_string(&entry) {
+            row.entry_json(json);
+        }
+    }
+
+    row.appended_at(raw_entry.header().append_time.as_u64() as i64);
 }

@@ -11,10 +11,10 @@
 use super::*;
 
 mod delayed_send;
-mod fixtures;
+pub mod fixtures;
 mod idempotency;
 mod kill_cancel;
-mod matchers;
+pub mod matchers;
 mod workflow;
 
 use crate::partition::state_machine::tests::fixtures::{
@@ -32,7 +32,6 @@ use restate_core::TaskCenter;
 use restate_invoker_api::{EffectKind, InvokeInputJournal};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
-use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::inbox_table::ReadOnlyInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -50,7 +49,8 @@ use restate_test_util::matchers::*;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::errors::{codes, InvocationError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::{
-    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
+    AwakeableIdentifier, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
+    ServiceId,
 };
 use restate_types::invocation::{
     Header, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
@@ -68,10 +68,10 @@ use test_log::test;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 pub struct TestEnv {
-    state_machine: StateMachine<ProtobufRawEntryCodec>,
+    pub state_machine: StateMachine,
     // TODO for the time being we use rocksdb storage because we have no mocks for storage interfaces.
     //  Perhaps we could make these tests faster by having those.
-    storage: PartitionStore,
+    pub storage: PartitionStore,
 }
 
 impl TestEnv {
@@ -97,9 +97,7 @@ impl TestEnv {
         .await
     }
 
-    pub async fn create_with_state_machine(
-        state_machine: StateMachine<ProtobufRawEntryCodec>,
-    ) -> Self {
+    pub async fn create_with_state_machine(state_machine: StateMachine) -> Self {
         // Try init logging, if not already initialized. This removes the need for the test_log macro
         let _ = tracing_subscriber::FmtSubscriber::builder().with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .with_span_events(  match std::env::var_os("RUST_LOG_SPAN_EVENTS") {
@@ -177,6 +175,27 @@ impl TestEnv {
 
     pub fn storage(&mut self) -> &mut PartitionStore {
         &mut self.storage
+    }
+
+    pub async fn read_journal_to_vec(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    ) -> Vec<journal_v2::Entry> {
+        restate_storage_api::journal_table_v2::ReadOnlyJournalTable::get_journal(
+            self.storage(),
+            invocation_id,
+            journal_length,
+        )
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_or_else(|_| panic!("can read journal {invocation_id} of length {journal_length}"))
+        .into_iter()
+        .map(|(i, e)| {
+            e.decode::<ServiceProtocolV4Codec, _>()
+                .unwrap_or_else(|_| panic!("entry index {i} can be decoded"))
+        })
+        .collect()
     }
 }
 
@@ -950,15 +969,14 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
     let outbox_head_index = 3;
     let outbox_tail_index = 5;
 
-    let mut test_env =
-        TestEnv::create_with_state_machine(StateMachine::<ProtobufRawEntryCodec>::new(
-            0,
-            outbox_tail_index,
-            Some(outbox_head_index),
-            PartitionKey::MIN..=PartitionKey::MAX,
-            EnumSet::empty(),
-        ))
-        .await;
+    let mut test_env = TestEnv::create_with_state_machine(StateMachine::new(
+        0,
+        outbox_tail_index,
+        Some(outbox_head_index),
+        PartitionKey::MIN..=PartitionKey::MAX,
+        EnumSet::empty(),
+    ))
+    .await;
 
     test_env
         .apply(Command::TruncateOutbox(outbox_tail_index))

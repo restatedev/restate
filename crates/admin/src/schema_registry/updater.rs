@@ -807,7 +807,7 @@ impl DiscoveredHandlerMetadata {
 
                 input_validation_rules.push(InputValidationRule::JsonValue {
                     content_type,
-                    schema,
+                    schema: Some(schema),
                 });
             } else {
                 input_validation_rules.push(InputValidationRule::ContentType { content_type });

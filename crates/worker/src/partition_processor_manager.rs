@@ -792,12 +792,14 @@ impl PartitionProcessorManager {
                     .partition_processor_status()
                     .map(|status| (*partition_id, status))
             })
-            .filter(|(_, status)| {
+            .filter(|(partition_id, status)| {
                 status.effective_mode == RunMode::Leader
                     && status.replay_status == ReplayStatus::Active
                     && status.last_applied_log_lsn.unwrap_or(Lsn::INVALID)
-                        >= status
-                            .last_archived_log_lsn
+                        >= self
+                            .archived_lsns
+                            .get(partition_id)
+                            .cloned()
                             .unwrap_or(Lsn::OLDEST)
                             .add(Lsn::from(records_per_snapshot.get()))
             })

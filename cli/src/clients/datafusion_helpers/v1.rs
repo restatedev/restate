@@ -20,8 +20,7 @@ use arrow_convert::{ArrowDeserialize, ArrowField};
 use bytes::Bytes;
 use chrono::{DateTime, Local, TimeZone};
 
-use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::identifiers::DeploymentId;
+use restate_types::identifiers::{AwakeableIdentifier, DeploymentId};
 use restate_types::identifiers::{InvocationId, ServiceId};
 use restate_types::invocation::ServiceType;
 

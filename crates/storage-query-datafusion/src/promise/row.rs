@@ -11,10 +11,9 @@
 use super::schema::SysPromiseBuilder;
 
 use crate::table_util::format_using;
-use restate_storage_api::promise_table::{OwnedPromiseRow, PromiseState};
+use restate_storage_api::promise_table::{OwnedPromiseRow, PromiseResult, PromiseState};
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::WithPartitionKey;
-use restate_types::journal::EntryResult;
 
 #[inline]
 pub(crate) fn append_promise_row(
@@ -33,7 +32,7 @@ pub(crate) fn append_promise_row(
         PromiseState::Completed(c) => {
             row.completed(true);
             match c {
-                EntryResult::Success(s) => {
+                PromiseResult::Success(s) => {
                     row.completion_success_value(&s);
                     if row.is_completion_success_value_utf8_defined() {
                         if let Ok(str) = std::str::from_utf8(&s) {
@@ -41,7 +40,7 @@ pub(crate) fn append_promise_row(
                         }
                     }
                 }
-                EntryResult::Failure(c, m) => {
+                PromiseResult::Failure(c, m) => {
                     if row.is_completion_failure_defined() {
                         row.completion_failure(format_using(output, &InvocationError::new(c, m)))
                     }

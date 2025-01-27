@@ -16,19 +16,20 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
-restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-queue = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message"] }
+restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "entry-codec"] }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
+assert2 = { workspace = true }
 bytes = { workspace = true }
+bytestring = { workspace = true }
 codederror = { workspace = true }
-derive_builder = { workspace = true }
 futures = { workspace = true }
 humantime = { workspace = true }
 
@@ -42,7 +43,6 @@ metrics = { workspace = true }
 opentelemetry = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
-serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -55,9 +55,7 @@ restate-test-util = { workspace = true }
 restate-types = { workspace = true }
 
 googletest = { workspace = true }
-prost = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
 tokio-util = { workspace = true }
-tracing-subscriber = { workspace = true }

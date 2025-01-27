@@ -16,9 +16,8 @@ use anyhow::Result;
 use bytes::Bytes;
 use chrono::{DateTime, Local};
 
-use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::identifiers::DeploymentId;
-use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::identifiers::{AwakeableIdentifier, InvocationId, ServiceId};
 use serde::Deserialize;
 use serde_with::serde_as;
 

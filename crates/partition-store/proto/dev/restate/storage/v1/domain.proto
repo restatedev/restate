@@ -61,6 +61,10 @@ message SequenceNumber {
   uint64 sequence_number = 1;
 }
 
+message JournalEntryIndex {
+  uint32 entry_index = 1;
+}
+
 message JournalEntryId {
   uint64 partition_key = 1;
   bytes invocation_uuid = 2;
@@ -155,7 +159,9 @@ message InvocationStatusV2 {
   optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
 
   // Suspended
-  repeated uint32 waiting_for_completed_entries = 17;
+  repeated uint32 waiting_for_completions = 17;
+  repeated uint32 waiting_for_signal_indexes = 23;
+  repeated string waiting_for_signal_names = 24;
 
   // Completed
   ResponseResult result = 18;
@@ -330,6 +336,7 @@ message InboxEntry {
   }
 }
 
+// Deprecated
 message InvocationResolutionResult {
   message Success {
     InvocationId invocation_id = 1;
@@ -343,13 +350,14 @@ message InvocationResolutionResult {
     Success success = 2;
   }
 }
-
+// Deprecated
 message BackgroundCallResolutionResult {
   InvocationId invocation_id = 1;
   InvocationTarget invocation_target = 2;
   SpanContext span_context = 3;
   Duration completion_retention_time = 4;
 }
+// Deprecated
 message EnrichedEntryHeader {
 
   message Input {
@@ -456,6 +464,7 @@ message EnrichedEntryHeader {
   }
 }
 
+// Deprecated
 message JournalEntry {
 
   message Entry {
@@ -487,9 +496,78 @@ message JournalEntry {
     Entry entry = 1;
     CompletionResult completion_result = 2;
   }
+
 }
 
+// -------- Entry V2 --------
+message Entry {
+  message EventEntry {
+    string ty = 1;
+    map<string, string> metadata = 2;
+  }
 
+  message CallOrSendCommandMetadata {
+    InvocationId invocation_id = 1;
+    InvocationTarget invocation_target = 2;
+    SpanContext span_context = 3;
+    Duration completion_retention_duration = 4;
+  }
+
+  enum EntryType {
+    UNKNOWN = 0;
+    EVENT = 1;
+    INPUT_COMMAND = 2;
+    OUTPUT_COMMAND = 3;
+    GET_LAZY_STATE_COMMAND = 8;
+    SET_STATE_COMMAND = 9;
+    CLEAR_STATE_COMMAND = 10;
+    CLEAR_ALL_STATE_COMMAND = 32;
+    GET_LAZY_STATE_KEYS_COMMAND = 11;
+    GET_EAGER_STATE_COMMAND = 12;
+    GET_EAGER_STATE_KEYS_COMMAND = 13;
+    GET_PROMISE_COMMAND = 14;
+    PEEK_PROMISE_COMMAND = 15;
+    COMPLETE_PROMISE_COMMAND = 16;
+    SLEEP_COMMAND = 7;
+    CALL_COMMAND = 5;
+    ONE_WAY_CALL_COMMAND = 6;
+    SEND_SIGNAL_COMMAND = 17;
+    RUN_COMMAND = 4;
+    ATTACH_INVOCATION_COMMAND = 18;
+    GET_INVOCATION_OUTPUT_COMMAND = 19;
+    SIGNAL = 20;
+    GET_LAZY_STATE_COMPLETION = 21;
+    GET_LAZY_STATE_KEYS_COMPLETION = 22;
+    GET_PROMISE_COMPLETION = 23;
+    PEEK_PROMISE_COMPLETION = 24;
+    COMPLETE_PROMISE_COMPLETION = 25;
+    SLEEP_COMPLETION = 26;
+    CALL_INVOCATION_ID_COMPLETION = 27;
+    CALL_COMPLETION = 28;
+    RUN_COMPLETION = 29;
+    ATTACH_INVOCATION_COMPLETION = 30;
+    GET_INVOCATION_OUTPUT_COMPLETION = 31;
+    COMPLETE_AWAKEABLE_COMMAND = 33;
+  }
+
+  EntryType ty = 3;
+  // For Event ty, this contains the EventEntry,
+  // otherwise the content depends on the RawEntry Encoder/Decoder.
+  bytes content = 4;
+
+  // Additional metadata for all entries
+  uint64 append_time = 5;
+
+  // Additional metadata for RUN_COMMAND and CALL_COMMAND
+  CallOrSendCommandMetadata call_or_send_command_metadata = 6;
+
+  // Additional metadata for NOTIFICATION
+  oneof notification_id {
+    uint32 completion_idx = 7;
+    uint32 signal_idx = 8;
+    string signal_name = 9;
+  }
+}
 
 message ResponseResult {
   message ResponseSuccess {
@@ -543,12 +621,31 @@ message OutboxMessage {
     ServiceInvocationResponseSink response_sink = 5;
   }
 
+  message NotifySignal {
+    message Failure {
+      uint32 error_code = 1;
+      string message = 2;
+    }
+
+    InvocationId invocation_id = 1;
+    oneof signal_id {
+      uint32 idx = 2;
+      string name = 3;
+    }
+    oneof result {
+      google.protobuf.Empty none = 4;
+      bytes success = 5;
+      Failure failure = 6;
+    }
+  }
+
   oneof outbox_message {
     OutboxServiceInvocation service_invocation_case = 1;
     OutboxServiceInvocationResponse service_invocation_response = 2;
     OutboxKill kill = 4;
     OutboxCancel cancel = 5;
     AttachInvocationRequest attach_invocation_request = 6;
+    NotifySignal notify_signal = 7;
   }
 
 }

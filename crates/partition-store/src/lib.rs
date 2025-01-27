@@ -14,6 +14,7 @@ pub mod idempotency_table;
 pub mod inbox_table;
 pub mod invocation_status_table;
 pub mod journal_table;
+pub mod journal_table_v2;
 pub mod keys;
 pub mod outbox_table;
 mod owned_iter;

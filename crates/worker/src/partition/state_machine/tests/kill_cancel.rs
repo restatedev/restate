@@ -17,9 +17,11 @@ use prost::Message;
 use restate_storage_api::invocation_status_table::JournalMetadata;
 use restate_storage_api::journal_table::JournalTable;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
+use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::TerminationFlavor;
 use restate_types::journal::enriched::EnrichedEntryHeader;
+use restate_types::journal_v2::NotificationId;
 use restate_types::service_protocol;
 use rstest::rstest;
 use test_log::test;
@@ -377,11 +379,20 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let _ = test_env
-        .apply(Command::Invoke(ServiceInvocation {
-            invocation_id,
-            invocation_target: invocation_target.clone(),
-            ..ServiceInvocation::mock()
-        }))
+        .apply_multiple([
+            Command::Invoke(ServiceInvocation {
+                invocation_id,
+                invocation_target: invocation_target.clone(),
+                ..ServiceInvocation::mock()
+            }),
+            Command::InvokerEffect(InvokerEffect {
+                invocation_id,
+                kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
+                    deployment_id: Default::default(),
+                    service_protocol_version: ServiceProtocolVersion::V3,
+                }),
+            }),
+        ])
         .await;
 
     // Let's add some journal entries
@@ -490,11 +501,20 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let _ = test_env
-        .apply(Command::Invoke(ServiceInvocation {
-            invocation_id,
-            invocation_target: invocation_target.clone(),
-            ..ServiceInvocation::mock()
-        }))
+        .apply_multiple([
+            Command::Invoke(ServiceInvocation {
+                invocation_id,
+                invocation_target: invocation_target.clone(),
+                ..ServiceInvocation::mock()
+            }),
+            Command::InvokerEffect(InvokerEffect {
+                invocation_id,
+                kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
+                    deployment_id: Default::default(),
+                    service_protocol_version: ServiceProtocolVersion::V3,
+                }),
+            }),
+        ])
         .await;
 
     // Let's add some journal entries
@@ -528,7 +548,15 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         &invocation_id,
         &InvocationStatus::Suspended {
             metadata: in_flight_meta,
-            waiting_for_completed_entries: HashSet::from([3, 4, 5, 6, 7, 8, 9]),
+            waiting_for_notifications: HashSet::from([
+                NotificationId::for_completion(3),
+                NotificationId::for_completion(4),
+                NotificationId::for_completion(5),
+                NotificationId::for_completion(6),
+                NotificationId::for_completion(7),
+                NotificationId::for_completion(8),
+                NotificationId::for_completion(9),
+            ]),
         },
     )
     .await;
