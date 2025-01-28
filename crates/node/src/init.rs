@@ -8,7 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_core::metadata_store::{MetadataStoreClient, MetadataStoreClientError, ReadWriteError};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tonic::Code;
+use tracing::{debug, error, info, trace, warn};
+
+use restate_core::metadata_store::{
+    MetadataStoreClient, MetadataStoreClientError, ReadWriteError, RemoteError,
+};
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, SyncError, TargetVersion,
 };
@@ -20,9 +28,6 @@ use restate_types::nodes_config::{
 };
 use restate_types::retries::RetryPolicy;
 use restate_types::PlainNodeId;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tracing::{debug, info, trace, warn};
 
 #[derive(Debug, thiserror::Error)]
 enum JoinError {
@@ -164,6 +169,10 @@ impl<'a> NodeInit<'a> {
                     match err {
                         JoinError::MissingNodesConfiguration => true,
                         JoinError::ConcurrentNodeRegistration(_) => false,
+                        JoinError::MetadataStore(ReadWriteError::RemoteError(RemoteError{status})) if status.code() == Code::Unimplemented => {
+                            error!("Received an invalid response from the metadata store. This could indicate a misconfigured client or a missing metadata-store role on one of the stores.");
+                            false
+                        },
                         JoinError::MetadataStore(err) => err.is_network_error(),
                         JoinError::ClusterMismatch { .. } => false,
                         JoinError::NodeIdMismatch { .. } => false,
