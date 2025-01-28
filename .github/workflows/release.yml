@@ -88,12 +88,24 @@ jobs:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
 
+  custom-ci:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+    permissions:
+      "actions": "read"
+      "checks": "write"
+      "contents": "read"
+      "issues": "read"
+      "packages": "read"
+      "pull-requests": "write"
+
   # Build and packages all the platform-specific things
   build-local-artifacts:
     name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
     # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
+      - custom-ci
     if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
     strategy:
       fail-fast: false

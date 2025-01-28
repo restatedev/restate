@@ -21,9 +21,7 @@ include = ["NOTICE"]
 precise-builds = true
 cache-builds = false
 
-# TODO: this is temporary just to test artifact builds
-pr-run-mode = "upload"
-# plan-jobs = ["./ci"]
+plan-jobs = ["./ci"]
 publish-jobs = ["./docker-release", "homebrew", "./npm"]
 post-announce-jobs = ["./helm"]
 
