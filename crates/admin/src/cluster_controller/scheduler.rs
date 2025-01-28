@@ -23,7 +23,6 @@ use restate_core::{
 };
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::identifiers::PartitionId;
-use restate_types::live::Pinned;
 use restate_types::locality::LocationScope;
 use restate_types::logs::LogId;
 use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
@@ -485,11 +484,11 @@ impl<T: TransportConnect> Scheduler<T> {
 /// Placement hints for the [`logs_controller::LogsController`] based on the current
 /// [`SchedulingPlan`].
 pub struct PartitionTableNodeSetSelectorHints {
-    partition_table: Pinned<PartitionTable>,
+    partition_table: Arc<PartitionTable>,
 }
 
-impl From<Pinned<PartitionTable>> for PartitionTableNodeSetSelectorHints {
-    fn from(value: Pinned<PartitionTable>) -> Self {
+impl From<Arc<PartitionTable>> for PartitionTableNodeSetSelectorHints {
+    fn from(value: Arc<PartitionTable>) -> Self {
         Self {
             partition_table: value,
         }
