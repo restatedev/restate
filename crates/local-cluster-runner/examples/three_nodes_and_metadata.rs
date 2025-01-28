@@ -35,7 +35,7 @@ async fn main() {
     let mut base_config = Configuration::default();
     base_config.common.log_format = LogFormat::Compact;
     base_config.common.log_filter = "warn,restate=debug".to_string();
-    base_config.common.bootstrap_num_partitions = NonZeroU16::new(4).unwrap();
+    base_config.common.default_num_partitions = NonZeroU16::new(4).unwrap();
     base_config.bifrost.default_provider = Replicated;
 
     let nodes = Node::new_test_nodes_with_metadata(

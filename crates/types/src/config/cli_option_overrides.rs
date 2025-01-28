@@ -44,6 +44,7 @@ pub struct CommonOptionCliOverride {
 
     /// Node location
     ///
+    /// [PREVIEW FEATURE]
     /// Setting the location allows Restate to form a tree-like cluster topology.
     /// The value is written in the format of "<region>[.zone]" to assign this node
     /// to a specific region, or to a zone within a region.
@@ -74,10 +75,21 @@ pub struct CommonOptionCliOverride {
     #[clap(long, env = "RESTATE_CLUSTER_NAME", global = true)]
     pub cluster_name: Option<String>,
 
-    /// If true, then a new cluster is bootstrapped. This node *must* have an admin
-    /// role and a new nodes configuration will be created that includes this node.
-    #[clap(long, global = true)]
-    pub allow_bootstrap: Option<bool>,
+    /// Auto Cluster Provisioning
+    ///
+    /// If true, then this node is allowed to automatically provision as a new cluster.
+    /// This node *must* have an admin role and a new nodes configuration will be created that includes this node.
+    ///
+    /// auto-provision is allowed by default in development mode and is disabled if restate-server runs with `--production` flag
+    /// to prevent cluster nodes from forming their own clusters, rather than forming a single cluster.
+    ///
+    /// Use `restatectl` to provision the cluster/node if automatic provisioning is disabled.
+    ///
+    /// This can also be explicitly disabled by setting this value to false.
+    ///
+    /// Default: true
+    #[clap(long, global = true, alias = "allow_bootstrap")]
+    pub auto_provision: Option<bool>,
 
     /// The working directory which this Restate node should use for relative paths. The default is
     /// `restate-data` under the current working directory.
@@ -97,24 +109,21 @@ pub struct CommonOptionCliOverride {
     #[clap(long, global = true)]
     pub advertise_address: Option<AdvertisedAddress>,
 
-    /// # Partitions
+    /// Default Number Of Partitions
     ///
-    /// Number of partitions that will be provisioned during cluster bootstrap,
-    /// partitions used to process messages.
+    /// Number of partitions that will be provisioned during initial cluster provisioning.
+    /// partitions are the logical shards used to process messages. Default is 24.
     ///
-    /// NOTE: This config entry only impacts the initial number of partitions, the
+    /// Cannot be higher than `65535` (You should almost never need as many partitions anyway)
+    ///
+    /// NOTE 1: This config entry only impacts the initial number of partitions, the
     /// value of this entry is ignored for bootstrapped nodes/clusters.
     ///
-    /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
-    #[clap(long, global = true)]
-    pub bootstrap_num_partitions: Option<NonZeroU64>,
-
-    /// # Automatically provision number of configured partitions
+    /// NOTE 2: This will be renamed to `default-num-partitions` by default as of v1.3+
     ///
-    /// If this option is set to `false`, then one needs to manually write a partition table to
-    /// the metadata store. Without a partition table, the cluster will not start.
-    #[clap(long, global = true)]
-    pub auto_provision_partitions: Option<bool>,
+    /// Default: 24
+    #[clap(long, global = true, alias = "bootstrap-num-partitions")]
+    pub default_num_partitions: Option<NonZeroU64>,
 
     /// This timeout is used when shutting down the various Restate components to drain all the internal queues.
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
@@ -153,7 +162,7 @@ pub struct CommonOptionCliOverride {
     #[clap(long, env = "RESTATE_TRACING_SERVICES_ENDPOINT", global = true)]
     pub tracing_services_endpoint: Option<String>,
 
-    /// # Distributed Tracing JSON Export Path
+    /// Distributed Tracing JSON Export Path
     ///
     /// If set, an exporter will be configured to write traces to files using the Jaeger JSON format.
     /// Each trace file will start with the `trace` prefix.
@@ -166,27 +175,27 @@ pub struct CommonOptionCliOverride {
     #[clap(long, global = true)]
     pub tracing_json_path: Option<PathBuf>,
 
-    /// # Tracing Filter
+    /// Tracing Filter
     ///
     /// Distributed tracing exporter filter.
     /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
     #[clap(long, global = true)]
     pub tracing_filter: Option<String>,
 
-    /// # Logging Filter
+    /// Logging Filter
     ///
     /// Log filter configuration. Can be overridden by the `RUST_LOG` environment variable.
     /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
     #[clap(long, global = true)]
     pub log_filter: Option<String>,
 
-    /// # Logging format
+    /// Logging format
     ///
     /// Format to use when logging.
     #[clap(long, global = true)]
     pub log_format: Option<LogFormat>,
 
-    /// # Disable ANSI in log output
+    /// Disable ANSI in log output
     ///
     /// Disable ANSI terminal codes for logs. This is useful when the log collector doesn't support processing ANSI terminal codes.
     #[clap(long, global = true)]
