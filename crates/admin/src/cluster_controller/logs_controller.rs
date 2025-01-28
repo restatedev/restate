@@ -141,6 +141,12 @@ impl LogState {
                         segment_index: segment_index_to_seal,
                         seal_lsn,
                     }
+                } else {
+                    debug!(
+                        "Ignoring sealing because out state is at segment {} while the seal is for segment {}. Current state is LogState::Available, we are not transitioning to LogState::Sealed",
+                        segment_index,
+                        segment_index_to_seal,
+                    );
                 }
             }
             LogState::Sealing {
@@ -156,6 +162,12 @@ impl LogState {
                         segment_index: segment_index_to_seal,
                         seal_lsn,
                     }
+                } else {
+                    debug!(
+                        "Ignoring sealing because out state is at segment {} while the seal is for segment {}. Current state is LogState::Sealing",
+                        segment_index,
+                        segment_index_to_seal,
+                    );
                 }
             }
             LogState::Sealed { .. } => {}
@@ -1094,6 +1106,7 @@ impl LogsController {
                     continue;
                 }
 
+                // maybe too long? check, note that we do this sequentially!
                 let found_tail = match writable_loglet.find_tail().await {
                     Ok(tail) => tail,
                     Err(err) => {
@@ -1204,7 +1217,7 @@ impl LogsController {
                 {
                     return match err {
                         WriteError::FailedPrecondition(err) => {
-                            debug!(
+                            info!(
                                 %err,
                                 "Detected a concurrent modification of the log chain. Fetching latest"
                             );
@@ -1241,26 +1254,26 @@ impl LogsController {
 
         self.async_operations.spawn(
             async move {
+                let start = tokio::time::Instant::now();
                 if let Some(debounce) = &mut debounce {
                     let delay = debounce.next().unwrap_or(FALLBACK_MAX_RETRY_DELAY);
-                    debug!(?delay, %log_id, %segment_index, "Wait before attempting to seal log");
+                    debug!(?delay, %log_id, %segment_index, "Wait before attempting to seal loglet");
                     tokio::time::sleep(delay).await;
                 }
 
                 match bifrost.admin().seal(log_id, segment_index).await {
                     Ok(sealed_segment) => {
-                        if sealed_segment.tail.is_sealed() {
-                            Event::SealSucceeded {
-                                log_id,
-                                segment_index,
-                                seal_lsn: sealed_segment.tail.offset(),
-                            }
-                        } else {
-                            Event::SealFailed {
-                                log_id,
-                                segment_index,
-                                debounce,
-                            }
+                        debug!(
+                            %log_id,
+                            %segment_index,
+                            "Loglet has been sealed in {:?}, stable tail is {}",
+                            start.elapsed(),
+                            sealed_segment.tail.offset(),
+                        );
+                        Event::SealSucceeded {
+                            log_id,
+                            segment_index,
+                            seal_lsn: sealed_segment.tail.offset(),
                         }
                     }
                     Err(err) => {
