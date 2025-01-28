@@ -130,8 +130,8 @@ async fn cluster_name_mismatch() -> googletest::Result<()> {
 async fn replicated_loglet() -> googletest::Result<()> {
     let mut base_config = Configuration::default();
     // require an explicit provision step to configure the replication property to 2
-    base_config.common.allow_bootstrap = false;
-    base_config.common.bootstrap_num_partitions = NonZeroU16::new(1).expect("1 to be non-zero");
+    base_config.common.auto_provision = false;
+    base_config.common.default_num_partitions = NonZeroU16::new(1).expect("1 to be non-zero");
 
     let nodes = Node::new_test_nodes_with_metadata(
         base_config.clone(),

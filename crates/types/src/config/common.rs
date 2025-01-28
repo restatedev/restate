@@ -55,6 +55,7 @@ pub struct CommonOptions {
 
     /// # Node Location
     ///
+    /// [PREVIEW FEATURE]
     /// Setting the location allows Restate to form a tree-like cluster topology.
     /// The value is written in the format of "<region>[.zone]" to assign this node
     /// to a specific region, or to a zone within a region.
@@ -81,19 +82,27 @@ pub struct CommonOptions {
     /// If set, the node insists on acquiring this node ID.
     pub force_node_id: Option<PlainNodeId>,
 
-    /// # Cluster Name
+    /// # Cluster name
     ///
     /// A unique identifier for the cluster. All nodes in the same cluster should
     /// have the same.
     cluster_name: String,
 
-    /// If true, then a new cluster is bootstrapped. This node *must* have an admin
-    /// role and a new nodes configuration will be created that includes this node.
+    /// # Auto cluster provisioning
     ///
-    /// Bootstrap is allowed by default, unless it is explicitly disabled in config files.
+    /// If true, then this node is allowed to automatically provision as a new cluster.
+    /// This node *must* have an admin role and a new nodes configuration will be created that includes this node.
+    ///
+    /// auto-provision is allowed by default in development mode and is disabled if restate-server runs with `--production` flag
+    /// to prevent cluster nodes from forming their own clusters, rather than forming a single cluster.
+    ///
+    /// Use `restatectl` to provision the cluster/node if automatic provisioning is disabled.
+    ///
+    /// This can also be explicitly disabled by setting this value to false.
     ///
     /// Default: true
-    pub allow_bootstrap: bool,
+    #[serde(alias = "allow-bootstrap")]
+    pub auto_provision: bool,
 
     /// The working directory which this Restate node should use for relative paths. The default is
     /// `restate-data` under the current working directory.
@@ -115,14 +124,20 @@ pub struct CommonOptions {
 
     /// # Partitions
     ///
-    /// Number of partitions that will be provisioned during cluster bootstrap,
-    /// partitions used to process messages.
-    ///
-    /// NOTE: This config entry only impacts the initial number of partitions, the
-    /// value of this entry is ignored for bootstrapped nodes/clusters.
+    /// Number of partitions that will be provisioned during initial cluster provisioning.
+    /// partitions are the logical shards used to process messages.
     ///
     /// Cannot be higher than `65535` (You should almost never need as many partitions anyway)
-    pub bootstrap_num_partitions: NonZeroU16,
+    ///
+    /// NOTE 1: This config entry only impacts the initial number of partitions, the
+    /// value of this entry is ignored for provisioned nodes/clusters.
+    ///
+    /// NOTE 2: This will be renamed to `default-num-partitions` by default as of v1.3+
+    ///
+    /// Default: 24
+    // todo switch to serializing as "default_num_partitions" in version 1.3
+    #[serde(alias = "bootstrap-num-partitions")]
+    pub default_num_partitions: NonZeroU16,
 
     /// # Shutdown grace timeout
     ///
@@ -389,12 +404,12 @@ impl Default for CommonOptions {
             // boot strap the cluster by default. This is very likely to change in the future to be
             // false by default. For now, this is true to make the converged deployment backward
             // compatible and easy for users.
-            allow_bootstrap: true,
+            auto_provision: true,
             base_dir: None,
             metadata_store_client: MetadataStoreClientOptions::default(),
             bind_address: None,
             advertised_address: AdvertisedAddress::from_str(DEFAULT_ADVERTISED_ADDRESS).unwrap(),
-            bootstrap_num_partitions: NonZeroU16::new(24).expect("is not zero"),
+            default_num_partitions: NonZeroU16::new(24).expect("is not zero"),
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
             service_client: Default::default(),
