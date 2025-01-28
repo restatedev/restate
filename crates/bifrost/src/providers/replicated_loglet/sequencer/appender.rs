@@ -215,69 +215,6 @@ impl<T: TransportConnect> SequencerAppender<T> {
         };
 
         tracing::trace!(%graylist, %spread, %wave, "Sending store wave");
-
-        // let mut gray = false;
-        // for id in &spread {
-        //     // todo:
-        //     // if a node is consistently down? we should have:
-        //     //   1) cool-off period between connection attempts
-        //     //   2) remember generation number to reset the cool-off period
-        //     //   3) Attempt to connect concurrently
-        //     //
-        //     // at this stage, if we fail to get connection to this server it must be
-        //     // a first time use. We can safely assume this has to be graylisted
-        //     let server = match self
-        //         .sequencer_shared_state
-        //         .log_server_manager
-        //         .get(*id, &self.networking)
-        //         .await
-        //     {
-        //         Ok(server) => server,
-        //         Err(err) => {
-        //             tracing::debug!(
-        //                 peer=%id,
-        //                 error=%err,
-        //                 %wave,
-        //                 %graylist,
-        //                 %spread,
-        //                 "Failed to connect to node. Graylisting this node in the next wave"
-        //             );
-        //             gray = true;
-        //             graylist.insert(*id);
-        //             continue;
-        //         }
-        //     };
-        //
-        //     checker.set_attribute(*id, true);
-        //     servers.push(server);
-        // }
-
-        // todo: we generated a spread but we couldn't connect to enough nodes. That's an
-        // optimization that wouldn't make sense if:
-        // 1) we maintain a global logserver-health map
-        // 2) we connect async.
-        //
-        // - sequencer creates the appender
-        // - appender checks if can attempt a wave:
-        //   - generate a spread while taking into account the log-server health
-        //   - if we can't create a spread. can we generate a spread by ignoring log-server health?
-        //   (no graylist)
-        //   - if we can, we generate a spread and attempt to send the wave
-        //   - send the wave (concurrent)
-        //   - continously collecting responses
-        //   - on errors of connection we report back to health - consider dedicated connection
-        //   (connection role)
-        //   - a wave timeout and a single store timeout???
-        // if gray && !checker.check_write_quorum(|attr| *attr) {
-        // TODO: WE SHOULD ACCOUNT FOR THOSE SERVERS THAT HAS ALREADY RESPONDED IN PREVIOUS
-        // ITERATIONS YA NEGM..... AS IN, set_attribute() THEM to TRUE. because we can still
-        // achieve quorum.
-        // the remaining nodes in the spread cannot achieve a write quorum
-        // hence we try again with the updated new graylist??
-        // return SequencerAppenderState::Wave { graylist };
-        // }
-
-        // otherwise, we try to send the wave.
         self.send_wave(spread, wave).await
     }
 
