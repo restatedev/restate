@@ -52,8 +52,8 @@ impl From<KeyRange> for RangeInclusive<PartitionKey> {
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PartitionReplication {
-    #[default]
     /// All partitions are replicated on all nodes in the cluster.
+    #[default]
     Everywhere,
     /// Replication of partitions is limited to the specified replication property.
     /// for example a replication property of `{node: 2}` will run

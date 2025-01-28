@@ -59,7 +59,7 @@ use crate::nodes_config::Role;
 pub static PRODUCTION_PROFILE_DEFAULTS: LazyLock<Configuration> = LazyLock::new(|| {
     let mut default = Configuration::default();
 
-    default.common.allow_bootstrap = false;
+    default.common.auto_provision = false;
 
     default
 });

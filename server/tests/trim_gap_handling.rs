@@ -43,7 +43,7 @@ mod common;
 #[test_log::test(tokio::test)]
 async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let mut base_config = Configuration::default();
-    base_config.common.bootstrap_num_partitions = 1.try_into()?;
+    base_config.common.default_num_partitions = 1.try_into()?;
     base_config.bifrost.default_provider = Replicated;
     base_config.common.log_filter = "restate=debug,warn".to_owned();
     base_config.common.log_format = LogFormat::Compact;

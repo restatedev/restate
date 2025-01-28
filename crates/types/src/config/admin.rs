@@ -67,10 +67,16 @@ pub struct AdminOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub log_tail_update_interval: humantime::Duration,
 
-    /// # Default partition replication strategy
+    /// # Default partition replication factor
     ///
-    /// The default partition replication strategy to be used by the cluster controller to place partition
-    /// processors.
+    /// [__PREVIEW FEATURE__]
+    /// The default replication factor for partition processors, this impacts how many replicas
+    /// each partition will have across the worker nodes of the cluster.
+    ///
+    /// Note that this value only impacts the cluster initial provisioning and will not be respected after
+    /// the cluster has been provisioned.
+    ///
+    /// For provisioned clusters, use the `restatectl` utility to update it.
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub default_partition_replication: PartitionReplication,
 
