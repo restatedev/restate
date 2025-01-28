@@ -16,6 +16,7 @@ mod roles;
 use anyhow::Context;
 use bytestring::ByteString;
 use prost_dto::IntoProst;
+use restate_types::metadata::Precondition;
 use std::num::NonZeroU16;
 use tracing::{debug, error, info, trace, warn};
 
@@ -25,9 +26,7 @@ use crate::network_server::NetworkServer;
 use crate::roles::{AdminRole, BaseRole, IngressRole, WorkerRole};
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
-use restate_core::metadata_store::{
-    retry_on_network_error, Precondition, ReadWriteError, WriteError,
-};
+use restate_core::metadata_store::{retry_on_network_error, ReadWriteError, WriteError};
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };

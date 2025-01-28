@@ -9,8 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use crate::grpc::metadata_store_svc_client::MetadataStoreSvcClient;
-use crate::grpc::pb_conversions::ConversionError;
-use crate::grpc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
 use crate::KnownLeader;
 use async_trait::async_trait;
 use bytes::BytesMut;
@@ -18,15 +16,18 @@ use bytestring::ByteString;
 use parking_lot::Mutex;
 use rand::prelude::IteratorRandom;
 use restate_core::metadata_store::{
-    retry_on_network_error, MetadataStore, MetadataStoreClientError, Precondition, ProvisionError,
-    ReadError, RemoteError, VersionedValue, WriteError,
+    retry_on_network_error, MetadataStore, MetadataStoreClientError, ProvisionError, ReadError,
+    RemoteError, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
 use restate_types::config::{Configuration, MetadataStoreClientOptions};
+use restate_types::errors::ConversionError;
+use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
+use restate_types::protobuf::metadata::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};

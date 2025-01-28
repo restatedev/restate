@@ -12,14 +12,13 @@ use crate::app::ConnectionInfo;
 use crate::util::grpc_channel;
 use clap::Parser;
 use cling::{Collect, Run};
-use itertools::Itertools;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::GetMetadataRequest;
 use restate_metadata_store::grpc::metadata_store_svc_client::MetadataStoreSvcClient;
-use restate_metadata_store::MemberId;
+use restate_types::metadata::MemberId;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -108,6 +107,7 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
                                         storage_id
                                     ))
                                     .map(|member_id| member_id.to_string())
+                                    .collect::<Vec<_>>()
                                     .join(",")
                             )
                         })

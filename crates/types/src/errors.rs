@@ -316,3 +316,21 @@ pub enum ThreadJoinError {
     #[error("thread terminated unexpectedly")]
     UnexpectedTermination,
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConversionError {
+    #[error("missing field '{0}'")]
+    MissingField(&'static str),
+    #[error("invalid data '{0}'")]
+    InvalidData(&'static str),
+}
+
+impl ConversionError {
+    pub fn missing_field(field: &'static str) -> Self {
+        ConversionError::MissingField(field)
+    }
+
+    pub fn invalid_data(field: &'static str) -> Self {
+        ConversionError::InvalidData(field)
+    }
+}

@@ -13,9 +13,10 @@ use std::sync::Arc;
 
 use itertools::Itertools;
 use rand::seq::IteratorRandom;
+use restate_types::metadata::Precondition;
 use tracing::debug;
 
-use restate_core::metadata_store::{Precondition, ReadError, ReadWriteError, WriteError};
+use restate_core::metadata_store::{ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{
     cancellation_watcher, Metadata, MetadataKind, MetadataWriter, ShutdownError, SyncError,

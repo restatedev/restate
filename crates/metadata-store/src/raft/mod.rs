@@ -14,7 +14,7 @@ mod store;
 
 use crate::network::{MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, NetworkMessage};
 use crate::raft::store::BuildError;
-use crate::{network, MemberId, MetadataStoreRunner};
+use crate::{network, MetadataStoreRunner};
 use anyhow::Context;
 use bytes::{Buf, BufMut};
 use protobuf::Message as ProtobufMessage;
@@ -23,6 +23,7 @@ use restate_core::MetadataWriter;
 use restate_types::config::RocksDbOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::metadata::MemberId;
 use restate_types::protobuf::common::MetadataServerStatus;
 pub use store::RaftMetadataStore;
 use tonic::codec::CompressionEncoding;

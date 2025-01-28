@@ -99,16 +99,18 @@ impl NetworkServer {
         let node_health = health.node_status();
         let node_rpc_health = health.node_rpc_status();
 
+        let node_svc_handler = NodeCtlSvcHandler::new(
+            TaskCenter::current(),
+            options.cluster_name().to_owned(),
+            options.roles,
+            health,
+            metadata_store_client,
+        );
+
         server_builder.register_grpc_service(
-            NodeCtlSvcServer::new(NodeCtlSvcHandler::new(
-                TaskCenter::current(),
-                options.cluster_name().to_owned(),
-                options.roles,
-                health,
-                metadata_store_client,
-            ))
-            .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Gzip),
+            NodeCtlSvcServer::new(node_svc_handler.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
             restate_core::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
         );
 

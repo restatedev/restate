@@ -11,7 +11,7 @@ syntax = "proto3";
 
 import "google/protobuf/empty.proto";
 
-package restate.metadata_store_network_svc;
+package restate.metadata_server_network_svc;
 
 // Grpc service definition for the metadata store network implementation.
 service MetadataStoreNetworkSvc {
@@ -21,12 +21,9 @@ service MetadataStoreNetworkSvc {
   rpc JoinCluster(JoinClusterRequest) returns (google.protobuf.Empty);
 }
 
-message NetworkMessage {
-  bytes payload = 1;
-}
+message NetworkMessage { bytes payload = 1; }
 
 message JoinClusterRequest {
   uint32 node_id = 1;
   uint64 storage_id = 2;
 }
-

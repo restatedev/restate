@@ -1,0 +1,73 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+import "restate/common.proto";
+import "restate/metadata.proto";
+
+package restate.metadata_store_svc;
+
+// Grpc service definition for a MetadataStore implementation.
+service MetadataStoreSvc {
+  // Get a versioned kv-pair
+  rpc Get(restate.metadata.GetRequest) returns (restate.metadata.GetResponse);
+
+  // Get the current version for a kv-pair
+  rpc GetVersion(restate.metadata.GetRequest)
+      returns (restate.metadata.GetVersionResponse);
+
+  // Puts the given kv-pair into the metadata store
+  rpc Put(restate.metadata.PutRequest) returns (google.protobuf.Empty);
+
+  // Deletes the given kv-pair
+  rpc Delete(restate.metadata.DeleteRequest) returns (google.protobuf.Empty);
+
+  // Provisions the metadata store with the given input
+  rpc Provision(restate.metadata.ProvisionRequest)
+      returns (restate.metadata.ProvisionResponse);
+
+  // Returns the status of the metadata store svc
+  rpc Status(google.protobuf.Empty) returns (restate.metadata.StatusResponse);
+}
+
+// Ulid is a u128, which is not supported
+// by protobuf so instead we built it out of
+// 2 uint64 which is more efficient than a
+// bytes type.
+message Ulid {
+  uint64 low = 1;
+  uint64 high = 2;
+}
+
+enum WriteRequestKind {
+  WriteRequestKind_UNKNOWN = 0;
+  Put = 1;
+  Delete = 2;
+}
+
+message WriteRequest {
+  Ulid request_id = 1;
+  WriteRequestKind kind = 2;
+  bytes key = 3;
+  restate.metadata.Precondition precondition = 4;
+  // value is only required if WriteRequestKind is set to PUT
+  optional restate.metadata.VersionedValue value = 7;
+}
+
+message KvEntry {
+  bytes key = 1;
+  restate.metadata.VersionedValue value = 2;
+}
+
+message MetadataServerSnapshot {
+  restate.metadata.MetadataServerConfiguration configuration = 1;
+  repeated KvEntry entries = 2;
+}

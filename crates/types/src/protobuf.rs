@@ -260,3 +260,133 @@ pub mod log_server_common {
         }
     }
 }
+
+pub mod metadata {
+    use crate::{errors::ConversionError, metadata::MetadataStoreSummary};
+
+    include!(concat!(env!("OUT_DIR"), "/restate.metadata.rs"));
+
+    impl TryFrom<GetResponse> for Option<crate::metadata::VersionedValue> {
+        type Error = ConversionError;
+
+        fn try_from(value: GetResponse) -> Result<Self, Self::Error> {
+            if let Some(versioned_value) = value.value {
+                Ok(Some(crate::metadata::VersionedValue::try_from(
+                    versioned_value,
+                )?))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    impl TryFrom<VersionedValue> for crate::metadata::VersionedValue {
+        type Error = ConversionError;
+
+        fn try_from(value: VersionedValue) -> Result<Self, Self::Error> {
+            let version = value
+                .version
+                .ok_or_else(|| ConversionError::missing_field("version"))?;
+            Ok(crate::metadata::VersionedValue::new(
+                version.into(),
+                value.bytes,
+            ))
+        }
+    }
+
+    impl From<GetVersionResponse> for Option<crate::Version> {
+        fn from(value: GetVersionResponse) -> Self {
+            value.version.map(Into::into)
+        }
+    }
+
+    impl From<crate::metadata::VersionedValue> for VersionedValue {
+        fn from(value: crate::metadata::VersionedValue) -> Self {
+            VersionedValue {
+                version: Some(value.version.into()),
+                bytes: value.value,
+            }
+        }
+    }
+
+    impl From<crate::metadata::Precondition> for Precondition {
+        fn from(value: crate::metadata::Precondition) -> Self {
+            match value {
+                crate::metadata::Precondition::None => Precondition {
+                    kind: PreconditionKind::None.into(),
+                    version: None,
+                },
+                crate::metadata::Precondition::DoesNotExist => Precondition {
+                    kind: PreconditionKind::DoesNotExist.into(),
+                    version: None,
+                },
+                crate::metadata::Precondition::MatchesVersion(version) => Precondition {
+                    kind: PreconditionKind::MatchesVersion.into(),
+                    version: Some(version.into()),
+                },
+            }
+        }
+    }
+
+    impl TryFrom<Precondition> for crate::metadata::Precondition {
+        type Error = ConversionError;
+
+        fn try_from(value: Precondition) -> Result<Self, Self::Error> {
+            match value.kind() {
+                PreconditionKind::Unknown => {
+                    Err(ConversionError::invalid_data("unknown precondition kind"))
+                }
+                PreconditionKind::None => Ok(crate::metadata::Precondition::None),
+                PreconditionKind::DoesNotExist => Ok(crate::metadata::Precondition::DoesNotExist),
+                PreconditionKind::MatchesVersion => {
+                    Ok(crate::metadata::Precondition::MatchesVersion(
+                        value
+                            .version
+                            .ok_or_else(|| ConversionError::missing_field("version"))?
+                            .into(),
+                    ))
+                }
+            }
+        }
+    }
+
+    impl From<MetadataStoreSummary> for StatusResponse {
+        fn from(value: MetadataStoreSummary) -> Self {
+            match value {
+                MetadataStoreSummary::Starting => StatusResponse {
+                    status: super::common::MetadataServerStatus::StartingUp.into(),
+                    configuration: None,
+                    leader: None,
+                    raft: None,
+                    snapshot: None,
+                },
+                MetadataStoreSummary::Provisioning => StatusResponse {
+                    status: super::common::MetadataServerStatus::AwaitingProvisioning.into(),
+                    configuration: None,
+                    leader: None,
+                    raft: None,
+                    snapshot: None,
+                },
+                MetadataStoreSummary::Standby => StatusResponse {
+                    status: super::common::MetadataServerStatus::Standby.into(),
+                    configuration: None,
+                    leader: None,
+                    raft: None,
+                    snapshot: None,
+                },
+                MetadataStoreSummary::Member {
+                    configuration,
+                    leader,
+                    raft,
+                    snapshot,
+                } => StatusResponse {
+                    status: super::common::MetadataServerStatus::Member.into(),
+                    configuration: Some(MetadataServerConfiguration::from(configuration)),
+                    leader: leader.map(MemberId::from),
+                    raft: Some(RaftSummary::from(raft)),
+                    snapshot: snapshot.map(SnapshotSummary::from),
+                },
+            }
+        }
+    }
+}

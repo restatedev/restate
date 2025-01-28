@@ -34,6 +34,7 @@ pub mod live;
 pub mod locality;
 pub mod logs;
 pub mod message;
+pub mod metadata;
 pub mod metadata_store;
 pub mod net;
 pub mod nodes_config;

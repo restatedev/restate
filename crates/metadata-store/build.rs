@@ -16,20 +16,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_build::configure()
         .bytes(["."])
-        .file_descriptor_set_path(out_dir.join("metadata_store_svc.bin"))
+        .file_descriptor_set_path(out_dir.join("metadata_server_svc.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
         .extern_path(".restate.common", "::restate_types::protobuf::common")
+        .extern_path(".restate.metadata", "::restate_types::protobuf::metadata")
         .compile_protos(
-            &["./proto/metadata_store_svc.proto"],
+            &["./proto/metadata_server_svc.proto"],
             &["proto", "../types/protobuf"],
         )?;
 
     tonic_build::configure()
         .bytes(["."])
-        .file_descriptor_set_path(out_dir.join("metadata_store_network_svc.bin"))
+        .file_descriptor_set_path(out_dir.join("metadata_server_network_svc.bin"))
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile_protos(&["./proto/metadata_store_network_svc.proto"], &["proto"])?;
+        .compile_protos(&["./proto/metadata_server_network_svc.proto"], &["proto"])?;
 
     Ok(())
 }

@@ -40,6 +40,7 @@ use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::debug;
 
+#[derive(Clone)]
 pub struct NodeCtlSvcHandler {
     task_center: task_center::Handle,
     cluster_name: String,
