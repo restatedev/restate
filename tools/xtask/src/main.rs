@@ -18,8 +18,8 @@ use schemars::gen::SchemaSettings;
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
-use restate_core::TaskKind;
 use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
+use restate_core::{TaskCenterFutureExt, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::table_docs;
@@ -215,7 +215,11 @@ async fn main() -> anyhow::Result<()> {
         Some(t) => match t.as_str() {
             "generate-config-schema" => generate_config_schema()?,
             "generate-default-config" => generate_default_config(),
-            "generate-rest-api-doc" => tc.block_on(generate_rest_api_doc())?,
+            "generate-rest-api-doc" => {
+                generate_rest_api_doc()
+                    .in_tc_as_task(&tc, TaskKind::Background, "generate-rest-api-doc")
+                    .await?
+            }
             "generate-table-docs" => generate_table_docs()?,
             invalid => {
                 print_help();
