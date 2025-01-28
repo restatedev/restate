@@ -226,8 +226,7 @@ impl LogServerService {
                         // Something might have cause this state to change. This should not happen,
                         // bail!
                         return Err(anyhow::anyhow!(
-                            "Node is not in provisioning state, cannot proceed with log-store provisioning"
-                        ));
+                            "Node is in state '{}', it must be in provisioning state to proceed with log-store provisioning", node.log_server_config.storage_state));
                     }
                     node.log_server_config.storage_state = target_storage_state;
 

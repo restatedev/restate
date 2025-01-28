@@ -10,15 +10,18 @@
 
 use crate::random_socket_address;
 use arc_swap::ArcSwapOption;
-use enumset::{enum_set, EnumSet};
+use enumset::EnumSet;
 use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest as ProtoProvisionClusterRequest;
+use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
+use restate_types::config::MetadataStoreKind;
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::partition_table::PartitionReplication;
+use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::retries::RetryPolicy;
 use restate_types::{
     config::{Configuration, MetadataStoreClient},
@@ -165,44 +168,34 @@ impl Node {
         builder.build()
     }
 
-    // Creates a group of Nodes with a single metadata node "metadata-node" running the
-    // metadata-store and the admin role, and a given number of other nodes ["node-1", ..] each with
-    // the provided roles. Node name, roles, bind/advertise addresses, and the metadata address from
-    // the base_config will all be overwritten.
-    pub fn new_test_nodes_with_metadata(
-        base_config: Configuration,
+    /// Creates a set of [`Node`] that all run the [`Role::Admin`] and [`Role::MetadataServer`]
+    /// roles and the embedded metadata store. Additionally, they will run the provided set of
+    /// roles. Node name, roles, bind/advertise addresses, and the metadata address from
+    /// the base_config will all be overwritten.
+    pub fn new_test_nodes(
+        mut base_config: Configuration,
         binary_source: BinarySource,
         roles: EnumSet<Role>,
         size: u32,
+        auto_provision: bool,
     ) -> Vec<Self> {
-        let mut nodes = Vec::with_capacity((size + 1) as usize);
+        let mut nodes = Vec::with_capacity(usize::try_from(size).expect("u32 to fit into usize"));
 
-        let metadata_node_address = {
-            let mut node_config = base_config.clone();
-            node_config.common.force_node_id = Some(PlainNodeId::new(0));
-            let mut metadata_node = Self::new_test_node(
-                "metadata-node",
-                node_config,
-                binary_source.clone(),
-                enum_set!(Role::Admin | Role::MetadataServer),
-            );
-            let metadata_node_address = metadata_node.advertised_address().clone();
-            *metadata_node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-                addresses: vec![metadata_node_address.clone()],
-            };
-
-            nodes.push(metadata_node);
-
-            metadata_node_address
-        };
+        base_config.common.allow_bootstrap = false;
+        base_config.metadata_store.kind = MetadataStoreKind::Raft;
 
         for node_id in 1..=size {
-            let mut base_config = base_config.clone();
-            base_config.common.force_node_id = Some(PlainNodeId::new(node_id));
+            let mut effective_config = base_config.clone();
+            effective_config.common.force_node_id = Some(PlainNodeId::new(node_id));
+
+            if auto_provision && node_id == 1 {
+                // the first node will be responsible for bootstrapping the cluster
+                effective_config.common.allow_bootstrap = true;
+            }
 
             // Create a separate ingress role when running a worker
             let roles = if roles.contains(Role::Worker) {
-                base_config
+                effective_config
                     .ingress
                     .experimental_feature_enable_separate_ingress_role = true;
                 roles | Role::HttpIngress
@@ -210,16 +203,30 @@ impl Node {
                 roles
             };
 
-            let mut node = Self::new_test_node(
+            // every node runs the admin and the metadata server role
+            let roles = roles | Role::Admin | Role::MetadataServer;
+
+            let node = Self::new_test_node(
                 format!("node-{node_id}"),
-                base_config,
+                effective_config,
                 binary_source.clone(),
                 roles,
             );
-            *node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
-                addresses: vec![metadata_node_address.clone()],
-            };
+
             nodes.push(node);
+        }
+
+        let node_addresses = vec![nodes
+            .first()
+            .expect("to have at least one node")
+            .advertised_address()
+            .clone()];
+
+        // update nodes with the addresses of the other nodes
+        for node in &mut nodes {
+            *node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
+                addresses: node_addresses.clone(),
+            }
         }
 
         nodes
@@ -756,6 +763,24 @@ impl StartedNode {
         !nodes_config.get_log_server_storage_state(&node_id).empty()
     }
 
+    /// Check to see if the metadata server has joined the metadata cluster.
+    pub async fn metadata_server_joined_cluster(&self) -> bool {
+        let mut metadata_server_client = MetadataServerSvcClient::new(create_tonic_channel(
+            self.config.common.advertised_address.clone(),
+            &self.config.networking,
+        ));
+
+        let Ok(response) = metadata_server_client
+            .status(())
+            .await
+            .map(|response| response.into_inner())
+        else {
+            return false;
+        };
+
+        response.status() == MetadataServerStatus::Member
+    }
+
     /// Provisions the cluster on this node with the given configuration. Returns true if the
     /// cluster was newly provisioned.
     pub async fn provision_cluster(
@@ -834,21 +859,12 @@ impl Drop for StartedNode {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, derive_more::Display)]
 pub enum HealthCheck {
     Admin,
     Ingress,
-    Logserver,
-}
-
-impl Display for HealthCheck {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HealthCheck::Admin => write!(f, "admin"),
-            HealthCheck::Ingress => write!(f, "ingress"),
-            HealthCheck::Logserver => write!(f, "logserver"),
-        }
-    }
+    LogServer,
+    MetadataServer,
 }
 
 impl HealthCheck {
@@ -856,7 +872,8 @@ impl HealthCheck {
         match self {
             HealthCheck::Admin => node.admin_address().is_some(),
             HealthCheck::Ingress => node.ingress_address().is_some(),
-            HealthCheck::Logserver => node.config().has_role(Role::LogServer),
+            HealthCheck::LogServer => node.config().has_role(Role::LogServer),
+            HealthCheck::MetadataServer => node.config().has_role(Role::MetadataServer),
         }
     }
 
@@ -864,7 +881,8 @@ impl HealthCheck {
         match self {
             HealthCheck::Admin => node.admin_healthy().await,
             HealthCheck::Ingress => node.ingress_healthy().await,
-            HealthCheck::Logserver => node.logserver_provisioned().await,
+            HealthCheck::LogServer => node.logserver_provisioned().await,
+            HealthCheck::MetadataServer => node.metadata_server_joined_cluster().await,
         }
     }
 

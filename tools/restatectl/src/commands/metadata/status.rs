@@ -91,7 +91,7 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
                 Cell::new(
                     status
                         .leader
-                        .map(|member_id| MemberId::from(member_id).to_string())
+                        .map(|leader_id| PlainNodeId::new(leader_id).to_string())
                         .unwrap_or("-".to_owned()),
                 ),
                 Cell::new(

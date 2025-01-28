@@ -1196,15 +1196,7 @@ impl Member {
             let current_leader = if self.raw_node.raft.leader_id == INVALID_ID {
                 None
             } else {
-                let plain_node_id = to_plain_node_id(self.raw_node.raft.leader_id);
-                Some(MemberId::new(
-                    plain_node_id,
-                    self.configuration
-                        .members
-                        .get(&plain_node_id)
-                        .copied()
-                        .expect("leader should be a known member"),
-                ))
+                Some(to_plain_node_id(self.raw_node.raft.leader_id))
             };
 
             if let MetadataStoreSummary::Member {

@@ -610,7 +610,7 @@ enum MetadataStoreSummary {
     Provisioning,
     Standby,
     Member {
-        leader: Option<MemberId>,
+        leader: Option<PlainNodeId>,
         configuration: MetadataServerConfiguration,
         raft: RaftSummary,
         snapshot: Option<SnapshotSummary>,

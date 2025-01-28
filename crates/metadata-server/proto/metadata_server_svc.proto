@@ -79,7 +79,7 @@ message ProvisionResponse { bool newly_provisioned = 1; }
 message StatusResponse {
   restate.common.MetadataServerStatus status = 1;
   optional MetadataServerConfiguration configuration = 2;
-  optional MemberId leader = 3;
+  optional uint32 leader = 3;
   optional SnapshotSummary snapshot = 4;
   optional RaftSummary raft = 5;
 }

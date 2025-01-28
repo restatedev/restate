@@ -57,16 +57,16 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
             .to_string(),
     );
 
-    let nodes = Node::new_test_nodes_with_metadata(
+    let nodes = Node::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
         enum_set!(Role::Worker | Role::LogServer),
         2,
+        true,
     );
-    let admin_node = &nodes[0];
 
-    let worker_1 = &nodes[1];
-    let worker_2 = &nodes[2];
+    let worker_1 = &nodes[0];
+    let worker_2 = &nodes[1];
 
     let mut worker_1_ready = worker_1.lines("PartitionProcessor starting event loop".parse()?);
     let mut worker_2_ready = worker_2.lines("PartitionProcessor starting event loop".parse()?);
@@ -102,7 +102,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let registration_response = http_client
         .post(format!(
             "http://{}/deployments",
-            admin_node.config().admin.bind_address
+            worker_1.config().admin.bind_address
         ))
         .header("content-type", "application/json")
         .json(&serde_json::json!({ "uri": "http://localhost:9080" }))

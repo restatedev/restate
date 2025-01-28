@@ -13,10 +13,10 @@ use std::pin::pin;
 use std::time::Duration;
 
 use enumset::enum_set;
-use futures::{FutureExt, StreamExt};
-use regex::Regex;
+use futures::never::Never;
 use tracing::{error, info};
 
+use restate_local_cluster_runner::cluster::StartedCluster;
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
@@ -29,7 +29,7 @@ use restate_types::{
 };
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
     let mut base_config = Configuration::default();
@@ -38,63 +38,54 @@ async fn main() {
     base_config.common.bootstrap_num_partitions = NonZeroU16::new(4).unwrap();
     base_config.bifrost.default_provider = Replicated;
 
-    let nodes = Node::new_test_nodes_with_metadata(
+    let nodes = Node::new_test_nodes(
         base_config,
         BinarySource::CargoTest,
         enum_set!(Role::Worker | Role::LogServer),
         3,
+        true,
     );
 
     let mut shutdown_signal = pin!(shutdown());
-
-    // Create the log stream upfront to avoid startup race condition
-    let mut admin_ready = nodes[0].lines(Regex::new("Restate server is ready").unwrap());
-
-    let mut admin_startup_timeout = pin!(tokio::time::sleep(Duration::from_secs(5)));
 
     let cluster = Cluster::builder()
         .cluster_name("test-cluster")
         .nodes(nodes)
         .build();
 
-    let mut cluster_fut = pin!(cluster.start().fuse());
-    let mut maybe_cluster = None;
-    let mut ready = false;
-
-    loop {
-        tokio::select! {
-            _ = &mut shutdown_signal => {
-                break;
-            }
-            started = &mut cluster_fut => {
-                maybe_cluster = Some(started);
-            }
-            _ = &mut admin_startup_timeout, if !ready => {
-                if !ready {
-                    error!("timeout waiting for admin node to start up");
-                    break;
-                }
-            }
-            line = admin_ready.next() => match line
-            {
-                None => {
-                    error!("admin node exited");
-                    break;
-                }
-                Some(line) => {
-                    info!("admin node started: {line}");
-                    ready = true;
-                }
-            }
+    let mut cluster = tokio::select! {
+        _ = &mut shutdown_signal => {
+            info!("Shutting down before the cluster started.");
+            return Ok(());
+        },
+        started = cluster.start() => {
+            started?
         }
+    };
+
+    let result = tokio::select! {
+        _ = &mut shutdown_signal => {
+            Ok(())
+        },
+        result = run_cluster(&cluster) => {
+            result.map(|_never| ())
+        }
+    };
+
+    if let Err(err) = result {
+        error!("Error running cluster: {err}")
     }
 
-    if let Some(res) = maybe_cluster {
-        let mut cluster = res.unwrap();
-        info!("cluster shutting down");
-        cluster
-            .graceful_shutdown(Duration::from_secs(5))
-            .await
-            .expect("cluster to shut down");
-    }
+    info!("cluster shutting down");
+    cluster
+        .graceful_shutdown(Duration::from_secs(5))
+        .await
+        .expect("cluster to shut down");
+
+    Ok(())
+}
+
+async fn run_cluster(cluster: &StartedCluster) -> anyhow::Result<Never> {
+    cluster.wait_healthy(Duration::from_secs(5)).await?;
+    futures::future::pending().await
 }

@@ -10,8 +10,6 @@ Featureset:
 - Obtain loglines as a stream based on a regex
 
 The cluster runner adds some extra files to the base dir:
-- `$BASE_DIR/metadata.sock`: a unix socket for the metadata service, if a node with the metadata role
-  is present.
 - `$BASE_DIR/$NODE_NAME/config.toml`: The configuration for the node, passed via env var `RESTATE_CONFIG`
 - `$BASE_DIR/$NODE_NAME/node.sock`: The gRPC node service. This is advertised as a absolute unix path.
 - `$BASE_DIR/$NODE_NAME/restate.log`: The stdout and stderr of the server process

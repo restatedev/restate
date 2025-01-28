@@ -6796,6 +6796,7 @@ dependencies = [
  "arc-swap",
  "clap",
  "clap-verbosity-flag",
+ "derive_more",
  "enumset",
  "futures",
  "http 1.2.0",

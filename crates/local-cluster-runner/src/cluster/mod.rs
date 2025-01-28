@@ -168,12 +168,14 @@ impl StartedCluster {
         .map(drop)
     }
 
-    /// Wait for all ingress, admin, logserver roles in the cluster to be healthy/provisioned
+    /// Wait for all ingress, admin, logserver roles in the cluster to be healthy/provisioned and
+    /// the embedded metadata cluster to include all nodes.
     pub async fn wait_healthy(&self, dur: Duration) -> Result<(), HealthError> {
         tokio::try_join!(
+            self.wait_check_healthy(HealthCheck::MetadataServer, dur),
             self.wait_check_healthy(HealthCheck::Admin, dur),
             self.wait_check_healthy(HealthCheck::Ingress, dur),
-            self.wait_check_healthy(HealthCheck::Logserver, dur),
+            self.wait_check_healthy(HealthCheck::LogServer, dur),
         )?;
         Ok(())
     }

@@ -105,11 +105,12 @@ where
 {
     // disable the cluster controller to allow us to manually set the logs configuration
     base_config.admin.disable_cluster_controller = true;
-    let nodes = Node::new_test_nodes_with_metadata(
+    let nodes = Node::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
         enum_set!(Role::LogServer),
         log_server_count,
+        true,
     );
 
     // ensure base dir lives longer than the node, otherwise it sees shutdown errors

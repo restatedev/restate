@@ -166,7 +166,7 @@ pub mod pb_conversions {
                 } => grpc::StatusResponse {
                     status: restate_types::protobuf::common::MetadataServerStatus::Member.into(),
                     configuration: Some(grpc::MetadataServerConfiguration::from(configuration)),
-                    leader: leader.map(grpc::MemberId::from),
+                    leader: leader.map(u32::from),
                     raft: Some(grpc::RaftSummary::from(raft)),
                     snapshot: snapshot.map(grpc::SnapshotSummary::from),
                 },
