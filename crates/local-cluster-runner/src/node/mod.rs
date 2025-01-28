@@ -18,7 +18,7 @@ use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest as ProtoProvisionClusterRequest;
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
-use restate_types::config::MetadataStoreKind;
+use restate_types::config::{MetadataServerKind, RaftOptions};
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::partition_table::PartitionReplication;
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -182,7 +182,7 @@ impl Node {
         let mut nodes = Vec::with_capacity(usize::try_from(size).expect("u32 to fit into usize"));
 
         base_config.common.allow_bootstrap = false;
-        base_config.metadata_server.kind = MetadataStoreKind::Raft;
+        base_config.metadata_server.kind = MetadataServerKind::Raft(RaftOptions::default());
 
         for node_id in 1..=size {
             let mut effective_config = base_config.clone();

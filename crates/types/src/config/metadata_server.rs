@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use restate_serde_util::NonZeroByteCount;
 use tracing::warn;
@@ -55,11 +55,11 @@ pub struct MetadataServerOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 
-    /// Type of metadata store to start
+    /// Type of metadata server to start
     ///
-    /// The type of metadata store to start when running the metadata store role.
+    /// The type of metadata server to start when running the metadata store role.
     #[serde(flatten)]
-    pub kind: MetadataStoreKind,
+    pub kind: MetadataServerKind,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
@@ -69,11 +69,11 @@ pub struct MetadataServerOptions {
     rename_all_fields = "kebab-case"
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub enum MetadataStoreKind {
+pub enum MetadataServerKind {
     #[default]
     Local,
     #[serde(alias = "embedded")]
-    Raft,
+    Raft(RaftOptions),
 }
 
 impl MetadataServerOptions {
@@ -125,7 +125,53 @@ impl Default for MetadataServerOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.01,
             rocksdb,
-            kind: MetadataStoreKind::default(),
+            kind: MetadataServerKind::default(),
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case", default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct RaftOptions {
+    /// The number of ticks before triggering an election
+    ///
+    /// The number of ticks before triggering an election. The value must be larger than
+    /// `raft_heartbeat_tick`. It's recommended to set `raft_election_tick = 10 * raft_heartbeat_tick`.
+    /// Decrease this value if you want to react faster to failed leaders. Note, decreasing this
+    /// value too much can lead to cluster instabilities due to falsely detecting dead leaders.
+    pub raft_election_tick: NonZeroUsize,
+    /// The number of ticks before sending a heartbeat
+    ///
+    /// A leader sends heartbeat messages to maintain its leadership every heartbeat ticks.
+    /// Decrease this value to send heartbeats more often.
+    pub raft_heartbeat_tick: NonZeroUsize,
+    /// The raft tick interval
+    ///
+    /// The interval at which the raft node will tick. Decrease this value in order to let the Raft
+    /// node react more quickly to changes. Note, that every tick comes with an overhead. Moreover,
+    /// the tick interval directly affects the election timeout. If the election timeout becomes too
+    /// small, then this can cause cluster instabilities due to frequent leader changes.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub raft_tick_interval: humantime::Duration,
+    /// The status update interval
+    ///
+    /// The interval at which the raft node will update its status. Decrease this value in order to
+    /// see more recent status updates.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub status_update_interval: humantime::Duration,
+}
+
+impl Default for RaftOptions {
+    fn default() -> Self {
+        RaftOptions {
+            raft_election_tick: NonZeroUsize::new(20).expect("20 to be non zero"),
+            raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
+            raft_tick_interval: Duration::from_millis(100).into(),
+            status_update_interval: Duration::from_secs(5).into(),
         }
     }
 }

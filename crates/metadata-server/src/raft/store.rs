@@ -24,6 +24,7 @@ use crate::{
     SnapshotSummary, StatusSender, StatusWatch, StorageId, WriteRequest,
 };
 use arc_swap::ArcSwapOption;
+use assert2::let_assert;
 use bytes::BytesMut;
 use futures::future::{FusedFuture, OptionFuture};
 use futures::never::Never;
@@ -44,7 +45,7 @@ use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind,
 };
-use restate_types::config::{Configuration, RocksDbOptions};
+use restate_types::config::{Configuration, MetadataServerKind, RocksDbOptions};
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
@@ -61,7 +62,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
-use tokio::time::MissedTickBehavior;
+use tokio::time::{Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, instrument, trace, warn, Span};
 use tracing_slog::TracingSlogDrain;
@@ -499,6 +500,9 @@ struct Member {
     networking: Networking<Message>,
     raft_rx: mpsc::Receiver<Message>,
 
+    tick_interval: Interval,
+    status_update_interval: Interval,
+
     my_member_id: MemberId,
     configuration: MetadataServerConfiguration,
     kv_storage: KvMemoryStorage,
@@ -540,11 +544,28 @@ impl Member {
         // todo remove additional indirection from Arc
         connection_manager.store(Some(Arc::new(new_connection_manager)));
 
-        // todo properly configure Raft instance
+        let_assert!(
+            MetadataServerKind::Raft(raft_options) = &Configuration::pinned().metadata_server.kind,
+            "Expecting that the embedded/raft metadata server has been configured"
+        );
+
         let mut config = Config {
             id: to_raft_id(my_member_id.node_id),
+            election_tick: raft_options.raft_election_tick.get(),
+            heartbeat_tick: raft_options.raft_heartbeat_tick.get(),
             read_only_option: ReadOnlyOption::Safe,
-            ..Default::default()
+            check_quorum: true,
+            pre_vote: true,
+            // 64 KiB
+            max_size_per_msg: 64 * 1024,
+            max_inflight_msgs: 256,
+            // 4 MiB
+            max_uncommitted_size: 4 * 1024 * 1024,
+            // 4 MiB
+            max_committed_size_per_ready: 4 * 1024 * 1024,
+            // only the leader should be allowed to accept proposals
+            disable_proposal_forwarding: true,
+            ..Config::default()
         };
 
         let drain = TracingSlogDrain;
@@ -563,6 +584,10 @@ impl Member {
         config.validate()?;
         let raw_node = RawNode::new(&config, storage, &logger)?;
 
+        let mut tick_interval = time::interval(raft_options.raft_tick_interval.into());
+        tick_interval.set_missed_tick_behavior(MissedTickBehavior::Burst);
+        let status_update_interval = time::interval(raft_options.status_update_interval.into());
+
         let member = Member {
             _logger: logger,
             is_leader: false,
@@ -576,6 +601,8 @@ impl Member {
             request_rx,
             join_cluster_rx,
             metadata_writer,
+            tick_interval,
+            status_update_interval,
             status_tx,
             pending_join_requests: HashMap::default(),
             read_index_to_request_id: VecDeque::default(),
@@ -598,11 +625,6 @@ impl Member {
         debug!("Run as a member of the metadata store cluster");
         self.update_status();
 
-        let mut tick_interval = time::interval(Duration::from_millis(100));
-        tick_interval.set_missed_tick_behavior(MissedTickBehavior::Burst);
-
-        let mut status_update_interval = time::interval(Duration::from_secs(5));
-
         let mut nodes_config_watch =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
         nodes_config_watch.mark_changed();
@@ -621,10 +643,10 @@ impl Member {
                 Ok(()) = nodes_config_watch.changed() => {
                     self.update_node_addresses(&Metadata::with_current(|m| m.nodes_config_ref()));
                 },
-                _ = tick_interval.tick() => {
+                _ = self.tick_interval.tick() => {
                     self.raw_node.tick();
                 },
-                _ = status_update_interval.tick() => {
+                _ = self.status_update_interval.tick() => {
                     self.update_status();
                 }
             }

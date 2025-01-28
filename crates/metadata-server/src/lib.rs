@@ -29,7 +29,7 @@ pub use restate_core::metadata_store::{
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
 use restate_types::config::{
-    Configuration, MetadataServerOptions, MetadataStoreKind, RocksDbOptions,
+    Configuration, MetadataServerKind, MetadataServerOptions, RocksDbOptions,
 };
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
@@ -238,7 +238,7 @@ pub async fn create_metadata_server(
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<BoxedMetadataStoreService> {
     match metadata_server_options.kind {
-        MetadataStoreKind::Local => local::create_server(
+        MetadataServerKind::Local => local::create_server(
             metadata_server_options,
             rocksdb_options,
             health_status,
@@ -247,7 +247,7 @@ pub async fn create_metadata_server(
         .await
         .map_err(anyhow::Error::from)
         .map(|store| store.boxed()),
-        MetadataStoreKind::Raft => raft::create_server(
+        MetadataServerKind::Raft { .. } => raft::create_server(
             rocksdb_options,
             health_status,
             metadata_writer,
