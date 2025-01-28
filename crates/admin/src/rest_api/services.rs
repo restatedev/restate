@@ -83,6 +83,11 @@ pub async fn get_service<V>(
     description = "Get the service OpenAPI 3.1 contract.",
     operation_id = "get_service_openapi",
     tags = "service",
+    parameters(path(
+        name = "service",
+        description = "Fully qualified service name.",
+        schema = "std::string::String"
+    )),
     responses(
         ignore_return_type = true,
         response(
