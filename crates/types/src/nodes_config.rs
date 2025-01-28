@@ -51,7 +51,7 @@ pub enum Role {
     // todo switch to serializing as "metadata-server" in version 1.3
     #[serde(rename(serialize = "metadata-store"))]
     MetadataServer,
-    /// [IN DEVELOPMENT] Serves a log server for replicated loglets
+    /// [PREVIEW FEATURE] Serves a log-server for replicated loglets
     LogServer,
     HttpIngress,
 }
