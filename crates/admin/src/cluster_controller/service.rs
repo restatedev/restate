@@ -319,15 +319,17 @@ impl<T: TransportConnect> Service<T> {
                 },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     self.observed_cluster_state.update(&cluster_state);
+                    // todo: potentially downgrade to trace
+                    debug!("Observed cluster state updated");
                     // todo quarantine this cluster controller if errors re-occur too often so that
                     //  another cluster controller can take over
                     if let Err(err) = state.update(&self).await {
-                        warn!("Failed to update cluster state. This can impair the overall cluster operations: {}", err);
+                        warn!(%err, "Failed to update cluster state. This can impair the overall cluster operations");
                         continue;
                     }
 
                     if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state).await {
-                        warn!("Failed to handle observed cluster state. This can impair the overall cluster operations: {}", err);
+                        warn!(%err, "Failed to handle observed cluster state. This can impair the overall cluster operations");
                     }
                 }
                 Some(cmd) = self.command_rx.recv() => {
@@ -344,13 +346,19 @@ impl<T: TransportConnect> Service<T> {
                     let leader_event = match result {
                         Ok(leader_event) => leader_event,
                         Err(err) => {
-                            warn!("Failed to run cluster controller operations. This can impair the overall cluster operations: {}", err);
+                            warn!(
+                                %err,
+                                "Failed to run cluster controller operations. This can impair the overall cluster operations"
+                            );
                             continue;
                         }
                     };
 
                     if let Err(err) = state.on_leader_event(&self.observed_cluster_state, leader_event).await {
-                        warn!("Failed to handle leader event. This can impair the overall cluster operations: {}", err);
+                        warn!(
+                            %err,
+                            "Failed to handle leader event. This can impair the overall cluster operations"
+                        );
                     }
                 }
             }
