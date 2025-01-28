@@ -81,7 +81,7 @@ impl NodeCtlSvcHandler {
                     })
             })
             .transpose()?
-            .unwrap_or(config.common.bootstrap_num_partitions);
+            .unwrap_or(config.common.default_num_partitions);
         let partition_replication = request.partition_replication.try_into()?;
 
         let log_provider = request
@@ -102,7 +102,7 @@ impl NodeCtlSvcHandler {
                 config
                     .bifrost
                     .replicated_loglet
-                    .default_replication_property
+                    .default_log_replication
                     .clone()
             });
 

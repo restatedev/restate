@@ -367,7 +367,7 @@ impl Node {
             )?;
         }
 
-        if config.common.allow_bootstrap {
+        if config.common.auto_provision {
             TaskCenter::spawn(TaskKind::SystemBoot, "auto-provision-cluster", {
                 let cluster_configuration = ClusterConfiguration::from_configuration(&config);
                 let metadata_store_client = self.metadata_store_client.clone();
@@ -561,7 +561,7 @@ fn num_partitions_to_u32(num_partitions: NonZeroU16) -> u32 {
 impl ClusterConfiguration {
     pub fn from_configuration(configuration: &Configuration) -> Self {
         ClusterConfiguration {
-            num_partitions: configuration.common.bootstrap_num_partitions,
+            num_partitions: configuration.common.default_num_partitions,
             partition_replication: configuration.admin.default_partition_replication.clone(),
             bifrost_provider: ProviderConfiguration::from_configuration(configuration),
         }

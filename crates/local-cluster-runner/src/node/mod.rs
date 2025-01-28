@@ -181,7 +181,7 @@ impl Node {
     ) -> Vec<Self> {
         let mut nodes = Vec::with_capacity(usize::try_from(size).expect("u32 to fit into usize"));
 
-        base_config.common.allow_bootstrap = false;
+        base_config.common.auto_provision = false;
         base_config.common.log_disable_ansi_codes = true;
         if !matches!(
             base_config.metadata_server.kind,
@@ -197,7 +197,7 @@ impl Node {
 
             if auto_provision && node_id == 1 {
                 // the first node will be responsible for bootstrapping the cluster
-                effective_config.common.allow_bootstrap = true;
+                effective_config.common.auto_provision = true;
             }
 
             // Create a separate ingress role when running a worker
