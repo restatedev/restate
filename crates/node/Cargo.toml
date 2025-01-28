@@ -79,10 +79,12 @@ tracing = { workspace = true }
 jemalloc_pprof = "0.6.0"
 
 [dev-dependencies]
+restate-admin = { workspace = true, features = ["memory-loglet"] }
+restate-core = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 
-tempfile = { workspace = true }
-
 googletest = { workspace = true }
+tempfile = { workspace = true }
+test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

@@ -300,3 +300,86 @@ impl<'a> NodeInit<'a> {
             .map_err(|err| err.transpose())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::init::NodeInit;
+    use googletest::assert_that;
+    use googletest::matchers::{contains_substring, displays_as, err};
+    use restate_core::TestCoreEnvBuilder;
+    use restate_types::config::{set_current_config, Configuration};
+    use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
+    use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+
+    #[test_log::test(restate_core::test)]
+    async fn node_id_mismatch() -> googletest::Result<()> {
+        let cluster_name = "node_id_mismatch".to_owned();
+        let node_name = "node".to_owned();
+        let mut config = Configuration::default();
+        config.common.set_cluster_name(&cluster_name);
+        config.common.set_node_name(&node_name);
+        config.common.force_node_id = Some(PlainNodeId::new(1337));
+        set_current_config(config);
+
+        let node_config = NodeConfig::new(
+            node_name,
+            GenerationalNodeId::INITIAL_NODE_ID,
+            Default::default(),
+            "http://localhost:1337".parse().unwrap(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        let mut nodes_configuration = NodesConfiguration::new(Version::MIN, cluster_name);
+        nodes_configuration.upsert_node(node_config);
+
+        let builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_nodes_config(nodes_configuration);
+        let node_env = builder.build().await;
+
+        let metadata_store_client = node_env.metadata_store_client.clone();
+        let metadata_writer = node_env.metadata_writer.clone();
+
+        let init = NodeInit::new(&metadata_store_client, &metadata_writer);
+        let result = init.init().await;
+
+        assert_that!(
+            result,
+            err(displays_as(contains_substring("node id mismatch")))
+        );
+
+        Ok(())
+    }
+
+    #[test_log::test(restate_core::test)]
+    async fn cluster_name_mismatch() -> googletest::Result<()> {
+        let cluster_name = "cluster_name_mismatch".to_owned();
+        let other_cluster_name = "other_cluster_name".to_owned();
+        let node_name = "node".to_owned();
+        let mut config = Configuration::default();
+        config.common.set_cluster_name(&cluster_name);
+        config.common.set_node_name(&node_name);
+        set_current_config(config);
+
+        let nodes_configuration = NodesConfiguration::new(Version::MIN, other_cluster_name);
+
+        let builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_nodes_config(nodes_configuration);
+        let node_env = builder.build().await;
+
+        let metadata_store_client = node_env.metadata_store_client.clone();
+        let metadata_writer = node_env.metadata_writer.clone();
+
+        let init = NodeInit::new(&metadata_store_client, &metadata_writer);
+        let result = init.init().await;
+
+        assert_that!(
+            result,
+            err(displays_as(contains_substring(
+                "trying to join wrong cluster"
+            )))
+        );
+
+        Ok(())
+    }
+}
