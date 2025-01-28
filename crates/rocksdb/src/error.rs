@@ -10,6 +10,7 @@
 
 use codederror::CodedError;
 use restate_core::ShutdownError;
+use tracing::warn;
 
 use crate::CfName;
 
@@ -47,6 +48,13 @@ impl RocksError {
         {
             Self::DbLocked(err)
         } else {
+            if err_message.contains("Direct I/O is not supported") {
+                warn!(
+                    r#"""Direct I/O can be disabled by configuring rocks-db-disable-direct-io-for-reads 
+                        and rocksdb-disable-direct-io-for-flush-and-compactions. RocksDB is better run 
+                        with Direct I/O enabled, are you running on an encrypted fs?"""#
+                );
+            }
             Self::Other(err)
         }
     }
