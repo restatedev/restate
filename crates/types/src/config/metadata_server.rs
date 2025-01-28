@@ -21,16 +21,16 @@ use super::{data_dir, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 
 /// # Metadata store options
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "schemars",
-    schemars(rename = "MetadataStoreOptions", default)
+    schemars(rename = "MetadataServerOptions", default)
 )]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", default)]
 #[builder(default)]
-pub struct MetadataStoreOptions {
-    /// # Limit number of in-flight requests
+pub struct MetadataServerOptions {
+    /// Limit number of in-flight requests
     ///
     /// Number of in-flight metadata store requests.
     request_queue_length: NonZeroUsize,
@@ -49,19 +49,20 @@ pub struct MetadataStoreOptions {
     /// (See `rocksdb-total-memtables-ratio` in common).
     rocksdb_memory_ratio: f32,
 
-    /// # RocksDB options for metadata store's RocksDB instance
+    /// RocksDB options for metadata store's RocksDB instance
     ///
     /// The RocksDB options which will be used to configure the metadata store's RocksDB instance.
+    #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 
-    /// # Type of metadata store to start
+    /// Type of metadata store to start
     ///
     /// The type of metadata store to start when running the metadata store role.
     #[serde(flatten)]
     pub kind: MetadataStoreKind,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
@@ -75,7 +76,7 @@ pub enum MetadataStoreKind {
     Raft,
 }
 
-impl MetadataStoreOptions {
+impl MetadataServerOptions {
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
 
@@ -112,7 +113,7 @@ impl MetadataStoreOptions {
     }
 }
 
-impl Default for MetadataStoreOptions {
+impl Default for MetadataServerOptions {
     fn default() -> Self {
         let rocksdb = RocksDbOptionsBuilder::default()
             .rocksdb_disable_wal(Some(false))

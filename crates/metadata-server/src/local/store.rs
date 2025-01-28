@@ -21,7 +21,7 @@ use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{Configuration, MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::{Configuration, MetadataServerOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -56,7 +56,7 @@ pub struct LocalMetadataServer {
 
 impl LocalMetadataServer {
     pub async fn create(
-        options: &MetadataStoreOptions,
+        options: &MetadataServerOptions,
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
         health_status: HealthStatus<MetadataServerStatus>,
     ) -> Result<Self, RocksError> {

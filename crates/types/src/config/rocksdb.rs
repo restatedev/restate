@@ -16,7 +16,7 @@ use serde_with::serde_as;
 use restate_serde_util::NonZeroByteCount;
 
 #[serde_as]
-#[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "RocksDbOptions", default))]
 #[serde(rename_all = "kebab-case")]
@@ -102,7 +102,7 @@ pub struct RocksDbOptions {
 
 /// Verbosity of the LOG.
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
-#[derive(Debug, Clone, Copy, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Hash, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 #[repr(i32)]
@@ -207,7 +207,7 @@ impl RocksDbOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "RocksbStatistics"))]
 #[serde(rename_all = "kebab-case")]

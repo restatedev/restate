@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::config::MetadataStoreOptions;
+use restate_types::config::MetadataServerOptions;
 use rocksdb::DBCompressionType;
 
-pub fn db_options(_options: &MetadataStoreOptions) -> rocksdb::Options {
+pub fn db_options(_options: &MetadataServerOptions) -> rocksdb::Options {
     rocksdb::Options::default()
 }
 

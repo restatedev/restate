@@ -21,7 +21,7 @@ mod http;
 mod ingress;
 mod kafka;
 mod log_server;
-mod metadata_store;
+mod metadata_server;
 mod networking;
 mod query_engine;
 mod rocksdb;
@@ -37,7 +37,7 @@ pub use http::*;
 pub use ingress::*;
 pub use kafka::*;
 pub use log_server::*;
-pub use metadata_store::*;
+pub use metadata_server::*;
 pub use networking::*;
 pub use query_engine::*;
 pub use rocksdb::*;
@@ -154,7 +154,7 @@ pub fn set_current_config(config: Configuration) {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(default))]
 #[builder(default)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", try_from = "ConfigurationShadow")]
 pub struct Configuration {
     #[serde(flatten)]
     pub common: CommonOptions,
@@ -162,7 +162,7 @@ pub struct Configuration {
     pub admin: AdminOptions,
     pub ingress: IngressOptions,
     pub bifrost: BifrostOptions,
-    pub metadata_store: MetadataStoreOptions,
+    pub metadata_server: MetadataServerOptions,
     pub networking: NetworkingOptions,
     pub log_server: LogServerOptions,
 }
@@ -219,7 +219,7 @@ impl Configuration {
     pub fn apply_cascading_values(mut self) -> Self {
         self.worker.storage.apply_common(&self.common);
         self.bifrost.local.apply_common(&self.common);
-        self.metadata_store.apply_common(&self.common);
+        self.metadata_server.apply_common(&self.common);
         self.log_server.apply_common(&self.common);
         self
     }
@@ -238,5 +238,49 @@ impl Configuration {
     /// Dumps the configuration to a string
     pub fn dump(&self) -> Result<String, GenericError> {
         Ok(toml::to_string_pretty(self)?)
+    }
+}
+
+/// Used to deserialize the [`Configuration`] in backwards compatible way which allows to specify
+/// a `metadata_store` field instead of `metadata_server`. Can be removed once we drop support for
+/// `metadata_store`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ConfigurationShadow {
+    #[serde(flatten)]
+    common: CommonOptions,
+    worker: WorkerOptions,
+    admin: AdminOptions,
+    ingress: IngressOptions,
+    bifrost: BifrostOptions,
+    metadata_server: MetadataServerOptions,
+    // previous name of metadata server options; kept for backwards compatibility
+    metadata_store: Option<MetadataServerOptions>,
+    networking: NetworkingOptions,
+    log_server: LogServerOptions,
+}
+
+impl TryFrom<ConfigurationShadow> for Configuration {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ConfigurationShadow) -> Result<Self, Self::Error> {
+        let metadata_server = if value.metadata_server == MetadataServerOptions::default()
+            && value.metadata_store.is_some()
+        {
+            value.metadata_store.unwrap()
+        } else {
+            value.metadata_server
+        };
+
+        Ok(Configuration {
+            common: value.common,
+            worker: value.worker,
+            admin: value.admin,
+            ingress: value.ingress,
+            bifrost: value.bifrost,
+            metadata_server,
+            networking: value.networking,
+            log_server: value.log_server,
+        })
     }
 }

@@ -74,10 +74,10 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
         let metadata = metadata_builder.to_metadata();
         TaskCenter::try_set_global_metadata(metadata.clone());
 
-        let metadata_store_client = metadata_store::start_metadata_store(
+        let metadata_store_client = metadata_store::start_metadata_server(
             config.common.metadata_store_client.clone(),
-            &config.metadata_store,
-            Live::from_value(config.metadata_store.clone())
+            &config.metadata_server,
+            Live::from_value(config.metadata_server.clone())
                 .map(|c| &c.rocksdb)
                 .boxed(),
         )

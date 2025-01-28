@@ -24,7 +24,7 @@ use restate_types::Version;
 use crate::commands::metadata::{
     create_metadata_store_client, GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts,
 };
-use crate::environment::metadata_store::start_metadata_store;
+use crate::environment::metadata_store::start_metadata_server;
 use crate::environment::task_center::run_in_task_center;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -84,10 +84,10 @@ async fn patch_value_direct(
         let rocksdb_manager = RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
         debug!("RocksDB Initialized");
 
-        let metadata_store_client = start_metadata_store(
+        let metadata_store_client = start_metadata_server(
             config.common.metadata_store_client.clone(),
-            &config.metadata_store,
-            Live::from_value(config.metadata_store.clone())
+            &config.metadata_server,
+            Live::from_value(config.metadata_server.clone())
                 .map(|c| &c.rocksdb)
                 .boxed(),
         )

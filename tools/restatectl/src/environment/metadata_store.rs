@@ -15,15 +15,15 @@ use restate_core::network::NetworkServerBuilder;
 use restate_core::{TaskCenter, TaskKind};
 use restate_metadata_server::MetadataServer;
 use restate_types::config;
-use restate_types::config::{MetadataStoreClientOptions, MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::{MetadataServerOptions, MetadataStoreClientOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::protobuf::common::NodeRpcStatus;
 
-pub async fn start_metadata_store(
+pub async fn start_metadata_server(
     mut metadata_store_client_options: MetadataStoreClientOptions,
-    opts: &MetadataStoreOptions,
+    opts: &MetadataServerOptions,
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
 ) -> anyhow::Result<MetadataStoreClient> {
     let mut server_builder = NetworkServerBuilder::default();

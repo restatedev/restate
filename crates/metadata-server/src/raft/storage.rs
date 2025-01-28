@@ -20,7 +20,7 @@ use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{data_dir, MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::{data_dir, MetadataServerOptions, RocksDbOptions};
 use restate_types::errors::GenericError;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::nodes_config::NodesConfiguration;
@@ -101,7 +101,7 @@ pub struct RocksDbStorage {
 
 impl RocksDbStorage {
     pub async fn create(
-        options: &MetadataStoreOptions,
+        options: &MetadataServerOptions,
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     ) -> Result<Self, BuildError> {
         let db_name = DbName::new(DB_NAME);
@@ -822,14 +822,14 @@ mod tests {
     use raft::{Error as RaftError, GetEntriesContext, Storage, StorageError};
     use raft_proto::eraftpb::{ConfState, Entry, Snapshot};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{CommonOptions, MetadataStoreOptions, RocksDbOptions};
+    use restate_types::config::{CommonOptions, MetadataServerOptions, RocksDbOptions};
     use restate_types::live::Constant;
 
     #[test_log::test(restate_core::test)]
     async fn initial_values() -> googletest::Result<()> {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let storage = RocksDbStorage::create(
-            &MetadataStoreOptions::default(),
+            &MetadataServerOptions::default(),
             Constant::new(RocksDbOptions::default()).boxed(),
         )
         .await?;
@@ -846,7 +846,7 @@ mod tests {
     async fn append_entries() -> googletest::Result<()> {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let mut storage = RocksDbStorage::create(
-            &MetadataStoreOptions::default(),
+            &MetadataServerOptions::default(),
             Constant::new(RocksDbOptions::default()).boxed(),
         )
         .await?;
@@ -881,7 +881,7 @@ mod tests {
     async fn apply_snapshot() -> googletest::Result<()> {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let mut storage = RocksDbStorage::create(
-            &MetadataStoreOptions::default(),
+            &MetadataServerOptions::default(),
             Constant::new(RocksDbOptions::default()).boxed(),
         )
         .await?;
@@ -932,7 +932,7 @@ mod tests {
 
         // re-create storage to check that the information is persisted
         let storage = RocksDbStorage::create(
-            &MetadataStoreOptions::default(),
+            &MetadataServerOptions::default(),
             Constant::new(RocksDbOptions::default()).boxed(),
         )
         .await?;
@@ -962,7 +962,7 @@ mod tests {
     async fn trim() -> googletest::Result<()> {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let mut storage = RocksDbStorage::create(
-            &MetadataStoreOptions::default(),
+            &MetadataServerOptions::default(),
             Constant::new(RocksDbOptions::default()).boxed(),
         )
         .await?;
@@ -1025,7 +1025,7 @@ mod tests {
     async fn overwrite_entries() -> googletest::Result<()> {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let mut storage = RocksDbStorage::create(
-            &MetadataStoreOptions::default(),
+            &MetadataServerOptions::default(),
             Constant::new(RocksDbOptions::default()).boxed(),
         )
         .await?;

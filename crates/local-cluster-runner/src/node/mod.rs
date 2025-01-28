@@ -182,7 +182,7 @@ impl Node {
         let mut nodes = Vec::with_capacity(usize::try_from(size).expect("u32 to fit into usize"));
 
         base_config.common.allow_bootstrap = false;
-        base_config.metadata_store.kind = MetadataStoreKind::Raft;
+        base_config.metadata_server.kind = MetadataStoreKind::Raft;
 
         for node_id in 1..=size {
             let mut effective_config = base_config.clone();

@@ -162,7 +162,7 @@ impl RaftMetadataServer {
         let (status_tx, _status_rx) = watch::channel(MetadataStoreSummary::default());
 
         let mut metadata_store_options =
-            Configuration::updateable().map(|configuration| &configuration.metadata_store);
+            Configuration::updateable().map(|configuration| &configuration.metadata_server);
         let mut storage =
             RocksDbStorage::create(metadata_store_options.live_load(), rocksdb_options).await?;
 

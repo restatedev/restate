@@ -160,10 +160,10 @@ impl Node {
         let metadata_store_role = if config.has_role(Role::MetadataServer) {
             Some(
                 restate_metadata_server::create_metadata_server(
-                    &config.metadata_store,
+                    &config.metadata_server,
                     updateable_config
                         .clone()
-                        .map(|config| &config.metadata_store.rocksdb)
+                        .map(|config| &config.metadata_server.rocksdb)
                         .boxed(),
                     health.metadata_server_status(),
                     Some(metadata_writer),

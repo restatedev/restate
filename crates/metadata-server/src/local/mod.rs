@@ -13,7 +13,7 @@ use restate_core::metadata_store::providers::create_object_store_based_meta_stor
 use restate_core::metadata_store::{providers::EtcdMetadataStore, MetadataStoreClient};
 use restate_core::network::NetworkServerBuilder;
 use restate_rocksdb::RocksError;
-use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::{MetadataServerOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -57,13 +57,14 @@ pub async fn create_client(
 }
 
 pub(crate) async fn create_server(
-    metadata_store_options: &MetadataStoreOptions,
+    metadata_server_options: &MetadataServerOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataServerStatus>,
     server_builder: &mut NetworkServerBuilder,
 ) -> Result<MetadataServerRunner<LocalMetadataServer>, RocksError> {
     let store =
-        LocalMetadataServer::create(metadata_store_options, rocksdb_options, health_status).await?;
+        LocalMetadataServer::create(metadata_server_options, rocksdb_options, health_status)
+            .await?;
     Ok(MetadataServerRunner::new(store, server_builder))
 }
 

@@ -89,8 +89,8 @@ enum WipeMode {
     Worker,
     /// Wipe the local rocksdb-based loglet.
     LocalLoglet,
-    /// Wipe the local rocksdb-based metadata-store.
-    LocalMetadataStore,
+    /// Wipe the rocksdb-based metadata-server.
+    MetadataServer,
     /// Wipe all
     All,
 }
@@ -104,8 +104,8 @@ impl WipeMode {
             Some(WipeMode::LocalLoglet) => {
                 restate_fs_util::remove_dir_all_if_exists(config.bifrost.local.data_dir()).await?
             }
-            Some(WipeMode::LocalMetadataStore) => {
-                restate_fs_util::remove_dir_all_if_exists(config.metadata_store.data_dir()).await?
+            Some(WipeMode::MetadataServer) => {
+                restate_fs_util::remove_dir_all_if_exists(config.metadata_server.data_dir()).await?
             }
             Some(WipeMode::All) => restate_fs_util::remove_dir_all_if_exists(node_dir()).await?,
             _ => {}

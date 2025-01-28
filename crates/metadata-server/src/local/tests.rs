@@ -18,8 +18,8 @@ use restate_core::network::{FailingConnector, NetworkServerBuilder};
 use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    self, reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
-    MetadataStoreOptions, RocksDbOptions,
+    self, reset_base_temp_dir_and_retain, Configuration, MetadataServerOptions,
+    MetadataStoreClientOptions, RocksDbOptions,
 };
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxedLiveLoad, Live};
@@ -64,7 +64,7 @@ flexbuffers_storage_encode_decode!(Value);
 /// Tests basic operations of the metadata store.
 #[test(restate_core::test(flavor = "multi_thread", worker_threads = 2))]
 async fn basic_metadata_store_operations() -> anyhow::Result<()> {
-    let (client, _env) = create_test_environment(&MetadataStoreOptions::default()).await?;
+    let (client, _env) = create_test_environment(&MetadataServerOptions::default()).await?;
 
     let key: ByteString = "key".into();
     let value = Value {
@@ -151,7 +151,7 @@ async fn basic_metadata_store_operations() -> anyhow::Result<()> {
 /// Tests multiple concurrent operations issued by the same client
 #[test(restate_core::test(flavor = "multi_thread", worker_threads = 2))]
 async fn concurrent_operations() -> anyhow::Result<()> {
-    let (client, _env) = create_test_environment(&MetadataStoreOptions::default()).await?;
+    let (client, _env) = create_test_environment(&MetadataServerOptions::default()).await?;
 
     let mut concurrent_operations = FuturesUnordered::default();
 
@@ -212,7 +212,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     // get current base dir and use this for subsequent tests.
     let base_path = reset_base_temp_dir_and_retain();
     let tmp = std::env::temp_dir();
-    let opts = MetadataStoreOptions::default();
+    let opts = MetadataServerOptions::default();
     assert!(base_path.starts_with(tmp));
     assert_eq!(base_path.join("local-metadata-store"), opts.data_dir());
 
@@ -271,11 +271,11 @@ async fn durable_storage() -> anyhow::Result<()> {
 /// Creates a test environment with the [`RocksDBMetadataStore`] and a [`GrpcMetadataServerClient`]
 /// connected to it.
 async fn create_test_environment(
-    opts: &MetadataStoreOptions,
+    opts: &MetadataServerOptions,
 ) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv<FailingConnector>)> {
     // Setup metadata store on unix domain socket.
     let config = Configuration {
-        metadata_store: opts.clone(),
+        metadata_server: opts.clone(),
         ..Default::default()
     };
 
@@ -289,8 +289,8 @@ async fn create_test_environment(
 
     let client = start_metadata_store(
         config.pinned().common.metadata_store_client.clone(),
-        &config.pinned().metadata_store,
-        config.clone().map(|c| &c.metadata_store.rocksdb).boxed(),
+        &config.pinned().metadata_server,
+        config.clone().map(|c| &c.metadata_server.rocksdb).boxed(),
     )
     .await?;
 
@@ -299,7 +299,7 @@ async fn create_test_environment(
 
 async fn start_metadata_store(
     mut metadata_store_client_options: MetadataStoreClientOptions,
-    opts: &MetadataStoreOptions,
+    opts: &MetadataServerOptions,
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
 ) -> anyhow::Result<MetadataStoreClient> {
     let mut server_builder = NetworkServerBuilder::default();
