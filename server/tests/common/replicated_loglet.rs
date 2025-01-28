@@ -55,7 +55,7 @@ async fn replicated_loglet_client(
     let node_socket = node_dir.join("node.sock");
 
     config.common.roles = EnumSet::empty();
-    config.common.allow_bootstrap = false;
+    config.common.auto_provision = false;
     config.common.force_node_id = Some(node_id);
     config.common.set_node_name(node_name);
     config.common.set_base_dir(cluster.base_dir());

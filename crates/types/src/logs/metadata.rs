@@ -144,7 +144,7 @@ impl ProviderConfiguration {
                 replication_property: configuration
                     .bifrost
                     .replicated_loglet
-                    .default_replication_property
+                    .default_replication
                     .clone(),
             }),
         }
@@ -402,9 +402,11 @@ pub enum ProviderKind {
     Local,
     /// An in-memory loglet, primarily for testing.
     #[cfg(any(test, feature = "memory-loglet"))]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
     InMemory,
-    /// Replicated loglet implementation. This requires log-server role to run on
-    /// enough nodes in the cluster.
+    /// [__PREVIEW FEATURE__]
+    /// Replicated loglets are restate's native log replication system. This requires
+    /// `log-server` role to run on enough nodes in the cluster.
     Replicated,
 }
 

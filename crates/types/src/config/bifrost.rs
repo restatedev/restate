@@ -263,9 +263,14 @@ pub struct ReplicatedLogletOptions {
     /// Value must be between 0 and 1. It will be clamped at `1.0`.
     pub readahead_trigger_ratio: f32,
 
-    /// # Default replication property
+    /// # Default log replication factor
     ///
-    /// Configures the default replication property to be used by the replicated loglet.
+    /// [__PREVIEW FEATURE__]
+    /// Configures the default replication factor to be used by the replicated loglets.
+    ///
+    /// Note that this value only impacts the cluster initial provisioning and will not be respected after
+    /// the cluster has been provisioned.
+    /// For provisioned clusters, use the `restatectl` utility to update it.
     // Also allow to specify the replication property as non-zero u8 value to make it simpler to
     // pass it in via an env variable.
     #[serde_as(
@@ -277,14 +282,18 @@ pub struct ReplicatedLogletOptions {
         skip_serializing_if = "is_default_replication_property"
     )]
     // hide the configuration option by excluding it from the Json schema
-    #[cfg_attr(feature = "schemars", schemars(skip, with = "String"))]
-    pub default_replication_property: ReplicationProperty,
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub default_replication: ReplicationProperty,
 
     /// # Default nodeset size
     ///
+    /// [__PREVIEW FEATURE__]
     /// Configures the target nodeset size used by the replicated loglet when generating new
     /// nodesets for logs. Setting this to 0 will let the system choose a reasonable value based on
     /// the effective replication_property at the time of logs reconfiguration.
+    ///
+    /// Note that this value only impacts the cluster initial provisioning and will not be respected after
+    /// the cluster has been provisioned.
     // hide the configuration option from serialization if it is the default
     #[serde(default, skip_serializing_if = "u16_is_zero")]
     // hide the configuration option by excluding it from the Json schema
@@ -336,7 +345,7 @@ impl Default for ReplicatedLogletOptions {
             ),
             readahead_records: NonZeroUsize::new(100).unwrap(),
             readahead_trigger_ratio: 0.5,
-            default_replication_property: default_replication_property(),
+            default_replication: default_replication_property(),
             default_nodeset_size: 0,
         }
     }
