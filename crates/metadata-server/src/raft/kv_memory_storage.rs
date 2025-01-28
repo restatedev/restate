@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::grpc::pb_conversions::ConversionError;
-use crate::grpc::MetadataStoreSnapshot;
+use crate::grpc::MetadataServerSnapshot;
 use crate::{
     grpc, Callback, PreconditionViolation, ReadOnlyRequest, ReadOnlyRequestKind, RequestError,
     RequestKind, WriteRequest,
@@ -224,7 +224,7 @@ impl KvMemoryStorage {
         Ok(())
     }
 
-    pub fn restore(&mut self, snapshot: MetadataStoreSnapshot) -> Result<(), ConversionError> {
+    pub fn restore(&mut self, snapshot: MetadataServerSnapshot) -> Result<(), ConversionError> {
         debug!("Restore from snapshot");
         self.kv_entries.clear();
 
@@ -238,7 +238,7 @@ impl KvMemoryStorage {
         Ok(())
     }
 
-    pub fn snapshot(&self, snapshot: &mut MetadataStoreSnapshot) {
+    pub fn snapshot(&self, snapshot: &mut MetadataServerSnapshot) {
         debug!("Create snapshot");
         snapshot.entries = self
             .kv_entries

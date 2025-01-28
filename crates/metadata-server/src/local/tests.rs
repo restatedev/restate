@@ -27,11 +27,9 @@ use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::protobuf::common::NodeRpcStatus;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
-use crate::grpc::client::GrpcMetadataStoreClient;
-use crate::local::LocalMetadataStore;
-use crate::{
-    MetadataStoreClient, MetadataStoreRunner, MetadataStoreService, Precondition, WriteError,
-};
+use crate::grpc::client::GrpcMetadataServerClient;
+use crate::local::LocalMetadataServer;
+use crate::{MetadataServer, MetadataServerRunner, MetadataStoreClient, Precondition, WriteError};
 
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
 struct Value {
@@ -270,7 +268,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Creates a test environment with the [`RocksDBMetadataStore`] and a [`GrpcMetadataStoreClient`]
+/// Creates a test environment with the [`RocksDBMetadataStore`] and a [`GrpcMetadataServerClient`]
 /// connected to it.
 async fn create_test_environment(
     opts: &MetadataStoreOptions,
@@ -306,9 +304,9 @@ async fn start_metadata_store(
 ) -> anyhow::Result<MetadataStoreClient> {
     let mut server_builder = NetworkServerBuilder::default();
     let store =
-        LocalMetadataStore::create(opts, updateables_rocksdb_options, HealthStatus::default())
+        LocalMetadataServer::create(opts, updateables_rocksdb_options, HealthStatus::default())
             .await?;
-    let service = MetadataStoreRunner::new(store, &mut server_builder);
+    let service = MetadataServerRunner::new(store, &mut server_builder);
 
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
@@ -345,7 +343,7 @@ async fn start_metadata_store(
         .await;
 
     let grpc_client =
-        GrpcMetadataStoreClient::new(addresses, metadata_store_client_options.clone());
+        GrpcMetadataServerClient::new(addresses, metadata_store_client_options.clone());
     let client = MetadataStoreClient::new(
         grpc_client,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),

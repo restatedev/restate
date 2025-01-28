@@ -36,8 +36,8 @@ use restate_core::{cancellation_watcher, Metadata, TaskKind};
 use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter};
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
-use restate_metadata_store::{
-    BoxedMetadataStoreService, MetadataStoreClient, MetadataStoreService, ReadModifyWriteError,
+use restate_metadata_server::{
+    BoxedMetadataStoreService, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
 };
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::GenericError;
@@ -148,7 +148,7 @@ impl Node {
 
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
-        let metadata_store_client = restate_metadata_store::local::create_client(
+        let metadata_store_client = restate_metadata_server::local::create_client(
             config.common.metadata_store_client.clone(),
         )
         .await
@@ -159,7 +159,7 @@ impl Node {
 
         let metadata_store_role = if config.has_role(Role::MetadataServer) {
             Some(
-                restate_metadata_store::create_metadata_store(
+                restate_metadata_server::create_metadata_server(
                     &config.metadata_store,
                     updateable_config
                         .clone()

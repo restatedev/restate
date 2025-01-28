@@ -23,7 +23,7 @@ use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, warn};
 
-use restate_metadata_store::ReadModifyWriteError;
+use restate_metadata_server::ReadModifyWriteError;
 use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind, SegmentIndex,
 };

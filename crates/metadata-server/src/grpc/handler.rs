@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc::metadata_store_svc_server::MetadataStoreSvc;
+use crate::grpc::metadata_server_svc_server::MetadataServerSvc;
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse,
@@ -51,7 +51,7 @@ impl MetadataStoreHandler {
 }
 
 #[async_trait]
-impl MetadataStoreSvc for MetadataStoreHandler {
+impl MetadataServerSvc for MetadataStoreHandler {
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let (result_tx, result_rx) = oneshot::channel();
 

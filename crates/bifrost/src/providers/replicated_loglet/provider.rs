@@ -17,7 +17,7 @@ use tracing::debug;
 
 use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
 use restate_core::{TaskCenter, TaskKind};
-use restate_metadata_store::MetadataStoreClient;
+use restate_metadata_server::MetadataStoreClient;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,

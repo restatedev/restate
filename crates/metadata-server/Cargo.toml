@@ -1,5 +1,5 @@
 [package]
-name = "restate-metadata-store"
+name = "restate-metadata-server"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

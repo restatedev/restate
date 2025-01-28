@@ -12,9 +12,9 @@ mod kv_memory_storage;
 mod storage;
 mod store;
 
-use crate::network::{MetadataStoreNetworkHandler, MetadataStoreNetworkSvcServer, NetworkMessage};
+use crate::network::{MetadataServerNetworkSvcServer, MetadataStoreNetworkHandler, NetworkMessage};
 use crate::raft::store::BuildError;
-use crate::{network, MemberId, MetadataStoreRunner};
+use crate::{network, MemberId, MetadataServerRunner};
 use anyhow::Context;
 use bytes::{Buf, BufMut};
 use protobuf::Message as ProtobufMessage;
@@ -24,19 +24,19 @@ use restate_types::config::RocksDbOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
-pub use store::RaftMetadataStore;
+pub use store::RaftMetadataServer;
 use tonic::codec::CompressionEncoding;
 
-pub(crate) async fn create_store(
+pub(crate) async fn create_server(
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataServerStatus>,
     metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
-) -> Result<MetadataStoreRunner<RaftMetadataStore>, BuildError> {
-    let store = RaftMetadataStore::create(rocksdb_options, metadata_writer, health_status).await?;
+) -> Result<MetadataServerRunner<RaftMetadataServer>, BuildError> {
+    let store = RaftMetadataServer::create(rocksdb_options, metadata_writer, health_status).await?;
 
     server_builder.register_grpc_service(
-        MetadataStoreNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
+        MetadataServerNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
             store.connection_manager(),
             Some(store.join_cluster_handle()),
         ))
@@ -45,7 +45,7 @@ pub(crate) async fn create_store(
         network::FILE_DESCRIPTOR_SET,
     );
 
-    Ok(MetadataStoreRunner::new(store, server_builder))
+    Ok(MetadataServerRunner::new(store, server_builder))
 }
 
 impl NetworkMessage for raft::prelude::Message {

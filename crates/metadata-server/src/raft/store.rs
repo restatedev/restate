@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::grpc::pb_conversions::ConversionError;
-use crate::grpc::MetadataStoreSnapshot;
-use crate::network::grpc_svc::metadata_store_network_svc_client::MetadataStoreNetworkSvcClient;
+use crate::grpc::MetadataServerSnapshot;
+use crate::network::grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient;
 use crate::network::{ConnectionManager, Networking};
 use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::storage::RocksDbStorage;
@@ -18,10 +18,10 @@ use crate::raft::{storage, RaftConfiguration};
 use crate::{
     grpc, prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError,
     JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, JoinError,
-    KnownLeader, MemberId, MetadataStoreBackend, MetadataStoreConfiguration, MetadataStoreRequest,
-    MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender, RaftSummary, Request,
-    RequestError, RequestKind, RequestReceiver, RequestSender, SnapshotSummary, StatusSender,
-    StatusWatch, StorageId, WriteRequest,
+    KnownLeader, MemberId, MetadataServerBackend, MetadataServerConfiguration,
+    MetadataStoreRequest, MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender,
+    RaftSummary, Request, RequestError, RequestKind, RequestReceiver, RequestSender,
+    SnapshotSummary, StatusSender, StatusWatch, StorageId, WriteRequest,
 };
 use arc_swap::ArcSwapOption;
 use bytes::BytesMut;
@@ -128,7 +128,7 @@ pub enum CreateSnapshotError {
     Encode(#[from] EncodeError),
 }
 
-pub struct RaftMetadataStore {
+pub struct RaftMetadataServer {
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
     storage: RocksDbStorage,
 
@@ -148,7 +148,7 @@ pub struct RaftMetadataStore {
     status_tx: StatusSender,
 }
 
-impl RaftMetadataStore {
+impl RaftMetadataServer {
     pub async fn create(
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
         metadata_writer: Option<MetadataWriter>,
@@ -360,14 +360,14 @@ impl RaftMetadataStore {
             raft_configuration.my_member_id.node_id,
             raft_configuration.my_member_id.storage_id,
         );
-        let metadata_store_snapshot = MetadataStoreSnapshot {
-            configuration: Some(grpc::MetadataStoreConfiguration::from(
-                MetadataStoreConfiguration {
+        let metadata_store_snapshot = MetadataServerSnapshot {
+            configuration: Some(grpc::MetadataServerConfiguration::from(
+                MetadataServerConfiguration {
                     version: Version::MIN,
                     members,
                 },
             )),
-            ..MetadataStoreSnapshot::default()
+            ..MetadataServerSnapshot::default()
         };
 
         let mut snapshot = Snapshot::new();
@@ -465,7 +465,7 @@ impl RaftMetadataStore {
     }
 }
 
-impl MetadataStoreBackend for RaftMetadataStore {
+impl MetadataServerBackend for RaftMetadataServer {
     fn request_sender(&self) -> RequestSender {
         self.request_sender()
     }
@@ -500,7 +500,7 @@ struct Member {
     raft_rx: mpsc::Receiver<Message>,
 
     my_member_id: MemberId,
-    configuration: MetadataStoreConfiguration,
+    configuration: MetadataServerConfiguration,
     kv_storage: KvMemoryStorage,
     is_leader: bool,
     pending_join_requests: HashMap<MemberId, oneshot::Sender<Result<(), JoinClusterError>>>,
@@ -552,7 +552,7 @@ impl Member {
 
         let mut kv_storage = KvMemoryStorage::new(metadata_writer.clone());
         let mut snapshot_summary = None;
-        let mut configuration = MetadataStoreConfiguration::default();
+        let mut configuration = MetadataServerConfiguration::default();
 
         if let Ok(snapshot) = storage.snapshot(0, to_raft_id(my_member_id.node_id)) {
             config.applied = snapshot.get_metadata().get_index();
@@ -768,7 +768,7 @@ impl Member {
             .insert(joining_member_id.node_id, joining_member_id.storage_id);
 
         let next_configuration_bytes =
-            grpc::MetadataStoreConfiguration::from(next_configuration).encode_to_vec();
+            grpc::MetadataServerConfiguration::from(next_configuration).encode_to_vec();
 
         if let Err(err) = self
             .raw_node
@@ -877,18 +877,18 @@ impl Member {
 
     fn restore_fsm_snapshot(
         mut data: &[u8],
-        configuration: &mut MetadataStoreConfiguration,
+        configuration: &mut MetadataServerConfiguration,
         kv_storage: &mut KvMemoryStorage,
     ) -> Result<(), RestoreSnapshotError> {
         if data.is_empty() {
             return Ok(());
         }
 
-        let mut snapshot = MetadataStoreSnapshot::decode(&mut data)?;
+        let mut snapshot = MetadataServerSnapshot::decode(&mut data)?;
         *configuration = snapshot
             .configuration
             .take()
-            .map(MetadataStoreConfiguration::from)
+            .map(MetadataServerConfiguration::from)
             .expect("configuration metadata expected");
         kv_storage.restore(snapshot)?;
         Ok(())
@@ -1001,8 +1001,8 @@ impl Member {
 
         self.raw_node.apply_conf_change(&cc_v2)?;
 
-        let new_configuration = MetadataStoreConfiguration::from(
-            grpc::MetadataStoreConfiguration::decode(entry.context)?,
+        let new_configuration = MetadataServerConfiguration::from(
+            grpc::MetadataServerConfiguration::decode(entry.context)?,
         );
 
         // sanity checks
@@ -1082,11 +1082,11 @@ impl Member {
     }
 
     async fn create_snapshot(&mut self, index: u64, term: u64) -> Result<(), CreateSnapshotError> {
-        let mut snapshot = MetadataStoreSnapshot {
-            configuration: Some(grpc::MetadataStoreConfiguration::from(
+        let mut snapshot = MetadataServerSnapshot {
+            configuration: Some(grpc::MetadataServerConfiguration::from(
                 self.configuration.clone(),
             )),
-            ..MetadataStoreSnapshot::default()
+            ..MetadataServerSnapshot::default()
         };
         self.kv_storage.snapshot(&mut snapshot);
         let mut data = BytesMut::new();
@@ -1477,7 +1477,7 @@ impl Standby {
 
         let channel = create_tonic_channel(address, &Configuration::pinned().networking);
 
-        let mut client = MetadataStoreNetworkSvcClient::new(channel)
+        let mut client = MetadataServerNetworkSvcClient::new(channel)
             .accept_compressed(CompressionEncoding::Gzip)
             .send_compressed(CompressionEncoding::Gzip);
 

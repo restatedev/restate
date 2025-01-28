@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::network::connection_manager::ConnectionError;
-use crate::network::grpc_svc::metadata_store_network_svc_server::MetadataStoreNetworkSvc;
+use crate::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
 use crate::network::grpc_svc::JoinClusterRequest;
 use crate::network::{grpc_svc, ConnectionManager, NetworkMessage};
 use crate::{JoinClusterError, JoinClusterHandle};
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
 
-pub const PEER_METADATA_KEY: &str = "x-restate-metadata-store-peer";
+pub const PEER_METADATA_KEY: &str = "x-restate-metadata-server-peer";
 
 #[derive(Debug)]
 pub struct MetadataStoreNetworkHandler<M> {
@@ -41,7 +41,7 @@ impl<M> MetadataStoreNetworkHandler<M> {
 }
 
 #[async_trait::async_trait]
-impl<M> MetadataStoreNetworkSvc for MetadataStoreNetworkHandler<M>
+impl<M> MetadataServerNetworkSvc for MetadataStoreNetworkHandler<M>
 where
     M: NetworkMessage + Send + 'static,
 {

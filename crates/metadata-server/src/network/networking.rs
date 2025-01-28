@@ -153,7 +153,7 @@ where
                 let channel = net_util::create_tonic_channel(address.clone(), networking_options);
 
                 async move {
-                    let mut network_client = grpc_svc::metadata_store_network_svc_client::MetadataStoreNetworkSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip)
+                    let mut network_client = grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip)
                         .send_compressed(CompressionEncoding::Gzip);
                     let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
 
