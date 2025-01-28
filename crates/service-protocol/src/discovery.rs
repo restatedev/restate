@@ -167,6 +167,7 @@ impl CodedError for DiscoveryError {
             DiscoveryError::BadStatusCode(_, _, _) => Some(&META0003),
             // special code for possible http1.1 errors
             DiscoveryError::Client(ServiceClientError::Http(
+                _,
                 restate_service_client::HttpError::PossibleHTTP11Only(_),
             )) => Some(&META0014),
             DiscoveryError::Client(_) => Some(&META0003),

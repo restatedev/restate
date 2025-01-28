@@ -58,7 +58,7 @@ where
             AwakeableRequestType::Reject { awakeable_id } => (
                 awakeable_id,
                 ResponseResult::from(Err(InvocationError::new(
-                    codes::UNKNOWN,
+                    codes::INTERNAL,
                     String::from_utf8_lossy(&collected_request_bytes).to_string(),
                 ))),
             ),

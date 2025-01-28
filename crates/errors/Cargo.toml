@@ -9,14 +9,13 @@ publish = false
 
 [features]
 default = []
-include_doc = ["termimad"]
+include_doc = []
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 codederror = { workspace = true }
 paste = { workspace = true }
-termimad = { version = "0.30.0", optional = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

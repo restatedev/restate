@@ -12,6 +12,7 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
+use std::fmt::Formatter;
 
 /// Error type which abstracts away the actual [`std::error::Error`] type. Use this type
 /// if you don't know the actual error type or if it is not important.
@@ -88,18 +89,7 @@ where
     }
 }
 
-#[derive(
-    Copy,
-    Clone,
-    PartialEq,
-    Eq,
-    derive_more::Debug,
-    derive_more::Display,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[debug("{}", _0)]
-#[display("{}", _0)]
+#[derive(Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct InvocationErrorCode(u16);
 
@@ -136,20 +126,49 @@ impl From<InvocationErrorCode> for u32 {
     }
 }
 
+impl fmt::Display for InvocationErrorCode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if let Some(display_str) = self.display_str() {
+            write!(f, "{} {}", self.0, display_str)
+        } else {
+            write!(f, "{}", self.0)
+        }
+    }
+}
+
+impl fmt::Debug for InvocationErrorCode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
 pub mod codes {
     use super::InvocationErrorCode;
 
-    pub const BAD_REQUEST: InvocationErrorCode = InvocationErrorCode(400);
-    pub const NOT_FOUND: InvocationErrorCode = InvocationErrorCode(404);
-    pub const INTERNAL: InvocationErrorCode = InvocationErrorCode(500);
-    pub const UNKNOWN: InvocationErrorCode = INTERNAL;
-    pub const ABORTED: InvocationErrorCode = InvocationErrorCode(409);
-    pub const KILLED: InvocationErrorCode = ABORTED;
-    pub const GONE: InvocationErrorCode = InvocationErrorCode(410);
-    pub const JOURNAL_MISMATCH: InvocationErrorCode = InvocationErrorCode(570);
-    pub const PROTOCOL_VIOLATION: InvocationErrorCode = InvocationErrorCode(571);
-    pub const CONFLICT: InvocationErrorCode = InvocationErrorCode(409);
-    pub const NOT_READY: InvocationErrorCode = InvocationErrorCode(470);
+    macro_rules! codes {
+        ($($name:ident $num:literal $str_name:literal,)*) => {
+            $(pub const $name: InvocationErrorCode = InvocationErrorCode($num);)*
+
+            impl InvocationErrorCode {
+                pub(super) fn display_str(&self) -> Option<&'static str> {
+                    $(if self.0 == $name.0 { return Some($str_name) })*
+                    None
+                }
+            }
+        };
+    }
+
+    codes!(
+        BAD_REQUEST 400 "Bad request",
+        NOT_FOUND 404 "Not found",
+        INTERNAL 500 "Internal",
+        ABORTED 409 "Aborted",
+        GONE 410 "Gone",
+        JOURNAL_MISMATCH 570 "Journal mismatch",
+        PROTOCOL_VIOLATION 571 "Protocol violation",
+        CONFLICT 409 "Conflict",
+        NOT_READY 470 "Not ready",
+    );
 }
 
 /// This struct represents errors arisen when processing a service invocation.
@@ -162,7 +181,7 @@ pub struct InvocationError {
 }
 
 pub const UNKNOWN_INVOCATION_ERROR: InvocationError =
-    InvocationError::new_static(codes::UNKNOWN, "unknown");
+    InvocationError::new_static(codes::INTERNAL, "unknown");
 
 impl Default for InvocationError {
     fn default() -> Self {
@@ -172,9 +191,9 @@ impl Default for InvocationError {
 
 impl fmt::Display for InvocationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{:?}] {}", self.code(), self.message())?;
+        write!(f, "[{}] {}", self.code(), self.message())?;
         if self.description.is_some() {
-            write!(f, ".\n{}", self.description().unwrap())?;
+            write!(f, "\n{}", self.description().unwrap())?;
         }
         Ok(())
     }
@@ -268,7 +287,7 @@ impl From<anyhow::Error> for InvocationError {
 // -- Some known errors
 
 pub const KILLED_INVOCATION_ERROR: InvocationError =
-    InvocationError::new_static(codes::KILLED, "killed");
+    InvocationError::new_static(codes::ABORTED, "killed");
 
 // TODO: Once we want to distinguish server side cancellations from user code returning the
 //  UserErrorCode::Cancelled, we need to add a new RestateErrorCode.

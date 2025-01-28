@@ -39,10 +39,9 @@ macro_rules! info_it {
             use ::codederror::CodedError;
 
             let err = &$err;
-            let decorated = err.decorate();
             let code = $crate::fmt::RestateCode::from_code(err.code());
 
-            tracing::info!(error = tracing::field::display(decorated), restate.error.code = ?code);
+            tracing::info!(error = %err, restate.error.code = ?code);
         }
     };
     ($err:expr, $($field:tt)*) => {
@@ -51,10 +50,9 @@ macro_rules! info_it {
             use ::codederror::CodedError;
 
             let err = &$err;
-            let decorated = err.decorate();
             let code = $crate::fmt::RestateCode::from_code(err.code());
 
-            tracing::info!(error = tracing::field::display(decorated), restate.error.code = ?code, $($field)*);
+            tracing::info!(error = %err, restate.error.code = ?code, $($field)*);
         }
     };
 }
@@ -68,10 +66,9 @@ macro_rules! warn_it {
             use ::codederror::CodedError;
 
             let err = &$err;
-            let decorated = err.decorate();
             let code = $crate::fmt::RestateCode::from_code(err.code());
 
-            tracing::warn!(error = tracing::field::display(decorated), restate.error.code = ?code);
+            tracing::warn!(error = %err, restate.error.code = ?code);
         }
     };
     ($err:expr, $($field:tt)*) => {
@@ -80,10 +77,9 @@ macro_rules! warn_it {
             use ::codederror::CodedError;
 
             let err = &$err;
-            let decorated = err.decorate();
             let code = $crate::fmt::RestateCode::from_code(err.code());
 
-            tracing::warn!(error = tracing::field::display(decorated), restate.error.code = ?code, $($field)*);
+            tracing::warn!(error = %err, restate.error.code = ?code, $($field)*);
         }
     };
 }
@@ -97,10 +93,9 @@ macro_rules! error_it {
             use ::codederror::CodedError;
 
             let err = &$err;
-            let decorated = err.decorate();
             let code = $crate::fmt::RestateCode::from_code(err.code());
 
-            tracing::error!(error = tracing::field::display(decorated), restate.error.code = ?code);
+            tracing::error!(error = %err, restate.error.code = ?code);
         }
     };
     ($err:expr, $($field:tt)*) => {
@@ -109,10 +104,9 @@ macro_rules! error_it {
             use ::codederror::CodedError;
 
             let err = &$err;
-            let decorated = err.decorate();
             let code = $crate::fmt::RestateCode::from_code(err.code());
 
-            tracing::error!(error = tracing::field::display(decorated), restate.error.code = ?code, $($field)*);
+            tracing::error!(error = %err, restate.error.code = ?code, $($field)*);
         }
     };
 }
@@ -130,16 +124,22 @@ impl RestateCode {
     fn fmt_alternate(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
             None => {
-                write!(f, "{}", termimad::term_text("## No error description"))
+                write!(f, "{}", "No error description")
             }
             Some(code) => match code.description() {
                 None => {
                     // We should never end up here,
                     // as we enforce all restate error codes to have a description thanks to the macro in helper.rs
-                    write!(f, "{}", termimad::term_text(&format!("## {}", code.code())))
+                    write!(f, "{}", &format!("{}", code.code()))
                 }
                 Some(description) => {
-                    write!(f, "{}", termimad::term_text(description))
+                    write!(
+                        f,
+                        "{}",
+                        description
+                            .trim_start_matches(&format!("## {}", code.code()))
+                            .trim()
+                    )
                 }
             },
         }

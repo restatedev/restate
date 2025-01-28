@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod error;
 mod input_command;
 mod invocation_state_machine;
 mod invocation_task;
@@ -51,11 +52,11 @@ use tokio::task::{AbortHandle, JoinSet};
 use tracing::instrument;
 use tracing::{debug, trace};
 
-use crate::invocation_task::InvocationTaskError;
 use crate::metric_definitions::{
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
     TASK_OP_SUSPENDED,
 };
+use error::InvokerError;
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
 use restate_invoker_api::journal_reader::JournalEntry;
@@ -1001,7 +1002,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        error: InvocationTaskError,
+        error: InvokerError,
     ) {
         if let Some((_, _, ism)) = self
             .invocation_state_machine_manager
@@ -1095,7 +1096,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        error: InvocationTaskError,
+        error: InvokerError,
         mut ism: InvocationStateMachine,
     ) {
         match ism.handle_task_error(
@@ -1273,7 +1274,7 @@ mod tests {
     use restate_types::schema::invocation_target::InvocationTargetMetadata;
     use restate_types::schema::service::ServiceMetadata;
 
-    use crate::invocation_task::InvocationTaskError;
+    use crate::error::InvokerError;
     use crate::quota::InvokerConcurrencyQuota;
 
     // -- Mocks
@@ -1661,7 +1662,7 @@ mod tests {
             .handle_invocation_task_failed(
                 MOCK_PARTITION,
                 invocation_id,
-                InvocationTaskError::EmptySuspensionMessage, /* any error is fine */
+                InvokerError::EmptySuspensionMessage, /* any error is fine */
             )
             .await;
 

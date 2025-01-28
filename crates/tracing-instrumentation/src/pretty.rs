@@ -17,6 +17,7 @@ use super::*;
 use nu_ansi_term::{Color, Style};
 use std::fmt;
 use std::fmt::Debug;
+use std::fmt::Write;
 use tracing::{
     field::{self, Field},
     span, Event, Level, Subscriber,
@@ -140,9 +141,14 @@ where
             target_style.infix(style)
         )?;
 
-        let mut v = PrettyVisitor::new(writer.by_ref()).with_style(style);
+        let mut v = PrettyVisitor::new(writer.by_ref(), style);
         event.record(&mut v);
         v.finish()?;
+
+        // Pretty print the restate error code description, if present
+        let mut restate_error_code_visitor = RestateErrorCodeWriter::new(writer.by_ref(), style);
+        event.record(&mut restate_error_code_visitor);
+        restate_error_code_visitor.finish()?;
         writer.write_char('\n')?;
 
         let dimmed = if writer.has_ansi_escapes() {
@@ -205,15 +211,13 @@ where
             writer.write_char('\n')?;
         }
 
-        let mut restate_error_code_visitor = RestateErrorCodeWriter::new(writer.by_ref());
-        event.record(&mut restate_error_code_visitor);
-        restate_error_code_visitor.finish()
+        Ok(())
     }
 }
 
 impl<'writer, T> FormatFields<'writer> for Pretty<T> {
     fn format_fields<R: RecordFields>(&self, writer: Writer<'writer>, fields: R) -> fmt::Result {
-        let mut v = PrettyVisitor::new(writer);
+        let mut v = PrettyVisitor::new(writer, Style::default());
         fields.record(&mut v);
         v.finish()
     }
@@ -224,7 +228,7 @@ impl<'writer, T> FormatFields<'writer> for Pretty<T> {
         fields: &span::Record<'_>,
     ) -> fmt::Result {
         let writer = current.as_writer();
-        let mut v = PrettyVisitor::new(writer);
+        let mut v = PrettyVisitor::new(writer, Style::default());
         fields.record(&mut v);
         v.finish()
     }
@@ -235,11 +239,7 @@ impl<'writer, T> FormatFields<'writer> for Pretty<T> {
 /// [visitor]: field::Visit
 /// [`MakeVisitor`]: crate::field::MakeVisitor
 #[derive(Debug)]
-pub struct PrettyVisitor<'a> {
-    writer: Writer<'a>,
-    style: Style,
-    result: fmt::Result,
-}
+pub struct PrettyVisitor<'a>(WriterWrapper<'a>);
 
 #[derive(Debug, Default)]
 pub struct PrettyFields;
@@ -249,47 +249,21 @@ impl<'a> MakeVisitor<Writer<'a>> for PrettyFields {
 
     #[inline]
     fn make_visitor(&self, target: Writer<'a>) -> Self::Visitor {
-        PrettyVisitor::new(target)
+        PrettyVisitor::new(target, Style::default())
     }
 }
 
 // === impl PrettyVisitor ===
 
 impl<'a> PrettyVisitor<'a> {
-    /// Returns a new default visitor that formats to the provided `writer`.
-    ///
-    /// # Arguments
-    /// - `writer`: the writer to format to.
-    /// - `is_empty`: whether or not any fields have been previously written to
-    ///   that writer.
-    pub fn new(writer: Writer<'a>) -> Self {
-        Self {
-            writer,
-            style: Style::default(),
-            result: Ok(()),
-        }
-    }
-
-    pub(crate) fn with_style(self, style: Style) -> Self {
-        Self { style, ..self }
-    }
-
-    fn write_padded(&mut self, value: &impl fmt::Debug) {
-        self.result = write!(self.writer, "\n  {value:?}");
-    }
-
-    fn bold(&self) -> Style {
-        if self.writer.has_ansi_escapes() {
-            self.style.bold()
-        } else {
-            Style::new()
-        }
+    pub fn new(writer: Writer<'a>, style: Style) -> Self {
+        Self(WriterWrapper::new(writer, style))
     }
 }
 
 impl<'a> field::Visit for PrettyVisitor<'a> {
     fn record_str(&mut self, field: &Field, value: &str) {
-        if self.result.is_err() {
+        if self.0.result.is_err() {
             return;
         }
 
@@ -312,37 +286,86 @@ impl<'a> field::Visit for PrettyVisitor<'a> {
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        if self.result.is_err() {
+        if self.0.result.is_err() {
             return;
         }
         match field.name() {
             "message" => {
-                let bold = self.bold();
-                self.write_padded(&format_args!(
-                    "{}{:?}{}",
-                    bold.prefix(),
-                    value,
-                    bold.infix(self.style)
-                ))
+                let bold = self.0.bold();
+                self.0.write_padded(
+                    &format_args!("{}{:?}{}", bold.prefix(), value, bold.infix(self.0.style())),
+                    MESSAGE_INDENT,
+                    MESSAGE_NEW_LINE_INDENT,
+                )
             }
-            name if name.starts_with("r#") => {
-                self.write_padded(&format_args!("  {}: {:?}", &name[2..], value))
+            "error" => {
+                let bold = self.0.bold();
+                self.0.write_padded(
+                    &format_args!(
+                        "{}error{}: {value:?}",
+                        bold.prefix(),
+                        bold.infix(self.0.style)
+                    ),
+                    FIELD_INDENT,
+                    FIELD_NEW_LINE_INDENT,
+                )
             }
-            name => self.write_padded(&format_args!("  {name}: {value:?}")),
+            "restate.error.code" => {
+                // skip, this is printed by the restate.error.code printer below
+            }
+            "restate.invocation.id" => {
+                let bold = self.0.bold();
+                let italic = self.0.italic();
+                self.0.write_padded(
+                    &format_args!(
+                        "{}restate.invocation.id{}: {}{value:?}{}",
+                        bold.prefix(),
+                        bold.infix(self.0.style()),
+                        italic.prefix(),
+                        italic.infix(self.0.style())
+                    ),
+                    FIELD_INDENT,
+                    FIELD_NEW_LINE_INDENT,
+                )
+            }
+            "restate.invocation.target" => {
+                let bold = self.0.bold();
+                let italic = self.0.italic();
+                self.0.write_padded(
+                    &format_args!(
+                        "{}restate.invocation.target{}: {}{value:?}{}",
+                        bold.prefix(),
+                        bold.infix(self.0.style()),
+                        italic.prefix(),
+                        italic.infix(self.0.style())
+                    ),
+                    FIELD_INDENT,
+                    FIELD_NEW_LINE_INDENT,
+                )
+            }
+            name if name.starts_with("r#") => self.0.write_padded(
+                &format_args!("{}: {:?}", &name[2..], value),
+                FIELD_INDENT,
+                FIELD_NEW_LINE_INDENT,
+            ),
+            name => self.0.write_padded(
+                &format_args!("{name}: {value:?}"),
+                FIELD_INDENT,
+                FIELD_NEW_LINE_INDENT,
+            ),
         };
     }
 }
 
 impl<'a> VisitOutput<fmt::Result> for PrettyVisitor<'a> {
-    fn finish(mut self) -> fmt::Result {
-        write!(&mut self.writer, "{}", self.style.suffix())?;
-        self.result
+    fn finish(self) -> fmt::Result {
+        self.0.end()
     }
 }
 
 impl<'a> VisitFmt for PrettyVisitor<'a> {
     fn writer(&mut self) -> &mut dyn fmt::Write {
-        &mut self.writer
+        &mut self.0.writer
     }
 }
 
@@ -363,35 +386,40 @@ impl<'a> Display for ErrorSourceList<'a> {
 // --- Visitor to record as alternate the restate.error.code field
 
 #[derive(Debug)]
-pub struct RestateErrorCodeWriter<'a> {
-    writer: Writer<'a>,
-    result: fmt::Result,
-}
+struct RestateErrorCodeWriter<'a>(WriterWrapper<'a>);
 
 impl<'a> RestateErrorCodeWriter<'a> {
-    fn new(writer: Writer<'a>) -> Self {
-        Self {
-            writer,
-            result: Ok(()),
-        }
+    pub fn new(writer: Writer<'a>, style: Style) -> Self {
+        Self(WriterWrapper::new(writer, style))
     }
 }
 
 impl<'a> field::Visit for RestateErrorCodeWriter<'a> {
     fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
         if field.name() == "restate.error.code" {
-            self.result = writeln!(self.writer, "{value:#?}")
+            self.0.write_padded(
+                &format_args!("restate.error.code: {value:?}"),
+                FIELD_INDENT,
+                FIELD_NEW_LINE_INDENT,
+            );
+
+            let italic_bold = self.0.italic_bold();
+            self.0.write_padded(&format_args!(
+                "Visit {}https://docs.restate.dev/references/errors#{value:?}{} for more info about this error.",
+                italic_bold.prefix(),
+                italic_bold.infix(self.0.style())
+            ), FIELD_INDENT, FIELD_NEW_LINE_INDENT);
         }
     }
 }
 
 impl<'a> VisitOutput<fmt::Result> for RestateErrorCodeWriter<'a> {
     fn finish(self) -> fmt::Result {
-        self.result
+        self.0.end()
     }
 }
 
-// --- Other utils
+// --- Utilities to write pretty print text
 
 pub fn level_color(level: &Level) -> Color {
     match *level {
@@ -405,4 +433,130 @@ pub fn level_color(level: &Level) -> Color {
 
 fn level_style(level: &Level) -> Style {
     Style::new().fg(level_color(level))
+}
+
+const MESSAGE_INDENT: &str = "  ";
+const MESSAGE_NEW_LINE_INDENT: &str = "    ";
+const FIELD_INDENT: &str = "    ";
+const FIELD_NEW_LINE_INDENT: &str = "      ";
+
+#[derive(Debug)]
+pub struct WriterWrapper<'a> {
+    writer: Writer<'a>,
+    style: Style,
+    result: fmt::Result,
+}
+
+impl<'a> WriterWrapper<'a> {
+    pub fn new(writer: Writer<'a>, style: Style) -> Self {
+        let mut this = Self {
+            writer,
+            style,
+            result: Ok(()),
+        };
+        this.result = write!(&mut this.writer, "{}", this.style.prefix());
+        this
+    }
+
+    fn write_padded(
+        &mut self,
+        value: &impl fmt::Debug,
+        first_line_indent: &'static str,
+        newline_indent: &'static str,
+    ) {
+        self.result = self
+            .result
+            .and_then(|_| write!(self.writer, "\n{first_line_indent}"))
+            .and_then(|_| {
+                write!(
+                    indented_skipping_first_line(&mut self.writer, newline_indent),
+                    "{value:?}"
+                )
+            })
+    }
+
+    fn style(&self) -> Style {
+        if self.writer.has_ansi_escapes() {
+            self.style
+        } else {
+            Style::new()
+        }
+    }
+
+    fn bold(&self) -> Style {
+        if self.writer.has_ansi_escapes() {
+            self.style.bold()
+        } else {
+            Style::new()
+        }
+    }
+
+    fn italic(&self) -> Style {
+        if self.writer.has_ansi_escapes() {
+            self.style.italic()
+        } else {
+            Style::new()
+        }
+    }
+
+    fn italic_bold(&self) -> Style {
+        if self.writer.has_ansi_escapes() {
+            self.style.italic().bold()
+        } else {
+            Style::new()
+        }
+    }
+
+    fn end(mut self) -> fmt::Result {
+        self.result?;
+        write!(&mut self.writer, "{}", self.style.suffix())?;
+        Ok(())
+    }
+}
+
+/// Inspired by https://docs.rs/indenter/0.3.3/indenter/index.html, MIT license
+pub struct Indented<'a, W: ?Sized> {
+    inner: &'a mut W,
+    needs_indent: bool,
+    indentation: &'static str,
+}
+
+/// Indents with the given static indentation, but skipping indenting the first line
+fn indented_skipping_first_line<'a, W: ?Sized>(
+    f: &'a mut W,
+    indentation: &'static str,
+) -> Indented<'a, W> {
+    Indented {
+        inner: f,
+        needs_indent: false,
+        indentation,
+    }
+}
+
+impl<T> Write for Indented<'_, T>
+where
+    T: Write + ?Sized,
+{
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for (ind, line) in s.split('\n').enumerate() {
+            if ind > 0 {
+                self.inner.write_char('\n')?;
+                self.needs_indent = true;
+            }
+
+            if self.needs_indent {
+                // Don't render the line unless its actually got text on it
+                if line.is_empty() {
+                    continue;
+                }
+
+                write!(&mut self.inner, "{}", self.indentation)?;
+                self.needs_indent = false;
+            }
+
+            self.inner.write_fmt(format_args!("{}", line))?;
+        }
+
+        Ok(())
+    }
 }

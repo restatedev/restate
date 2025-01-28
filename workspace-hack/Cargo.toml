@@ -29,10 +29,7 @@ clap = { version = "4", default-features = false, features = ["color", "derive",
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
-crossbeam-channel = { version = "0.5" }
-crossbeam-deque = { version = "0.8" }
 crossbeam-epoch = { version = "0.9" }
-crossbeam-utils = { version = "0.8" }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
@@ -60,7 +57,6 @@ idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
 indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
 itertools = { version = "0.12" }
-lazy-regex = { version = "3", features = ["lite"] }
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
@@ -135,10 +131,7 @@ clap = { version = "4", default-features = false, features = ["color", "derive",
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
-crossbeam-channel = { version = "0.5" }
-crossbeam-deque = { version = "0.8" }
 crossbeam-epoch = { version = "0.9" }
-crossbeam-utils = { version = "0.8" }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
@@ -167,7 +160,6 @@ idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
 indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
 itertools = { version = "0.12" }
-lazy-regex = { version = "3", features = ["lite"] }
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
@@ -230,7 +222,6 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
@@ -239,13 +230,11 @@ num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
 rustls-2b5c6dc72f624058 = { package = "rustls", version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
-signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
@@ -254,37 +243,30 @@ num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
 rustls-2b5c6dc72f624058 = { package = "rustls", version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
-signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
 rustls-2b5c6dc72f624058 = { package = "rustls", version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
-signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
 rustls-2b5c6dc72f624058 = { package = "rustls", version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
-signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 
