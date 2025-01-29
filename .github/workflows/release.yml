@@ -88,24 +88,12 @@ jobs:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
 
-  custom-ci:
-    uses: ./.github/workflows/ci.yml
-    secrets: inherit
-    permissions:
-      "actions": "read"
-      "checks": "write"
-      "contents": "read"
-      "issues": "read"
-      "packages": "read"
-      "pull-requests": "write"
-
   # Build and packages all the platform-specific things
   build-local-artifacts:
     name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
     # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
-      - custom-ci
     if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
     strategy:
       fail-fast: false
@@ -313,10 +301,28 @@ jobs:
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
+  custom-ci:
+    needs:
+      - plan
+      - build-local-artifacts
+      - build-global-artifacts
+    uses: ./.github/workflows/ci.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+    permissions:
+      "actions": "read"
+      "checks": "write"
+      "contents": "read"
+      "issues": "read"
+      "packages": "read"
+      "pull-requests": "write"
+
   publish-homebrew-formula:
     needs:
       - plan
       - host
+      - custom-ci
     runs-on: "ubuntu-20.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -362,6 +368,7 @@ jobs:
     needs:
       - plan
       - host
+      - custom-ci
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     uses: ./.github/workflows/docker-release.yml
     with:
@@ -376,6 +383,7 @@ jobs:
     needs:
       - plan
       - host
+      - custom-ci
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     uses: ./.github/workflows/npm.yml
     with:
@@ -393,6 +401,7 @@ jobs:
       - publish-homebrew-formula
       - custom-docker-release
       - custom-npm
+      - custom-ci
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!

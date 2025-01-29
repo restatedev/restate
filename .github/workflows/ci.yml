@@ -1,8 +1,13 @@
 name: CI
 
 on:
-  # pull_request is not needed because cargo-dist's plan steps will run on pull_request and that calls ci.yml
+  pull_request:
   workflow_call:
+    inputs:
+      # comes from cargo-dist workflow call
+      plan:
+        required: true
+        type: string
   workflow_dispatch:
   push:
     branches:

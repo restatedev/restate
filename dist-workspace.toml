@@ -21,7 +21,7 @@ include = ["NOTICE"]
 precise-builds = true
 cache-builds = false
 
-plan-jobs = ["./ci"]
+host-jobs = ["./ci"]
 publish-jobs = ["./docker-release", "homebrew", "./npm"]
 post-announce-jobs = ["./helm"]
 
