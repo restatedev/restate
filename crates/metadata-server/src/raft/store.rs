@@ -10,9 +10,9 @@
 
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::MetadataServerSnapshot;
-use crate::network::grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient;
-use crate::network::{ConnectionManager, Networking};
 use crate::raft::kv_memory_storage::KvMemoryStorage;
+use crate::raft::network::grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient;
+use crate::raft::network::{ConnectionManager, Networking};
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{storage, RaftConfiguration};
 use crate::{
@@ -1497,7 +1497,7 @@ impl Standby {
             .send_compressed(CompressionEncoding::Gzip);
 
         if let Err(status) = client
-            .join_cluster(crate::network::grpc_svc::JoinClusterRequest {
+            .join_cluster(crate::raft::network::grpc_svc::JoinClusterRequest {
                 node_id: u32::from(my_node_id),
                 storage_id,
             })

@@ -7048,6 +7048,7 @@ dependencies = [
  "restate-errors",
  "restate-fs-util",
  "restate-local-cluster-runner",
+ "restate-metadata-server",
  "restate-node",
  "restate-rocksdb",
  "restate-service-client",

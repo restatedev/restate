@@ -10,7 +10,6 @@
 
 pub mod grpc;
 pub mod local;
-mod network;
 pub mod raft;
 mod util;
 

@@ -27,7 +27,7 @@ mod store;
 use crate::MetadataServerRunner;
 pub use store::LocalMetadataServer;
 
-/// Creates a [`MetadataStoreClient`] for the [`GrpcMetadataServerClient`].
+/// Creates a [`MetadataStoreClient`] for configured metadata store.
 pub async fn create_client(
     metadata_store_client_options: MetadataStoreClientOptions,
 ) -> Result<MetadataStoreClient, GenericError> {

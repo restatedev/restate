@@ -9,14 +9,15 @@
 // by the Apache License, Version 2.0.
 
 mod kv_memory_storage;
+mod network;
 mod storage;
 mod store;
 
-use crate::network::{MetadataServerNetworkSvcServer, MetadataStoreNetworkHandler, NetworkMessage};
 use crate::raft::store::BuildError;
-use crate::{network, MemberId, MetadataServerRunner};
+use crate::{MemberId, MetadataServerRunner};
 use anyhow::Context;
 use bytes::{Buf, BufMut};
+use network::{MetadataServerNetworkSvcServer, MetadataStoreNetworkHandler, NetworkMessage};
 use protobuf::Message as ProtobufMessage;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::MetadataWriter;
