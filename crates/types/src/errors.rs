@@ -18,6 +18,8 @@ use std::fmt::Formatter;
 /// if you don't know the actual error type or if it is not important.
 pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
+pub type BoxedMaybeRetryableError = Box<dyn MaybeRetryableError + Send + Sync>;
+
 /// Tells whether an error should be retried by upper layers or not.
 pub trait MaybeRetryableError: std::error::Error + 'static {
     /// Signal upper layers whether this error should be retried or not.

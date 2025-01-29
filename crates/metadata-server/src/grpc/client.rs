@@ -18,12 +18,13 @@ use bytestring::ByteString;
 use parking_lot::Mutex;
 use rand::prelude::IteratorRandom;
 use restate_core::metadata_store::{
-    retry_on_network_error, MetadataStore, MetadataStoreClientError, Precondition, ProvisionError,
-    ReadError, VersionedValue, WriteError,
+    retry_on_retryable_error, MetadataStore, Precondition, ProvisionError, ReadError,
+    VersionedValue, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
 use restate_types::config::{Configuration, MetadataStoreClientOptions};
+use restate_types::errors::MaybeRetryableError;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
@@ -123,7 +124,7 @@ impl GrpcMetadataServerClient {
         map_status: impl Fn(Status) -> E,
     ) -> Result<T, E>
     where
-        E: MetadataStoreClientError,
+        E: MaybeRetryableError,
     {
         response.map_err(|status| {
             let known_leader = KnownLeader::from_status(&status);
@@ -131,7 +132,7 @@ impl GrpcMetadataServerClient {
 
             if let Some(known_leader) = known_leader {
                 self.choose_known_leader(known_leader);
-            } else if err.is_network_error() {
+            } else if err.retryable() {
                 self.choose_random_endpoint();
             }
             err
@@ -144,10 +145,10 @@ impl MetadataStore for GrpcMetadataServerClient {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         let retry_policy = Self::retry_policy();
 
-        let response = retry_on_network_error(retry_policy, || async {
-            let mut client = self.current_client().ok_or_else(|| {
-                ReadError::Internal("No metadata store address known.".to_string())
-            })?;
+        let response = retry_on_retryable_error(retry_policy, || async {
+            let mut client = self
+                .current_client()
+                .ok_or_else(|| ReadError::terminal(NoKnownMetadataServer))?;
 
             self.handle_grpc_response(
                 client
@@ -163,16 +164,16 @@ impl MetadataStore for GrpcMetadataServerClient {
         response
             .into_inner()
             .try_into()
-            .map_err(|err: ConversionError| ReadError::Internal(err.to_string()))
+            .map_err(|err: ConversionError| ReadError::terminal(err))
     }
 
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
         let retry_policy = Self::retry_policy();
 
-        let response = retry_on_network_error(retry_policy, || async {
-            let mut client = self.current_client().ok_or_else(|| {
-                ReadError::Internal("No metadata store address known.".to_string())
-            })?;
+        let response = retry_on_retryable_error(retry_policy, || async {
+            let mut client = self
+                .current_client()
+                .ok_or_else(|| ReadError::terminal(NoKnownMetadataServer))?;
 
             self.handle_grpc_response(
                 client
@@ -196,10 +197,10 @@ impl MetadataStore for GrpcMetadataServerClient {
     ) -> Result<(), WriteError> {
         let retry_policy = Self::retry_policy();
 
-        retry_on_network_error(retry_policy, || async {
-            let mut client = self.current_client().ok_or_else(|| {
-                WriteError::Internal("No metadata store address known.".to_string())
-            })?;
+        retry_on_retryable_error(retry_policy, || async {
+            let mut client = self
+                .current_client()
+                .ok_or_else(|| WriteError::terminal(NoKnownMetadataServer))?;
 
             self.handle_grpc_response(
                 client
@@ -220,10 +221,10 @@ impl MetadataStore for GrpcMetadataServerClient {
     async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
         let retry_policy = Self::retry_policy();
 
-        retry_on_network_error(retry_policy, || async {
-            let mut client = self.current_client().ok_or_else(|| {
-                WriteError::Internal("No metadata store address known.".to_string())
-            })?;
+        retry_on_retryable_error(retry_policy, || async {
+            let mut client = self
+                .current_client()
+                .ok_or_else(|| WriteError::terminal(NoKnownMetadataServer))?;
 
             self.handle_grpc_response(
                 client
@@ -281,25 +282,29 @@ impl MetadataStore for GrpcMetadataServerClient {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("No known metadata server")]
+struct NoKnownMetadataServer;
+
 fn map_status_to_read_error(status: Status) -> ReadError {
     match &status.code() {
-        Code::Unavailable => ReadError::Network(status.into()),
-        _ => ReadError::Internal(status.to_string()),
+        Code::Unavailable => ReadError::retryable(status),
+        _ => ReadError::terminal(status),
     }
 }
 
 fn map_status_to_write_error(status: Status) -> WriteError {
     match &status.code() {
-        Code::Unavailable => WriteError::Network(status.into()),
+        Code::Unavailable => WriteError::retryable(status),
         Code::FailedPrecondition => WriteError::FailedPrecondition(status.message().to_string()),
-        _ => WriteError::Internal(status.to_string()),
+        _ => WriteError::terminal(status),
     }
 }
 
 fn map_status_to_provision_error(status: Status) -> ProvisionError {
     match &status.code() {
-        Code::Unavailable => ProvisionError::Network(status.into()),
-        _ => ProvisionError::Internal(status.to_string()),
+        Code::Unavailable => ProvisionError::retryable(status),
+        _ => ProvisionError::terminal(status),
     }
 }
 

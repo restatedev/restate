@@ -16,7 +16,9 @@ use crate::metadata_store::test_util::InMemoryMetadataStore;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
-use restate_types::errors::GenericError;
+use restate_types::errors::{
+    BoxedMaybeRetryableError, GenericError, IntoMaybeRetryable, MaybeRetryableError,
+};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::retries::RetryPolicy;
@@ -24,56 +26,103 @@ use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, Storage
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 use std::future::Future;
 use std::sync::Arc;
-use tracing::{debug, trace};
+use tracing::debug;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
-    #[error("network error: {0}")]
-    Network(GenericError),
-    #[error("internal error: {0}")]
-    Internal(String),
     #[error("codec error: {0}")]
     Codec(GenericError),
-    #[error("store error: {0}")]
-    Store(GenericError),
+    #[error("other error: {0}")]
+    Other(BoxedMaybeRetryableError),
+}
+
+impl ReadError {
+    pub fn retryable<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
+        Self::Other(Box::new(error.into_retryable()))
+    }
+
+    pub fn terminal<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
+        Self::Other(Box::new(error.into_terminal()))
+    }
+
+    pub fn other<E: MaybeRetryableError + Send + Sync>(error: E) -> Self {
+        Self::Other(Box::new(error))
+    }
+}
+
+impl MaybeRetryableError for ReadError {
+    fn retryable(&self) -> bool {
+        match self {
+            ReadError::Other(err) => err.retryable(),
+            ReadError::Codec(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
-    #[error("network error: {0}")]
-    Network(GenericError),
-    #[error("internal error: {0}")]
-    Internal(String),
+    #[error("other error: {0}")]
+    Other(BoxedMaybeRetryableError),
     #[error("codec error: {0}")]
     Codec(GenericError),
-    #[error("store error: {0}")]
-    Store(GenericError),
+}
+
+impl WriteError {
+    pub fn retryable<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
+        Self::Other(Box::new(error.into_retryable()))
+    }
+
+    pub fn terminal<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
+        Self::Other(Box::new(error.into_terminal()))
+    }
+
+    pub fn other<E: MaybeRetryableError + Send + Sync>(error: E) -> Self {
+        Self::Other(Box::new(error))
+    }
+}
+
+impl MaybeRetryableError for WriteError {
+    fn retryable(&self) -> bool {
+        match self {
+            WriteError::Other(err) => err.retryable(),
+            WriteError::Codec(_) => false,
+            WriteError::FailedPrecondition(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProvisionError {
-    #[error("network error: {0}")]
-    Network(GenericError),
-    #[error("internal error: {0}")]
-    Internal(String),
+    #[error("other error: {0}")]
+    Other(BoxedMaybeRetryableError),
     #[error("codec error: {0}")]
     Codec(GenericError),
-    #[error("store error: {0}")]
-    Store(GenericError),
     #[error("provisioning is not supported: {0}")]
     NotSupported(String),
 }
 
-impl MetadataStoreClientError for ProvisionError {
-    fn is_network_error(&self) -> bool {
+impl ProvisionError {
+    pub fn retryable<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
+        Self::Other(Box::new(error.into_retryable()))
+    }
+
+    pub fn terminal<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
+        Self::Other(Box::new(error.into_terminal()))
+    }
+
+    pub fn other<E: MaybeRetryableError + Send + Sync>(error: E) -> Self {
+        Self::Other(Box::new(error))
+    }
+}
+
+impl MaybeRetryableError for ProvisionError {
+    fn retryable(&self) -> bool {
         match self {
-            ProvisionError::Network(_) => true,
-            ProvisionError::Internal(_)
-            | ProvisionError::Codec(_)
-            | ProvisionError::Store(_)
-            | ProvisionError::NotSupported(_) => false,
+            ProvisionError::Other(err) => err.retryable(),
+            ProvisionError::Codec(_) => false,
+            ProvisionError::NotSupported(_) => false,
         }
     }
 }
@@ -207,10 +256,8 @@ impl<T: ProvisionedMetadataStore + Sync> MetadataStore for T {
             Ok(()) => Ok(true),
             Err(err) => match err {
                 WriteError::FailedPrecondition(_) => Ok(false),
-                WriteError::Network(err) => Err(ProvisionError::Network(err)),
-                WriteError::Internal(err) => Err(ProvisionError::Internal(err)),
+                WriteError::Other(err) => Err(ProvisionError::Other(err)),
                 WriteError::Codec(err) => Err(ProvisionError::Codec(err)),
-                WriteError::Store(err) => Err(ProvisionError::Store(err)),
             },
         }
     }
@@ -415,16 +462,22 @@ pub fn serialize_value<T: Versioned + StorageEncode>(
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadWriteError {
-    #[error("network error: {0}")]
-    Network(GenericError),
-    #[error("internal error: {0}")]
-    Internal(String),
+    #[error("other error: {0}")]
+    Other(BoxedMaybeRetryableError),
     #[error("codec error: {0}")]
     Codec(GenericError),
     #[error("retries for operation on key '{0}' exhausted")]
     RetriesExhausted(ByteString),
-    #[error("store error: {0}")]
-    Store(GenericError),
+}
+
+impl MaybeRetryableError for ReadWriteError {
+    fn retryable(&self) -> bool {
+        match self {
+            ReadWriteError::Other(err) => err.retryable(),
+            ReadWriteError::Codec(_) => false,
+            ReadWriteError::RetriesExhausted(_) => true,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -433,6 +486,18 @@ pub enum ReadModifyWriteError<E = String> {
     ReadWrite(#[from] ReadWriteError),
     #[error("failed read-modify-write operation: {0}")]
     FailedOperation(E),
+}
+
+impl<E> MaybeRetryableError for ReadModifyWriteError<E>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    fn retryable(&self) -> bool {
+        match self {
+            ReadModifyWriteError::ReadWrite(err) => err.retryable(),
+            ReadModifyWriteError::FailedOperation(_) => false,
+        }
+    }
 }
 
 impl<E> ReadModifyWriteError<E>
@@ -450,10 +515,8 @@ where
 impl From<ReadError> for ReadWriteError {
     fn from(value: ReadError) -> Self {
         match value {
-            ReadError::Network(err) => ReadWriteError::Network(err),
-            ReadError::Internal(msg) => ReadWriteError::Internal(msg),
+            ReadError::Other(err) => ReadWriteError::Other(err),
             ReadError::Codec(err) => ReadWriteError::Codec(err),
-            ReadError::Store(err) => ReadWriteError::Store(err),
         }
     }
 }
@@ -464,76 +527,26 @@ impl From<WriteError> for ReadWriteError {
             WriteError::FailedPrecondition(_) => {
                 unreachable!("failed preconditions should be treated separately")
             }
-            WriteError::Network(err) => ReadWriteError::Network(err),
-            WriteError::Internal(msg) => ReadWriteError::Internal(msg),
+            WriteError::Other(err) => ReadWriteError::Other(err),
             WriteError::Codec(err) => ReadWriteError::Codec(err),
-            WriteError::Store(err) => ReadWriteError::Store(err),
-        }
-    }
-}
-
-pub trait MetadataStoreClientError {
-    fn is_network_error(&self) -> bool;
-}
-
-impl<E> MetadataStoreClientError for ReadModifyWriteError<E> {
-    fn is_network_error(&self) -> bool {
-        match self {
-            ReadModifyWriteError::ReadWrite(err) => err.is_network_error(),
-            ReadModifyWriteError::FailedOperation(_) => false,
-        }
-    }
-}
-
-impl MetadataStoreClientError for ReadWriteError {
-    fn is_network_error(&self) -> bool {
-        // we don't use the catch all pattern _ to make sure
-        // new errors are explicitly handled
-        match self {
-            ReadWriteError::Network(_) => true,
-            ReadWriteError::Internal(_) => false,
-            ReadWriteError::Codec(_) => false,
-            ReadWriteError::RetriesExhausted(_) => false,
-            ReadWriteError::Store(_) => false,
-        }
-    }
-}
-
-impl MetadataStoreClientError for WriteError {
-    fn is_network_error(&self) -> bool {
-        match self {
-            WriteError::Network(_) => true,
-            WriteError::FailedPrecondition(_) => false,
-            WriteError::Internal(_) => false,
-            WriteError::Codec(_) => false,
-            WriteError::Store(_) => false,
-        }
-    }
-}
-
-impl MetadataStoreClientError for ReadError {
-    fn is_network_error(&self) -> bool {
-        match self {
-            ReadError::Network(_) => true,
-            ReadError::Codec(_) | ReadError::Internal(_) | ReadError::Store(_) => false,
         }
     }
 }
 
 static_assertions::assert_impl_all!(MetadataStoreClient: Send, Sync, Clone);
 
-pub async fn retry_on_network_error<Fn, Fut, T, E, P>(retry_policy: P, action: Fn) -> Result<T, E>
+pub async fn retry_on_retryable_error<Fn, Fut, T, E, P>(retry_policy: P, action: Fn) -> Result<T, E>
 where
     P: Into<RetryPolicy>,
     Fn: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
-    E: MetadataStoreClientError + std::fmt::Display,
+    E: MaybeRetryableError,
 {
     retry_policy
         .into()
         .retry_if(action, |err: &E| {
-            if err.is_network_error() {
-                trace!("could not connect to metadata store: {err}; retrying");
+            if err.retryable() {
+                debug!(%err, "Operation failed. Retrying it.");
                 true
             } else {
                 false

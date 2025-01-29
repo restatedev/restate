@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_core::metadata_store::{MetadataStoreClient, MetadataStoreClientError, ReadWriteError};
+use restate_core::metadata_store::{MetadataStoreClient, ReadWriteError};
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, SyncError, TargetVersion,
 };
 use restate_types::config::{CommonOptions, Configuration};
+use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{
@@ -120,7 +121,7 @@ impl<'a> NodeInit<'a> {
                         .await
                 },
                 |err| match err {
-                    SyncError::MetadataStore(err) => err.is_network_error(),
+                    SyncError::MetadataStore(err) => err.retryable(),
                     SyncError::Shutdown(_) => false,
                 },
             )
@@ -164,7 +165,7 @@ impl<'a> NodeInit<'a> {
                     match err {
                         JoinError::MissingNodesConfiguration => true,
                         JoinError::ConcurrentNodeRegistration(_) => false,
-                        JoinError::MetadataStore(err) => err.is_network_error(),
+                        JoinError::MetadataStore(err) => err.retryable(),
                         JoinError::ClusterMismatch { .. } => false,
                         JoinError::NodeIdMismatch { .. } => false,
                     }

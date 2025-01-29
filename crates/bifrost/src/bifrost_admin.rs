@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tracing::{debug, info, instrument};
 
-use restate_core::metadata_store::retry_on_network_error;
+use restate_core::metadata_store::retry_on_retryable_error;
 use restate_core::{Metadata, MetadataKind};
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Chain, LogletParams, Logs, ProviderKind, SegmentIndex};
@@ -222,7 +222,7 @@ impl<'a> BifrostAdmin<'a> {
             .common
             .network_error_retry_policy
             .clone();
-        let logs = retry_on_network_error(retry_policy, || {
+        let logs = retry_on_retryable_error(retry_policy, || {
             self.inner
                 .metadata_writer
                 .metadata_store_client()
@@ -267,7 +267,7 @@ impl<'a> BifrostAdmin<'a> {
             .common
             .network_error_retry_policy
             .clone();
-        let logs = retry_on_network_error(retry_policy, || {
+        let logs = retry_on_retryable_error(retry_policy, || {
             self.inner
                 .metadata_writer
                 .metadata_store_client()
@@ -301,7 +301,7 @@ impl<'a> BifrostAdmin<'a> {
             .network_error_retry_policy
             .clone();
 
-        let logs = retry_on_network_error(retry_policy, || {
+        let logs = retry_on_retryable_error(retry_policy, || {
             self.inner
                 .metadata_writer
                 .metadata_store_client()

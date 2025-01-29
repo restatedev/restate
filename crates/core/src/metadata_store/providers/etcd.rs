@@ -27,9 +27,9 @@ use crate::network::net_util::CommonClientConnectionOptions;
 impl From<EtcdError> for ReadError {
     fn from(value: EtcdError) -> Self {
         match value {
-            err @ EtcdError::IoError(_) => Self::Network(err.into()),
-            err @ EtcdError::TransportError(_) => Self::Network(err.into()),
-            any => Self::Store(any.into()),
+            err @ EtcdError::IoError(_) => Self::retryable(err),
+            err @ EtcdError::TransportError(_) => Self::retryable(err),
+            any => Self::terminal(any),
         }
     }
 }
@@ -37,9 +37,9 @@ impl From<EtcdError> for ReadError {
 impl From<EtcdError> for WriteError {
     fn from(value: EtcdError) -> Self {
         match value {
-            err @ EtcdError::IoError(_) => Self::Network(err.into()),
-            err @ EtcdError::TransportError(_) => Self::Network(err.into()),
-            any => Self::Store(any.into()),
+            err @ EtcdError::IoError(_) => Self::retryable(err),
+            err @ EtcdError::TransportError(_) => Self::retryable(err),
+            any => Self::terminal(any),
         }
     }
 }

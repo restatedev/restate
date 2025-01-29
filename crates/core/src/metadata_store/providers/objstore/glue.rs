@@ -15,11 +15,11 @@ use restate_types::Version;
 use tokio::sync::oneshot::Sender;
 use tracing::warn;
 
-use crate::cancellation_watcher;
 use crate::metadata_store::providers::objstore::optimistic_store::OptimisticLockingMetadataStoreBuilder;
 use crate::metadata_store::{
     Precondition, ProvisionedMetadataStore, ReadError, VersionedValue, WriteError,
 };
+use crate::{cancellation_watcher, ShutdownError};
 
 #[derive(Debug)]
 pub(crate) enum Commands {
@@ -119,11 +119,9 @@ impl ProvisionedMetadataStore for Client {
 
         self.sender
             .send(Commands::Get { key, tx })
-            .map_err(|_| ReadError::Internal("Object store fetch channel ".into()))?;
+            .map_err(|_| ReadError::terminal(ShutdownError))?;
 
-        rx.await.map_err(|_| {
-            ReadError::Internal("Object store fetch channel disconnected".to_string())
-        })?
+        rx.await.map_err(|_| ReadError::terminal(ShutdownError))?
     }
 
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
@@ -131,11 +129,9 @@ impl ProvisionedMetadataStore for Client {
 
         self.sender
             .send(Commands::GetVersion { key, tx })
-            .map_err(|_| ReadError::Internal("Object store fetch channel ".into()))?;
+            .map_err(|_| ReadError::terminal(ShutdownError))?;
 
-        rx.await.map_err(|_| {
-            ReadError::Internal("Object store fetch channel disconnected".to_string())
-        })?
+        rx.await.map_err(|_| ReadError::terminal(ShutdownError))?
     }
 
     async fn put(
@@ -153,10 +149,9 @@ impl ProvisionedMetadataStore for Client {
                 precondition,
                 tx,
             })
-            .map_err(|_| WriteError::Internal("Object store channel ".into()))?;
+            .map_err(|_| WriteError::terminal(ShutdownError))?;
 
-        rx.await
-            .map_err(|_| WriteError::Internal("Object store channel disconnected".to_string()))?
+        rx.await.map_err(|_| WriteError::terminal(ShutdownError))?
     }
 
     async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
@@ -168,10 +163,8 @@ impl ProvisionedMetadataStore for Client {
                 precondition,
                 tx,
             })
-            .map_err(|_| WriteError::Internal("Object store fetch channel ".into()))?;
+            .map_err(|_| WriteError::terminal(ShutdownError))?;
 
-        rx.await.map_err(|_| {
-            WriteError::Internal("Object store fetch channel disconnected".to_string())
-        })?
+        rx.await.map_err(|_| WriteError::terminal(ShutdownError))?
     }
 }

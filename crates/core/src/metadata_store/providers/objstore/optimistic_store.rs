@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::borrow::Cow;
-
 use bytes::{BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
+use std::borrow::Cow;
 
 use crate::metadata_store::providers::objstore::version_repository::VersionRepositoryError::PreconditionFailed;
 use crate::metadata_store::providers::objstore::version_repository::{
@@ -72,7 +71,7 @@ impl OptimisticLockingMetadataStore {
                 Ok(Some(d))
             }
             Err(VersionRepositoryError::NotFound) => Ok(None),
-            Err(e) => Err(ReadError::Network(e.into())),
+            Err(e) => Err(ReadError::retryable(e)),
         }
     }
 
@@ -112,7 +111,7 @@ impl OptimisticLockingMetadataStore {
                 self.version_repository
                     .put(key, buf)
                     .await
-                    .map_err(|e| WriteError::Network(e.into()))?;
+                    .map_err(WriteError::retryable)?;
                 Ok(())
             }
             Precondition::DoesNotExist => match self.version_repository.create(key, buf).await {
@@ -120,7 +119,7 @@ impl OptimisticLockingMetadataStore {
                 Err(VersionRepositoryError::AlreadyExists) => {
                     Err(WriteError::FailedPrecondition("already exists".to_string()))
                 }
-                Err(e) => Err(WriteError::Network(e.into())),
+                Err(e) => Err(WriteError::retryable(e)),
             },
             Precondition::MatchesVersion(version) => {
                 // we need to get the current version here, because the version provided by the API does not
@@ -140,7 +139,7 @@ impl OptimisticLockingMetadataStore {
                                 "no current version exists".to_string(),
                             ))
                         }
-                        Err(e) => return Err(WriteError::Network(e.into())),
+                        Err(e) => return Err(WriteError::retryable(e)),
                     };
                 //
                 // 2. check if logical version is the expected version
@@ -163,7 +162,7 @@ impl OptimisticLockingMetadataStore {
                     Err(PreconditionFailed) => Err(WriteError::FailedPrecondition(
                         "failed precondition".to_string(),
                     )),
-                    Err(e) => Err(WriteError::Network(e.into())),
+                    Err(e) => Err(WriteError::retryable(e)),
                 }
             }
         }
@@ -177,11 +176,9 @@ impl OptimisticLockingMetadataStore {
         match precondition {
             Precondition::None => match self.version_repository.delete(key).await {
                 Ok(_) => Ok(()),
-                Err(e) => Err(WriteError::Network(e.into())),
+                Err(e) => Err(WriteError::retryable(e)),
             },
-            Precondition::DoesNotExist => Err(WriteError::Internal(
-                "This combination does not make sense".to_string(),
-            )),
+            Precondition::DoesNotExist => Err(WriteError::terminal(NonSensicalPrecondition)),
             Precondition::MatchesVersion(version) => {
                 // we need to convert a version into a tag, this mean we need to do a read first.
                 let (tag, current_version) = match self.version_repository.get(key.clone()).await {
@@ -196,7 +193,7 @@ impl OptimisticLockingMetadataStore {
                             "No version found".to_string(),
                         ))
                     }
-                    Err(e) => return Err(WriteError::Network(e.into())),
+                    Err(e) => return Err(WriteError::retryable(e)),
                 };
 
                 if current_version != version {
@@ -214,7 +211,7 @@ impl OptimisticLockingMetadataStore {
                     Err(PreconditionFailed) => Err(WriteError::FailedPrecondition(
                         "failed precondition".to_string(),
                     )),
-                    Err(e) => Err(WriteError::Network(e.into())),
+                    Err(e) => Err(WriteError::retryable(e)),
                 }
             }
         }
@@ -323,3 +320,7 @@ mod tests {
             .unwrap();
     }
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("This combination does not make sense")]
+struct NonSensicalPrecondition;

@@ -26,7 +26,7 @@ use crate::roles::{AdminRole, BaseRole, IngressRole, WorkerRole};
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{
-    retry_on_network_error, Precondition, ReadWriteError, WriteError,
+    retry_on_retryable_error, Precondition, ReadWriteError, WriteError,
 };
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
@@ -584,12 +584,12 @@ async fn provision_cluster_metadata(
     let (initial_nodes_configuration, initial_partition_table, initial_logs) =
         generate_initial_metadata(common_opts, cluster_configuration);
 
-    let result = retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
+    let result = retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
         metadata_store_client.provision(&initial_nodes_configuration)
     })
     .await?;
 
-    retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
+    retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
         write_initial_logs_dont_fail_if_it_exists(
             metadata_store_client,
             BIFROST_CONFIG_KEY.clone(),
@@ -603,7 +603,7 @@ async fn provision_cluster_metadata(
     // The partition table metadata must be initialized only after the bifrost (logs) metadata.
     // Otherwise, the logs controller may begin creating logs with incorrect configurations
     // initialized by bifrost.
-    retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
+    retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
         write_initial_value_dont_fail_if_it_exists(
             metadata_store_client,
             PARTITION_TABLE_KEY.clone(),
