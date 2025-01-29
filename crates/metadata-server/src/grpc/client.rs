@@ -37,11 +37,34 @@ use tonic::transport::Channel;
 use tonic::{Code, Status};
 use tracing::debug;
 
+#[derive(Debug, Clone, derive_more::Deref, derive_more::DerefMut)]
+struct MetadataServerSvcClientWithAddress {
+    #[deref]
+    #[deref_mut]
+    client: MetadataServerSvcClient<Channel>,
+    channel: ChannelWithAddress,
+}
+
+impl MetadataServerSvcClientWithAddress {
+    fn new(channel: ChannelWithAddress) -> Self {
+        Self {
+            client: MetadataServerSvcClient::new(channel.channel.clone())
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+            channel,
+        }
+    }
+
+    fn address(&self) -> &AdvertisedAddress {
+        &self.channel.address
+    }
+}
+
 /// Client end to interact with a set of metadata servers.
 #[derive(Debug, Clone)]
 pub struct GrpcMetadataServerClient {
     channel_manager: ChannelManager,
-    current_leader: Arc<Mutex<Option<MetadataServerSvcClient<Channel>>>>,
+    current_leader: Arc<Mutex<Option<MetadataServerSvcClientWithAddress>>>,
 }
 
 impl GrpcMetadataServerClient {
@@ -53,7 +76,7 @@ impl GrpcMetadataServerClient {
         let svc_client = Arc::new(Mutex::new(
             channel_manager
                 .choose_random()
-                .map(MetadataServerSvcClient::new),
+                .map(MetadataServerSvcClientWithAddress::new),
         ));
 
         if let Some(tc) = TaskCenter::try_with_current(|handle| handle.clone()) {
@@ -86,32 +109,27 @@ impl GrpcMetadataServerClient {
 
     fn choose_random_endpoint(&self) {
         // let's try another endpoint
-        *self.current_leader.lock() = self.channel_manager.choose_random().map(|channel| {
-            MetadataServerSvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip)
-        });
+        *self.current_leader.lock() = self
+            .channel_manager
+            .choose_random()
+            .map(MetadataServerSvcClientWithAddress::new);
     }
 
     fn choose_known_leader(&self, known_leader: KnownLeader) {
         let channel = self
             .channel_manager
             .register_address(known_leader.node_id, known_leader.address);
-        *self.current_leader.lock() = Some(
-            MetadataServerSvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
-        );
+        *self.current_leader.lock() = Some(MetadataServerSvcClientWithAddress::new(channel));
     }
 
-    fn current_client(&self) -> Option<MetadataServerSvcClient<Channel>> {
+    fn current_client(&self) -> Option<MetadataServerSvcClientWithAddress> {
         let mut svc_client_guard = self.current_leader.lock();
 
         if svc_client_guard.is_none() {
             *svc_client_guard = self
                 .channel_manager
                 .choose_random()
-                .map(MetadataServerSvcClient::new);
+                .map(MetadataServerSvcClientWithAddress::new);
         }
 
         svc_client_guard.clone()
@@ -155,7 +173,7 @@ impl MetadataStore for GrpcMetadataServerClient {
                         key: key.clone().into(),
                     })
                     .await,
-                map_status_to_read_error,
+                |status| map_status_to_read_error(client.address(), status),
             )
         })
         .await?;
@@ -180,7 +198,7 @@ impl MetadataStore for GrpcMetadataServerClient {
                         key: key.clone().into(),
                     })
                     .await,
-                map_status_to_read_error,
+                |status| map_status_to_read_error(client.address(), status),
             )
         })
         .await?;
@@ -209,7 +227,7 @@ impl MetadataStore for GrpcMetadataServerClient {
                         precondition: Some(precondition.clone().into()),
                     })
                     .await,
-                map_status_to_write_error,
+                |status| map_status_to_write_error(client.address(), status),
             )
         })
         .await?;
@@ -232,7 +250,7 @@ impl MetadataStore for GrpcMetadataServerClient {
                         precondition: Some(precondition.clone().into()),
                     })
                     .await,
-                map_status_to_write_error,
+                |status| map_status_to_write_error(client.address(), status),
             )
         })
         .await?;
@@ -256,9 +274,9 @@ impl MetadataStore for GrpcMetadataServerClient {
             return Err(ProvisionError::NotSupported(format!("Node '{}' does not run the metadata-server role. Try to provision a different node.", config.common.advertised_address)));
         }
 
-        let mut client = MetadataServerSvcClient::new(create_tonic_channel(
+        let mut client = MetadataServerSvcClientWithAddress::new(ChannelWithAddress::new(
             config.common.advertised_address.clone(),
-            &config.networking,
+            create_tonic_channel(config.common.advertised_address.clone(), &config.networking),
         ));
 
         let mut buffer = BytesMut::new();
@@ -271,7 +289,7 @@ impl MetadataStore for GrpcMetadataServerClient {
                 nodes_configuration: buffer.freeze(),
             })
             .await
-            .map_err(map_status_to_provision_error);
+            .map_err(|status| map_status_to_provision_error(client.address(), status));
 
         if response.is_ok() {
             *self.current_leader.lock() = Some(client);
@@ -281,25 +299,29 @@ impl MetadataStore for GrpcMetadataServerClient {
     }
 }
 
-fn map_status_to_read_error(status: Status) -> ReadError {
+fn map_status_to_read_error(address: &AdvertisedAddress, status: Status) -> ReadError {
     match &status.code() {
-        Code::Unavailable => ReadError::Network(status.into()),
-        _ => ReadError::Internal(status.to_string()),
+        Code::Unavailable => ReadError::Network(anyhow::anyhow!("[{address}] {status}").into()),
+        _ => ReadError::Internal(format!("[{address}] {status}")),
     }
 }
 
-fn map_status_to_write_error(status: Status) -> WriteError {
+fn map_status_to_write_error(address: &AdvertisedAddress, status: Status) -> WriteError {
     match &status.code() {
-        Code::Unavailable => WriteError::Network(status.into()),
-        Code::FailedPrecondition => WriteError::FailedPrecondition(status.message().to_string()),
-        _ => WriteError::Internal(status.to_string()),
+        Code::Unavailable => WriteError::Network(anyhow::anyhow!("[{address}] {status}").into()),
+        Code::FailedPrecondition => {
+            WriteError::FailedPrecondition(format!("[{address}] {}", status.message()))
+        }
+        _ => WriteError::Internal(format!("[{address}] {status}")),
     }
 }
 
-fn map_status_to_provision_error(status: Status) -> ProvisionError {
+fn map_status_to_provision_error(address: &AdvertisedAddress, status: Status) -> ProvisionError {
     match &status.code() {
-        Code::Unavailable => ProvisionError::Network(status.into()),
-        _ => ProvisionError::Internal(status.to_string()),
+        Code::Unavailable => {
+            ProvisionError::Network(anyhow::anyhow!("[{address}] {status}").into())
+        }
+        _ => ProvisionError::Internal(format!("[{address}] {status}")),
     }
 }
 
@@ -316,7 +338,12 @@ impl ChannelManager {
     ) -> Self {
         let initial_channels: Vec<_> = initial_addresses
             .into_iter()
-            .map(|address| create_tonic_channel(address, &client_options))
+            .map(|address| {
+                ChannelWithAddress::new(
+                    address.clone(),
+                    create_tonic_channel(address, &client_options),
+                )
+            })
             .collect();
 
         ChannelManager {
@@ -325,15 +352,23 @@ impl ChannelManager {
         }
     }
 
-    fn register_address(&self, plain_node_id: PlainNodeId, address: AdvertisedAddress) -> Channel {
-        let channel = create_tonic_channel(address, &self.client_options);
+    fn register_address(
+        &self,
+        plain_node_id: PlainNodeId,
+        address: AdvertisedAddress,
+    ) -> ChannelWithAddress {
+        let channel = ChannelWithAddress::new(
+            address.clone(),
+            create_tonic_channel(address, &self.client_options),
+        );
         self.channels
             .lock()
             .register(plain_node_id, channel.clone());
+
         channel
     }
 
-    fn choose_random(&self) -> Option<Channel> {
+    fn choose_random(&self) -> Option<ChannelWithAddress> {
         self.channels.lock().choose_random()
     }
 
@@ -374,7 +409,10 @@ impl ChannelManager {
                 {
                     Some((
                         node_id,
-                        create_tonic_channel(node_config.address.clone(), &self.client_options),
+                        ChannelWithAddress::new(
+                            node_config.address.clone(),
+                            create_tonic_channel(node_config.address.clone(), &self.client_options),
+                        ),
                     ))
                 } else {
                     None
@@ -394,25 +432,41 @@ impl ChannelManager {
     }
 }
 
+#[derive(Clone, Debug, derive_more::Deref)]
+struct ChannelWithAddress {
+    #[deref]
+    channel: Channel,
+    address: AdvertisedAddress,
+}
+
+impl ChannelWithAddress {
+    fn new(address: AdvertisedAddress, inner: Channel) -> Self {
+        Self {
+            channel: inner,
+            address,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Channels {
-    initial_channels: Vec<Channel>,
-    channels: HashMap<PlainNodeId, Channel>,
+    initial_channels: Vec<ChannelWithAddress>,
+    channels: HashMap<PlainNodeId, ChannelWithAddress>,
 }
 
 impl Channels {
-    fn new(initial_channels: Vec<Channel>) -> Self {
+    fn new(initial_channels: Vec<ChannelWithAddress>) -> Self {
         Channels {
             initial_channels,
             channels: HashMap::default(),
         }
     }
 
-    fn register(&mut self, plain_node_id: PlainNodeId, channel: Channel) {
+    fn register(&mut self, plain_node_id: PlainNodeId, channel: ChannelWithAddress) {
         self.channels.insert(plain_node_id, channel);
     }
 
-    fn choose_random(&self) -> Option<Channel> {
+    fn choose_random(&self) -> Option<ChannelWithAddress> {
         let mut rng = rand::thread_rng();
         let chosen_channel = self
             .channels
@@ -434,7 +488,10 @@ impl Channels {
         }
     }
 
-    fn update_channels(&mut self, new_channels: impl IntoIterator<Item = (PlainNodeId, Channel)>) {
+    fn update_channels(
+        &mut self,
+        new_channels: impl IntoIterator<Item = (PlainNodeId, ChannelWithAddress)>,
+    ) {
         self.channels.clear();
         self.channels.extend(new_channels);
     }
