@@ -29,7 +29,6 @@ pub use record_cache::RecordCache;
 pub use tail::*;
 
 #[derive(
-    Debug,
     Clone,
     Copy,
     Eq,
@@ -37,12 +36,14 @@ pub use tail::*;
     Hash,
     Ord,
     PartialOrd,
+    derive_more::Debug,
     derive_more::Display,
     derive_more::From,
     derive_more::Into,
     Serialize,
     Deserialize,
 )]
+#[debug("{}", _0)]
 pub struct LogId(u32);
 
 impl LogId {

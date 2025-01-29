@@ -35,7 +35,6 @@ use crate::time::MillisSinceEpoch;
 
 /// Identifying the leader epoch of a partition processor
 #[derive(
-    Debug,
     PartialEq,
     Eq,
     Ord,
@@ -46,10 +45,12 @@ use crate::time::MillisSinceEpoch;
     derive_more::From,
     derive_more::Into,
     derive_more::Display,
+    derive_more::Debug,
     serde::Serialize,
     serde::Deserialize,
 )]
 #[display("e{}", _0)]
+#[debug("e{}", _0)]
 pub struct LeaderEpoch(u64);
 impl LeaderEpoch {
     pub const INITIAL: Self = Self(1);
@@ -82,7 +83,6 @@ impl From<LeaderEpoch> for crate::protobuf::common::LeaderEpoch {
 #[derive(
     Copy,
     Clone,
-    Debug,
     PartialEq,
     Eq,
     Hash,
@@ -93,12 +93,14 @@ impl From<LeaderEpoch> for crate::protobuf::common::LeaderEpoch {
     derive_more::Into,
     derive_more::Add,
     derive_more::Display,
+    derive_more::Debug,
     derive_more::FromStr,
     serde::Serialize,
     serde::Deserialize,
 )]
 #[repr(transparent)]
 #[serde(transparent)]
+#[debug("{}", _0)]
 pub struct PartitionId(u16);
 
 impl From<PartitionId> for u32 {
