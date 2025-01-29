@@ -47,7 +47,7 @@ impl<T> ClusterControllerState<T>
 where
     T: TransportConnect,
 {
-    pub async fn update(&mut self, service: &Service<T>) -> anyhow::Result<()> {
+    pub fn update(&mut self, service: &Service<T>) -> anyhow::Result<()> {
         let maybe_leader = {
             let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
             nodes_config
@@ -64,7 +64,6 @@ where
 
         // A Cluster Controller is a leader if the node holds the smallest PlainNodeID
         // If no other node was found to take leadership, we assume leadership
-
         let is_leader = match maybe_leader {
             None => true,
             Some(leader) => leader == my_node_id(),
@@ -77,10 +76,13 @@ where
             }
             (true, ClusterControllerState::Follower) => {
                 info!("Cluster controller switching to leader mode");
-                *self = ClusterControllerState::Leader(Leader::from_service(service).await?);
+                *self = ClusterControllerState::Leader(Leader::from_service(service)?);
             }
             (false, ClusterControllerState::Leader(_)) => {
-                info!("Cluster controller switching to follower mode");
+                info!(
+                    "Cluster controller switching to follower mode, I think the leader is {}",
+                    maybe_leader.expect("a leader must be identified"),
+                );
                 *self = ClusterControllerState::Follower;
             }
         };
@@ -159,7 +161,7 @@ impl<T> Leader<T>
 where
     T: TransportConnect,
 {
-    async fn from_service(service: &Service<T>) -> anyhow::Result<Leader<T>> {
+    fn from_service(service: &Service<T>) -> anyhow::Result<Leader<T>> {
         let configuration = service.configuration.pinned();
 
         let scheduler = Scheduler::new(service.metadata_writer.clone(), service.networking.clone());
