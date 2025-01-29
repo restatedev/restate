@@ -6642,12 +6642,14 @@ dependencies = [
  "anyhow",
  "futures",
  "pin-project",
+ "pin-project-lite",
  "restate-test-util",
  "test-log",
  "thiserror 2.0.11",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "tracing-test",
  "workspace-hack",
 ]
 
