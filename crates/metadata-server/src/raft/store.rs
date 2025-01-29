@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::MetadataServerSnapshot;
 use crate::network::grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient;
 use crate::network::{ConnectionManager, Networking};
@@ -16,12 +15,11 @@ use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{storage, RaftConfiguration};
 use crate::{
-    grpc, prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError,
-    JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, JoinError,
-    KnownLeader, MemberId, MetadataServerBackend, MetadataServerConfiguration,
-    MetadataStoreRequest, MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender,
-    RaftSummary, Request, RequestError, RequestKind, RequestReceiver, RequestSender,
-    SnapshotSummary, StatusSender, StatusWatch, StorageId, WriteRequest,
+    prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError, JoinClusterHandle,
+    JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, JoinError, KnownLeader,
+    MetadataServerBackend, MetadataStoreRequest, MetadataStoreSummary, ProvisionError,
+    ProvisionReceiver, ProvisionSender, Request, RequestError, RequestKind, RequestReceiver,
+    RequestSender, SnapshotSummary, SnapshotSummaryExt, StatusSender, StatusWatch, WriteRequest,
 };
 use arc_swap::ArcSwapOption;
 use bytes::BytesMut;
@@ -39,15 +37,19 @@ use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMe
 use raft_proto::ConfChangeI;
 use rand::prelude::IteratorRandom;
 use rand::{random, thread_rng};
-use restate_core::metadata_store::{serialize_value, Precondition};
+use restate_core::metadata_store::serialize_value;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind,
 };
 use restate_types::config::{Configuration, RocksDbOptions};
+use restate_types::errors::ConversionError;
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::metadata::{
+    MemberId, MetadataServerConfiguration, Precondition, RaftSummary, StorageId,
+};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
@@ -361,12 +363,13 @@ impl RaftMetadataServer {
             raft_configuration.my_member_id.storage_id,
         );
         let metadata_store_snapshot = MetadataServerSnapshot {
-            configuration: Some(grpc::MetadataServerConfiguration::from(
+            configuration: Some(
                 MetadataServerConfiguration {
                     version: Version::MIN,
                     members,
-                },
-            )),
+                }
+                .into(),
+            ),
             ..MetadataServerSnapshot::default()
         };
 
@@ -767,8 +770,7 @@ impl Member {
             .members
             .insert(joining_member_id.node_id, joining_member_id.storage_id);
 
-        let next_configuration_bytes =
-            grpc::MetadataServerConfiguration::from(next_configuration).encode_to_vec();
+        let next_configuration_bytes = next_configuration.encode_to_vec();
 
         if let Err(err) = self
             .raw_node
@@ -1001,9 +1003,7 @@ impl Member {
 
         self.raw_node.apply_conf_change(&cc_v2)?;
 
-        let new_configuration = MetadataServerConfiguration::from(
-            grpc::MetadataServerConfiguration::decode(entry.context)?,
-        );
+        let new_configuration = MetadataServerConfiguration::decode(&entry.context)?;
 
         // sanity checks
         assert_eq!(
@@ -1083,9 +1083,7 @@ impl Member {
 
     async fn create_snapshot(&mut self, index: u64, term: u64) -> Result<(), CreateSnapshotError> {
         let mut snapshot = MetadataServerSnapshot {
-            configuration: Some(grpc::MetadataServerConfiguration::from(
-                self.configuration.clone(),
-            )),
+            configuration: Some(self.configuration.clone().into()),
             ..MetadataServerSnapshot::default()
         };
         self.kv_storage.snapshot(&mut snapshot);

@@ -8,15 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{
-    util, MetadataServerBackend, MetadataStoreRequest, PreconditionViolation, ProvisionSender,
-    RequestError, RequestReceiver, RequestSender, StatusWatch,
-};
+use std::future::Future;
+use std::sync::Arc;
+
 use bytes::BytesMut;
 use bytestring::ByteString;
 use futures::FutureExt;
+use rocksdb::{BoundColumnFamily, WriteBatch, WriteOptions, DB};
+use tokio::sync::mpsc;
+use tracing::{debug, info, trace};
+
 use restate_core::cancellation_watcher;
-use restate_core::metadata_store::{serialize_value, Precondition, VersionedValue};
+use restate_core::metadata_store::serialize_value;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
@@ -24,16 +27,17 @@ use restate_rocksdb::{
 use restate_types::config::{Configuration, MetadataStoreOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration};
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::Version;
-use rocksdb::{BoundColumnFamily, WriteBatch, WriteOptions, DB};
-use std::future::Future;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tracing::{debug, info, trace};
+
+use crate::{
+    util, MetadataServerBackend, MetadataStoreRequest, PreconditionViolation, ProvisionSender,
+    RequestError, RequestReceiver, RequestSender, StatusWatch,
+};
 
 const DB_NAME: &str = "local-metadata-store";
 const KV_PAIRS: &str = "kv_pairs";

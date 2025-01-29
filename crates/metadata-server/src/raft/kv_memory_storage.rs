@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::MetadataServerSnapshot;
 use crate::{
     grpc, Callback, PreconditionViolation, ReadOnlyRequest, ReadOnlyRequestKind, RequestError,
     RequestKind, WriteRequest,
 };
 use bytestring::ByteString;
-use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_core::MetadataWriter;
+use restate_types::errors::ConversionError;
+use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;

@@ -12,10 +12,11 @@ use bytestring::ByteString;
 use clap::Parser;
 use cling::{Collect, Run};
 use json_patch::Patch;
+use restate_types::metadata::Precondition;
 use serde_json::Value;
 use tracing::debug;
 
-use restate_core::metadata_store::{MetadataStoreClient, Precondition};
+use restate_core::metadata_store::MetadataStoreClient;
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
 use restate_types::live::Live;

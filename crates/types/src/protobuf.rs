@@ -260,3 +260,7 @@ pub mod log_server_common {
         }
     }
 }
+
+pub mod metadata {
+    include!(concat!(env!("OUT_DIR"), "/restate.metadata.rs"));
+}

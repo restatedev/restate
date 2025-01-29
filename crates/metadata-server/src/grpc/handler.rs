@@ -8,8 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::Deref;
+
+use async_trait::async_trait;
+use tokio::sync::{oneshot, watch};
+use tonic::{Request, Response, Status};
+
+use restate_core::metadata_store::serialize_value;
+use restate_types::config::Configuration;
+use restate_types::errors::ConversionError;
+use restate_types::metadata::Precondition;
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::storage::StorageCodec;
+
 use crate::grpc::metadata_server_svc_server::MetadataServerSvc;
-use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse,
     ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest, StatusResponse,
@@ -18,16 +31,6 @@ use crate::{
     prepare_initial_nodes_configuration, MetadataStoreRequest, MetadataStoreSummary,
     ProvisionError, ProvisionRequest, ProvisionSender, RequestError, RequestSender, StatusWatch,
 };
-use async_trait::async_trait;
-use restate_core::metadata_store::{serialize_value, Precondition};
-use restate_types::config::Configuration;
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::storage::StorageCodec;
-use std::ops::Deref;
-use tokio::sync::{oneshot, watch};
-use tonic::{Request, Response, Status};
-
 /// Grpc svc handler for the metadata store.
 #[derive(Debug)]
 pub struct MetadataStoreHandler {
@@ -217,7 +220,9 @@ impl MetadataServerSvc for MetadataStoreHandler {
 
     async fn status(&self, _request: Request<()>) -> Result<Response<StatusResponse>, Status> {
         if let Some(status_watch) = &self.status_watch {
-            let response = StatusResponse::from(status_watch.borrow().deref().clone());
+            let response = StatusResponse {
+                summary: Some(status_watch.borrow().deref().clone().into()),
+            };
             Ok(Response::new(response))
         } else {
             Err(Status::unimplemented(

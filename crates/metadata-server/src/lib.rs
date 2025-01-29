@@ -14,26 +14,33 @@ mod network;
 pub mod raft;
 mod util;
 
-use crate::grpc::handler::MetadataStoreHandler;
-use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
+use std::future::Future;
+
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
-use grpc::pb_conversions::ConversionError;
 use prost::Message;
 use raft_proto::eraftpb::Snapshot;
-use restate_core::metadata_store::VersionedValue;
+use tokio::sync::{mpsc, oneshot, watch};
+use tonic::codec::CompressionEncoding;
+use tonic::Status;
+use tracing::debug;
+use ulid::Ulid;
+
 pub use restate_core::metadata_store::{
-    MetadataStoreClient, Precondition, ReadError, ReadModifyWriteError, WriteError,
+    MetadataStoreClient, ReadError, ReadModifyWriteError, WriteError,
 };
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
 use restate_types::config::{
     Configuration, MetadataStoreKind, MetadataStoreOptions, RocksDbOptions,
 };
-use restate_types::errors::GenericError;
+use restate_types::errors::{ConversionError, GenericError};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::metadata::{
+    MetadataStoreSummary, Precondition, SnapshotSummary, VersionedValue,
+};
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
@@ -41,14 +48,9 @@ use restate_types::nodes_config::{
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
-use std::future::Future;
-use tokio::sync::{mpsc, oneshot, watch};
-use tonic::codec::CompressionEncoding;
-use tonic::Status;
-use tracing::debug;
-use ulid::Ulid;
+
+use crate::grpc::handler::MetadataStoreHandler;
+use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 
 pub type BoxedMetadataStoreService = Box<dyn MetadataServer>;
 
@@ -566,97 +568,15 @@ impl JoinClusterHandle {
     }
 }
 
-/// Identifier to detect the loss of a disk.
-type StorageId = u64;
-
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    prost_dto::IntoProst,
-    prost_dto::FromProst,
-)]
-#[prost(target = "crate::grpc::MemberId")]
-pub struct MemberId {
-    node_id: PlainNodeId,
-    storage_id: StorageId,
+trait SnapshotSummaryExt {
+    fn from_snapshot(snapshot: &Snapshot) -> Self;
 }
 
-impl MemberId {
-    pub fn new(node_id: PlainNodeId, storage_id: StorageId) -> Self {
-        MemberId {
-            node_id,
-            storage_id,
-        }
-    }
-}
-
-impl Display for MemberId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{:x}", self.node_id, self.storage_id & 0x0ffff)
-    }
-}
-
-/// Status summary of the metadata store.
-#[derive(Clone, Debug, Default)]
-enum MetadataStoreSummary {
-    #[default]
-    Starting,
-    Provisioning,
-    Standby,
-    Member {
-        leader: Option<PlainNodeId>,
-        configuration: MetadataServerConfiguration,
-        raft: RaftSummary,
-        snapshot: Option<SnapshotSummary>,
-    },
-}
-
-#[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
-#[prost(target = "crate::grpc::RaftSummary")]
-struct RaftSummary {
-    term: u64,
-    committed: u64,
-    applied: u64,
-    first_index: u64,
-    last_index: u64,
-}
-
-#[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
-#[prost(target = "crate::grpc::SnapshotSummary")]
-struct SnapshotSummary {
-    index: u64,
-    // size in bytes
-    size: u64,
-}
-
-impl SnapshotSummary {
+impl SnapshotSummaryExt for SnapshotSummary {
     fn from_snapshot(snapshot: &Snapshot) -> Self {
         SnapshotSummary {
             size: u64::try_from(snapshot.get_data().len()).expect("snapshot size to fit into u64"),
             index: snapshot.get_metadata().get_index(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
-#[prost(target = "crate::grpc::MetadataServerConfiguration")]
-struct MetadataServerConfiguration {
-    #[prost(required)]
-    version: Version,
-    members: HashMap<PlainNodeId, StorageId>,
-}
-
-impl Default for MetadataServerConfiguration {
-    fn default() -> Self {
-        MetadataServerConfiguration {
-            version: Version::INVALID,
-            members: HashMap::default(),
         }
     }
 }

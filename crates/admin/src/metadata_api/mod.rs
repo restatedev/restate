@@ -24,9 +24,13 @@ use axum::{
 use bytestring::ByteString;
 use http::{header::ToStrError, HeaderMap, StatusCode};
 
-use restate_core::metadata_store::{MetadataStore, VersionedValue};
-use restate_metadata_server::{MetadataStoreClient, Precondition, ReadError, WriteError};
-use restate_types::{metadata_store::keys, Version};
+use restate_core::metadata_store::MetadataStore;
+use restate_metadata_server::{MetadataStoreClient, ReadError, WriteError};
+use restate_types::{
+    metadata::{Precondition, VersionedValue},
+    metadata_store::keys,
+    Version,
+};
 
 /// ETag header.
 const HEADER_ETAG: &str = "ETag";

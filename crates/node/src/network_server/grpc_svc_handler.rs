@@ -225,7 +225,9 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
                     debug!("Failed retrieving metadata server status from '{node_id}': {err}");
                     continue;
                 }
-            };
+            }
+            .summary
+            .expect("summary must be set");
 
             if let Some(configuration) = response.configuration {
                 if let Some(max_configuration) = max_metadata_cluster_configuration {

@@ -25,9 +25,7 @@ use crate::network_server::NetworkServer;
 use crate::roles::{AdminRole, BaseRole, IngressRole, WorkerRole};
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
-use restate_core::metadata_store::{
-    retry_on_network_error, Precondition, ReadWriteError, WriteError,
-};
+use restate_core::metadata_store::{retry_on_network_error, ReadWriteError, WriteError};
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
@@ -46,6 +44,7 @@ use restate_types::live::Live;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
+use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,

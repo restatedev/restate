@@ -15,6 +15,7 @@ use clap::Parser;
 use codederror::CodedError;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use restate_core::task_center::TaskCenterMonitoring;
+use restate_types::metadata::Precondition;
 use tracing::trace;
 
 use bifrost_benchpress::util::{print_prometheus_stats, print_rocksdb_stats};
@@ -25,7 +26,7 @@ use restate_core::{
     TaskCenterBuilder,
 };
 use restate_errors::fmt::RestateCode;
-use restate_metadata_server::{MetadataStoreClient, Precondition};
+use restate_metadata_server::MetadataStoreClient;
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_types::config::{
