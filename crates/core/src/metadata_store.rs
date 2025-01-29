@@ -142,7 +142,7 @@ impl VersionedValue {
 flexbuffers_storage_encode_decode!(VersionedValue);
 
 /// Preconditions for the write operations of the [`MetadataStore`].
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_more::Display)]
 pub enum Precondition {
     /// No precondition
     None,

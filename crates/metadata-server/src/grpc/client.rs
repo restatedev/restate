@@ -18,17 +18,14 @@ use bytestring::ByteString;
 use parking_lot::Mutex;
 use rand::prelude::IteratorRandom;
 use restate_core::metadata_store::{
-    retry_on_retryable_error, MetadataStore, Precondition, ProvisionError, ReadError,
-    VersionedValue, WriteError,
+    MetadataStore, Precondition, ProvisionError, ReadError, VersionedValue, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
 use restate_types::config::{Configuration, MetadataStoreClientOptions};
-use restate_types::errors::MaybeRetryableError;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
-use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};
 use std::collections::HashMap;
@@ -36,7 +33,9 @@ use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::{Code, Status};
-use tracing::debug;
+use tracing::{debug, instrument};
+
+const MAX_RETRY_ATTEMPTS: usize = 3;
 
 /// Client end to interact with a set of metadata servers.
 #[derive(Debug, Clone)]
@@ -61,28 +60,21 @@ impl GrpcMetadataServerClient {
             if let Some(metadata) = Metadata::try_with_current(|m| m.clone()) {
                 tc.spawn_child(
                     TaskKind::Background,
-                    "update-metadata-store-channels",
+                    "update-metadata-server-channels",
                     channel_manager.clone().run(metadata),
                 )
                 .expect("to spawn new tasks");
             } else {
-                debug!("The GrpcMetadataStoreClient has been started w/o access to the Metadata. Therefore, it will not update the metadata store endpoints automatically.");
+                debug!("The GrpcMetadataServerClient has been started w/o access to the Metadata. Therefore, it will not update the metadata store endpoints automatically.");
             }
         } else {
-            debug!("The GrpcMetadataStoreClient has been started outside of the TaskCenter. Therefore, it will not update the metadata store endpoints automatically.");
+            debug!("The GrpcMetadataServerClient has been started outside of the TaskCenter. Therefore, it will not update the metadata store endpoints automatically.");
         }
 
         Self {
             channel_manager,
             current_leader: svc_client,
         }
-    }
-
-    fn retry_policy() -> RetryPolicy {
-        Configuration::pinned()
-            .common
-            .network_error_retry_policy
-            .clone()
     }
 
     fn choose_random_endpoint(&self) {
@@ -118,127 +110,144 @@ impl GrpcMetadataServerClient {
         svc_client_guard.clone()
     }
 
-    fn handle_grpc_response<T, E>(
-        &self,
-        response: Result<T, Status>,
-        map_status: impl Fn(Status) -> E,
-    ) -> Result<T, E>
-    where
-        E: MaybeRetryableError,
-    {
-        response.map_err(|status| {
-            let known_leader = KnownLeader::from_status(&status);
-            let err = map_status(status);
-
-            if let Some(known_leader) = known_leader {
-                self.choose_known_leader(known_leader);
-            } else if err.retryable() {
-                self.choose_random_endpoint();
-            }
-            err
-        })
+    fn has_known_leader(&self, status: &Status) -> bool {
+        if let Some(known_leader) = KnownLeader::from_status(status) {
+            self.choose_known_leader(known_leader);
+            true
+        } else {
+            self.choose_random_endpoint();
+            false
+        }
     }
 }
 
 #[async_trait]
 impl MetadataStore for GrpcMetadataServerClient {
+    #[instrument(level = "debug", skip(self))]
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
-        let retry_policy = Self::retry_policy();
-
-        let response = retry_on_retryable_error(retry_policy, || async {
+        let mut attempt = 0;
+        loop {
             let mut client = self
                 .current_client()
                 .ok_or_else(|| ReadError::terminal(NoKnownMetadataServer))?;
 
-            self.handle_grpc_response(
-                client
-                    .get(GetRequest {
-                        key: key.clone().into(),
-                    })
-                    .await,
-                map_status_to_read_error,
-            )
-        })
-        .await?;
-
-        response
-            .into_inner()
-            .try_into()
-            .map_err(|err: ConversionError| ReadError::terminal(err))
+            return match client
+                .get(GetRequest {
+                    key: key.clone().into(),
+                })
+                .await
+            {
+                Ok(response) => response
+                    .into_inner()
+                    .try_into()
+                    .map_err(|err: ConversionError| ReadError::terminal(err)),
+                Err(status) => {
+                    // try again if the error response contains information about the known leader,
+                    // and we have an attempt left
+                    if self.has_known_leader(&status) && attempt < MAX_RETRY_ATTEMPTS {
+                        attempt += 1;
+                        debug!(%attempt, %status, "Retrying failed operation because we learned about the current leader.");
+                        continue;
+                    }
+                    Err(map_status_to_read_error(status))
+                }
+            };
+        }
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
-        let retry_policy = Self::retry_policy();
-
-        let response = retry_on_retryable_error(retry_policy, || async {
+        let mut attempt = 0;
+        loop {
             let mut client = self
                 .current_client()
                 .ok_or_else(|| ReadError::terminal(NoKnownMetadataServer))?;
 
-            self.handle_grpc_response(
-                client
-                    .get_version(GetRequest {
-                        key: key.clone().into(),
-                    })
-                    .await,
-                map_status_to_read_error,
-            )
-        })
-        .await?;
-
-        Ok(response.into_inner().into())
+            return match client
+                .get_version(GetRequest {
+                    key: key.clone().into(),
+                })
+                .await
+            {
+                Ok(response) => return Ok(response.into_inner().into()),
+                Err(status) => {
+                    // try again if the error response contains information about the known leader,
+                    // and we have an attempt left
+                    if self.has_known_leader(&status) && attempt < MAX_RETRY_ATTEMPTS {
+                        attempt += 1;
+                        debug!(%attempt, %status, "Retrying failed operation because we learned about the current leader.");
+                        continue;
+                    }
+                    Err(map_status_to_read_error(status))
+                }
+            };
+        }
     }
 
+    #[instrument(level = "debug", skip_all, fields(%key, version = %value.version, %precondition))]
     async fn put(
         &self,
         key: ByteString,
         value: VersionedValue,
         precondition: Precondition,
     ) -> Result<(), WriteError> {
-        let retry_policy = Self::retry_policy();
-
-        retry_on_retryable_error(retry_policy, || async {
+        let mut attempt = 0;
+        loop {
             let mut client = self
                 .current_client()
                 .ok_or_else(|| WriteError::terminal(NoKnownMetadataServer))?;
 
-            self.handle_grpc_response(
-                client
-                    .put(PutRequest {
-                        key: key.clone().into(),
-                        value: Some(value.clone().into()),
-                        precondition: Some(precondition.clone().into()),
-                    })
-                    .await,
-                map_status_to_write_error,
-            )
-        })
-        .await?;
-
-        Ok(())
+            return match client
+                .put(PutRequest {
+                    key: key.clone().into(),
+                    value: Some(value.clone().into()),
+                    precondition: Some(precondition.clone().into()),
+                })
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(status) => {
+                    // try again if the error response contains information about the known leader,
+                    // and we have an attempt left
+                    if self.has_known_leader(&status) && attempt < MAX_RETRY_ATTEMPTS {
+                        attempt += 1;
+                        debug!(%attempt, %status, "Retrying failed operation because we learned about the current leader.");
+                        continue;
+                    }
+                    Err(map_status_to_write_error(status))
+                }
+            };
+        }
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
-        let retry_policy = Self::retry_policy();
-
-        retry_on_retryable_error(retry_policy, || async {
+        let mut attempt = 0;
+        loop {
             let mut client = self
                 .current_client()
                 .ok_or_else(|| WriteError::terminal(NoKnownMetadataServer))?;
 
-            self.handle_grpc_response(
-                client
-                    .delete(DeleteRequest {
-                        key: key.clone().into(),
-                        precondition: Some(precondition.clone().into()),
-                    })
-                    .await,
-                map_status_to_write_error,
-            )
-        })
-        .await?;
-
-        Ok(())
+            return match client
+                .delete(DeleteRequest {
+                    key: key.clone().into(),
+                    precondition: Some(precondition.clone().into()),
+                })
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(status) => {
+                    // try again if the error response contains information about the known leader,
+                    // and we have an attempt left
+                    if self.has_known_leader(&status) && attempt < MAX_RETRY_ATTEMPTS {
+                        attempt += 1;
+                        debug!(%attempt, %status, "Retrying failed operation because we learned about the current leader.");
+                        continue;
+                    }
+                    Err(map_status_to_write_error(status))
+                }
+            };
+        }
     }
 
     async fn provision(
