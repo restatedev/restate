@@ -10,10 +10,11 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use itertools::Itertools;
 use rand::seq::IteratorRandom;
-use tracing::debug;
+use tracing::{debug, info};
 
 use restate_core::metadata_store::{Precondition, ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
@@ -21,6 +22,7 @@ use restate_core::{
     cancellation_watcher, Metadata, MetadataKind, MetadataWriter, ShutdownError, SyncError,
     TargetVersion, TaskCenter, TaskHandle, TaskKind,
 };
+use restate_futures_util::overdue_log::OverdueLoggingExt;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::identifiers::PartitionId;
 use restate_types::locality::LocationScope;
@@ -133,7 +135,6 @@ impl<T: TransportConnect> Scheduler<T> {
             // we need to wait until both partitions and logs are created
             return Ok(());
         }
-
         let version = partition_table.version();
 
         // todo(azmy): avoid cloning the partition table every time by keeping
@@ -156,7 +157,10 @@ impl<T: TransportConnect> Scheduler<T> {
         });
 
         if let Some(partition_table) = builder.build_if_modified() {
-            debug!("Updated partition table placement: {partition_table:?}");
+            debug!(
+                "Will attempt to write partition table {} to metadata store",
+                partition_table.version()
+            );
             self.try_update_partition_table(version, partition_table)
                 .await?;
 
@@ -179,27 +183,50 @@ impl<T: TransportConnect> Scheduler<T> {
                 &partition_table,
                 Precondition::MatchesVersion(version),
             )
+            .log_slow_after(
+                Duration::from_secs(1),
+                tracing::Level::DEBUG,
+                format!("Updating partition table to version {version}"),
+            )
+            .with_overdue(Duration::from_secs(3), tracing::Level::INFO)
             .await
         {
-            Ok(_) => {}
-            Err(WriteError::FailedPrecondition(msg)) => {
-                debug!("Partition table update failed due to: {msg}");
-                // There is no need to wait for the partition table
-                // to synchronize. The update_partition_placement will
-                // get called again anyway once the partition table is updated.
-                self.sync_partition_table()?;
+            Ok(_) => {
+                debug!(
+                    "Partition table {} has been written to metadata store",
+                    partition_table.version()
+                );
+            }
+            Err(WriteError::FailedPrecondition(err)) => {
+                info!(
+                    err,
+                    "Write partition table to metadata store was rejected due to version conflict, \
+                        this is benign unless it's happening repeatedly. In such case, we might be in \
+                        a tight race with another admin node"
+                );
+                // There is no need to wait for the partition table to synchronize.
+                // The update_partition_placement will get called again anyway once
+                // the partition table is updated.
+                self.sync_partition_table(partition_table.version().next())?;
             }
             Err(err) => return Err(err.into()),
         }
 
+        let new_version = partition_table.version();
         self.metadata_writer
             .update(Arc::new(partition_table))
+            .log_slow_after(
+                Duration::from_millis(100),
+                tracing::Level::DEBUG,
+                format!("Updating partition table in metadata manager to {new_version}."),
+            )
+            .with_overdue(Duration::from_secs(2), tracing::Level::INFO)
             .await?;
         Ok(())
     }
 
     /// Synchronize partition table asynchronously
-    fn sync_partition_table(&mut self) -> Result<(), Error> {
+    fn sync_partition_table(&mut self, next_version: Version) -> Result<(), Error> {
         if self
             .inflight_sync_task
             .as_ref()
@@ -211,11 +238,11 @@ impl<T: TransportConnect> Scheduler<T> {
         let task = TaskCenter::spawn_unmanaged(
             TaskKind::Disposable,
             "scheduler-sync-partition-table",
-            async {
+            async move {
                 let cancelled = cancellation_watcher();
                 let metadata = Metadata::current();
                 tokio::select! {
-                    result = metadata.sync(MetadataKind::PartitionTable, TargetVersion::Latest) => {
+                    result = metadata.sync(MetadataKind::PartitionTable, TargetVersion::Version(next_version)) => {
                         if let Err(err) = result {
                             debug!("Failed to sync partition table metadata: {err}");
                         }
