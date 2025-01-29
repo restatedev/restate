@@ -104,6 +104,8 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
         cluster_state_tx: Arc<watch::Sender<Arc<ClusterState>>>,
     ) -> Result<Option<TaskHandle<anyhow::Result<()>>>, ShutdownError> {
         let refresh = async move {
+            // todo: potentially downgrade to trace()...
+            debug!("Refreshing cluster state");
             let last_state = Arc::clone(&cluster_state_tx.borrow());
             let metadata = Metadata::current();
             // make sure we have a partition table that equals or newer than last refresh
@@ -217,6 +219,8 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             };
 
             // publish the new state
+            // todo: potentially downgrade to trace!
+            debug!("New cluster state is acquired, publishing");
             cluster_state_tx.send(Arc::new(state))?;
             Ok(())
         };
