@@ -708,10 +708,8 @@ impl StartedNode {
     pub async fn metadata_client(
         &self,
     ) -> Result<restate_metadata_server::MetadataStoreClient, GenericError> {
-        restate_metadata_server::local::create_client(
-            self.config.common.metadata_store_client.clone(),
-        )
-        .await
+        restate_metadata_server::create_client(self.config.common.metadata_store_client.clone())
+            .await
     }
 
     /// Check to see if the admin address is healthy. Returns false if this node has no admin role.

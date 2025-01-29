@@ -13,6 +13,7 @@ pub mod local;
 pub mod raft;
 mod util;
 
+use crate::grpc::client::GrpcMetadataServerClient;
 use crate::grpc::handler::MetadataStoreHandler;
 use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 use assert2::let_assert;
@@ -21,6 +22,9 @@ use bytestring::ByteString;
 use grpc::pb_conversions::ConversionError;
 use prost::Message;
 use raft_proto::eraftpb::Snapshot;
+use restate_core::metadata_store::providers::{
+    create_object_store_based_meta_store, EtcdMetadataStore,
+};
 use restate_core::metadata_store::VersionedValue;
 pub use restate_core::metadata_store::{
     MetadataStoreClient, Precondition, ReadError, ReadModifyWriteError, WriteError,
@@ -28,7 +32,8 @@ pub use restate_core::metadata_store::{
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
 use restate_types::config::{
-    Configuration, MetadataServerKind, MetadataServerOptions, RocksDbOptions,
+    Configuration, MetadataServerKind, MetadataServerOptions, MetadataStoreClientOptions,
+    RocksDbOptions,
 };
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
@@ -39,7 +44,7 @@ use restate_types::nodes_config::{
 };
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
-use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+use restate_types::{config, GenerationalNodeId, PlainNodeId, Version};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
@@ -658,6 +663,35 @@ impl Default for MetadataServerConfiguration {
             members: HashMap::default(),
         }
     }
+}
+
+/// Creates a [`MetadataStoreClient`] for configured metadata store.
+pub async fn create_client(
+    metadata_store_client_options: MetadataStoreClientOptions,
+) -> Result<MetadataStoreClient, GenericError> {
+    let backoff_policy = Some(
+        metadata_store_client_options
+            .metadata_store_client_backoff_policy
+            .clone(),
+    );
+
+    let client = match metadata_store_client_options.metadata_store_client.clone() {
+        config::MetadataStoreClient::Embedded { addresses } => {
+            let inner_client =
+                GrpcMetadataServerClient::new(addresses, metadata_store_client_options);
+            MetadataStoreClient::new(inner_client, backoff_policy)
+        }
+        config::MetadataStoreClient::Etcd { addresses } => {
+            let store = EtcdMetadataStore::new(addresses, &metadata_store_client_options).await?;
+            MetadataStoreClient::new(store, backoff_policy)
+        }
+        conf @ config::MetadataStoreClient::ObjectStore { .. } => {
+            let store = create_object_store_based_meta_store(conf).await?;
+            MetadataStoreClient::new(store, backoff_policy)
+        }
+    };
+
+    Ok(client)
 }
 
 /// Ensures that the initial nodes configuration contains the current node and has the right
