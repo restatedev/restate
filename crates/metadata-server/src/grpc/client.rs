@@ -288,14 +288,16 @@ struct NoKnownMetadataServer;
 
 fn map_status_to_read_error(status: Status) -> ReadError {
     match &status.code() {
-        Code::Unavailable => ReadError::retryable(status),
+        // Transport errors manifest as unknown statuses, hence mark them as retryable
+        Code::Unavailable | Code::Unknown => ReadError::retryable(status),
         _ => ReadError::terminal(status),
     }
 }
 
 fn map_status_to_write_error(status: Status) -> WriteError {
     match &status.code() {
-        Code::Unavailable => WriteError::retryable(status),
+        // Transport errors manifest as unknown statuses, hence mark them as retryable
+        Code::Unavailable | Code::Unknown => WriteError::retryable(status),
         Code::FailedPrecondition => WriteError::FailedPrecondition(status.message().to_string()),
         _ => WriteError::terminal(status),
     }
@@ -303,7 +305,8 @@ fn map_status_to_write_error(status: Status) -> WriteError {
 
 fn map_status_to_provision_error(status: Status) -> ProvisionError {
     match &status.code() {
-        Code::Unavailable => ProvisionError::retryable(status),
+        // Transport errors manifest as unknown statuses, hence mark them as retryable
+        Code::Unavailable | Code::Unknown => ProvisionError::retryable(status),
         _ => ProvisionError::terminal(status),
     }
 }
