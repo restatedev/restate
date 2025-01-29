@@ -755,3 +755,46 @@ fn prepare_initial_nodes_configuration(
 
     Ok(plain_node_id)
 }
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod tests {
+    use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
+    pub struct Value {
+        pub version: Version,
+        pub value: u32,
+    }
+
+    impl Default for Value {
+        fn default() -> Self {
+            Self {
+                version: Version::MIN,
+                value: Default::default(),
+            }
+        }
+    }
+
+    impl Value {
+        pub fn new(value: u32) -> Self {
+            Value {
+                value,
+                ..Value::default()
+            }
+        }
+
+        pub fn next_version(mut self) -> Self {
+            self.version = self.version.next();
+            self
+        }
+    }
+
+    impl Versioned for Value {
+        fn version(&self) -> Version {
+            self.version
+        }
+    }
+
+    flexbuffers_storage_encode_decode!(Value);
+}

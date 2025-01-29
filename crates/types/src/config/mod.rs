@@ -139,6 +139,11 @@ pub fn reset_base_temp_dir_and_retain() -> PathBuf {
 pub fn set_current_config(config: Configuration) {
     #[cfg(not(any(test, feature = "test-util")))]
     let proposed_cwd = config.common.base_dir().join(config.node_name());
+    #[cfg(any(test, feature = "test-util"))]
+    if let Some(base_dir) = config.common.base_dir_opt() {
+        // overwrite temp directory if an explicit base dir was configured
+        set_base_temp_dir(base_dir.clone().join(config.node_name()));
+    }
     // todo: potentially validate the config
     CONFIGURATION.store(Arc::new(config));
     #[cfg(not(any(test, feature = "test-util")))]

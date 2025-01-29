@@ -11,7 +11,6 @@
 use bytestring::ByteString;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
 use test_log::test;
 
 use restate_core::network::{FailingConnector, NetworkServerBuilder};
@@ -25,41 +24,12 @@ use restate_types::health::HealthStatus;
 use restate_types::live::{BoxedLiveLoad, Live};
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::protobuf::common::NodeRpcStatus;
-use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
+use restate_types::{Version, Versioned};
 
 use crate::grpc::client::GrpcMetadataServerClient;
 use crate::local::LocalMetadataServer;
+use crate::tests::Value;
 use crate::{MetadataServer, MetadataServerRunner, MetadataStoreClient, Precondition, WriteError};
-
-#[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
-struct Value {
-    version: Version,
-    value: String,
-}
-
-impl Default for Value {
-    fn default() -> Self {
-        Self {
-            version: Version::MIN,
-            value: Default::default(),
-        }
-    }
-}
-
-impl Value {
-    fn next_version(mut self) -> Self {
-        self.version = self.version.next();
-        self
-    }
-}
-
-impl Versioned for Value {
-    fn version(&self) -> Version {
-        self.version
-    }
-}
-
-flexbuffers_storage_encode_decode!(Value);
 
 /// Tests basic operations of the metadata store.
 #[test(restate_core::test(flavor = "multi_thread", worker_threads = 2))]
@@ -69,17 +39,17 @@ async fn basic_metadata_store_operations() -> anyhow::Result<()> {
     let key: ByteString = "key".into();
     let value = Value {
         version: Version::MIN,
-        value: "test_value".to_owned(),
+        value: 1,
     };
 
     let next_value = Value {
         version: Version::from(2),
-        value: "next_value".to_owned(),
+        value: 2,
     };
 
     let other_value = Value {
         version: Version::MIN,
-        value: "other_value".to_owned(),
+        value: 3,
     };
 
     // first get should be empty
@@ -227,7 +197,7 @@ async fn durable_storage() -> anyhow::Result<()> {
                 metadata_key,
                 &Value {
                     version: Version::from(key),
-                    value,
+                    value: key,
                 },
                 Precondition::DoesNotExist,
             )
@@ -258,7 +228,7 @@ async fn durable_storage() -> anyhow::Result<()> {
             client.get(metadata_key).await?,
             Some(Value {
                 version: Version::from(key),
-                value
+                value: key,
             })
         );
     }
