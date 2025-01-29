@@ -19,11 +19,13 @@ use rand::prelude::IteratorRandom;
 use rand::thread_rng;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tracing::{debug, error, trace, trace_span, Instrument};
+use tracing::{debug, error, info, trace, trace_span, Instrument};
 
 use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_core::metadata_store::{Precondition, WriteError};
-use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt};
+use restate_core::{
+    Metadata, MetadataKind, MetadataWriter, ShutdownError, TargetVersion, TaskCenterFutureExt,
+};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;
@@ -1188,7 +1190,7 @@ impl LogsController {
         self.async_operations.spawn(async move {
                 if let Some(debounce) = &mut debounce {
                     let delay = debounce.next().unwrap_or(FALLBACK_MAX_RETRY_DELAY);
-                    debug!(?delay, %previous_version, "Wait before attempting to write logs");
+                    debug!(?delay, %previous_version, "Wait before attempting to write the log chain metadata");
                     tokio::time::sleep(delay).await;
                 }
 
@@ -1202,30 +1204,16 @@ impl LogsController {
                 {
                     return match err {
                         WriteError::FailedPrecondition(err) => {
-                            debug!("Detected a concurrent modification of logs. Fetching the latest logs now. {err}");
-                            // There was a concurrent modification of the logs. Fetch the latest version.
-                            match metadata_writer.metadata_store_client()
-                                .get::<Logs>(BIFROST_CONFIG_KEY.clone())
-                                .await
-                            {
-                                Ok(result) => {
-                                    let logs = result.expect("should be present");
-                                    // we are only failing if we are shutting down
-                                    let _ = metadata_writer.update(Arc::new(logs)).await;
-                                    Event::NewLogs
-                                }
-                                Err(err) => {
-                                    debug!("failed committing new logs: {err}");
-                                    Event::WriteLogsFailed {
-                                        logs,
-                                        previous_version,
-                                        debounce,
-                                    }
-                                }
-                            }
+                            debug!(
+                                %err,
+                                "Detected a concurrent modification of the log chain. Fetching latest"
+                            );
+                            // Perhaps we already have a newer version, if not, fetch latest.
+                            let _ = Metadata::current().sync(MetadataKind::Logs, TargetVersion::Version(previous_version.next())).await;
+                            Event::NewLogs
                         }
                         err => {
-                            debug!("failed writing new logs: {err}");
+                            info!(%err, "Failed writing new log chain to metadata store, will retry");
                             Event::WriteLogsFailed {
                                 logs,
                                 previous_version,
@@ -1276,7 +1264,7 @@ impl LogsController {
                         }
                     }
                     Err(err) => {
-                        debug!(%log_id, %segment_index, "failed sealing loglet: {err}");
+                        debug!(%log_id, %segment_index, %err, "Failed sealing loglet");
                         Event::SealFailed {
                             log_id,
                             segment_index,

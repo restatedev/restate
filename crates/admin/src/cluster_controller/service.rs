@@ -739,7 +739,7 @@ impl SealAndExtendTask {
                     &self.observed_cluster_state,
                     previous_params.as_ref(),
                     Metadata::with_current(|m| {
-                        PartitionTableNodeSetSelectorHints::from(m.partition_table_ref())
+                        PartitionTableNodeSetSelectorHints::from(m.partition_table_snapshot())
                     })
                     .preferred_sequencer(&self.log_id),
                 )
