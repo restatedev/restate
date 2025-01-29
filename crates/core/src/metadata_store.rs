@@ -11,59 +11,148 @@
 pub mod providers;
 mod test_util;
 
-#[cfg(any(test, feature = "test-util"))]
-use crate::metadata_store::test_util::InMemoryMetadataStore;
+use std::future::Future;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
+use codederror::{error_code, Code, CodedError};
+use tracing::{debug, trace};
+
 use restate_types::errors::GenericError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, StorageEncodeError};
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
-use std::future::Future;
-use std::sync::Arc;
-use tracing::{debug, trace};
 
-#[derive(Debug, thiserror::Error)]
+#[cfg(any(test, feature = "test-util"))]
+use crate::metadata_store::test_util::InMemoryMetadataStore;
+
+pub const CODE_UNIMPLEMENTED: Code = error_code!(
+    "E0001",
+    help = "Unimplemented Function",
+    description =
+        "This could indicate a misconfigured client or a missing metadata-store role on node."
+);
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum InternalError {
+    #[error("{0}")]
+    Message(String),
+    #[error("{0}")]
+    WithCode(String, &'static Code),
+}
+
+impl CodedError for InternalError {
+    fn code(&self) -> Option<&'static Code> {
+        match self {
+            Self::Message(_) => None,
+            Self::WithCode(_, code) => Some(code),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, CodedError)]
 pub enum ReadError {
+    #[code(unknown)]
     #[error("network error: {0}")]
     Network(GenericError),
     #[error("internal error: {0}")]
-    Internal(String),
+    Internal(
+        #[source]
+        #[code]
+        InternalError,
+    ),
+    #[code(unknown)]
     #[error("codec error: {0}")]
     Codec(GenericError),
+    #[code(unknown)]
     #[error("store error: {0}")]
     Store(GenericError),
 }
 
-#[derive(Debug, thiserror::Error)]
+impl ReadError {
+    pub fn internal(msg: String) -> Self {
+        Self::Internal(InternalError::Message(msg))
+    }
+
+    pub fn internal_with_code(msg: String, code: Option<&'static Code>) -> Self {
+        match code {
+            Some(code) => Self::Internal(InternalError::WithCode(msg, code)),
+            None => Self::internal(msg),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, CodedError)]
 pub enum WriteError {
+    #[code(unknown)]
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
+    #[code(unknown)]
     #[error("network error: {0}")]
     Network(GenericError),
     #[error("internal error: {0}")]
-    Internal(String),
+    Internal(
+        #[source]
+        #[code]
+        InternalError,
+    ),
+    #[code(unknown)]
     #[error("codec error: {0}")]
     Codec(GenericError),
+    #[code(unknown)]
     #[error("store error: {0}")]
     Store(GenericError),
 }
 
-#[derive(Debug, thiserror::Error)]
+impl WriteError {
+    pub fn internal(msg: String) -> Self {
+        Self::Internal(InternalError::Message(msg))
+    }
+
+    pub fn internal_with_code(msg: String, code: Option<&'static Code>) -> Self {
+        match code {
+            Some(code) => Self::Internal(InternalError::WithCode(msg, code)),
+            None => Self::internal(msg),
+        }
+    }
+}
+#[derive(Debug, thiserror::Error, CodedError)]
 pub enum ProvisionError {
+    #[code(unknown)]
     #[error("network error: {0}")]
     Network(GenericError),
     #[error("internal error: {0}")]
-    Internal(String),
+    Internal(
+        #[source]
+        #[code]
+        InternalError,
+    ),
+    #[code(unknown)]
     #[error("codec error: {0}")]
     Codec(GenericError),
+    #[code(unknown)]
     #[error("store error: {0}")]
     Store(GenericError),
+    #[code(unknown)]
     #[error("provisioning is not supported: {0}")]
     NotSupported(String),
+}
+
+impl ProvisionError {
+    pub fn internal(msg: String) -> Self {
+        Self::Internal(InternalError::Message(msg))
+    }
+
+    pub fn internal_with_code(msg: String, code: Option<&'static Code>) -> Self {
+        match code {
+            Some(code) => Self::Internal(InternalError::WithCode(msg, code)),
+            None => Self::internal(msg),
+        }
+    }
 }
 
 impl MetadataStoreClientError for ProvisionError {
@@ -413,16 +502,24 @@ pub fn serialize_value<T: Versioned + StorageEncode>(
     Ok(versioned_value)
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, CodedError)]
 pub enum ReadWriteError {
+    #[code(unknown)]
     #[error("network error: {0}")]
     Network(GenericError),
     #[error("internal error: {0}")]
-    Internal(String),
+    Internal(
+        #[source]
+        #[code]
+        InternalError,
+    ),
+    #[code(unknown)]
     #[error("codec error: {0}")]
     Codec(GenericError),
+    #[code(unknown)]
     #[error("retries for operation on key '{0}' exhausted")]
     RetriesExhausted(ByteString),
+    #[code(unknown)]
     #[error("store error: {0}")]
     Store(GenericError),
 }
@@ -451,7 +548,7 @@ impl From<ReadError> for ReadWriteError {
     fn from(value: ReadError) -> Self {
         match value {
             ReadError::Network(err) => ReadWriteError::Network(err),
-            ReadError::Internal(msg) => ReadWriteError::Internal(msg),
+            ReadError::Internal(err) => ReadWriteError::Internal(err),
             ReadError::Codec(err) => ReadWriteError::Codec(err),
             ReadError::Store(err) => ReadWriteError::Store(err),
         }
@@ -465,7 +562,7 @@ impl From<WriteError> for ReadWriteError {
                 unreachable!("failed preconditions should be treated separately")
             }
             WriteError::Network(err) => ReadWriteError::Network(err),
-            WriteError::Internal(msg) => ReadWriteError::Internal(msg),
+            WriteError::Internal(err) => ReadWriteError::Internal(err),
             WriteError::Codec(err) => ReadWriteError::Codec(err),
             WriteError::Store(err) => ReadWriteError::Store(err),
         }

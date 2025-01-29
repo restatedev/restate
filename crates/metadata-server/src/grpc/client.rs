@@ -18,8 +18,8 @@ use bytestring::ByteString;
 use parking_lot::Mutex;
 use rand::prelude::IteratorRandom;
 use restate_core::metadata_store::{
-    retry_on_network_error, MetadataStore, MetadataStoreClientError, Precondition, ProvisionError,
-    ReadError, VersionedValue, WriteError,
+    self, retry_on_network_error, MetadataStore, MetadataStoreClientError, Precondition,
+    ProvisionError, ReadError, VersionedValue, WriteError,
 };
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
@@ -164,7 +164,7 @@ impl MetadataStore for GrpcMetadataServerClient {
 
         let response = retry_on_network_error(retry_policy, || async {
             let mut client = self.current_client().ok_or_else(|| {
-                ReadError::Internal("No metadata store address known.".to_string())
+                ReadError::internal("No metadata store address known.".to_string())
             })?;
 
             self.handle_grpc_response(
@@ -181,7 +181,7 @@ impl MetadataStore for GrpcMetadataServerClient {
         response
             .into_inner()
             .try_into()
-            .map_err(|err: ConversionError| ReadError::Internal(err.to_string()))
+            .map_err(|err: ConversionError| ReadError::internal(err.to_string()))
     }
 
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
@@ -189,7 +189,7 @@ impl MetadataStore for GrpcMetadataServerClient {
 
         let response = retry_on_network_error(retry_policy, || async {
             let mut client = self.current_client().ok_or_else(|| {
-                ReadError::Internal("No metadata store address known.".to_string())
+                ReadError::internal("No metadata store address known.".to_string())
             })?;
 
             self.handle_grpc_response(
@@ -216,7 +216,7 @@ impl MetadataStore for GrpcMetadataServerClient {
 
         retry_on_network_error(retry_policy, || async {
             let mut client = self.current_client().ok_or_else(|| {
-                WriteError::Internal("No metadata store address known.".to_string())
+                WriteError::internal("No metadata store address known.".to_string())
             })?;
 
             self.handle_grpc_response(
@@ -240,7 +240,7 @@ impl MetadataStore for GrpcMetadataServerClient {
 
         retry_on_network_error(retry_policy, || async {
             let mut client = self.current_client().ok_or_else(|| {
-                WriteError::Internal("No metadata store address known.".to_string())
+                WriteError::internal("No metadata store address known.".to_string())
             })?;
 
             self.handle_grpc_response(
@@ -302,7 +302,9 @@ impl MetadataStore for GrpcMetadataServerClient {
 fn map_status_to_read_error(address: &AdvertisedAddress, status: Status) -> ReadError {
     match &status.code() {
         Code::Unavailable => ReadError::Network(anyhow::anyhow!("[{address}] {status}").into()),
-        _ => ReadError::Internal(format!("[{address}] {status}")),
+        code => {
+            ReadError::internal_with_code(format!("[{address}] {status}"), code.into_error_code())
+        }
     }
 }
 
@@ -312,7 +314,9 @@ fn map_status_to_write_error(address: &AdvertisedAddress, status: Status) -> Wri
         Code::FailedPrecondition => {
             WriteError::FailedPrecondition(format!("[{address}] {}", status.message()))
         }
-        _ => WriteError::Internal(format!("[{address}] {status}")),
+        code => {
+            WriteError::internal_with_code(format!("[{address}] {status}"), code.into_error_code())
+        }
     }
 }
 
@@ -321,7 +325,24 @@ fn map_status_to_provision_error(address: &AdvertisedAddress, status: Status) ->
         Code::Unavailable => {
             ProvisionError::Network(anyhow::anyhow!("[{address}] {status}").into())
         }
-        _ => ProvisionError::Internal(format!("[{address}] {status}")),
+        code => ProvisionError::internal_with_code(
+            format!("[{address}] {status}"),
+            code.into_error_code(),
+        ),
+    }
+}
+
+trait TonicCodeExt {
+    fn into_error_code(self) -> Option<&'static codederror::Code>;
+}
+
+impl TonicCodeExt for Code {
+    fn into_error_code(self) -> Option<&'static codederror::Code> {
+        // todo(azmy): extend with more error codes
+        match self {
+            Self::Unimplemented => Some(&metadata_store::CODE_UNIMPLEMENTED),
+            _ => None,
+        }
     }
 }
 

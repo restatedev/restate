@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use codederror::CodedError;
 use restate_core::metadata_store::{MetadataStoreClient, MetadataStoreClientError, ReadWriteError};
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, SyncError, TargetVersion,
@@ -30,7 +31,7 @@ enum JoinError {
     MissingNodesConfiguration,
     #[error("detected a concurrent registration for node '{0}'")]
     ConcurrentNodeRegistration(String),
-    #[error("failed writing to metadata store: {0}")]
+    #[error("failed writing to metadata store: {:#}", .0.decorate())]
     MetadataStore(#[from] ReadWriteError),
     #[error("trying to join wrong cluster; expected '{expected_cluster_name}', actual '{actual_cluster_name}'")]
     ClusterMismatch {

@@ -119,10 +119,10 @@ impl ProvisionedMetadataStore for Client {
 
         self.sender
             .send(Commands::Get { key, tx })
-            .map_err(|_| ReadError::Internal("Object store fetch channel ".into()))?;
+            .map_err(|_| ReadError::internal("Object store fetch channel ".into()))?;
 
         rx.await.map_err(|_| {
-            ReadError::Internal("Object store fetch channel disconnected".to_string())
+            ReadError::internal("Object store fetch channel disconnected".to_string())
         })?
     }
 
@@ -131,10 +131,10 @@ impl ProvisionedMetadataStore for Client {
 
         self.sender
             .send(Commands::GetVersion { key, tx })
-            .map_err(|_| ReadError::Internal("Object store fetch channel ".into()))?;
+            .map_err(|_| ReadError::internal("Object store fetch channel ".into()))?;
 
         rx.await.map_err(|_| {
-            ReadError::Internal("Object store fetch channel disconnected".to_string())
+            ReadError::internal("Object store fetch channel disconnected".to_string())
         })?
     }
 
@@ -153,10 +153,10 @@ impl ProvisionedMetadataStore for Client {
                 precondition,
                 tx,
             })
-            .map_err(|_| WriteError::Internal("Object store channel ".into()))?;
+            .map_err(|_| WriteError::internal("Object store channel ".into()))?;
 
         rx.await
-            .map_err(|_| WriteError::Internal("Object store channel disconnected".to_string()))?
+            .map_err(|_| WriteError::internal("Object store channel disconnected".to_string()))?
     }
 
     async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
@@ -168,10 +168,10 @@ impl ProvisionedMetadataStore for Client {
                 precondition,
                 tx,
             })
-            .map_err(|_| WriteError::Internal("Object store fetch channel ".into()))?;
+            .map_err(|_| WriteError::internal("Object store fetch channel ".into()))?;
 
         rx.await.map_err(|_| {
-            WriteError::Internal("Object store fetch channel disconnected".to_string())
+            WriteError::internal("Object store fetch channel disconnected".to_string())
         })?
     }
 }

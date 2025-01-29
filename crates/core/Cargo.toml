@@ -26,6 +26,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 ciborium = { workspace = true}
+codederror = {workspace = true}
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }

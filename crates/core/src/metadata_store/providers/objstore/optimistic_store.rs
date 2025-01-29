@@ -179,7 +179,7 @@ impl OptimisticLockingMetadataStore {
                 Ok(_) => Ok(()),
                 Err(e) => Err(WriteError::Network(e.into())),
             },
-            Precondition::DoesNotExist => Err(WriteError::Internal(
+            Precondition::DoesNotExist => Err(WriteError::internal(
                 "This combination does not make sense".to_string(),
             )),
             Precondition::MatchesVersion(version) => {
