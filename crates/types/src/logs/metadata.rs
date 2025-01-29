@@ -37,16 +37,17 @@ use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
     PartialEq,
     Ord,
     PartialOrd,
-    Debug,
     Hash,
     Serialize,
     Deserialize,
     derive_more::From,
     derive_more::Into,
     derive_more::Display,
+    derive_more::Debug,
 )]
 #[repr(transparent)]
 #[serde(transparent)]
+#[debug("{}", _0)]
 pub struct SegmentIndex(pub(crate) u32);
 
 impl SegmentIndex {
@@ -218,11 +219,12 @@ pub struct LogsConfiguration {
     pub default_provider: ProviderConfiguration,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "LogsSerde", into = "LogsSerde")]
 pub struct Logs {
     pub(super) version: Version,
     pub(super) logs: HashMap<LogId, Chain>,
+    #[debug(skip)]
     pub(super) lookup_index: LookupIndex,
     pub(super) config: LogsConfiguration,
 }
