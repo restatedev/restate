@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-replicated-loglet = []
+replicated-loglet = ["auto-extend"]
 memory-loglet = ["restate-types/memory-loglet"]
 test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util"]
 # enables bifrost to auto seal and extend. This is a transitional feature that will be removed soon.
@@ -19,10 +19,11 @@ auto-extend = []
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-core = { workspace = true }
-restate-rocksdb = { workspace = true }
-restate-types = { workspace = true }
+restate-futures-util = { workspace = true }
 restate-metadata-server = { workspace = true }
+restate-rocksdb = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
