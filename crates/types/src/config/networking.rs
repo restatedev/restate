@@ -68,7 +68,7 @@ pub struct NetworkingOptions {
 impl Default for NetworkingOptions {
     fn default() -> Self {
         Self {
-            connect_timeout: Duration::from_secs(5).into(),
+            connect_timeout: Duration::from_secs(3).into(),
             connect_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,
