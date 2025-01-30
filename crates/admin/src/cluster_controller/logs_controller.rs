@@ -19,13 +19,14 @@ use rand::prelude::IteratorRandom;
 use rand::thread_rng;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, trace, trace_span, Instrument};
+use tracing::{debug, error, info, trace_span, Instrument};
 
 use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_core::metadata_store::{Precondition, WriteError};
 use restate_core::{
     Metadata, MetadataKind, MetadataWriter, ShutdownError, TargetVersion, TaskCenterFutureExt,
 };
+use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;
@@ -141,6 +142,12 @@ impl LogState {
                         segment_index: segment_index_to_seal,
                         seal_lsn,
                     }
+                } else {
+                    debug!(
+                        "Ignoring sealing because our state is at segment {} while the seal is for segment {}. Current state is LogState::Available, we are not transitioning to LogState::Sealed",
+                        segment_index,
+                        segment_index_to_seal,
+                    );
                 }
             }
             LogState::Sealing {
@@ -156,6 +163,12 @@ impl LogState {
                         segment_index: segment_index_to_seal,
                         seal_lsn,
                     }
+                } else {
+                    debug!(
+                        "Ignoring sealing because our state is at segment {} while the seal is for segment {}. Current state is LogState::Sealing",
+                        segment_index,
+                        segment_index_to_seal,
+                    );
                 }
             }
             LogState::Sealed { .. } => {}
@@ -1077,7 +1090,7 @@ impl LogsController {
             for (log_id, chain) in logs.iter() {
                 let tail_segment = chain.tail();
 
-                let writable_loglet = match bifrost.admin().writeable_loglet(*log_id).await {
+                let writeable_loglet = match bifrost.admin().writeable_loglet(*log_id).await {
                     Ok(loglet) => loglet,
                     Err(BifrostError::Shutdown(_)) => break,
                     Err(err) => {
@@ -1086,25 +1099,26 @@ impl LogsController {
                     }
                 };
 
-                if writable_loglet.segment_index() != tail_segment.index() {
+                if writeable_loglet.segment_index() != tail_segment.index() {
                     // writable segment in bifrost is probably ahead of our snapshot.
                     // then there is probably a new metadata update that will fix this
                     // for now we just ignore this segment
-                    trace!(%log_id, segment_index=%tail_segment.index(), "Segment is not tail segment, skip finding tail");
+                    debug!(%log_id, segment_index=%tail_segment.index(), "Segment is not tail segment, skip finding tail");
                     continue;
                 }
 
-                let found_tail = match writable_loglet.find_tail().await {
+                debug!(%log_id, segment_index=%writeable_loglet.segment_index(), "Attempting to find tail for loglet");
+                let found_tail = match writeable_loglet.find_tail().await {
                     Ok(tail) => tail,
                     Err(err) => {
-                        debug!(error=%err, %log_id, segment_index=%tail_segment.index(), "Failed to find tail for loglet");
+                        debug!(error=%err, %log_id, segment_index=%writeable_loglet.segment_index(), "Failed to find tail for loglet");
                         continue;
                     }
                 };
 
                 // send message
                 let update = LogTailUpdate {
-                    segment_index: writable_loglet.segment_index(),
+                    segment_index: writeable_loglet.segment_index(),
                     tail: found_tail,
                 };
 
@@ -1118,6 +1132,12 @@ impl LogsController {
 
         self.async_operations.spawn(
             find_tail
+                .log_slow_after(
+                    Duration::from_secs(3),
+                    tracing::Level::INFO,
+                    "Determining the tail status for all logs",
+                )
+                .with_overdue(Duration::from_secs(30), tracing::Level::WARN)
                 .instrument(trace_span!("scheduled-find-tail"))
                 .in_current_tc(),
         );
@@ -1204,7 +1224,7 @@ impl LogsController {
                 {
                     return match err {
                         WriteError::FailedPrecondition(err) => {
-                            debug!(
+                            info!(
                                 %err,
                                 "Detected a concurrent modification of the log chain. Fetching latest"
                             );
@@ -1241,26 +1261,26 @@ impl LogsController {
 
         self.async_operations.spawn(
             async move {
+                let start = tokio::time::Instant::now();
                 if let Some(debounce) = &mut debounce {
                     let delay = debounce.next().unwrap_or(FALLBACK_MAX_RETRY_DELAY);
-                    debug!(?delay, %log_id, %segment_index, "Wait before attempting to seal log");
+                    debug!(?delay, %log_id, %segment_index, "Wait before attempting to seal loglet");
                     tokio::time::sleep(delay).await;
                 }
 
                 match bifrost.admin().seal(log_id, segment_index).await {
                     Ok(sealed_segment) => {
-                        if sealed_segment.tail.is_sealed() {
-                            Event::SealSucceeded {
-                                log_id,
-                                segment_index,
-                                seal_lsn: sealed_segment.tail.offset(),
-                            }
-                        } else {
-                            Event::SealFailed {
-                                log_id,
-                                segment_index,
-                                debounce,
-                            }
+                        debug!(
+                            %log_id,
+                            %segment_index,
+                            "Loglet has been sealed in {:?}, stable tail is {}",
+                            start.elapsed(),
+                            sealed_segment.tail.offset(),
+                        );
+                        Event::SealSucceeded {
+                            log_id,
+                            segment_index,
+                            seal_lsn: sealed_segment.tail.offset(),
                         }
                     }
                     Err(err) => {
