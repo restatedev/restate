@@ -55,6 +55,15 @@ pub struct BifrostOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub seal_retry_interval: humantime::Duration,
 
+    /// # Auto recovery threshold
+    ///
+    /// Time interval after which bifrost's auto-recovery mechanism will kick in. This
+    /// is is triggered in scenarios where the control plane took too long to complete loglet
+    /// reconfigurations.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub auto_recovery_interval: humantime::Duration,
+
     /// # Append retry minimum interval
     ///
     /// Minimum retry duration used by the exponential backoff mechanism for bifrost appends.
@@ -103,6 +112,7 @@ impl Default for BifrostOptions {
             ),
             append_retry_min_interval: Duration::from_millis(10).into(),
             append_retry_max_interval: Duration::from_secs(1).into(),
+            auto_recovery_interval: Duration::from_secs(3).into(),
             seal_retry_interval: Duration::from_secs(2).into(),
             record_cache_memory_size: 20_000_000u64.into(), // 20MB
         }
