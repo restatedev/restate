@@ -30,7 +30,7 @@ impl PeriodicTailChecker {
     ) -> anyhow::Result<()> {
         debug!(
             %loglet_id,
-            "Starting a background periodic tail checker for this loglet",
+            "Started a background periodic tail checker for this loglet",
         );
         // Optimization. Don't run the check if the tail/seal has been updated recently.
         // Unfortunately this requires a litte bit more setup in the TailOffsetWatch so we don't do
@@ -50,7 +50,7 @@ impl PeriodicTailChecker {
             );
             if loglet.known_global_tail().is_sealed() {
                 // stop the task. we are sealed already.
-                trace!(
+                debug!(
                     %loglet_id,
                     is_sequencer = ?loglet.is_sequencer_local(),
                     "Loglet has been sealed, stopping the periodic tail checker",

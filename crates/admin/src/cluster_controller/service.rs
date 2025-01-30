@@ -21,7 +21,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use restate_metadata_server::ReadModifyWriteError;
 use restate_types::logs::metadata::{
@@ -320,7 +320,7 @@ impl<T: TransportConnect> Service<T> {
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     self.observed_cluster_state.update(&cluster_state);
                     // todo: potentially downgrade to trace
-                    debug!("Observed cluster state updated");
+                    trace!("Observed cluster state updated");
                     // todo quarantine this cluster controller if errors re-occur too often so that
                     //  another cluster controller can take over
                     if let Err(err) = state.update(&self) {
