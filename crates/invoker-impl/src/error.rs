@@ -156,16 +156,16 @@ pub(crate) enum InvokerError {
 }
 
 impl InvokerError {
-    pub(crate) fn error_details(&self) -> Option<&str> {
+    pub(crate) fn error_stacktrace(&self) -> Option<&str> {
         match self {
             InvokerError::Sdk(s) => {
                 s.error
-                    .description()
+                    .stacktrace()
                     .and_then(|s| if s.is_empty() { None } else { Some(s) })
             }
             InvokerError::SdkV2(s) => {
                 s.error
-                    .description()
+                    .stacktrace()
                     .and_then(|s| if s.is_empty() { None } else { Some(s) })
             }
             _ => None,
@@ -215,8 +215,8 @@ impl InvokerError {
                     e.message()
                 );
                 let mut err = InvocationError::new(e.code(), msg);
-                if let Some(desc) = e.description() {
-                    err = err.with_description(desc);
+                if let Some(desc) = e.stacktrace() {
+                    err = err.with_stacktrace(desc);
                 }
                 err
             }

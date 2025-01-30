@@ -45,6 +45,10 @@ use crate::pretty::PrettyFields;
 pub use exporter::set_global_node_id;
 
 const SERVICE_INSTANCE_NAME: &str = "service.instance.name";
+const RESTATE_INVOCATION_ID: &str ="restate.invocation.id";
+const RESTATE_INVOCATION_TARGET: &str = "restate.invocation.target";
+const RESTATE_ERROR_CODE: &str = "restate.error.code";
+const RESTATE_INVOCATION_ERROR_STACKTRACE: &str = "restate.invocation.error.stacktrace";
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]

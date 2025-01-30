@@ -1109,14 +1109,14 @@ where
                     "transient" => "true"
                 )
                 .increment(1);
-                if let Some(error_details) = error.error_details() {
+                if let Some(error_stacktrace) = error.error_stacktrace() {
                     // The error details is treated differently from the pretty printer,
                     // makes sure it prints at the end of the log the spammy exception
                     warn_it!(
                         error,
                         restate.invocation.id = %invocation_id,
                         restate.invocation.target = %ism.invocation_target,
-                        restate.error.details = %error_details,
+                        restate.invocation.error.stacktrace = %error_stacktrace,
                         "Invocation error, retrying in {}.",
                         humantime::format_duration(next_retry_timer_duration));
                 } else {

@@ -243,7 +243,7 @@ impl<'writer, T> FormatFields<'writer> for Pretty<T> {
 pub struct PrettyVisitor<'a> {
     writer: WriterWrapper<'a>,
     skip_restate_code: bool,
-    skip_restate_error_details: bool,
+    skip_restate_invocation_error_stacktrace: bool,
 }
 
 #[derive(Debug, Default)]
@@ -270,7 +270,7 @@ impl<'a> PrettyVisitor<'a> {
         Self {
             writer: WriterWrapper::new(writer, style),
             skip_restate_code,
-            skip_restate_error_details,
+            skip_restate_invocation_error_stacktrace: skip_restate_error_details,
         }
     }
 }
@@ -329,18 +329,18 @@ impl<'a> field::Visit for PrettyVisitor<'a> {
                     FIELD_NEW_LINE_INDENT,
                 )
             }
-            "restate.error.code" if self.skip_restate_code => {
+            RESTATE_ERROR_CODE if self.skip_restate_code => {
                 // skip, this is printed by the restate specific event printer below
             }
-            "restate.error.details" if self.skip_restate_error_details => {
+            RESTATE_INVOCATION_ERROR_STACKTRACE if self.skip_restate_invocation_error_stacktrace => {
                 // skip, this is printed by the restate specific event printer below
             }
-            "restate.invocation.id" => {
+            RESTATE_INVOCATION_ID => {
                 let bold = self.writer.bold();
                 let italic = self.writer.italic();
                 self.writer.write_padded(
                     &format_args!(
-                        "{}restate.invocation.id{}: {}{value:?}{}",
+                        "{}{RESTATE_INVOCATION_ID}{}: {}{value:?}{}",
                         bold.prefix(),
                         bold.infix(self.writer.style()),
                         italic.prefix(),
@@ -350,12 +350,12 @@ impl<'a> field::Visit for PrettyVisitor<'a> {
                     FIELD_NEW_LINE_INDENT,
                 )
             }
-            "restate.invocation.target" => {
+            RESTATE_INVOCATION_TARGET => {
                 let bold = self.writer.bold();
                 let italic = self.writer.italic();
                 self.writer.write_padded(
                     &format_args!(
-                        "{}restate.invocation.target{}: {}{value:?}{}",
+                        "{}{RESTATE_INVOCATION_TARGET}{}: {}{value:?}{}",
                         bold.prefix(),
                         bold.infix(self.writer.style()),
                         italic.prefix(),
@@ -418,9 +418,9 @@ impl<'a> RestateErrorCodeAndDetailsWriter<'a> {
 
 impl<'a> field::Visit for RestateErrorCodeAndDetailsWriter<'a> {
     fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
-        if field.name() == "restate.error.code" {
+        if field.name() == RESTATE_ERROR_CODE {
             self.0.write_padded(
-                &format_args!("restate.error.code: {value:?}"),
+                &format_args!("{RESTATE_ERROR_CODE}: {value:?}"),
                 FIELD_INDENT,
                 FIELD_NEW_LINE_INDENT,
             );
@@ -431,9 +431,9 @@ impl<'a> field::Visit for RestateErrorCodeAndDetailsWriter<'a> {
                 italic_bold.prefix(),
                 italic_bold.infix(self.0.style())
             ), FIELD_INDENT, FIELD_NEW_LINE_INDENT);
-        } else if field.name() == "restate.error.details" {
+        } else if field.name() == RESTATE_INVOCATION_ERROR_STACKTRACE {
             self.0.write_padded(
-                &format_args!("restate.error.details: {value:?}"),
+                &format_args!("{RESTATE_INVOCATION_ERROR_STACKTRACE}:\n{value:?}"),
                 FIELD_INDENT,
                 FIELD_NEW_LINE_INDENT,
             );

@@ -179,7 +179,7 @@ pub struct InvocationError {
     code: InvocationErrorCode,
     message: Cow<'static, str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<Cow<'static, str>>,
+    stacktrace: Option<Cow<'static, str>>,
 }
 
 pub const UNKNOWN_INVOCATION_ERROR: InvocationError =
@@ -194,8 +194,8 @@ impl Default for InvocationError {
 impl fmt::Display for InvocationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{}] {}", self.code(), self.message())?;
-        if self.description.is_some() {
-            write!(f, "\n{}", self.description().unwrap())?;
+        if self.stacktrace.is_some() {
+            write!(f, "\n{}", self.stacktrace().unwrap())?;
         }
         Ok(())
     }
@@ -208,7 +208,7 @@ impl InvocationError {
         Self {
             code,
             message: Cow::Borrowed(message),
-            description: None,
+            stacktrace: None,
         }
     }
 
@@ -216,7 +216,7 @@ impl InvocationError {
         Self {
             code: code.into(),
             message: Cow::Owned(message.to_string()),
-            description: None,
+            stacktrace: None,
         }
     }
 
@@ -224,7 +224,7 @@ impl InvocationError {
         Self {
             code: codes::INTERNAL,
             message: Cow::Owned(message.to_string()),
-            description: None,
+            stacktrace: None,
         }
     }
 
@@ -232,7 +232,7 @@ impl InvocationError {
         Self {
             code: codes::NOT_FOUND,
             message: Cow::Owned(format!("Service '{service}' not found. Check whether the deployment containing the service is registered.")),
-            description: None,
+            stacktrace: None,
         }
     }
 
@@ -243,7 +243,7 @@ impl InvocationError {
         Self {
             code: codes::NOT_FOUND,
             message: Cow::Owned(format!("Service handler '{service}/{handler}' not found. Check whether you've registered the correct version of your service.")),
-            description: None,
+            stacktrace: None,
         }
     }
 
@@ -257,13 +257,8 @@ impl InvocationError {
         self
     }
 
-    pub fn with_static_description(mut self, description: &'static str) -> InvocationError {
-        self.description = Some(Cow::Borrowed(description));
-        self
-    }
-
-    pub fn with_description(mut self, description: impl fmt::Display) -> InvocationError {
-        self.description = Some(Cow::Owned(description.to_string()));
+    pub fn with_stacktrace(mut self, stacktrace: impl fmt::Display) -> InvocationError {
+        self.stacktrace = Some(Cow::Owned(stacktrace.to_string()));
         self
     }
 
@@ -275,8 +270,8 @@ impl InvocationError {
         &self.message
     }
 
-    pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
+    pub fn stacktrace(&self) -> Option<&str> {
+        self.stacktrace.as_deref()
     }
 }
 
