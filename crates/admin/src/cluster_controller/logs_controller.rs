@@ -37,7 +37,7 @@ use restate_types::logs::metadata::{
 };
 use restate_types::logs::{LogId, LogletId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role, StorageState};
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, StorageState};
 use restate_types::partition_table::PartitionTable;
 use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
 use restate_types::replication::{NodeSetSelector, NodeSetSelectorOptions};
@@ -353,24 +353,7 @@ fn try_provisioning(
     }
 }
 
-fn logserver_candidate_filter(_node_id: PlainNodeId, config: &NodeConfig) -> bool {
-    // Important note: we check if the server has role=log-server when storage_state is
-    // provisioning because all nodes get provisioning storage by default, we only care about
-    // log-servers so we avoid adding other nodes in the nodeset. In the case of read-write, we
-    // don't check the role to not accidentally consider those nodes as non-logservers even if
-    // the role was removed by mistake (although some protection should be added for this)
-    match config.log_server_config.storage_state {
-        StorageState::ReadWrite => true,
-        StorageState::Provisioning if config.has_role(Role::LogServer) => true,
-        // explicit match to make it clear that we are excluding nodes with the following states,
-        // any new states added will force the compiler to fail
-        StorageState::Provisioning
-        | StorageState::Disabled
-        | StorageState::ReadOnly
-        | StorageState::DataLoss => false,
-    }
-}
-
+#[cfg(feature = "replicated-loglet")]
 fn logserver_writeable_node_filter(
     observed_cluster_state: &ObservedClusterState,
 ) -> impl Fn(PlainNodeId, &NodeConfig) -> bool + '_ {
@@ -420,7 +403,7 @@ pub fn build_new_replicated_loglet_configuration(
     let selection = NodeSetSelector::select(
         nodes_config,
         &replication,
-        logserver_candidate_filter,
+        restate_bifrost::providers::replicated_loglet::logserver_candidate_filter,
         logserver_writeable_node_filter(observed_cluster_state),
         opts,
     );
@@ -521,7 +504,7 @@ impl LogletConfiguration {
                 let Ok(selection) = NodeSetSelector::select(
                     nodes_config,
                     &params.replication,
-                    logserver_candidate_filter,
+                    restate_bifrost::providers::replicated_loglet::logserver_candidate_filter,
                     logserver_writeable_node_filter(observed_cluster_state),
                     opts,
                 ) else {
