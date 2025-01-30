@@ -175,15 +175,52 @@ impl LogState {
         }
     }
 
+    /// Moves the log state to [`LogState::Available`].
+    ///
+    /// # Panics
+    /// This method panics if you try setting the log state of a newer segment than the provided
+    /// one.
+    fn transition_to_available(
+        &mut self,
+        new_segment_index: SegmentIndex,
+        new_configuration: LogletConfiguration,
+    ) {
+        match self {
+            LogState::Provisioning { .. } => {
+                *self = LogState::Available {
+                    configuration: Some(new_configuration),
+                    segment_index: new_segment_index,
+                }
+            }
+            LogState::Available { segment_index, .. }
+            | LogState::Sealing { segment_index, .. }
+            | LogState::Sealed { segment_index, .. }
+                if *segment_index < new_segment_index =>
+            {
+                *self = LogState::Available {
+                    configuration: Some(new_configuration),
+                    segment_index: new_segment_index,
+                }
+            }
+            _ => {
+                panic!("Trying to transition LogState to Available with a segment that should be sealed.");
+            }
+        }
+    }
+
     /// Checks whether the current segment requires reconfiguration and, therefore, needs to be
     /// sealed. The method returns [`true`] if the state was moved to sealing.
-    fn try_transition_to_sealing(
+    fn try_transition_to_sealing<F>(
         &mut self,
         log_id: LogId,
         nodes_config: &NodesConfiguration,
         logs_configuration: &LogsConfiguration,
         observed_cluster_state: &ObservedClusterState,
-    ) -> bool {
+        preferred_sequencer_hint: F,
+    ) -> ShouldSeal
+    where
+        F: Fn() -> Option<NodeId>,
+    {
         match self {
             // We can only move from Available to Sealing
             LogState::Available {
@@ -200,18 +237,27 @@ impl LogState {
                         observed_cluster_state,
                     )
                 {
+                    let new_configuration = configuration
+                        .as_ref()
+                        .expect("configuration to be present")
+                        .try_reconfiguring(
+                            log_id,
+                            logs_configuration,
+                            observed_cluster_state,
+                            preferred_sequencer_hint(),
+                        );
                     *self = LogState::Sealing {
                         configuration: configuration.take(),
                         segment_index: *segment_index,
                     };
 
-                    true
+                    ShouldSeal::Yes(new_configuration)
                 } else {
-                    false
+                    ShouldSeal::No
                 }
             }
             LogState::Provisioning { .. } | LogState::Sealing { .. } | LogState::Sealed { .. } => {
-                false
+                ShouldSeal::No
             }
         }
     }
@@ -319,6 +365,13 @@ impl LogState {
             LogState::Sealed { segment_index, .. } => Some(*segment_index),
         }
     }
+}
+
+/// Whether we should seal the log segment or not. Optionally, a new configuration can be provided
+/// which would result in a `seal_and_extend` operation.
+enum ShouldSeal {
+    No,
+    Yes(Option<LogletConfiguration>),
 }
 
 /// Try provisioning a new log for the given [`ProviderKind`] based on the observed cluster state.
@@ -680,6 +733,7 @@ enum Effect {
         log_id: LogId,
         segment_index: SegmentIndex,
         debounce: Option<RetryIter<'static>>,
+        new_configuration: Option<LogletConfiguration>,
     },
     FindLogsTail,
 }
@@ -703,11 +757,18 @@ enum Event {
         segment_index: SegmentIndex,
         seal_lsn: Lsn,
     },
+    /// Sealing and extending of the given log segment succeeded
+    SealAndExtendSucceeded {
+        log_id: LogId,
+        new_segment_index: SegmentIndex,
+        new_configuration: LogletConfiguration,
+    },
     /// Sealing of the given log segment failed
     SealFailed {
         log_id: LogId,
         segment_index: SegmentIndex,
         debounce: Option<RetryIter<'static>>,
+        new_configuration: Option<LogletConfiguration>,
     },
     LogsTailUpdates {
         updates: LogsTailUpdates,
@@ -768,7 +829,12 @@ impl LogsControllerInner {
             return Ok(());
         }
 
-        self.seal_logs(nodes_config, observed_cluster_state, effects);
+        self.seal_logs(
+            nodes_config,
+            observed_cluster_state,
+            effects,
+            &node_set_selector_hints,
+        );
 
         let mut builder = self.current_logs.deref().clone().into_builder();
         self.provision_logs(
@@ -805,13 +871,15 @@ impl LogsControllerInner {
         nodes_config: &NodesConfiguration,
         observed_cluster_state: &ObservedClusterState,
         effects: &mut Vec<Effect>,
+        node_set_selector_hints: impl NodeSetSelectorHints,
     ) {
         for (log_id, log_state) in &mut self.logs_state {
-            if log_state.try_transition_to_sealing(
+            if let ShouldSeal::Yes(new_configuration) = log_state.try_transition_to_sealing(
                 *log_id,
                 nodes_config,
                 self.current_logs.configuration(),
                 observed_cluster_state,
+                || node_set_selector_hints.preferred_sequencer(log_id),
             ) {
                 effects.push(Effect::Seal {
                     log_id: *log_id,
@@ -819,6 +887,7 @@ impl LogsControllerInner {
                         .current_segment_index()
                         .expect("expect a valid segment"),
                     debounce: None,
+                    new_configuration,
                 })
             }
         }
@@ -903,10 +972,18 @@ impl LogsControllerInner {
             } => {
                 self.on_logs_sealed(log_id, segment_index, seal_lsn);
             }
+            Event::SealAndExtendSucceeded {
+                log_id,
+                new_segment_index,
+                new_configuration,
+            } => {
+                self.on_logs_sealed_and_extended(log_id, new_segment_index, new_configuration);
+            }
             Event::SealFailed {
                 log_id,
                 segment_index,
                 debounce,
+                new_configuration,
             } => {
                 if matches!(self.logs_state.get(&log_id), Some(LogState::Sealing { segment_index: current_segment_index, ..}) if segment_index == *current_segment_index)
                 {
@@ -915,6 +992,7 @@ impl LogsControllerInner {
                         log_id,
                         segment_index,
                         debounce: debounce.or_else(|| Some(self.retry_policy.clone().into_iter())),
+                        new_configuration,
                     })
                 }
             }
@@ -1020,6 +1098,17 @@ impl LogsControllerInner {
                     let log_id = (*partition_id).into();
                     LogState::Provisioning { log_id }
                 });
+        }
+    }
+
+    fn on_logs_sealed_and_extended(
+        &mut self,
+        log_id: LogId,
+        new_segment_index: SegmentIndex,
+        new_configuration: LogletConfiguration,
+    ) {
+        if let Some(logs_state) = self.logs_state.get_mut(&log_id) {
+            logs_state.transition_to_available(new_segment_index, new_configuration);
         }
     }
 
@@ -1187,8 +1276,9 @@ impl LogsController {
                     log_id,
                     segment_index,
                     debounce,
+                    new_configuration,
                 } => {
-                    self.seal_log(log_id, segment_index, debounce);
+                    self.seal_log(log_id, segment_index, debounce, new_configuration);
                 }
                 Effect::FindLogsTail => {
                     self.find_logs_tail();
@@ -1256,6 +1346,7 @@ impl LogsController {
         log_id: LogId,
         segment_index: SegmentIndex,
         mut debounce: Option<RetryIter<'static>>,
+        new_configuration: Option<LogletConfiguration>,
     ) {
         let bifrost = self.bifrost.clone();
 
@@ -1268,7 +1359,13 @@ impl LogsController {
                     tokio::time::sleep(delay).await;
                 }
 
-                match bifrost.admin().seal(log_id, segment_index).await {
+                let seal_result = if let Some(new_configuration) = &new_configuration {
+                    bifrost.admin().seal_and_extend_chain(log_id, Some(segment_index), Version::MIN, new_configuration.as_provider(), new_configuration.to_loglet_params().expect("to be infallible")).await
+                } else {
+                    bifrost.admin().seal(log_id, segment_index).await
+                };
+
+                match seal_result {
                     Ok(sealed_segment) => {
                         debug!(
                             %log_id,
@@ -1277,10 +1374,19 @@ impl LogsController {
                             start.elapsed(),
                             sealed_segment.tail.offset(),
                         );
-                        Event::SealSucceeded {
-                            log_id,
-                            segment_index,
-                            seal_lsn: sealed_segment.tail.offset(),
+
+                        if let Some(new_configuration) = new_configuration {
+                            Event::SealAndExtendSucceeded {
+                                log_id,
+                                new_segment_index: segment_index.next(),
+                                new_configuration
+                            }
+                        } else {
+                            Event::SealSucceeded {
+                                log_id,
+                                segment_index,
+                                seal_lsn: sealed_segment.tail.offset(),
+                            }
                         }
                     }
                     Err(err) => {
@@ -1289,6 +1395,7 @@ impl LogsController {
                             log_id,
                             segment_index,
                             debounce,
+                            new_configuration,
                         }
                     }
                 }
