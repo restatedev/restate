@@ -29,15 +29,17 @@ use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
 
 /// The strategy to use when bifrost fails to append or when it observes
 /// a sealed loglet while it's tailing a log.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// Please keep this enum ordered, i.e. anything > Allowed should still mean allowed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum ErrorRecoveryStrategy {
-    /// Eagerly extend the chain by creating a new loglet and appending to it.
-    ExtendChainPreferred,
+    /// Do not extend the chain, wait indefinitely instead until the error disappears.
+    Wait = 1,
     /// Extend the chain only running out of patience, others might be better suited to reconfigure
     /// the chain, but when desperate, we are allowed to seal and extend.
     ExtendChainAllowed,
-    /// Do not extend the chain, wait indefinitely instead until the error disappears.
-    Wait,
+    /// Eagerly extend the chain by creating a new loglet and appending to it.
+    ExtendChainPreferred,
 }
 
 impl ErrorRecoveryStrategy {
