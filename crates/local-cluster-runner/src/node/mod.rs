@@ -778,7 +778,7 @@ impl StartedNode {
             return false;
         };
 
-        response.status() == MetadataServerStatus::Member
+        response.summary.expect("summary must be set").status() == MetadataServerStatus::Member
     }
 
     /// Provisions the cluster on this node with the given configuration. Returns true if the

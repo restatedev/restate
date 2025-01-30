@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::raft::RaftConfiguration;
-use crate::{util, StorageId};
+use crate::util;
 use bytes::{BufMut, BytesMut};
 use flexbuffers::{DeserializationError, SerializationError};
 use protobuf::{Message, ProtobufError};
@@ -23,6 +23,7 @@ use restate_rocksdb::{
 use restate_types::config::{data_dir, MetadataStoreOptions, RocksDbOptions};
 use restate_types::errors::GenericError;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::metadata::StorageId;
 use restate_types::nodes_config::NodesConfiguration;
 use rocksdb::{BoundColumnFamily, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions, DB};
 use std::array::TryFromSliceError;

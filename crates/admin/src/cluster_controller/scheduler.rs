@@ -16,7 +16,7 @@ use itertools::Itertools;
 use rand::seq::IteratorRandom;
 use tracing::{debug, info, instrument};
 
-use restate_core::metadata_store::{Precondition, ReadError, ReadWriteError, WriteError};
+use restate_core::metadata_store::{ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{
     cancellation_watcher, Metadata, MetadataKind, MetadataWriter, ShutdownError, SyncError,
@@ -27,6 +27,7 @@ use restate_types::cluster::cluster_state::RunMode;
 use restate_types::identifiers::PartitionId;
 use restate_types::locality::LocationScope;
 use restate_types::logs::LogId;
+use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,

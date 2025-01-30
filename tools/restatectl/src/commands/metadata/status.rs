@@ -19,7 +19,7 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::GetMetadataRequest;
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
-use restate_metadata_server::MemberId;
+use restate_types::metadata::MemberId;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -76,7 +76,9 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
                     unreachable_nodes.insert(node_id, err.to_string());
                     continue;
                 }
-            };
+            }
+            .summary
+            .expect("summary must be set");
 
             metadata_nodes_table.add_row(vec![
                 Cell::new(node_id),

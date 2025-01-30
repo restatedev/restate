@@ -803,7 +803,7 @@ mod tests {
             .put(
                 BIFROST_CONFIG_KEY.clone(),
                 &new_metadata,
-                restate_metadata_server::Precondition::MatchesVersion(old_version),
+                restate_types::metadata::Precondition::MatchesVersion(old_version),
             )
             .await?;
 

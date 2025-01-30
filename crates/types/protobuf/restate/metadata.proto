@@ -1,0 +1,64 @@
+// Copyright (c) 2025 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+import "restate/common.proto";
+
+package restate.metadata;
+
+message VersionedValue {
+  restate.common.Version version = 1;
+  bytes bytes = 2;
+}
+
+enum PreconditionKind {
+  PreconditionKind_UNKNOWN = 0;
+  NONE = 1;
+  DOES_NOT_EXIST = 2;
+  MATCHES_VERSION = 3;
+}
+
+message Precondition {
+  PreconditionKind kind = 1;
+  // needs to be set in case of PreconditionKind::MATCHES_VERSION
+  optional restate.common.Version version = 2;
+}
+
+message MetadataServerConfiguration {
+  restate.common.Version version = 1;
+  map<uint32, uint64> members = 2;
+}
+
+message MetadataStoreSummary {
+  restate.common.MetadataServerStatus status = 1;
+  optional MetadataServerConfiguration configuration = 2;
+  optional uint32 leader = 3;
+  optional SnapshotSummary snapshot = 4;
+  optional RaftSummary raft = 5;
+}
+
+message MemberId {
+  uint32 node_id = 1;
+  uint64 storage_id = 2;
+}
+
+message SnapshotSummary {
+  uint64 index = 1;
+  uint64 size = 2;
+}
+
+message RaftSummary {
+  uint64 term = 1;
+  uint64 applied = 2;
+  uint64 committed = 3;
+  uint64 first_index = 4;
+  uint64 last_index = 5;
+}
