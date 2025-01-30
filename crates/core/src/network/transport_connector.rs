@@ -77,7 +77,9 @@ impl TransportConnect for GrpcConnector {
         };
 
         // Establish the connection
-        let mut client = CoreNodeSvcClient::new(channel);
+        let mut client = CoreNodeSvcClient::new(channel)
+            .max_decoding_message_size(32 * 1024 * 1024)
+            .max_encoding_message_size(32 * 1024 * 1024);
         let incoming = client.create_connection(output_stream).await?.into_inner();
         Ok(incoming.map(|x| x.map_err(ProtocolError::from)))
     }
