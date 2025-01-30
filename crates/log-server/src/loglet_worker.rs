@@ -177,7 +177,7 @@ impl<S: LogStore> LogletWorker<S> {
                     // todo: consider a draining shutdown if needed
                     // this might include sending notifications of shutdown to allow graceful
                     // handoff
-                    debug!(loglet_id = %self.loglet_id, "Loglet writer shutting down");
+                    trace!(loglet_id = %self.loglet_id, "Loglet writer shutting down");
                     return;
                 }
                 // GET_DIGEST
@@ -191,7 +191,7 @@ impl<S: LogStore> LogletWorker<S> {
                 Some(Ok(_)) = &mut in_flight_seal => {
                     sealing_in_progress = false;
                     self.loglet_state.get_local_tail_watch().notify_seal();
-                    debug!(loglet_id = %self.loglet_id, "Loglet is sealed");
+                    debug!(loglet_id = %self.loglet_id, "Loglet is now sealed on this log-server node");
                     in_flight_seal.set(None.into());
                 }
                 // The set of requests waiting for seal to complete
