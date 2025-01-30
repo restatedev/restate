@@ -1,0 +1,56 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.28.0"
+# CI backends to support
+ci = "github"
+github-attestations = true
+# The installers to generate for each app
+installers = ["homebrew"]
+# A GitHub repo to push Homebrew formulas to
+tap = "restatedev/homebrew-tap"
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
+macos-sign = true
+
+github-build-setup = "steps/release-build-setup.yml"
+include = ["NOTICE"]
+precise-builds = true
+cache-builds = false
+
+host-jobs = ["./ci"]
+publish-jobs = ["./docker-release", "homebrew", "./npm"]
+post-announce-jobs = ["./helm"]
+
+[dist.github-custom-job-permissions.ci]
+packages = "read"
+contents = "read"
+issues = "read"
+checks = "write"
+pull-requests = "write"
+actions = "read"
+
+[dist.github-custom-job-permissions.npm]
+packages = "read"
+contents = "read"
+
+[dist.dependencies.homebrew]
+protobuf = "*"
+
+[dist.github-custom-runners.aarch64-apple-darwin]
+runner = "warp-macos-latest-arm64-6x"
+
+[dist.github-custom-runners.x86_64-apple-darwin]
+runner = "warp-macos-latest-arm64-6x"
+host = "aarch64-apple-darwin"
+
+[dist.github-custom-runners.aarch64-unknown-linux-musl]
+runner = "warp-ubuntu-latest-arm64-16x"
+container = { image = "ghcr.io/restatedev/dev-tools", host = "aarch64-unknown-linux-musl" }
+
+[dist.github-custom-runners.x86_64-unknown-linux-musl ]
+runner = "warp-ubuntu-latest-x64-16x"
+container = { image = "ghcr.io/restatedev/dev-tools", host = "x86_64-unknown-linux-musl" }

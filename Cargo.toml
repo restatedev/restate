@@ -30,6 +30,7 @@ edition = "2021"
 rust-version = "1.82.0"
 license = "BUSL-1.1"
 repository = "https://github.com/restatedev/restate"
+homepage = "https://github.com/restatedev/restate"
 description = "Restate makes distributed applications easy!"
 
 [workspace.dependencies]
@@ -242,4 +243,6 @@ debug = true
 [profile.dev.package.tikv-jemalloc-sys]
 opt-level = 2
 
-
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"

@@ -5,6 +5,7 @@ RUST_TEST_THREADS = "1"
 xtask = "run --package xtask --"
 
 [build]
+# when changing these please also change .github/workflows/steps/release-build-setup.yml
 rustflags = [
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "-C" , "debug-assertions", # Enable debug assertions in release builds to have more safeguards in place

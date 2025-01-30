@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
   workflow_call:
+    inputs:
+      # comes from cargo-dist workflow call
+      plan:
+        required: true
+        type: string
   workflow_dispatch:
   push:
     branches:
