@@ -1109,12 +1109,24 @@ where
                     "transient" => "true"
                 )
                 .increment(1);
-                warn_it!(
-                    error,
-                    restate.invocation.id = %invocation_id,
-                    restate.invocation.target = %ism.invocation_target,
-                    "Error when executing the invocation, retrying in {}.",
-                    humantime::format_duration(next_retry_timer_duration));
+                if let Some(error_details) = error.error_details() {
+                    // The error details is treated differently from the pretty printer,
+                    // makes sure it prints at the end of the log the spammy exception
+                    warn_it!(
+                        error,
+                        restate.invocation.id = %invocation_id,
+                        restate.invocation.target = %ism.invocation_target,
+                        restate.error.details = %error_details,
+                        "Invocation error, retrying in {}.",
+                        humantime::format_duration(next_retry_timer_duration));
+                } else {
+                    warn_it!(
+                        error,
+                        restate.invocation.id = %invocation_id,
+                        restate.invocation.target = %ism.invocation_target,
+                        "Invocation error, retrying in {}.",
+                        humantime::format_duration(next_retry_timer_duration));
+                }
                 trace!("Invocation state: {:?}.", ism.invocation_state_debug());
                 let next_retry_at = SystemTime::now() + next_retry_timer_duration;
 
