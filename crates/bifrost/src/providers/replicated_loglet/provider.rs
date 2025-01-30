@@ -13,16 +13,19 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use tracing::debug;
+use restate_types::nodes_config::{NodeConfig, Role, StorageState};
+use restate_types::replication::{NodeSet, NodeSetSelector, NodeSetSelectorOptions};
+use restate_types::PlainNodeId;
+use tracing::{debug, warn};
 
 use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
-use restate_core::{TaskCenter, TaskKind};
+use restate_core::{my_node_id, Metadata, TaskCenter, TaskKind};
 use restate_metadata_server::MetadataStoreClient;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
-use restate_types::logs::{LogId, RecordCache};
+use restate_types::logs::{LogId, LogletId, RecordCache};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use super::loglet::ReplicatedLoglet;
@@ -205,18 +208,112 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
 
     fn propose_new_loglet_params(
         &self,
-        _log_id: LogId,
-        _chain: Option<&Chain>,
+        log_id: LogId,
+        chain: Option<&Chain>,
         defaults: &ProviderConfiguration,
     ) -> Result<LogletParams, OperationError> {
-        let ProviderConfiguration::Replicated(_defaults) = defaults else {
+        let ProviderConfiguration::Replicated(defaults) = defaults else {
             panic!("ProviderConfiguration::Replicated is expected");
         };
 
-        todo!()
+        // use the last loglet if it was replicated as a source for preferred nodes to reduce data
+        // scatter for this log.
+        let mut preferred_nodes = match chain {
+            Some(chain) if chain.tail().config.kind == ProviderKind::Replicated => {
+                let tail = chain.tail();
+                // Json serde
+                let params =
+                    ReplicatedLogletParams::deserialize_from(tail.config.params.as_bytes())
+                        .map_err(|e| {
+                            ReplicatedLogletError::LogletParamsParsingError(log_id, tail.index(), e)
+                        })?;
+                params.nodeset
+            }
+            _ => NodeSet::new(),
+        };
+
+        let new_segment_index = chain
+            .map(|chain| chain.tail_index().next())
+            .unwrap_or(SegmentIndex::OLDEST);
+
+        let my_node = my_node_id();
+        // If we are are a log-server, it should be preferred.
+        if Configuration::pinned().roles().contains(Role::LogServer) {
+            preferred_nodes.insert(my_node);
+        }
+
+        let opts = NodeSetSelectorOptions::new(u32::from(log_id) as u64)
+            .with_target_size(defaults.target_nodeset_size)
+            .with_preferred_nodes(&preferred_nodes)
+            .with_top_priority_node(my_node);
+
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+
+        let selection = NodeSetSelector::select(
+            &nodes_config,
+            &defaults.replication_property,
+            logserver_candidate_filter,
+            |_, config| {
+                matches!(
+                    config.log_server_config.storage_state,
+                    StorageState::ReadWrite
+                )
+            },
+            opts,
+        );
+
+        match selection {
+            Ok(nodeset) => {
+                debug_assert!(nodeset.len() >= defaults.replication_property.num_copies() as usize);
+                if defaults.replication_property.num_copies() > 1
+                    && nodeset.len() == defaults.replication_property.num_copies() as usize
+                {
+                    warn!(
+                        ?log_id,
+                        replication = %defaults.replication_property,
+                        generated_nodeset_size = nodeset.len(),
+                        "The number of writeable log-servers is too small for the configured \
+                        replication, there will be no fault-tolerance until you add more nodes."
+                    );
+                }
+                let new_params = ReplicatedLogletParams {
+                    loglet_id: LogletId::new(log_id, new_segment_index),
+                    sequencer: my_node,
+                    replication: defaults.replication_property.clone(),
+                    nodeset,
+                };
+
+                let new_params = new_params
+                    .serialize()
+                    .expect("LogletParams serde is infallible");
+                Ok(LogletParams::from(new_params))
+            }
+            Err(err) => {
+                warn!(?log_id, "Cannot select node-set for log: {err}");
+                Err(OperationError::retryable(err))
+            }
+        }
     }
 
     async fn shutdown(&self) -> Result<(), OperationError> {
         Ok(())
+    }
+}
+
+pub fn logserver_candidate_filter(_node_id: PlainNodeId, config: &NodeConfig) -> bool {
+    // Important note: we check if the server has role=log-server when storage_state is
+    // provisioning because all nodes get provisioning storage by default, we only care about
+    // log-servers so we avoid adding other nodes in the nodeset. In the case of read-write, we
+    // don't check the role to not accidentally consider those nodes as non-logservers even if
+    // the role was removed by mistake (although some protection should be added for this)
+    match config.log_server_config.storage_state {
+        StorageState::ReadWrite => true,
+        StorageState::Provisioning if config.has_role(Role::LogServer) => true,
+        // explicit match to make it clear that we are excluding nodes with the following states,
+        // any new states added will force the compiler to fail
+        StorageState::Provisioning
+        | StorageState::Disabled
+        | StorageState::ReadOnly
+        | StorageState::DataLoss => false,
     }
 }
