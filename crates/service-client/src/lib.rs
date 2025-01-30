@@ -125,25 +125,37 @@ impl ServiceClient {
         match parts.address {
             Endpoint::Http(uri, version) => {
                 let fut = self.http.request(
-                    uri,
+                    uri.clone(),
                     version,
                     parts.method.into(),
                     body,
                     parts.path,
                     parts.headers,
                 );
-                async move { Ok(fut.await?.map(http_body_util::Either::Left)) }.left_future()
+                async move {
+                    Ok(fut
+                        .await
+                        .map_err(|e| ServiceClientError::Http(uri, e))?
+                        .map(http_body_util::Either::Left))
+                }
+                .left_future()
             }
             Endpoint::Lambda(arn, assume_role_arn) => {
                 let fut = self.lambda.invoke(
-                    arn,
+                    arn.clone(),
                     parts.method.into(),
                     assume_role_arn,
                     body,
                     parts.path,
                     parts.headers,
                 );
-                async move { Ok(fut.await?.map(http_body_util::Either::Right)) }.right_future()
+                async move {
+                    Ok(fut
+                        .await
+                        .map_err(|e| ServiceClientError::Lambda(arn, e))?
+                        .map(http_body_util::Either::Right))
+                }
+                .right_future()
             }
         }
         .left_future()
@@ -152,10 +164,10 @@ impl ServiceClient {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceClientError {
-    #[error("HTTP client error: {0}")]
-    Http(#[from] http::HttpError),
-    #[error("Lambda client error: {0}")]
-    Lambda(#[from] lambda::LambdaError),
+    #[error("error when calling '{0}': {1}")]
+    Http(Uri, #[source] http::HttpError),
+    #[error("error when calling '{0}': {1}")]
+    Lambda(LambdaARN, #[source] lambda::LambdaError),
     #[error(transparent)]
     IdentityV1(#[from] <request_identity::v1::Signer<'static, 'static> as SignRequest>::Error),
 }
@@ -165,8 +177,8 @@ impl ServiceClientError {
     /// retrying can succeed.
     pub fn is_retryable(&self) -> bool {
         match self {
-            ServiceClientError::Http(http_error) => http_error.is_retryable(),
-            ServiceClientError::Lambda(lambda_error) => lambda_error.is_retryable(),
+            ServiceClientError::Http(_, http_error) => http_error.is_retryable(),
+            ServiceClientError::Lambda(_, lambda_error) => lambda_error.is_retryable(),
             ServiceClientError::IdentityV1(_) => false, // this really should never happen
         }
     }

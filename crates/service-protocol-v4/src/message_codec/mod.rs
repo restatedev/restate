@@ -19,7 +19,9 @@ mod header;
 
 pub use encoding::{Decoder, Encoder, EncodingError};
 pub use header::MessageHeader;
-use restate_types::journal_v2::{CommandIndex, CommandType, CompletionType, NotificationType};
+use restate_types::journal_v2::{
+    CommandIndex, CommandType, CompletionType, EntryType, NotificationType,
+};
 
 /// Protobuf protocol messages
 pub mod proto {
@@ -282,6 +284,28 @@ macro_rules! gen_message {
         gen_message!(@gen_from_notification_ty [$($tail)*] -> [$($body)*]);
     };
 
+    (@gen_message_type_enum_entry_type [] -> [$($body:tt)*]) => {
+        impl MessageType {
+            pub fn entry_type(&self) -> Option<EntryType> {
+                match self {
+                    $($body)*
+                    _ => None,
+                }
+            }
+        }
+    };
+    (@gen_message_type_enum_entry_type [$variant:ident Command $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_type_enum_entry_type [$($tail)*] -> [MessageType::[< $variant Command >] => Some(EntryType::Command(CommandType::$variant)), $($body)*]); }
+    };
+    (@gen_message_type_enum_entry_type [$variant:ident CompletionNotification $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_type_enum_entry_type [$($tail)*] -> [MessageType::[< $variant CompletionNotification >] => Some(EntryType::Notification(NotificationType::Completion(CompletionType::$variant))), $($body)*]); }
+    };
+    (@gen_message_type_enum_entry_type [$variant:ident Notification $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message!(@gen_message_type_enum_entry_type [$($tail)*] -> [MessageType::[< $variant Notification >] => Some(EntryType::Notification(NotificationType::$variant)), $($body)*]); }
+    };
+    (@gen_message_type_enum_entry_type [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message!(@gen_message_type_enum_entry_type [$($tail)*] -> [$($body)*]);
+    };
 
     // Entrypoint of the macro
     ($($tokens:tt)*) => {
@@ -293,6 +317,7 @@ macro_rules! gen_message {
         gen_message!(@gen_message_type_enum [$($tokens)*] -> []);
         gen_message!(@gen_message_type_enum_allows_ack [$($tokens)*] -> []);
         gen_message!(@gen_message_type_enum_decode [$($tokens)*] -> []);
+        gen_message!(@gen_message_type_enum_entry_type [$($tokens)*] -> []);
         gen_message!(@gen_to_id [$($tokens)*] -> []);
         gen_message!(@gen_from_id [$($tokens)*] -> []);
         gen_message!(@gen_from_command_ty [$($tokens)*] -> []);

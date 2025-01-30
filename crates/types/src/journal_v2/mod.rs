@@ -54,7 +54,7 @@ pub type SignalName = ByteString;
 
 // -- Entry metadata
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum EntryType {
     Command(CommandType),
     Notification(NotificationType),

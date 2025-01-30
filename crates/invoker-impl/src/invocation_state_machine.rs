@@ -24,7 +24,7 @@ pub(super) struct InvocationStateMachine {
     invocation_state: InvocationState,
     retry_iter: retries::RetryIter<'static>,
     /// This retry count is passed in the StartMessage.
-    /// For more details of when we bump it, see [`InvocationTaskError::should_bump_start_message_retry_count_since_last_stored_entry`].
+    /// For more details of when we bump it, see [`InvokerError::should_bump_start_message_retry_count_since_last_stored_entry`].
     pub(super) start_message_retry_count_since_last_stored_command: u32,
 }
 

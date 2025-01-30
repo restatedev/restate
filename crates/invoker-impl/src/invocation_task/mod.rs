@@ -13,6 +13,7 @@ mod service_protocol_runner_v4;
 
 use super::Notification;
 
+use crate::error::InvokerError;
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::INVOKER_TASK_DURATION;
 use bytes::Bytes;
@@ -22,18 +23,14 @@ use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::histogram;
 use restate_invoker_api::{
-    EagerState, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
-    StateReader,
+    EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
 };
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
-use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_types::deployment::PinnedDeployment;
-use restate_types::errors::InvocationError;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::raw::RawEntryCodecError;
-use restate_types::journal::{EntryIndex, EntryType};
+use restate_types::journal::EntryIndex;
 use restate_types::journal_v2;
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
@@ -42,17 +39,14 @@ use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::service_protocol::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::future::Future;
 use std::iter;
-use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{instrument, warn};
@@ -77,201 +71,6 @@ const SERVICE_PROTOCOL_VERSION_V4: HeaderValue =
 
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
-
-#[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub(crate) enum InvocationTaskError {
-    #[error("no deployment was found to process the invocation")]
-    #[code(restate_errors::RT0011)]
-    NoDeploymentForService,
-    #[error("the invocation has a deployment id associated, but it was not found in the registry. This might indicate that a deployment was forcefully removed from the registry, but there are still in-flight invocations pinned to it")]
-    #[code(restate_errors::RT0011)]
-    UnknownDeployment(DeploymentId),
-
-    #[error("unexpected http status code: {0}")]
-    #[code(restate_errors::RT0012)]
-    UnexpectedResponse(http::StatusCode),
-    #[error("cannot start the invocation because the SDK doesn't support the protocol version '{}' negotiated at discovery time", .0.as_repr())]
-    #[code(restate_errors::RT0015)]
-    BadNegotiatedServiceProtocolVersion(ServiceProtocolVersion),
-
-    #[error("unexpected content type '{0:?}'; expected content type '{1:?}'")]
-    #[code(restate_errors::RT0012)]
-    UnexpectedContentType(Option<HeaderValue>, HeaderValue),
-    #[error("received unexpected message: {0:?}")]
-    #[code(restate_errors::RT0012)]
-    UnexpectedMessage(MessageType),
-    #[error("received unexpected message: {0:?}")]
-    #[code(restate_errors::RT0012)]
-    UnexpectedMessageV4(restate_service_protocol_v4::message_codec::MessageType),
-    #[error("message encoding error: {0}")]
-    Encoding(
-        #[from]
-        #[code]
-        EncodingError,
-    ),
-    #[error("message encoding error: {0}")]
-    #[code(unknown)]
-    EncodingV2(#[from] journal_v2::encoding::DecodingError),
-    #[error("message encoding error: {0}")]
-    #[code(unknown)]
-    EncoderV2(#[from] restate_service_protocol_v4::message_codec::EncodingError),
-    #[error("cannot decode entry: {0}")]
-    #[code(unknown)]
-    RawEntry(#[from] RawEntryCodecError),
-    #[error("cannot decode entry: {0}")]
-    #[code(unknown)]
-    RawEntryV2(#[from] journal_v2::raw::RawEntryError),
-    #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry")]
-    #[code(restate_errors::RT0012)]
-    WriteAfterEndOfStream,
-    #[error("Bad header '{0}': {1}")]
-    #[code(restate_errors::RT0012)]
-    BadHeader(HeaderName, #[source] http::header::ToStrError),
-    #[error("got bad SuspensionMessage without journal indexes")]
-    #[code(restate_errors::RT0012)]
-    EmptySuspensionMessage,
-    #[error(
-        "got bad SuspensionMessage, suspending on journal indexes {0:?}, but journal length is {1}"
-    )]
-    #[code(restate_errors::RT0012)]
-    BadSuspensionMessage(HashSet<EntryIndex>, EntryIndex),
-    #[error("malformed ProposeRunCompletion, missing result field")]
-    #[code(restate_errors::RT0012)]
-    MalformedProposeRunCompletion,
-
-    #[error("error when trying to read the journal: {0}")]
-    #[code(restate_errors::RT0006)]
-    JournalReader(anyhow::Error),
-    #[error("error when trying to read the service instance state: {0}")]
-    #[code(restate_errors::RT0006)]
-    StateReader(anyhow::Error),
-
-    #[error(transparent)]
-    #[code(restate_errors::RT0010)]
-    Client(ServiceClientError),
-    #[error(transparent)]
-    #[code(restate_errors::RT0010)]
-    ClientBody(Box<dyn std::error::Error + Send + Sync>),
-    #[error("unexpected join error, looks like hyper panicked: {0}")]
-    #[code(restate_errors::RT0010)]
-    UnexpectedJoinError(#[from] JoinError),
-    #[error("unexpected closed request stream")]
-    #[code(restate_errors::RT0010)]
-    UnexpectedClosedRequestStream,
-
-    #[error("response timeout")]
-    #[code(restate_errors::RT0001)]
-    ResponseTimeout,
-
-    #[error("cannot process incoming entry at index {0} of type {1}: {2}")]
-    #[code(unknown)]
-    EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
-    #[error("cannot process incoming command {0} of type {1}: {2}")]
-    #[code(unknown)]
-    CommandPrecondition(
-        CommandIndex,
-        journal_v2::EntryType,
-        #[source] InvocationError,
-    ),
-
-    #[error("Error message received from the SDK with related entry {related_entry:?}: {error}")]
-    #[code(restate_errors::RT0007)]
-    ErrorMessageReceived {
-        related_entry: Option<InvocationErrorRelatedEntry>,
-        next_retry_interval_override: Option<Duration>,
-        #[source]
-        error: InvocationError,
-    },
-    #[error("cannot talk to service endpoint '{0}' because its service protocol versions [{start}, {end}] are incompatible with the server's service protocol versions [{min}, {max}].", start = .1.start(), end = .1.end(), min = i32::from(MIN_SERVICE_PROTOCOL_VERSION), max = i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
-    #[code(restate_errors::RT0013)]
-    IncompatibleServiceEndpoint(DeploymentId, RangeInclusive<i32>),
-    #[error("cannot resume invocation because it was created with an incompatible service protocol version '{}' and the server does not support upgrading versions yet", .0.as_repr())]
-    #[code(restate_errors::RT0014)]
-    ResumeWithWrongServiceProtocolVersion(ServiceProtocolVersion),
-
-    #[error("service is temporary unavailable '{0}'")]
-    #[code(restate_errors::RT0010)]
-    ServiceUnavailable(http::StatusCode),
-}
-
-// TODO update this should support journal_v2 data types
-
-#[derive(Debug, Default)]
-pub struct InvocationErrorRelatedEntry {
-    pub related_entry_index: Option<restate_types::journal::EntryIndex>,
-    pub related_entry_name: Option<String>,
-    pub related_entry_type: Option<EntryType>,
-}
-
-impl InvocationTaskError {
-    pub(crate) fn is_transient(&self) -> bool {
-        true
-    }
-
-    pub(crate) fn should_bump_start_message_retry_count_since_last_stored_entry(&self) -> bool {
-        !matches!(
-            self,
-            InvocationTaskError::JournalReader(_)
-                | InvocationTaskError::StateReader(_)
-                | InvocationTaskError::NoDeploymentForService
-                | InvocationTaskError::BadNegotiatedServiceProtocolVersion(_)
-                | InvocationTaskError::UnknownDeployment(_)
-                | InvocationTaskError::ResumeWithWrongServiceProtocolVersion(_)
-                | InvocationTaskError::IncompatibleServiceEndpoint(_, _)
-        )
-    }
-
-    pub(crate) fn next_retry_interval_override(&self) -> Option<Duration> {
-        match self {
-            InvocationTaskError::ErrorMessageReceived {
-                next_retry_interval_override,
-                ..
-            } => *next_retry_interval_override,
-            _ => None,
-        }
-    }
-
-    pub(crate) fn into_invocation_error(self) -> InvocationError {
-        match self {
-            InvocationTaskError::ErrorMessageReceived { error, .. } => error,
-            InvocationTaskError::EntryEnrichment(entry_index, entry_type, e) => {
-                let msg = format!(
-                    "Error when processing entry {} of type {}: {}",
-                    entry_index,
-                    entry_type,
-                    e.message()
-                );
-                let mut err = InvocationError::new(e.code(), msg);
-                if let Some(desc) = e.description() {
-                    err = err.with_description(desc);
-                }
-                err
-            }
-            e => InvocationError::internal(e),
-        }
-    }
-
-    pub(crate) fn into_invocation_error_report(mut self) -> InvocationErrorReport {
-        let doc_error_code = codederror::CodedError::code(&self);
-        let maybe_related_entry = match self {
-            InvocationTaskError::ErrorMessageReceived {
-                ref mut related_entry,
-                ..
-            } => related_entry.take(),
-            _ => None,
-        }
-        .unwrap_or_default();
-        let err = self.into_invocation_error();
-
-        InvocationErrorReport {
-            doc_error_code,
-            err,
-            related_entry_index: maybe_related_entry.related_entry_index,
-            related_entry_name: maybe_related_entry.related_entry_name,
-            related_entry_type: maybe_related_entry.related_entry_type,
-        }
-    }
-}
 
 pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
@@ -309,11 +108,11 @@ pub(super) enum InvocationTaskOutputInner {
     Closed,
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
-    Failed(InvocationTaskError),
+    Failed(InvokerError),
 }
 
-impl From<InvocationTaskError> for InvocationTaskOutputInner {
-    fn from(value: InvocationTaskError) -> Self {
+impl From<InvokerError> for InvocationTaskOutputInner {
+    fn from(value: InvokerError) -> Self {
         InvocationTaskOutputInner::Failed(value)
     }
 }
@@ -354,10 +153,10 @@ enum TerminalLoopState<T> {
     Closed,
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
-    Failed(InvocationTaskError),
+    Failed(InvokerError),
 }
 
-impl<T, E: Into<InvocationTaskError>> From<Result<T, E>> for TerminalLoopState<T> {
+impl<T, E: Into<InvokerError>> From<Result<T, E>> for TerminalLoopState<T> {
     fn from(value: Result<T, E>) -> Self {
         match value {
             Ok(v) => TerminalLoopState::Continue(v),
@@ -473,7 +272,7 @@ where
                         .journal_reader
                         .read_journal(&self.invocation_id)
                         .await
-                        .map_err(|e| InvocationTaskError::JournalReader(e.into()))?;
+                        .map_err(|e| InvokerError::JournalReader(e.into()))?;
                     (journal_meta, future::Either::Left(journal_stream))
                 }
                 InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
@@ -491,7 +290,7 @@ where
                 self.state_reader
                     .read_state(&keyed_service_id.unwrap())
                     .await
-                    .map_err(|e| InvocationTaskError::StateReader(e.into()))
+                    .map_err(|e| InvokerError::StateReader(e.into()))
                     .map(|r| r.map(itertools::Either::Left))
             }
         };
@@ -508,18 +307,16 @@ where
                 // deployments have been registered for the same service.
                 let deployment_metadata = shortcircuit!(schemas
                     .get_deployment(&pinned_deployment.deployment_id)
-                    .ok_or_else(|| InvocationTaskError::UnknownDeployment(
+                    .ok_or_else(|| InvokerError::UnknownDeployment(
                         pinned_deployment.deployment_id
                     )));
 
                 // todo: We should support resuming an invocation with a newer protocol version if
                 //  the endpoint supports it
                 if !pinned_deployment.service_protocol_version.is_supported() {
-                    shortcircuit!(Err(
-                        InvocationTaskError::ResumeWithWrongServiceProtocolVersion(
-                            pinned_deployment.service_protocol_version
-                        )
-                    ));
+                    shortcircuit!(Err(InvokerError::ResumeWithWrongServiceProtocolVersion(
+                        pinned_deployment.service_protocol_version
+                    )));
                 }
 
                 (
@@ -532,14 +329,14 @@ where
                 // of the registered service.
                 let deployment = shortcircuit!(schemas
                     .resolve_latest_deployment_for_service(self.invocation_target.service_name())
-                    .ok_or(InvocationTaskError::NoDeploymentForService));
+                    .ok_or(InvokerError::NoDeploymentForService));
 
                 let chosen_service_protocol_version =
                     shortcircuit!(ServiceProtocolVersion::choose_max_supported_version(
                         &deployment.metadata.supported_protocol_versions,
                     )
                     .ok_or_else(|| {
-                        InvocationTaskError::IncompatibleServiceEndpoint(
+                        InvokerError::IncompatibleServiceEndpoint(
                             deployment.id,
                             deployment.metadata.supported_protocol_versions.clone(),
                         )
@@ -647,16 +444,14 @@ impl ResponseStreamState {
     fn poll_only_headers(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<ResponseParts, InvocationTaskError>> {
+    ) -> Poll<Result<ResponseParts, InvokerError>> {
         match self {
             ResponseStreamState::WaitingHeaders(join_handle) => {
                 let http_response = match ready!(join_handle.poll_unpin(cx)) {
                     Ok(Ok(res)) => res,
-                    Ok(Err(hyper_err)) => {
-                        return Poll::Ready(Err(InvocationTaskError::Client(hyper_err)))
-                    }
+                    Ok(Err(hyper_err)) => return Poll::Ready(Err(InvokerError::Client(hyper_err))),
                     Err(join_err) => {
-                        return Poll::Ready(Err(InvocationTaskError::UnexpectedJoinError(join_err)))
+                        return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)))
                     }
                 };
 
@@ -678,7 +473,7 @@ impl ResponseStreamState {
     fn poll_next_chunk(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<ResponseChunk, InvocationTaskError>> {
+    ) -> Poll<Result<ResponseChunk, InvokerError>> {
         // Could be replaced by a Stream implementation
         loop {
             match self {
@@ -686,12 +481,10 @@ impl ResponseStreamState {
                     let http_response = match ready!(join_handle.poll_unpin(cx)) {
                         Ok(Ok(res)) => res,
                         Ok(Err(hyper_err)) => {
-                            return Poll::Ready(Err(InvocationTaskError::Client(hyper_err)))
+                            return Poll::Ready(Err(InvokerError::Client(hyper_err)))
                         }
                         Err(join_err) => {
-                            return Poll::Ready(Err(InvocationTaskError::UnexpectedJoinError(
-                                join_err,
-                            )))
+                            return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)))
                         }
                     };
 
@@ -714,7 +507,7 @@ impl ResponseStreamState {
                             Ok(ResponseChunk::Data(frame.into_data().unwrap()))
                         }
                         Ok(_) => Ok(ResponseChunk::End),
-                        Err(err) => Err(InvocationTaskError::ClientBody(err)),
+                        Err(err) => Err(InvokerError::ClientBody(err)),
                     });
                 }
             }

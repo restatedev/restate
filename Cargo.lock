@@ -1725,15 +1725,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "coolor"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "691defa50318376447a73ced869862baecfab35f6aabaa91a4cd726b315bfe1a"
-dependencies = [
- "crossterm 0.28.1",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1840,45 +1831,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crokey"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "520e83558f4c008ac06fa6a86e5c1d4357be6f994cce7434463ebcdaadf47bb1"
-dependencies = [
- "crokey-proc_macros",
- "crossterm 0.28.1",
- "once_cell",
- "serde",
- "strict",
-]
-
-[[package]]
-name = "crokey-proc_macros"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "370956e708a1ce65fe4ac5bb7185791e0ece7485087f17736d54a23a0895049f"
-dependencies = [
- "crossterm 0.28.1",
- "proc-macro2",
- "quote",
- "strict",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "crossbeam"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1137cd7e7fc0fb5d3c5a8678be38ec56e819125d8d7907411fe24ccb943faca8"
-dependencies = [
- "crossbeam-channel",
- "crossbeam-deque",
- "crossbeam-epoch",
- "crossbeam-queue",
- "crossbeam-utils",
-]
-
-[[package]]
 name = "crossbeam-channel"
 version = "0.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1902,15 +1854,6 @@ name = "crossbeam-epoch"
 version = "0.9.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-queue"
-version = "0.3.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df0346b5d5e76ac2fe4e327c5fd1118d6be7c51dfb18f9b7922923f287471e35"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1945,11 +1888,8 @@ checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
 dependencies = [
  "bitflags 2.6.0",
  "crossterm_winapi",
- "mio 1.0.3",
  "parking_lot",
  "rustix",
- "signal-hook",
- "signal-hook-mio",
  "winapi",
 ]
 
@@ -4088,7 +4028,6 @@ checksum = "8d8e41c97e6bc7ecb552016274b99fbb5d035e8de288c582d9b933af6677bfda"
 dependencies = [
  "lazy-regex-proc_macros",
  "once_cell",
- "regex",
  "regex-lite",
 ]
 
@@ -4461,15 +4400,6 @@ checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
 dependencies = [
  "mime",
  "unicase",
-]
-
-[[package]]
-name = "minimad"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9c5d708226d186590a7b6d4a9780e2bdda5f689e0d58cd17012a298efd745d2"
-dependencies = [
- "once_cell",
 ]
 
 [[package]]
@@ -6617,7 +6547,6 @@ version = "1.1.6"
 dependencies = [
  "codederror",
  "paste",
- "termimad",
  "test-log",
  "thiserror 2.0.11",
  "tracing",
@@ -8255,7 +8184,6 @@ checksum = "34db1a06d485c9142248b7a054f034b349b212551f3dfd19c94d45a754a217cd"
 dependencies = [
  "libc",
  "mio 0.8.11",
- "mio 1.0.3",
  "signal-hook",
 ]
 
@@ -8508,12 +8436,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9091b6114800a5f2141aee1d1b9d6ca3592ac062dc5decb3764ec5895a47b4eb"
 
 [[package]]
-name = "strict"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f42444fea5b87a39db4218d9422087e66a85d0e7a0963a439b07bcdf91804006"
-
-[[package]]
 name = "stringprep"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8690,22 +8612,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "termimad"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22117210909e9dfff30a558f554c7fb3edb198ef614e7691386785fb7679677c"
-dependencies = [
- "coolor",
- "crokey",
- "crossbeam",
- "lazy-regex",
- "minimad",
- "serde",
- "thiserror 1.0.69",
- "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -10081,11 +9987,7 @@ dependencies = [
  "clap_builder",
  "comfy-table",
  "criterion",
- "crossbeam-channel",
- "crossbeam-deque",
  "crossbeam-epoch",
- "crossbeam-utils",
- "crossterm 0.28.1",
  "digest",
  "either",
  "enum-map",
@@ -10115,7 +10017,6 @@ dependencies = [
  "indexmap 1.9.3",
  "indexmap 2.7.0",
  "itertools 0.12.1",
- "lazy-regex",
  "libc",
  "libz-sys",
  "log",
@@ -10152,7 +10053,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "signal-hook-mio",
  "smallvec",
  "stable_deref_trait",
  "strum",
