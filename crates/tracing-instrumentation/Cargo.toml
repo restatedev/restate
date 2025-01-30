@@ -40,7 +40,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
-tracing-appender = { version = "0.2.3" }
+tracing-appender = { version = "0.2.3", features = ["parking_lot"] }
 tracing-core = { version = "0.1" }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }

@@ -8,9 +8,9 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["no-trace-logging"]
 frame-pointer = ["pprof/frame-pointer"]
-no-trace-logging = ["tracing/max_level_debug", "tracing/release_max_level_debug"]
+no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
 [dependencies]
 restate-core = { workspace = true }
