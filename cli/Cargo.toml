@@ -11,9 +11,9 @@ default-run = "restate"
 build = "build.rs"
 
 [features]
-default = ["cloud"]
+default = ["cloud", "no-trace-logging"]
 cloud = []
-no-trace-logging = ["tracing/max_level_debug", "tracing/release_max_level_debug"]
+no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
 [dependencies]
 restate-admin-rest-model = { workspace = true }
