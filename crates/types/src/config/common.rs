@@ -639,14 +639,14 @@ impl Default for MetadataStoreClientOptions {
                     .parse()
                     .expect("valid metadata store address")],
             },
-            metadata_store_connect_timeout: Duration::from_secs(5).into(),
-            metadata_store_keep_alive_interval: Duration::from_secs(40).into(),
-            metadata_store_keep_alive_timeout: Duration::from_secs(20).into(),
+            metadata_store_connect_timeout: Duration::from_secs(3).into(),
+            metadata_store_keep_alive_interval: Duration::from_secs(5).into(),
+            metadata_store_keep_alive_timeout: Duration::from_secs(5).into(),
             metadata_store_client_backoff_policy: RetryPolicy::exponential(
-                Duration::from_millis(10),
+                Duration::from_millis(250),
                 2.0,
-                None,
-                Some(Duration::from_millis(100)),
+                Some(10),
+                Some(Duration::from_millis(3000)),
             ),
         }
     }
