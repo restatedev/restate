@@ -6350,6 +6350,7 @@ dependencies = [
  "prost",
  "rand",
  "restate-core",
+ "restate-futures-util",
  "restate-log-server",
  "restate-metadata-server",
  "restate-rocksdb",
