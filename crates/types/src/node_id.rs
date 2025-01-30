@@ -20,7 +20,6 @@ use bytes::{Buf, BufMut, BytesMut};
 /// must be also generational and the generations must match. If you are only interested in
 /// checking the id part, then compare using `x.id() == y.id()` instead of `x == y`.
 #[derive(
-    Debug,
     PartialEq,
     Eq,
     Clone,
@@ -28,6 +27,7 @@ use bytes::{Buf, BufMut, BytesMut};
     Hash,
     derive_more::From,
     derive_more::Display,
+    derive_more::Debug,
     derive_more::IsVariant,
     serde::Serialize,
     serde::Deserialize,
@@ -38,7 +38,6 @@ pub enum NodeId {
 }
 
 #[derive(
-    Debug,
     PartialEq,
     Eq,
     PartialOrd,
@@ -48,10 +47,12 @@ pub enum NodeId {
     Hash,
     derive_more::From,
     derive_more::Display,
+    derive_more::Debug,
     serde::Serialize,
     serde::Deserialize,
 )]
 #[display("{}:{}", _0, _1)]
+#[debug("{}:{}", _0, _1)]
 pub struct GenerationalNodeId(PlainNodeId, u32);
 
 #[derive(Debug, thiserror::Error)]
@@ -120,7 +121,6 @@ impl From<u64> for GenerationalNodeId {
 }
 
 #[derive(
-    Debug,
     Default,
     PartialEq,
     Eq,
@@ -132,12 +132,14 @@ impl From<u64> for GenerationalNodeId {
     derive_more::From,
     derive_more::Into,
     derive_more::Display,
+    derive_more::Debug,
     serde::Serialize,
     serde::Deserialize,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(transparent))]
 #[display("N{}", _0)]
+#[debug("N{}", _0)]
 pub struct PlainNodeId(u32);
 
 impl FromStr for PlainNodeId {

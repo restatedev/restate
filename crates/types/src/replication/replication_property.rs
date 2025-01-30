@@ -34,7 +34,7 @@ static REPLICATION_PROPERTY_EXTRACTOR: LazyLock<Regex> = LazyLock::new(|| {
 pub struct ReplicationPropertyError(String);
 
 /// The replication policy for appends
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Eq, PartialEq)]
 pub struct ReplicationProperty(BTreeMap<LocationScope, u8>);
 
 impl ReplicationProperty {
@@ -148,6 +148,12 @@ impl ReplicationProperty {
             .0;
         debug_assert!(scope < LocationScope::Root);
         scope
+    }
+}
+
+impl std::fmt::Debug for ReplicationProperty {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
     }
 }
 

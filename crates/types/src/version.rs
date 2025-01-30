@@ -10,7 +10,6 @@
 
 /// A type used for versioned metadata.
 #[derive(
-    Debug,
     Clone,
     Copy,
     PartialEq,
@@ -20,11 +19,13 @@
     derive_more::Display,
     derive_more::From,
     derive_more::Into,
+    derive_more::Debug,
     derive_more::AddAssign,
     serde::Serialize,
     serde::Deserialize,
 )]
 #[display("v{}", _0)]
+#[debug("v{}", _0)]
 pub struct Version(u32);
 
 impl Version {
