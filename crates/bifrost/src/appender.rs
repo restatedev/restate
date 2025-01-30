@@ -9,8 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use restate_futures_util::overdue::OverdueLoggingExt;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::Metadata;
@@ -24,7 +25,7 @@ use restate_types::storage::StorageEncode;
 use crate::bifrost::{BifrostInner, ErrorRecoveryStrategy};
 use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
-use crate::{Error, InputRecord, Result};
+use crate::{BifrostAdmin, Error, InputRecord, Result};
 
 #[derive(Clone, derive_more::Debug)]
 pub struct Appender {
@@ -113,18 +114,25 @@ impl Appender {
             match loglet.append_batch(batch.clone()).await {
                 Ok(lsn) => return Ok(lsn),
                 Err(AppendError::Sealed) => {
-                    info!(
+                    debug!(
+                        log_id = %self.log_id,
                         attempt = attempt,
                         segment_index = %loglet.segment_index(),
-                        "Append batch will be retried (loglet is being sealed), waiting for tail to be determined"
+                        "Batch append failed but will be retried (loglet has been sealed). Waiting for reconfiguration to complete"
                     );
-                    let new_loglet = Self::wait_next_unsealed_loglet(
+                    let new_loglet = Self::on_sealed_loglet(
                         self.log_id,
                         &self.bifrost_inner,
                         loglet.segment_index(),
                         &mut retry_iter,
+                        self.error_recovery_strategy,
                     )
                     .await?;
+                    debug!(
+                        log_id = %self.log_id,
+                        segment_index = %loglet.segment_index(),
+                        "Log reconfiguration has been completed, appender will resume now"
+                    );
 
                     self.loglet_cache = Some(new_loglet);
                 }
@@ -132,6 +140,7 @@ impl Appender {
                     if let Some(retry_dur) = retry_iter.next() {
                         info!(
                             %err,
+                            log_id = %self.log_id,
                             attempt = attempt,
                             segment_index = %loglet.segment_index(),
                             "Failed to append this batch. Since underlying error is retryable, will retry in {:?}",
@@ -141,6 +150,7 @@ impl Appender {
                     } else {
                         warn!(
                             %err,
+                            log_id = %self.log_id,
                             attempt = attempt,
                             segment_index = %loglet.segment_index(),
                             "Failed to append this batch and exhausted all attempts to retry",
@@ -155,12 +165,16 @@ impl Appender {
     }
 
     #[instrument(level = "error" err, skip(retry_iter, bifrost_inner))]
-    async fn wait_next_unsealed_loglet(
+    async fn on_sealed_loglet(
         log_id: LogId,
         bifrost_inner: &Arc<BifrostInner>,
         sealed_segment: SegmentIndex,
         retry_iter: &mut RetryIter<'_>,
+        error_recovery_strategy: ErrorRecoveryStrategy,
     ) -> Result<LogletWrapper> {
+        // todo: configuration
+        let recovery_patience_dur = Duration::from_secs(5);
+        let mut tone_escalated = false;
         let start = Instant::now();
         for sleep_dur in retry_iter.by_ref() {
             bifrost_inner.fail_if_shutting_down()?;
@@ -169,19 +183,67 @@ impl Appender {
             // Do we think that the last tail loglet is different and unsealed?
             if loglet.tail_lsn.is_none() && loglet.segment_index() > sealed_segment {
                 let total_dur = start.elapsed();
-                debug!(
-                    "Found an unsealed segment {} after {:?}",
-                    loglet.segment_index(),
-                    total_dur
-                );
+                if tone_escalated {
+                    info!(
+                        open_segment = %loglet.segment_index(),
+                        "Reconfiguration complete, found an open segment after {:?}",
+                        total_dur
+                    );
+                } else {
+                    info!(
+                        open_segment = %loglet.segment_index(),
+                        "Reconfiguration complete, found an open segment after {:?}",
+                        total_dur
+                    );
+                }
                 return Ok(loglet);
             } else {
                 let log_version = Metadata::with_current(|m| m.logs_version());
-                debug!(
-                    log_version = %log_version,
-                    "Still waiting for sealing to complete. Elapsed={:?}",
-                    start.elapsed(),
-                );
+                if start.elapsed() > recovery_patience_dur {
+                    tone_escalated = true;
+
+                    if error_recovery_strategy >= ErrorRecoveryStrategy::ExtendChainAllowed {
+                        // take the matter in our own hands
+                        let admin = BifrostAdmin::new(bifrost_inner);
+                        info!(
+                            %sealed_segment,
+                            "[Auto Recovery] Attempting to extend the chain to allow new appends to proceed on a new configuration. We waited for {:?} before triggering automatic recovery",
+                            start.elapsed(),
+                        );
+                        if let Err(err) = admin
+                            .seal_and_auto_extend_chain(log_id, Some(sealed_segment))
+                            .log_slow_after(
+                                recovery_patience_dur / 2,
+                                tracing::Level::INFO,
+                                "Extending the chain with new configuration",
+                            )
+                            .with_overdue(recovery_patience_dur, tracing::Level::WARN)
+                            .await
+                        {
+                            // we couldn't reconfigure. Let the loop handle retries as normal
+                            info!(
+                                %err,
+                                %log_version,
+                                "Could not reconfigure the log, perhaps someone else beat us to it? We'll check",
+                            );
+                        }
+                    } else {
+                        // Holding pattern
+                        if tone_escalated {
+                            info!(
+                                %log_version,
+                                "In holding pattern, still waiting for log reconfiguration to complete. Elapsed={:?}",
+                                start.elapsed(),
+                            );
+                        } else {
+                            debug!(
+                                %log_version,
+                                "In holding pattern, waiting for log reconfiguration to complete. Elapsed={:?}",
+                                start.elapsed(),
+                            );
+                        }
+                    }
+                }
             }
         }
 
