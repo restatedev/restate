@@ -399,11 +399,14 @@ impl fmt::Display for SdkInvocationErrorV2 {
 
         if let Some(related_command) = &self.related_command {
             if related_command.command_was_commited {
-                write!(f, "This error originated after executing {related_command}")?;
+                write!(
+                    f,
+                    "> This error originated after executing {related_command}"
+                )?;
             } else {
                 write!(
                     f,
-                    "This error originated while processing {related_command}"
+                    "> This error originated while processing {related_command}"
                 )?;
             }
         }

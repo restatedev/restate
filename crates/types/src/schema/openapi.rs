@@ -683,9 +683,9 @@ fn error_response_json_schema() -> Value {
                 "type": "string",
                 "title": "Error message"
             },
-            "description": {
+            "stacktrace": {
                 "type": "string",
-                "title": "Verbose error description"
+                "title": "Stacktrace of the error"
             }
         },
         "required": ["message"],

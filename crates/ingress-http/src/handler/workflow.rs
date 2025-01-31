@@ -75,7 +75,7 @@ where
             .await?
         {
             AttachInvocationResponse::NotFound => {
-                return Err(HandlerError::NotFound);
+                return Err(HandlerError::InvocationNotFound);
             }
             AttachInvocationResponse::NotSupported => {
                 return Err(HandlerError::NotImplemented);
