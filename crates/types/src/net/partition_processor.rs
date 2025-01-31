@@ -114,6 +114,7 @@ pub enum PartitionProcessorRpcResponse {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubmittedInvocationNotification {
     pub request_id: PartitionProcessorRpcRequestId,
+    pub execution_time: Option<MillisSinceEpoch>,
     /// If true, this request_id created a "fresh invocation",
     /// otherwise the invocation was previously submitted.
     pub is_new_invocation: bool,

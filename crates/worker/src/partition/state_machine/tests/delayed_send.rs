@@ -44,6 +44,7 @@ async fn send_with_delay() {
             contains(pat!(Action::RegisterTimer { .. })),
             contains(eq(Action::IngressSubmitNotification {
                 request_id,
+                execution_time: Some(wake_up_time),
                 is_new_invocation: true
             }))
         )
@@ -63,6 +64,7 @@ async fn send_with_delay() {
             contains(matchers::actions::invoke_for_id(invocation_id)),
             not(contains(eq(Action::IngressSubmitNotification {
                 request_id,
+                execution_time: Some(wake_up_time),
                 is_new_invocation: true,
             })))
         )
@@ -102,6 +104,7 @@ async fn send_with_delay_to_locked_virtual_object() {
             contains(pat!(Action::RegisterTimer { .. })),
             contains(eq(Action::IngressSubmitNotification {
                 request_id,
+                execution_time: Some(wake_up_time),
                 is_new_invocation: true,
             }))
         )
@@ -130,6 +133,7 @@ async fn send_with_delay_to_locked_virtual_object() {
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             not(contains(eq(Action::IngressSubmitNotification {
                 request_id,
+                execution_time: Some(wake_up_time),
                 is_new_invocation: true,
             })))
         )
@@ -162,6 +166,9 @@ async fn send_with_delay_and_idempotency_key() {
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     let request_id_1 = PartitionProcessorRpcRequestId::default();
+    let execution_time = Some(MillisSinceEpoch::from(
+        SystemTime::now() + Duration::from_secs(60),
+    ));
 
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
@@ -173,9 +180,7 @@ async fn send_with_delay_and_idempotency_key() {
             }),
             completion_retention_duration: Some(retention),
             // Doesn't matter the execution time here, just needs to be filled
-            execution_time: Some(MillisSinceEpoch::from(
-                SystemTime::now() + Duration::from_secs(60),
-            )),
+            execution_time,
             source: Source::Ingress(request_id_1),
             ..ServiceInvocation::mock()
         }))
@@ -187,6 +192,7 @@ async fn send_with_delay_and_idempotency_key() {
             contains(pat!(Action::RegisterTimer { .. })),
             contains(eq(Action::IngressSubmitNotification {
                 request_id: request_id_1,
+                execution_time,
                 is_new_invocation: true,
             }))
         )
@@ -203,10 +209,8 @@ async fn send_with_delay_and_idempotency_key() {
                 request_id: request_id_2,
             }),
             completion_retention_duration: Some(retention),
-            // Doesn't matter the execution time here, just needs to be filled
-            execution_time: Some(MillisSinceEpoch::from(
-                SystemTime::now() + Duration::from_secs(60),
-            )),
+            // Needs to be different from the original one!
+            execution_time: execution_time.map(|m| m + Duration::from_secs(10)),
             source: Source::Ingress(request_id_2),
             ..ServiceInvocation::mock()
         }))
@@ -217,6 +221,7 @@ async fn send_with_delay_and_idempotency_key() {
             not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(eq(Action::IngressSubmitNotification {
                 request_id: request_id_2,
+                execution_time,
                 is_new_invocation: false,
             }))
         )

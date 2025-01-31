@@ -225,6 +225,15 @@ impl InvocationStatus {
     }
 
     #[inline]
+    pub fn execution_time(&self) -> Option<MillisSinceEpoch> {
+        match self {
+            InvocationStatus::Scheduled(metadata) => metadata.metadata.execution_time,
+            InvocationStatus::Inboxed(metadata) => metadata.metadata.execution_time,
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub fn idempotency_key(&self) -> Option<&ByteString> {
         match self {
             InvocationStatus::Scheduled(metadata) => metadata.metadata.idempotency_key.as_ref(),

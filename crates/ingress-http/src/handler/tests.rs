@@ -252,6 +252,7 @@ async fn send_service() {
 
             ready(Ok(SubmittedInvocationNotification {
                 request_id: Default::default(),
+                execution_time: None,
                 is_new_invocation: true,
             }))
             .boxed()
@@ -299,6 +300,7 @@ async fn send_with_delay_service() {
 
             ready(Ok(SubmittedInvocationNotification {
                 request_id: Default::default(),
+                execution_time: None,
                 is_new_invocation: true,
             }))
             .boxed()
@@ -345,6 +347,7 @@ async fn send_virtual_object() {
 
             ready(Ok(SubmittedInvocationNotification {
                 request_id: Default::default(),
+                execution_time: None,
                 is_new_invocation: true,
             }))
             .boxed()
@@ -465,6 +468,7 @@ async fn idempotency_key_and_send() {
 
             ready(Ok(SubmittedInvocationNotification {
                 request_id: Default::default(),
+                execution_time: None,
                 is_new_invocation: true,
             }))
             .boxed()
@@ -525,6 +529,7 @@ async fn idempotency_key_and_send_with_different_invocation_id() {
 
             ready(Ok(SubmittedInvocationNotification {
                 request_id: Default::default(),
+                execution_time: None,
                 is_new_invocation: true,
             }))
             .boxed()
