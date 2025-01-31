@@ -22,9 +22,9 @@ use std::string;
 pub(crate) enum HandlerError {
     #[error("not found")]
     NotFound,
-    #[error("service '{0}' not found")]
+    #[error("service '{0}' not found, make sure to register the service before calling it.")]
     ServiceNotFound(String),
-    #[error("service '{0}' handler '{1}' not found")]
+    #[error("the service '{0}' exists, but the handler '{1}' was not found, check that the handler exists in the latest registered service version.")]
     ServiceHandlerNotFound(String, String),
     #[error("invocation not found")]
     InvocationNotFound,
