@@ -641,7 +641,7 @@ impl Member {
                     self.raw_node.step(raft)?;
                 },
                 Ok(()) = nodes_config_watch.changed() => {
-                    self.update_node_addresses(&Metadata::with_current(|m| m.nodes_config_ref()));
+                    self.update_node_addresses();
                 },
                 _ = self.tick_interval.tick() => {
                     self.raw_node.tick();
@@ -748,7 +748,9 @@ impl Member {
             return;
         }
 
-        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
 
         let Ok(joining_node_config) = nodes_config.find_node_by_id(joining_member_id.node_id)
         else {
@@ -1043,7 +1045,7 @@ impl Member {
 
         self.answer_join_callbacks();
         self.update_leadership();
-        self.update_node_addresses(&Metadata::with_current(|m| m.nodes_config_ref()));
+        self.update_node_addresses();
         self.update_status();
 
         Ok(())
@@ -1197,13 +1199,18 @@ impl Member {
         }
     }
 
-    fn update_node_addresses(&mut self, nodes_configuration: &NodesConfiguration) {
+    fn update_node_addresses(&mut self) {
+        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
+
         trace!(
             "Update node addresses in networking based on NodesConfiguration '{}'",
-            nodes_configuration.version()
+            nodes_config.version()
         );
+
         for node_id in self.raw_node.raft.prs().conf().voters().ids().iter() {
-            if let Ok(node_config) = nodes_configuration.find_node_by_id(PlainNodeId::from(
+            if let Ok(node_config) = nodes_config.find_node_by_id(PlainNodeId::from(
                 u32::try_from(node_id).expect("node id is derived from PlainNodeId"),
             )) {
                 self.networking
@@ -1265,6 +1272,19 @@ impl Member {
         self.configuration.members.contains_key(&node_id)
     }
 
+    fn latest_nodes_configuration<'a>(
+        kv_storage: &'a KvMemoryStorage,
+        metadata_nodes_config: &'a NodesConfiguration,
+    ) -> &'a NodesConfiguration {
+        let kv_storage_nodes_config = kv_storage.last_seen_nodes_configuration();
+
+        if metadata_nodes_config.version() > kv_storage_nodes_config.version() {
+            metadata_nodes_config
+        } else {
+            kv_storage_nodes_config
+        }
+    }
+
     /// Returns the known leader from the Raft instance or a random known leader from the
     /// current nodes configuration.
     fn known_leader(&self) -> Option<KnownLeader> {
@@ -1274,7 +1294,9 @@ impl Member {
 
         let leader = to_plain_node_id(self.raw_node.raft.leader_id);
 
-        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
         nodes_config
             .find_node_by_id(leader)
             .ok()
