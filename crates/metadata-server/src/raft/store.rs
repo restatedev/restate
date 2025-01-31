@@ -1269,7 +1269,7 @@ impl Member {
     /// current nodes configuration.
     fn known_leader(&self) -> Option<KnownLeader> {
         if self.raw_node.raft.leader_id == INVALID_ID {
-            return Self::random_member();
+            return None;
         }
 
         let leader = to_plain_node_id(self.raw_node.raft.leader_id);
@@ -1280,29 +1280,6 @@ impl Member {
             .ok()
             .map(|node_config| KnownLeader {
                 node_id: leader,
-                address: node_config.address.clone(),
-            })
-            .or_else(Self::random_member)
-    }
-
-    /// Returns a random metadata store member from the current nodes configuration.
-    fn random_member() -> Option<KnownLeader> {
-        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
-
-        nodes_config
-            .iter()
-            .filter_map(|(node_id, node_config)| {
-                if node_config.metadata_server_config.metadata_server_state
-                    == MetadataServerState::Member
-                {
-                    Some((node_id, node_config))
-                } else {
-                    None
-                }
-            })
-            .choose(&mut thread_rng())
-            .map(|(node_id, node_config)| KnownLeader {
-                node_id,
                 address: node_config.address.clone(),
             })
     }
@@ -1387,11 +1364,11 @@ impl Standby {
                     let request = request.into_request();
                     request.fail(RequestError::Unavailable(
                         "Not being part of the metadata store cluster.".into(),
-                        Member::random_member(),
+                        Standby::random_member(),
                     ))
                 },
                 Some(request) = join_cluster_rx.recv() => {
-                    let _ = request.response_tx.send(Err(JoinClusterError::NotMember(Member::random_member())));
+                    let _ = request.response_tx.send(Err(JoinClusterError::NotMember(Standby::random_member())));
                 }
                 Some(join_result) = &mut join_cluster => {
                     match join_result {
@@ -1507,6 +1484,28 @@ impl Standby {
         };
 
         Ok(())
+    }
+
+    /// Returns a random metadata store member from the current nodes configuration.
+    fn random_member() -> Option<KnownLeader> {
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+
+        nodes_config
+            .iter()
+            .filter_map(|(node_id, node_config)| {
+                if node_config.metadata_server_config.metadata_server_state
+                    == MetadataServerState::Member
+                {
+                    Some((node_id, node_config))
+                } else {
+                    None
+                }
+            })
+            .choose(&mut thread_rng())
+            .map(|(node_id, node_config)| KnownLeader {
+                node_id,
+                address: node_config.address.clone(),
+            })
     }
 }
 
