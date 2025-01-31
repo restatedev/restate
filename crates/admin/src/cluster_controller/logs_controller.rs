@@ -194,16 +194,15 @@ impl LogState {
             }
             LogState::Available { segment_index, .. }
             | LogState::Sealing { segment_index, .. }
-            | LogState::Sealed { segment_index, .. }
-                if *segment_index < new_segment_index =>
-            {
-                *self = LogState::Available {
-                    configuration: Some(new_configuration),
-                    segment_index: new_segment_index,
+            | LogState::Sealed { segment_index, .. } => {
+                if *segment_index < new_segment_index {
+                    *self = LogState::Available {
+                        configuration: Some(new_configuration),
+                        segment_index: new_segment_index,
+                    }
+                } else {
+                    debug!(segment_index = %new_segment_index, "Ignoring setting segment to available because it's outdated.");
                 }
-            }
-            _ => {
-                panic!("Trying to transition LogState to Available with a segment that should be sealed.");
             }
         }
     }
