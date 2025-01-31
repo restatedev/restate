@@ -11,6 +11,7 @@
 use crate::partition_table::PartitionReplication;
 
 use super::QueryEngineOptions;
+use http::Uri;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::net::SocketAddr;
@@ -75,6 +76,13 @@ pub struct AdminOptions {
 
     #[cfg(any(test, feature = "test-util"))]
     pub disable_cluster_controller: bool,
+
+    /// # Ingress endpoint
+    ///
+    /// Ingress endpoint that the Web UI should use to interact with.
+    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String", url))]
+    pub advertised_ingress_endpoint: Option<Uri>,
 }
 
 impl AdminOptions {
@@ -114,6 +122,7 @@ impl Default for AdminOptions {
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             log_tail_update_interval: Duration::from_secs(5 * 60).into(),
+            advertised_ingress_endpoint: Some("http://localhost:8080/".parse().unwrap()),
         }
     }
 }

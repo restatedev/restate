@@ -11,6 +11,7 @@
 use axum::Json;
 use okapi_operation::*;
 use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
+use restate_types::config::Configuration;
 
 /// Min/max supported admin api versions by the server
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
@@ -28,5 +29,9 @@ pub async fn version() -> Json<VersionInformation> {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         min_admin_api_version: MIN_ADMIN_API_VERSION.as_repr(),
         max_admin_api_version: MAX_ADMIN_API_VERSION.as_repr(),
+        ingress_endpoint: Configuration::pinned()
+            .admin
+            .advertised_ingress_endpoint
+            .clone(),
     })
 }
