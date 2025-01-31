@@ -54,7 +54,7 @@ impl LogNodeSetExt for NodeSet {
         let my_node_id = my_node_id.into();
         let mut new_nodeset: Vec<_> = self.iter().cloned().collect();
         // Shuffle nodes
-        new_nodeset.shuffle(&mut rand::thread_rng());
+        new_nodeset.shuffle(&mut rand::rng());
 
         let has_my_node_idx = self.iter().position(|&x| x == my_node_id);
 

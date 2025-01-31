@@ -203,7 +203,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
     async fn wave(&mut self, mut graylist: NodeSet, wave: usize) -> SequencerAppenderState {
         // select the spread
         let spread = match self.sequencer_shared_state.selector.select(
-            &mut rand::thread_rng(),
+            &mut rand::rng(),
             &self.networking.metadata().nodes_config_ref(),
             &graylist,
         ) {

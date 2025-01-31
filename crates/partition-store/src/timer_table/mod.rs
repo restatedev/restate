@@ -498,7 +498,7 @@ mod tests {
     pub fn random_timer_key() -> TimerKey {
         let kind = {
             match TimerKeyKindDiscriminants::VARIANTS
-                [rand::thread_rng().gen_range(0..TimerKeyKindDiscriminants::VARIANTS.len())]
+                [rand::rng().random_range(0..TimerKeyKindDiscriminants::VARIANTS.len())]
             {
                 TimerKeyKindDiscriminants::Invoke => TimerKeyKind::Invoke {
                     invocation_uuid: InvocationUuid::mock_generate(
@@ -511,7 +511,7 @@ mod tests {
                 TimerKeyKindDiscriminants::CompleteJournalEntry => {
                     TimerKeyKind::CompleteJournalEntry {
                         invocation_uuid: InvocationUuid::mock_random(),
-                        journal_index: rand::thread_rng().gen_range(0..2 ^ 16),
+                        journal_index: rand::rng().random_range(0..2 ^ 16),
                     }
                 }
                 TimerKeyKindDiscriminants::CleanInvocationStatus => {
@@ -524,7 +524,7 @@ mod tests {
 
         TimerKey {
             kind,
-            timestamp: rand::thread_rng().gen_range(0..2 ^ 16),
+            timestamp: rand::rng().random_range(0..2 ^ 16),
         }
     }
 }

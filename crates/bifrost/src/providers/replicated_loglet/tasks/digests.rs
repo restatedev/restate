@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use rand::thread_rng;
+use rand::rng;
 use tokio::task::JoinSet;
 use tracing::{debug, trace, warn};
 
@@ -181,7 +181,7 @@ impl Digests {
             .spread_selector
             .select_fixups(
                 known_copies,
-                &mut thread_rng(),
+                &mut rng(),
                 &networking.metadata().nodes_config_ref(),
                 &NodeSet::default(),
             )

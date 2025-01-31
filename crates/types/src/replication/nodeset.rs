@@ -13,6 +13,7 @@ use std::iter::FusedIterator;
 
 use ahash::AHasher;
 use itertools::Itertools;
+use rand::distr::Uniform;
 use rand::prelude::*;
 
 use crate::PlainNodeId;
@@ -192,9 +193,11 @@ impl NodeSet {
 
     /// Shuffles the node set in place.
     pub fn shuffle<R: Rng + ?Sized>(&mut self, rng: &mut R) {
-        use rand::distributions::Standard;
-        self.0
-            .sort_by_cached_key(|_| rng.sample::<usize, Standard>(Standard));
+        self.0.sort_by_cached_key(|_| {
+            rng.sample::<usize, _>(
+                Uniform::new_inclusive(0, usize::MAX).expect("valid sample range"),
+            )
+        });
     }
 }
 

@@ -211,7 +211,7 @@ mod tests {
             SelectorStrategy::Fixed(strategy.clone()),
             replication,
         );
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let spread = selector.select(&mut rng, &nodes_config, &NodeSet::default())?;
         assert_that!(spread, eq(Spread::from([1, 2, 3])));
 
@@ -250,7 +250,7 @@ mod tests {
         let nodeset: NodeSet = (1..=5).collect();
 
         let selector = SpreadSelector::new(nodeset, SelectorStrategy::Flood, replication);
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let spread = selector.select(&mut rng, &nodes_config, &NodeSet::default())?;
         let spread = spread.to_vec();
 

@@ -16,7 +16,6 @@ use enum_map::EnumMap;
 use futures::{Stream, StreamExt};
 use opentelemetry::global;
 use parking_lot::Mutex;
-use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, instrument, trace, warn, Instrument, Span};
@@ -68,9 +67,10 @@ impl ConnectionManagerInner {
         &self,
         peer_node_id: &GenerationalNodeId,
     ) -> Option<Arc<OwnedConnection>> {
+        use rand::prelude::IndexedRandom;
         self.connection_by_gen_id
             .get(peer_node_id)
-            .and_then(|connections| connections.choose(&mut rand::thread_rng())?.upgrade())
+            .and_then(|connections| connections.choose(&mut rand::rng())?.upgrade())
     }
 }
 

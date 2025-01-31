@@ -17,7 +17,7 @@ use futures_util::StreamExt;
 use http::header::CONTENT_TYPE;
 use http::Uri;
 use pprof::criterion::{Output, PProfProfiler};
-use rand::distributions::{Alphanumeric, DistString};
+use rand::distr::{Alphanumeric, SampleString};
 use restate_benchmarks::{parse_benchmark_settings, BenchmarkSettings};
 use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
@@ -82,7 +82,7 @@ async fn send_parallel_counter_requests(
             && completed_requests as usize + pending_requests.len() < num_requests as usize
         {
             let client = client.clone();
-            let counter_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
+            let counter_name = Alphanumeric.sample_string(&mut rand::rng(), 8);
             pending_requests.push(async move {
                 client
                     .post(format!(

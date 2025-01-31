@@ -62,6 +62,7 @@ pub fn format_rocksdb_stat_ticker_for_prometheus(
         labels,
         None,
         db.get_ticker_count(ticker),
+        None,
     );
     let _ = writeln!(out);
 }
@@ -88,6 +89,7 @@ pub fn format_rocksdb_property_for_prometheus(
         labels,
         None,
         property_value,
+        None,
     );
     let _ = writeln!(out);
 }
@@ -124,6 +126,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         labels,
         Some(("quantile", "0.5")),
         unit.normalize_value(data.median()),
+        None,
     );
     formatting::write_metric_line::<&str, f64>(
         out,
@@ -132,6 +135,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         labels,
         Some(("quantile", "0.95")),
         unit.normalize_value(data.p95()),
+        None,
     );
     formatting::write_metric_line::<&str, f64>(
         out,
@@ -140,6 +144,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         labels,
         Some(("quantile", "0.99")),
         unit.normalize_value(data.p99()),
+        None,
     );
     formatting::write_metric_line::<&str, f64>(
         out,
@@ -148,6 +153,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         labels,
         Some(("quantile", "1.0")),
         unit.normalize_value(data.max()),
+        None,
     );
     formatting::write_metric_line::<&str, f64>(
         out,
@@ -156,6 +162,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         labels,
         None,
         unit.normalize_value(data.sum() as f64),
+        None,
     );
     formatting::write_metric_line::<&str, u64>(
         out,
@@ -164,6 +171,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         labels,
         None,
         data.count(),
+        None,
     );
     let _ = writeln!(out);
 }

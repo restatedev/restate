@@ -305,7 +305,7 @@ pub fn with_jitter(duration: Duration, max_multiplier: f32) -> Duration {
         // We can't get a random value unless max_jitter is higher than MIN_JITTER.
         duration + MIN_JITTER
     } else {
-        let jitter = rand::thread_rng().gen_range(MIN_JITTER..max_jitter);
+        let jitter = rand::rng().random_range(MIN_JITTER..max_jitter);
         duration + jitter
     }
 }

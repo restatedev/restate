@@ -17,7 +17,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use pprof::criterion::{Output, PProfProfiler};
 use pprof::flamegraph::Options;
 use prost::Message as _;
-use rand::distributions::Alphanumeric;
+use rand::distr::Alphanumeric;
 use rand::{random, Rng};
 
 use restate_bifrost::InputRecord;
@@ -49,7 +49,7 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
 }
 
 fn rand_string(len: usize) -> String {
-    rand::thread_rng()
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(len)
         .map(char::from)
@@ -131,8 +131,7 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
     let body = serialize_message(
         append_message,
         restate_types::net::ProtocolVersion::Flexbuffers,
-    )
-    .unwrap();
+    )?;
 
     let message = Message {
         header: Some(restate_types::protobuf::node::Header {
