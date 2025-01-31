@@ -526,12 +526,18 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             PreFlightInvocationMetadata::from_service_invocation(service_invocation);
 
         // 2. Check if we need to schedule it
+        let execution_time = pre_flight_invocation_metadata.execution_time;
         let Some(pre_flight_invocation_metadata) = self
             .handle_service_invocation_execution_time(invocation_id, pre_flight_invocation_metadata)
             .await?
         else {
             // Invocation was scheduled, send back the ingress attach notification and return
-            self.send_submit_notification_if_needed(invocation_id, true, submit_notification_sink);
+            self.send_submit_notification_if_needed(
+                invocation_id,
+                execution_time,
+                true,
+                submit_notification_sink,
+            );
             return Ok(());
         };
 
@@ -544,15 +550,20 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             .await?
         else {
             // Invocation was inboxed, send back the ingress attach notification and return
-            self.send_submit_notification_if_needed(invocation_id, true, submit_notification_sink);
+            self.send_submit_notification_if_needed(
+                invocation_id,
+                execution_time,
+                true,
+                submit_notification_sink,
+            );
             // Invocation was inboxed, nothing else to do here
             return Ok(());
         };
 
         // 4. Execute it
-        Self::send_submit_notification_if_needed(
-            self,
+        self.send_submit_notification_if_needed(
             invocation_id,
+            pre_flight_invocation_metadata.execution_time,
             true,
             submit_notification_sink,
         );
@@ -675,6 +686,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
         // Send submit notification
         self.send_submit_notification_if_needed(
             service_invocation.invocation_id,
+            previous_invocation_status.execution_time(),
             // is_new_invocation is true if the RPC ingress request is a duplicate.
             service_invocation.source
                 == *previous_invocation_status
@@ -3469,6 +3481,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
     fn send_submit_notification_if_needed(
         &mut self,
         invocation_id: InvocationId,
+        execution_time: Option<MillisSinceEpoch>,
         is_new_invocation: bool,
         submit_notification_sink: Option<SubmitNotificationSink>,
     ) {
@@ -3483,6 +3496,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
             self.action_collector
                 .push(Action::IngressSubmitNotification {
                     request_id,
+                    execution_time,
                     is_new_invocation,
                 });
         }

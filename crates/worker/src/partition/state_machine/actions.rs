@@ -65,6 +65,7 @@ pub enum Action {
     },
     IngressSubmitNotification {
         request_id: PartitionProcessorRpcRequestId,
+        execution_time: Option<MillisSinceEpoch>,
         /// If true, this request_id created a "fresh invocation",
         /// otherwise the invocation was previously submitted.
         is_new_invocation: bool,
