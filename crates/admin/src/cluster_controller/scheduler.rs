@@ -61,13 +61,13 @@ pub enum Error {
 /// Placement hints for the [`Scheduler`]. The hints can specify which nodes should be chosen for
 /// the partition processor placement and on which node the leader should run.
 pub trait PartitionProcessorPlacementHints {
-    fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = &PlainNodeId>;
+    fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = PlainNodeId>;
 
     fn preferred_leader(&self, partition_id: &PartitionId) -> Option<PlainNodeId>;
 }
 
 impl<T: PartitionProcessorPlacementHints> PartitionProcessorPlacementHints for &T {
-    fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = &PlainNodeId> {
+    fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = PlainNodeId> {
         (*self).preferred_nodes(partition_id)
     }
 
@@ -317,8 +317,7 @@ impl<T: TransportConnect> Scheduler<T> {
                     // todo: Implement cleverer strategies
                     // randomly choose from the preferred workers nodes first
                     let new_nodes = preferred_worker_nodes
-                        .filter(|node_id| !target_state.node_set.contains(**node_id))
-                        .cloned()
+                        .filter(|node_id| !target_state.node_set.contains(*node_id))
                         .choose_multiple(
                             &mut rng,
                             replication_factor - target_state.node_set.len(),
@@ -341,7 +340,7 @@ impl<T: TransportConnect> Scheduler<T> {
                     }
                 } else if target_state.node_set.len() > replication_factor {
                     let preferred_worker_nodes: HashSet<PlainNodeId> =
-                        preferred_worker_nodes.cloned().collect();
+                        preferred_worker_nodes.collect();
 
                     // first remove the not preferred nodes
                     for node_id in target_state
@@ -617,7 +616,7 @@ mod tests {
         fn preferred_nodes(
             &self,
             _partition_id: &PartitionId,
-        ) -> impl Iterator<Item = &PlainNodeId> {
+        ) -> impl Iterator<Item = PlainNodeId> {
             iter::empty()
         }
 

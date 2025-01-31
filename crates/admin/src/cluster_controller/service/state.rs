@@ -166,8 +166,12 @@ where
 
         let scheduler = Scheduler::new(service.metadata_writer.clone(), service.networking.clone());
 
-        let logs_controller =
-            LogsController::new(service.bifrost.clone(), service.metadata_writer.clone())?;
+        let logs_controller = if configuration.admin.disable_logs_controller {
+            info!("Logs controller is disabled");
+            LogsController::disabled()
+        } else {
+            LogsController::enabled(service.bifrost.clone(), service.metadata_writer.clone())?
+        };
 
         let log_trim_check_interval = create_log_trim_check_interval(&configuration.admin);
 
