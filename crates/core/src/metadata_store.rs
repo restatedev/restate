@@ -490,7 +490,7 @@ pub enum ReadModifyWriteError<E = String> {
 
 impl<E> MaybeRetryableError for ReadModifyWriteError<E>
 where
-    E: std::error::Error + Send + Sync + 'static,
+    E: std::fmt::Display + std::fmt::Debug + 'static,
 {
     fn retryable(&self) -> bool {
         match self {
