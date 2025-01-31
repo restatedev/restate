@@ -14,7 +14,7 @@ use anyhow::Context;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, instrument};
 
-use restate_core::metadata_store::{retry_on_retryable_error, ReadWriteError};
+use restate_core::metadata_store::{retry_on_retryable_error, ReadWriteError, RetryError};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
@@ -240,10 +240,15 @@ impl LogServerService {
             )
         })
         .await
-        .map_err(|e| e.transpose())
+        .map_err(|e| e.map(|err| err.transpose()))
         {
             Ok(nodes_config) => nodes_config,
-            Err(MarkNodeAsWriteableError::PreviousAttemptSucceeded(nodes_config)) => nodes_config,
+            Err(RetryError::NotRetryable(MarkNodeAsWriteableError::PreviousAttemptSucceeded(
+                nodes_config,
+            )))
+            | Err(RetryError::RetriesExhausted(
+                MarkNodeAsWriteableError::PreviousAttemptSucceeded(nodes_config),
+            )) => nodes_config,
             Err(err) => {
                 return Err(err).context("failed to mark this node as writeable");
             }

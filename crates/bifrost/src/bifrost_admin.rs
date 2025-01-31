@@ -248,7 +248,7 @@ impl<'a> BifrostAdmin<'a> {
                 })
         })
         .await
-        .map_err(|e| e.transpose())?;
+        .map_err(|e| e.into_inner().transpose())?;
 
         self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
@@ -287,7 +287,7 @@ impl<'a> BifrostAdmin<'a> {
                 )
         })
         .await
-        .map_err(|e| e.transpose())?;
+        .map_err(|e| e.into_inner().transpose())?;
 
         self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
@@ -310,7 +310,8 @@ impl<'a> BifrostAdmin<'a> {
                     Logs::from_configuration(&Configuration::pinned())
                 })
         })
-        .await?;
+        .await
+        .map_err(|err| err.into_inner())?;
 
         self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())

@@ -535,22 +535,57 @@ impl From<WriteError> for ReadWriteError {
 
 static_assertions::assert_impl_all!(MetadataStoreClient: Send, Sync, Clone);
 
-pub async fn retry_on_retryable_error<Fn, Fut, T, E, P>(retry_policy: P, action: Fn) -> Result<T, E>
+pub async fn retry_on_retryable_error<Fn, Fut, T, E, P>(
+    retry_policy: P,
+    mut action: Fn,
+) -> Result<T, RetryError<E>>
 where
     P: Into<RetryPolicy>,
     Fn: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
     E: MaybeRetryableError,
 {
-    retry_policy
-        .into()
-        .retry_if(action, |err: &E| {
-            if err.retryable() {
-                debug!(%err, "Operation failed. Retrying it.");
-                true
-            } else {
-                false
+    let retry_policy = retry_policy.into();
+    let mut retry_iter = retry_policy.iter();
+
+    loop {
+        match action().await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if err.retryable() {
+                    if let Some(delay) = retry_iter.next() {
+                        tokio::time::sleep(delay).await;
+                    } else {
+                        return Err(RetryError::RetriesExhausted(err));
+                    }
+                } else {
+                    return Err(RetryError::NotRetryable(err));
+                }
             }
-        })
-        .await
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RetryError<E> {
+    #[error("retries exhausted: {0}")]
+    RetriesExhausted(E),
+    #[error(transparent)]
+    NotRetryable(E),
+}
+
+impl<E> RetryError<E> {
+    pub fn into_inner(self) -> E {
+        match self {
+            RetryError::RetriesExhausted(err) => err,
+            RetryError::NotRetryable(err) => err,
+        }
+    }
+
+    pub fn map<F>(self, mapper: impl Fn(E) -> F) -> RetryError<F> {
+        match self {
+            RetryError::RetriesExhausted(err) => RetryError::RetriesExhausted(mapper(err)),
+            RetryError::NotRetryable(err) => RetryError::NotRetryable(mapper(err)),
+        }
+    }
 }
