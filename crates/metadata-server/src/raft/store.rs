@@ -1411,9 +1411,11 @@ impl Standby {
                             Span::current().record("member_id", MemberId::new(my_node_id.unwrap(), self.storage_id).to_string());
                         }
 
-                        if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) && join_cluster.is_terminated() {
-                            debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
-                            join_cluster.set(Some(Self::join_cluster(None, None, my_node_id.unwrap(), storage_id).fuse()).into());
+                        if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
+                            if join_cluster.is_terminated() {
+                                debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
+                                join_cluster.set(Some(Self::join_cluster(None, None, my_node_id.unwrap(), storage_id).fuse()).into());
+                            }
                         } else {
                             debug!("Node is not part of the metadata store cluster. Waiting to become a candidate.");
                             join_cluster.set(None.into());
