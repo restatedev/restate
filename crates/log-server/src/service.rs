@@ -17,7 +17,6 @@ use tracing::{debug, info, instrument};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
-use restate_metadata_server::MetadataStoreClient;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
@@ -40,7 +39,6 @@ pub struct LogServerService {
     health_status: HealthStatus<LogServerStatus>,
     metadata: Metadata,
     request_processor: RequestPump,
-    metadata_store_client: MetadataStoreClient,
     state_map: LogletStateMap,
     log_store: RocksDbLogStore,
 }
@@ -50,7 +48,6 @@ impl LogServerService {
         health_status: HealthStatus<LogServerStatus>,
         updateable_config: Live<Configuration>,
         metadata: Metadata,
-        metadata_store_client: MetadataStoreClient,
         record_cache: RecordCache,
         router_builder: &mut MessageRouterBuilder,
         server_builder: &mut NetworkServerBuilder,
@@ -104,7 +101,6 @@ impl LogServerService {
             health_status,
             metadata,
             request_processor,
-            metadata_store_client,
             state_map,
             log_store,
         })
@@ -115,19 +111,13 @@ impl LogServerService {
             health_status,
             metadata,
             request_processor: request_pump,
-            mut metadata_store_client,
             state_map,
             mut log_store,
         } = self;
 
         // Run log-store checks and self-provision if needed.
-        let storage_state = Self::provision_node(
-            &metadata,
-            &mut log_store,
-            &mut metadata_store_client,
-            &mut metadata_writer,
-        )
-        .await?;
+        let storage_state =
+            Self::provision_node(&metadata, &mut log_store, &mut metadata_writer).await?;
 
         let _ = TaskCenter::spawn_child(
             TaskKind::SystemService,
@@ -142,7 +132,6 @@ impl LogServerService {
     async fn provision_node(
         metadata: &Metadata,
         log_store: &mut impl LogStore,
-        metadata_store_client: &mut MetadataStoreClient,
         metadata_writer: &mut MetadataWriter,
     ) -> anyhow::Result<StorageState> {
         let my_node_id = metadata.my_node_id();
@@ -189,12 +178,8 @@ impl LogServerService {
                 my_node_id.as_plain()
             );
             // Self transition our storage state into read-write.
-            my_storage_state = Self::mark_the_node_as_writeable(
-                my_node_id,
-                metadata_store_client,
-                metadata_writer,
-            )
-            .await?;
+            my_storage_state =
+                Self::mark_the_node_as_writeable(my_node_id, metadata_writer).await?;
         }
 
         debug!("My storage state: {:?}", my_storage_state);
@@ -203,12 +188,11 @@ impl LogServerService {
 
     async fn mark_the_node_as_writeable(
         my_node_id: GenerationalNodeId,
-        metadata_store_client: &mut MetadataStoreClient,
         metadata_writer: &mut MetadataWriter,
     ) -> anyhow::Result<StorageState> {
         let target_storage_state = StorageState::ReadWrite;
 
-        let nodes_config = metadata_store_client
+        let nodes_config = metadata_writer.metadata_store_client()
             .read_modify_write(
                 NODES_CONFIG_KEY.clone(),
                 move |nodes_config: Option<NodesConfiguration>| {

@@ -217,7 +217,6 @@ impl Node {
                     health.log_server_status(),
                     updateable_config.clone(),
                     metadata.clone(),
-                    metadata_store_client.clone(),
                     record_cache,
                     &mut router_builder,
                     &mut server_builder,
