@@ -332,7 +332,9 @@ impl<'a> field::Visit for PrettyVisitor<'a> {
             RESTATE_ERROR_CODE if self.skip_restate_code => {
                 // skip, this is printed by the restate specific event printer below
             }
-            RESTATE_INVOCATION_ERROR_STACKTRACE if self.skip_restate_invocation_error_stacktrace => {
+            RESTATE_INVOCATION_ERROR_STACKTRACE
+                if self.skip_restate_invocation_error_stacktrace =>
+            {
                 // skip, this is printed by the restate specific event printer below
             }
             RESTATE_INVOCATION_ID => {

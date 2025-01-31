@@ -292,7 +292,7 @@ impl fmt::Display for SdkInvocationError {
         if self.error.code() == codes::JOURNAL_MISMATCH {
             writeln!(
                 f,
-                "Detected journal mismatch. Either the code was updated without registering a new service deployment, or some code within the handler is non-deterministic."
+                "Detected journal mismatch. Either some code within the handler is non-deterministic, or the code was updated without registering a new service deployment."
             )?;
         } else {
             writeln!(
@@ -385,7 +385,7 @@ impl fmt::Display for SdkInvocationErrorV2 {
         if self.error.code() == codes::JOURNAL_MISMATCH {
             writeln!(
                 f,
-                "Detected journal mismatch. Either the code was updated without registering a new service deployment, or some code within the handler is non-deterministic."
+                "Detected journal mismatch. Either some code within the handler is non-deterministic, or the code was updated without registering a new service deployment."
             )?;
         } else {
             writeln!(
