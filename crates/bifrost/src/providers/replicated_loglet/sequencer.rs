@@ -11,7 +11,7 @@
 mod appender;
 
 use std::sync::{
-    atomic::{AtomicU32, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     Arc,
 };
 
@@ -56,11 +56,23 @@ pub struct SequencerSharedState {
     my_params: ReplicatedLogletParams,
     selector: SpreadSelector,
     log_server_manager: RemoteLogServerManager,
+    maybe_sealed: AtomicBool,
 }
 
 impl SequencerSharedState {
     pub fn sequencer(&self) -> &GenerationalNodeId {
         &self.my_params.sequencer
+    }
+
+    pub fn remote_log_servers(&self) -> &RemoteLogServerManager {
+        &self.log_server_manager
+    }
+
+    pub fn mark_as_maybe_sealed(&self) {
+        self.maybe_sealed.store(true, Ordering::Relaxed)
+    }
+    pub fn maybe_sealed(&self) -> bool {
+        self.maybe_sealed.load(Ordering::Relaxed)
     }
 
     pub fn replication(&self) -> &ReplicationProperty {
@@ -101,6 +113,18 @@ pub struct Sequencer<T> {
     record_cache: RecordCache,
 }
 
+impl<T> Sequencer<T> {
+    pub fn sequencer_state(&self) -> &SequencerSharedState {
+        &self.sequencer_shared_state
+    }
+
+    /// Number of records that can be added to the sequencer before exhausting it in-flight
+    /// capacity
+    pub fn available_capacity(&self) -> usize {
+        self.record_permits.available_permits()
+    }
+}
+
 impl<T: TransportConnect> Sequencer<T> {
     /// Create a new sequencer instance
     pub fn new(
@@ -139,6 +163,7 @@ impl<T: TransportConnect> Sequencer<T> {
             log_server_manager,
             my_params,
             selector,
+            maybe_sealed: AtomicBool::new(false),
         });
 
         Self {
@@ -153,17 +178,7 @@ impl<T: TransportConnect> Sequencer<T> {
         }
     }
 
-    pub fn sequencer_state(&self) -> &SequencerSharedState {
-        &self.sequencer_shared_state
-    }
-
-    /// Number of records that can be added to the sequencer before exhausting it in-flight
-    /// capacity
-    pub fn available_capacity(&self) -> usize {
-        self.record_permits.available_permits()
-    }
-
-    /// wait until all in-flight appends are drained. Note that this will cause the sequencer to
+    /// Waits until all in-flight appends are drained. Note that this will cause the sequencer to
     /// return AppendError::Sealed for new appends but it won't start the seal process itself. The
     /// seal process must be started externally. _Only_ after the drain is complete, the caller
     /// can set the seal on `known_global_tail` as it's guaranteed that no more work will be

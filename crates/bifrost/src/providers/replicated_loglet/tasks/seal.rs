@@ -9,7 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use tokio::sync::mpsc;
-use tracing::{debug, trace};
+use tokio::time::Instant;
+use tracing::{info, trace};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Incoming, Networking, TransportConnect};
@@ -56,6 +57,7 @@ impl SealTask {
         self,
         networking: Networking<T>,
     ) -> Result<LogletOffset, ReplicatedLogletError> {
+        let start = Instant::now();
         // Use the entire nodeset except for StorageState::Disabled.
         let effective_nodeset = self
             .my_params
@@ -114,9 +116,10 @@ impl SealTask {
                     .map(|(n, _)| *n)
                     .collect();
 
-                debug!(loglet_id = %self.my_params.loglet_id,
+                info!(loglet_id = %self.my_params.loglet_id,
                     max_tail = %max_tail,
-                    "Seal task completed on f-majority of nodes. Sealed log-servers '{}'",
+                    "Seal task completed on f-majority of nodes in {:?}. Sealed log-servers '{}'",
+                    start.elapsed(),
                     sealed_nodes,
                 );
                 // note that the rest of seal requests will continue in the background

@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use tokio::task::JoinSet;
-use tracing::{trace, warn};
+use tracing::{trace, warn, Instrument, Span};
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{ShutdownError, TaskCenterFutureExt};
@@ -155,6 +155,7 @@ impl<T: TransportConnect> RepairTail<T> {
                     }
                 }
                 .in_current_tc()
+                .instrument(Span::current())
             });
         }
 

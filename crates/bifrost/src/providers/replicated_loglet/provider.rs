@@ -34,6 +34,7 @@ use super::network::RequestPump;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
 use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
+use crate::providers::replicated_loglet::loglet::FindTailOptions;
 use crate::providers::replicated_loglet::tasks::PeriodicTailChecker;
 use crate::Error;
 
@@ -177,13 +178,24 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                     self.sequencer_rpc_routers.clone(),
                     self.record_cache.clone(),
                 );
+                let is_local_sequencer = loglet.is_sequencer_local();
                 let key_value = entry.insert(Arc::new(loglet));
+
                 let loglet = Arc::downgrade(key_value.value());
+                // the periodic tail checker depend on whether we are a sequencer node or not.
+                // For non-sequencer nodes, the period impacts the max lag of our read
+                // streams' view of tail. For sequencers, we only need this to do periodic
+                // releases/check-seals.
+                let opts = if is_local_sequencer {
+                    FindTailOptions::ForceSealCheck
+                } else {
+                    FindTailOptions::Default
+                };
                 let _ = TaskCenter::spawn(
                     TaskKind::BifrostBackgroundLowPriority,
                     "periodic-tail-checker",
                     // todo: configuration
-                    PeriodicTailChecker::run(loglet_id, loglet, Duration::from_secs(2)),
+                    PeriodicTailChecker::run(loglet_id, loglet, Duration::from_secs(2), opts),
                 );
                 Arc::clone(key_value.value())
             }

@@ -26,7 +26,7 @@ type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
 /// Possible results of f-majority checks for a subset of the NodeSet.
 /// Read variant docs for details.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FMajorityResult {
     /// The subset of nodes neither satisfies the authoritative f-majority
     /// property, nor does it contain sufficient authoritative nodes.
