@@ -35,6 +35,11 @@ impl Version {
     pub fn next(self) -> Self {
         Version(self.0 + 1)
     }
+
+    #[cfg(feature = "test-util")]
+    pub fn prev(self) -> Self {
+        Version(self.0.saturating_sub(1))
+    }
 }
 
 impl From<crate::protobuf::common::Version> for Version {

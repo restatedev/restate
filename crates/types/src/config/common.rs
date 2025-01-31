@@ -322,6 +322,11 @@ impl CommonOptions {
         })
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn base_dir_opt(&self) -> Option<&PathBuf> {
+        self.base_dir.as_ref()
+    }
+
     pub fn rocksdb_actual_total_memtables_size(&self) -> usize {
         let sanitized = self.rocksdb_total_memtables_ratio.clamp(0.0, 1.0) as f64;
         let total_mem = self.rocksdb_total_memory_size.get() as f64;

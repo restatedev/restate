@@ -468,6 +468,7 @@ async fn attach_with_send_service_invocation(
             not(contains(pat!(Action::IngressResponse { .. }))),
             contains(eq(Action::IngressSubmitNotification {
                 request_id: request_id_2,
+                execution_time: None,
                 is_new_invocation: use_same_request_id,
             }))
         )
@@ -575,6 +576,7 @@ async fn attach_inboxed_with_send_service_invocation(
             }))),
             contains(eq(Action::IngressSubmitNotification {
                 request_id: request_id_1,
+                execution_time: None,
                 is_new_invocation: true,
             }))
         )
@@ -618,6 +620,7 @@ async fn attach_inboxed_with_send_service_invocation(
             not(contains(pat!(Action::IngressResponse { .. }))),
             contains(eq(Action::IngressSubmitNotification {
                 request_id: request_id_2,
+                execution_time: None,
                 is_new_invocation: false,
             }))
         )

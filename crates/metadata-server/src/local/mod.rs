@@ -8,53 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc::client::GrpcMetadataServerClient;
-use restate_core::metadata_store::providers::create_object_store_based_meta_store;
-use restate_core::metadata_store::{providers::EtcdMetadataStore, MetadataStoreClient};
 use restate_core::network::NetworkServerBuilder;
 use restate_rocksdb::RocksError;
 use restate_types::config::{MetadataServerOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
-use restate_types::{
-    config::{MetadataStoreClient as MetadataStoreClientConfig, MetadataStoreClientOptions},
-    errors::GenericError,
-};
 
 mod store;
 
 use crate::MetadataServerRunner;
 pub use store::LocalMetadataServer;
-
-/// Creates a [`MetadataStoreClient`] for the [`GrpcMetadataServerClient`].
-pub async fn create_client(
-    metadata_store_client_options: MetadataStoreClientOptions,
-) -> Result<MetadataStoreClient, GenericError> {
-    let backoff_policy = Some(
-        metadata_store_client_options
-            .metadata_store_client_backoff_policy
-            .clone(),
-    );
-
-    let client = match metadata_store_client_options.metadata_store_client.clone() {
-        MetadataStoreClientConfig::Embedded { addresses } => {
-            let inner_client =
-                GrpcMetadataServerClient::new(addresses, metadata_store_client_options);
-            MetadataStoreClient::new(inner_client, backoff_policy)
-        }
-        MetadataStoreClientConfig::Etcd { addresses } => {
-            let store = EtcdMetadataStore::new(addresses, &metadata_store_client_options).await?;
-            MetadataStoreClient::new(store, backoff_policy)
-        }
-        conf @ MetadataStoreClientConfig::ObjectStore { .. } => {
-            let store = create_object_store_based_meta_store(conf).await?;
-            MetadataStoreClient::new(store, backoff_policy)
-        }
-    };
-
-    Ok(client)
-}
 
 pub(crate) async fn create_server(
     metadata_server_options: &MetadataServerOptions,

@@ -20,6 +20,13 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::{info, trace, trace_span, Instrument};
 
+use super::path_parsing::{InvokeType, ServiceRequestType, TargetType};
+use super::tracing::prepare_tracing_span;
+use super::HandlerError;
+use super::{Handler, APPLICATION_JSON};
+use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
+use crate::metric_definitions::{INGRESS_REQUESTS, INGRESS_REQUEST_DURATION, REQUEST_COMPLETED};
+use crate::RequestDispatcher;
 use restate_types::identifiers::{InvocationId, WithInvocationId};
 use restate_types::invocation::{
     Header, InvocationRequest, InvocationRequestHeader, InvocationTarget, InvocationTargetType,
@@ -28,14 +35,7 @@ use restate_types::invocation::{
 use restate_types::schema::invocation_target::{
     InvocationTargetMetadata, InvocationTargetResolver,
 };
-
-use super::path_parsing::{InvokeType, ServiceRequestType, TargetType};
-use super::tracing::prepare_tracing_span;
-use super::HandlerError;
-use super::{Handler, APPLICATION_JSON};
-use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
-use crate::metric_definitions::{INGRESS_REQUESTS, INGRESS_REQUEST_DURATION, REQUEST_COMPLETED};
-use crate::RequestDispatcher;
+use restate_types::time::MillisSinceEpoch;
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const DELAY_QUERY_PARAM: &str = "delay";
@@ -255,7 +255,6 @@ where
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         let invocation_id = invocation_request.invocation_id();
-        let execution_time = invocation_request.header.execution_time;
 
         // Send the service invocation, wait for the submit notification
         let response = dispatcher.send(invocation_request).await?;
@@ -268,7 +267,18 @@ where
             .body(Full::new(
                 serde_json::to_vec(&SendResponse {
                     invocation_id,
-                    execution_time: execution_time.map(SystemTime::from).map(Into::into),
+                    execution_time: response
+                        .execution_time
+                        .and_then(|m| {
+                            if m == MillisSinceEpoch::UNIX_EPOCH {
+                                // Ignore
+                                None
+                            } else {
+                                Some(m)
+                            }
+                        })
+                        .map(SystemTime::from)
+                        .map(Into::into),
                     status: if response.is_new_invocation {
                         SendStatus::Accepted
                     } else {

@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::network::connection_manager::ConnectionManager;
-use crate::network::grpc_svc;
-use crate::network::handler::PEER_METADATA_KEY;
+use crate::raft::network::connection_manager::ConnectionManager;
+use crate::raft::network::grpc_svc;
+use crate::raft::network::handler::PEER_METADATA_KEY;
 use bytes::{Buf, BufMut, BytesMut};
 use futures::FutureExt;
 use restate_core::network::net_util;

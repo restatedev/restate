@@ -10,9 +10,9 @@
 
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::MetadataServerSnapshot;
-use crate::network::grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient;
-use crate::network::{ConnectionManager, Networking};
 use crate::raft::kv_memory_storage::KvMemoryStorage;
+use crate::raft::network::grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient;
+use crate::raft::network::{ConnectionManager, Networking};
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{storage, RaftConfiguration};
 use crate::{
@@ -641,7 +641,7 @@ impl Member {
                     self.raw_node.step(raft)?;
                 },
                 Ok(()) = nodes_config_watch.changed() => {
-                    self.update_node_addresses(&Metadata::with_current(|m| m.nodes_config_ref()));
+                    self.update_node_addresses();
                 },
                 _ = self.tick_interval.tick() => {
                     self.raw_node.tick();
@@ -748,7 +748,9 @@ impl Member {
             return;
         }
 
-        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
 
         let Ok(joining_node_config) = nodes_config.find_node_by_id(joining_member_id.node_id)
         else {
@@ -1043,7 +1045,7 @@ impl Member {
 
         self.answer_join_callbacks();
         self.update_leadership();
-        self.update_node_addresses(&Metadata::with_current(|m| m.nodes_config_ref()));
+        self.update_node_addresses();
         self.update_status();
 
         Ok(())
@@ -1197,13 +1199,18 @@ impl Member {
         }
     }
 
-    fn update_node_addresses(&mut self, nodes_configuration: &NodesConfiguration) {
+    fn update_node_addresses(&mut self) {
+        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
+
         trace!(
             "Update node addresses in networking based on NodesConfiguration '{}'",
-            nodes_configuration.version()
+            nodes_config.version()
         );
+
         for node_id in self.raw_node.raft.prs().conf().voters().ids().iter() {
-            if let Ok(node_config) = nodes_configuration.find_node_by_id(PlainNodeId::from(
+            if let Ok(node_config) = nodes_config.find_node_by_id(PlainNodeId::from(
                 u32::try_from(node_id).expect("node id is derived from PlainNodeId"),
             )) {
                 self.networking
@@ -1265,44 +1272,36 @@ impl Member {
         self.configuration.members.contains_key(&node_id)
     }
 
+    fn latest_nodes_configuration<'a>(
+        kv_storage: &'a KvMemoryStorage,
+        metadata_nodes_config: &'a NodesConfiguration,
+    ) -> &'a NodesConfiguration {
+        let kv_storage_nodes_config = kv_storage.last_seen_nodes_configuration();
+
+        if metadata_nodes_config.version() > kv_storage_nodes_config.version() {
+            metadata_nodes_config
+        } else {
+            kv_storage_nodes_config
+        }
+    }
+
     /// Returns the known leader from the Raft instance or a random known leader from the
     /// current nodes configuration.
     fn known_leader(&self) -> Option<KnownLeader> {
         if self.raw_node.raft.leader_id == INVALID_ID {
-            return Self::random_member();
+            return None;
         }
 
         let leader = to_plain_node_id(self.raw_node.raft.leader_id);
 
-        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
         nodes_config
             .find_node_by_id(leader)
             .ok()
             .map(|node_config| KnownLeader {
                 node_id: leader,
-                address: node_config.address.clone(),
-            })
-            .or_else(Self::random_member)
-    }
-
-    /// Returns a random metadata store member from the current nodes configuration.
-    fn random_member() -> Option<KnownLeader> {
-        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
-
-        nodes_config
-            .iter()
-            .filter_map(|(node_id, node_config)| {
-                if node_config.metadata_server_config.metadata_server_state
-                    == MetadataServerState::Member
-                {
-                    Some((node_id, node_config))
-                } else {
-                    None
-                }
-            })
-            .choose(&mut thread_rng())
-            .map(|(node_id, node_config)| KnownLeader {
-                node_id,
                 address: node_config.address.clone(),
             })
     }
@@ -1387,11 +1386,11 @@ impl Standby {
                     let request = request.into_request();
                     request.fail(RequestError::Unavailable(
                         "Not being part of the metadata store cluster.".into(),
-                        Member::random_member(),
+                        Standby::random_member(),
                     ))
                 },
                 Some(request) = join_cluster_rx.recv() => {
-                    let _ = request.response_tx.send(Err(JoinClusterError::NotMember(Member::random_member())));
+                    let _ = request.response_tx.send(Err(JoinClusterError::NotMember(Standby::random_member())));
                 }
                 Some(join_result) = &mut join_cluster => {
                     match join_result {
@@ -1434,9 +1433,11 @@ impl Standby {
                             Span::current().record("member_id", MemberId::new(my_node_id.unwrap(), self.storage_id).to_string());
                         }
 
-                        if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) && join_cluster.is_terminated() {
-                            debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
-                            join_cluster.set(Some(Self::join_cluster(None, None, my_node_id.unwrap(), storage_id).fuse()).into());
+                        if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
+                            if join_cluster.is_terminated() {
+                                debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
+                                join_cluster.set(Some(Self::join_cluster(None, None, my_node_id.unwrap(), storage_id).fuse()).into());
+                            }
                         } else {
                             debug!("Node is not part of the metadata store cluster. Waiting to become a candidate.");
                             join_cluster.set(None.into());
@@ -1496,7 +1497,7 @@ impl Standby {
             .send_compressed(CompressionEncoding::Gzip);
 
         if let Err(status) = client
-            .join_cluster(crate::network::grpc_svc::JoinClusterRequest {
+            .join_cluster(crate::raft::network::grpc_svc::JoinClusterRequest {
                 node_id: u32::from(my_node_id),
                 storage_id,
             })
@@ -1507,6 +1508,28 @@ impl Standby {
         };
 
         Ok(())
+    }
+
+    /// Returns a random metadata store member from the current nodes configuration.
+    fn random_member() -> Option<KnownLeader> {
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+
+        nodes_config
+            .iter()
+            .filter_map(|(node_id, node_config)| {
+                if node_config.metadata_server_config.metadata_server_state
+                    == MetadataServerState::Member
+                {
+                    Some((node_id, node_config))
+                } else {
+                    None
+                }
+            })
+            .choose(&mut thread_rng())
+            .map(|(node_id, node_config)| KnownLeader {
+                node_id,
+                address: node_config.address.clone(),
+            })
     }
 }
 

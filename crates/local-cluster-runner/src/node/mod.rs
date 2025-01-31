@@ -182,7 +182,14 @@ impl Node {
         let mut nodes = Vec::with_capacity(usize::try_from(size).expect("u32 to fit into usize"));
 
         base_config.common.allow_bootstrap = false;
-        base_config.metadata_server.kind = MetadataServerKind::Raft(RaftOptions::default());
+        base_config.common.log_disable_ansi_codes = true;
+        if !matches!(
+            base_config.metadata_server.kind,
+            MetadataServerKind::Raft(_)
+        ) {
+            info!("Setting the metadata server to embedded");
+            base_config.metadata_server.kind = MetadataServerKind::Raft(RaftOptions::default());
+        }
 
         for node_id in 1..=size {
             let mut effective_config = base_config.clone();
@@ -295,7 +302,7 @@ impl Node {
             inherit_env,
             env,
             searcher,
-        } = self;
+        } = &self;
 
         let node_base_dir = std::path::absolute(
             base_config
@@ -332,7 +339,7 @@ impl Node {
             .await
             .map_err(NodeStartError::CreateLog)?;
 
-        let binary_path: OsString = binary_source.try_into()?;
+        let binary_path: OsString = binary_source.clone().try_into()?;
         let mut cmd = Command::new(&binary_path);
 
         if !inherit_env {
@@ -342,13 +349,13 @@ impl Node {
         }
         .env("RESTATE_CONFIG", node_config_file)
         .env("DO_NOT_TRACK", "true") // avoid sending telemetry as part of tests
-        .envs(env)
+        .envs(env.clone())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .process_group(0) // avoid terminal control C being propagated
-        .args(&args);
+        .args(args);
 
         let mut child = cmd.spawn().map_err(NodeStartError::SpawnError)?;
         let pid = child.id().expect("child to have a pid");
@@ -429,10 +436,10 @@ impl Node {
             log_file: node_log_filename,
             status: StartedNodeStatus::Running {
                 child_handle,
-                searcher,
+                searcher: searcher.clone(),
                 pid,
             },
-            config: base_config,
+            node: Some(self),
         })
     }
 
@@ -518,7 +525,7 @@ impl TryInto<OsString> for BinarySource {
 pub struct StartedNode {
     log_file: PathBuf,
     status: StartedNodeStatus,
-    config: Configuration,
+    node: Option<Node>,
 }
 
 enum StartedNodeStatus {
@@ -561,18 +568,17 @@ impl StartedNode {
             StartedNodeStatus::Exited(status) => Ok(status),
             StartedNodeStatus::Failed(kind) => Err(kind.into()),
             StartedNodeStatus::Running { pid, .. } => {
-                info!(
-                    "Sending SIGKILL to node {} (pid {})",
-                    self.config.node_name(),
-                    pid
-                );
+                info!("Sending SIGKILL to node {} (pid {})", self.node_name(), pid);
                 match nix::sys::signal::kill(
                     nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
                     nix::sys::signal::SIGKILL,
                 ) {
                     Ok(()) => (&mut self.status).await,
                     Err(errno) => match errno {
-                        nix::errno::Errno::ESRCH => Ok(ExitStatus::default()), // ignore "no such process"
+                        nix::errno::Errno::ESRCH => {
+                            self.status = StartedNodeStatus::Exited(ExitStatus::default());
+                            Ok(ExitStatus::default())
+                        } // ignore "no such process"
                         _ => Err(io::Error::from_raw_os_error(errno as i32)),
                     },
                 }
@@ -586,11 +592,7 @@ impl StartedNode {
             StartedNodeStatus::Exited(_) => Ok(()),
             StartedNodeStatus::Failed(kind) => Err(kind.into()),
             StartedNodeStatus::Running { pid, .. } => {
-                info!(
-                    "Sending SIGTERM to node {} (pid {})",
-                    self.config.node_name(),
-                    pid
-                );
+                info!("Sending SIGTERM to node {} (pid {})", self.node_name(), pid);
                 match nix::sys::signal::kill(
                     nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
                     nix::sys::signal::SIGTERM,
@@ -598,7 +600,7 @@ impl StartedNode {
                     Err(nix::errno::Errno::ESRCH) => {
                         warn!(
                             "Node {} server process (pid {}) did not exist when sending SIGTERM",
-                            self.config.node_name(),
+                            self.node_name(),
                             pid
                         );
                         Ok(())
@@ -608,6 +610,17 @@ impl StartedNode {
                 }
             }
         }
+    }
+
+    pub async fn restart(&mut self) -> anyhow::Result<()> {
+        info!("Restarting node '{}'", self.config().node_name());
+        self.kill().await?;
+        assert!(
+            !matches!(self.status, StartedNodeStatus::Running { .. }),
+            "Node should not be in status running after killing it."
+        );
+        *self = self.node.take().expect("to be present").start().await?;
+        Ok(())
     }
 
     /// Send a SIGTERM, then wait for `dur` for exit, otherwise send a SIGKILL
@@ -651,7 +664,7 @@ impl StartedNode {
     }
 
     pub fn config(&self) -> &Configuration {
-        &self.config
+        &self.node.as_ref().expect("to be present").base_config
     }
 
     pub fn node_name(&self) -> &str {
@@ -708,10 +721,8 @@ impl StartedNode {
     pub async fn metadata_client(
         &self,
     ) -> Result<restate_metadata_server::MetadataStoreClient, GenericError> {
-        restate_metadata_server::local::create_client(
-            self.config.common.metadata_store_client.clone(),
-        )
-        .await
+        restate_metadata_server::create_client(self.config().common.metadata_store_client.clone())
+            .await
     }
 
     /// Check to see if the admin address is healthy. Returns false if this node has no admin role.
@@ -766,8 +777,8 @@ impl StartedNode {
     /// Check to see if the metadata server has joined the metadata cluster.
     pub async fn metadata_server_joined_cluster(&self) -> bool {
         let mut metadata_server_client = MetadataServerSvcClient::new(create_tonic_channel(
-            self.config.common.advertised_address.clone(),
-            &self.config.networking,
+            self.config().common.advertised_address.clone(),
+            &self.config().networking,
         ));
 
         let Ok(response) = metadata_server_client
@@ -840,7 +851,7 @@ impl Drop for StartedNode {
         if let StartedNodeStatus::Running { pid, .. } = self.status {
             warn!(
                 "Node {} (pid {}) dropped without explicit shutdown",
-                self.config.node_name(),
+                self.config().node_name(),
                 pid,
             );
             match nix::sys::signal::kill(
@@ -850,7 +861,7 @@ impl Drop for StartedNode {
                 Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
                 err => error!(
                     "Failed to send SIGKILL to running node {} (pid {}): {:?}",
-                    self.config.node_name(),
+                    self.config().node_name(),
                     pid,
                     err,
                 ),

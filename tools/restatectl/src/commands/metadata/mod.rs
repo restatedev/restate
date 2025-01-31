@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_metadata_server::local::create_client;
+use restate_metadata_server::create_client;
 use restate_types::config::MetadataStoreClientOptions;
 use restate_types::net::AdvertisedAddress;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};

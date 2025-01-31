@@ -95,8 +95,8 @@ message ErrorMessage {
   uint32 code = 1;
   // Contains a concise error message, e.g. Throwable#getMessage() in Java.
   string message = 2;
-  // Contains a verbose error description, e.g. the exception stacktrace.
-  string description = 3;
+  // The exception stacktrace, if available.
+  string stacktrace = 3;
 
   // Command that caused the failure. This may be outside the current stored journal size.
   // If no specific entry caused the failure, the current replayed/processed entry can be used.

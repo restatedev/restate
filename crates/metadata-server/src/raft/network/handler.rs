@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::network::connection_manager::ConnectionError;
-use crate::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
-use crate::network::grpc_svc::JoinClusterRequest;
-use crate::network::{grpc_svc, ConnectionManager, NetworkMessage};
+use crate::raft::network::connection_manager::ConnectionError;
+use crate::raft::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
+use crate::raft::network::grpc_svc::JoinClusterRequest;
+use crate::raft::network::{grpc_svc, ConnectionManager, NetworkMessage};
 use crate::{JoinClusterError, JoinClusterHandle};
 use arc_swap::access::Access;
 use arc_swap::ArcSwapOption;

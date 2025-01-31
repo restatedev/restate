@@ -148,11 +148,10 @@ impl Node {
 
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
-        let metadata_store_client = restate_metadata_server::local::create_client(
-            config.common.metadata_store_client.clone(),
-        )
-        .await
-        .map_err(BuildError::MetadataStoreClient)?;
+        let metadata_store_client =
+            restate_metadata_server::create_client(config.common.metadata_store_client.clone())
+                .await
+                .map_err(BuildError::MetadataStoreClient)?;
         let metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
         let metadata_writer = metadata_manager.writer();
@@ -218,7 +217,6 @@ impl Node {
                     health.log_server_status(),
                     updateable_config.clone(),
                     metadata.clone(),
-                    metadata_store_client.clone(),
                     record_cache,
                     &mut router_builder,
                     &mut server_builder,

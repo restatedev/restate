@@ -55,7 +55,7 @@ impl From<ErrorMessage> for InvocationError {
         if value.description.is_empty() {
             InvocationError::new(value.code, value.message)
         } else {
-            InvocationError::new(value.code, value.message).with_description(value.description)
+            InvocationError::new(value.code, value.message).with_stacktrace(value.description)
         }
     }
 }

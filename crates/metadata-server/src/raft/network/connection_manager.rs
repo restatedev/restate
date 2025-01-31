@@ -8,8 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::network::grpc_svc;
-use crate::network::NetworkMessage;
+use crate::raft::network::{grpc_svc, NetworkMessage};
 use futures::StreamExt;
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 use std::collections::HashMap;

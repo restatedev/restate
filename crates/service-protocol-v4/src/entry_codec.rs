@@ -1607,10 +1607,10 @@ fn parse_complete_awakeable_id(awakeable_id: String) -> Result<CompleteAwakeable
 
 impl From<proto::ErrorMessage> for InvocationError {
     fn from(value: proto::ErrorMessage) -> Self {
-        if value.description.is_empty() {
+        if value.stacktrace.is_empty() {
             InvocationError::new(value.code, value.message)
         } else {
-            InvocationError::new(value.code, value.message).with_description(value.description)
+            InvocationError::new(value.code, value.message).with_stacktrace(value.stacktrace)
         }
     }
 }

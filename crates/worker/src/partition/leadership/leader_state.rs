@@ -423,6 +423,7 @@ impl LeaderState {
             }
             Action::IngressSubmitNotification {
                 request_id,
+                execution_time,
                 is_new_invocation,
                 ..
             } => {
@@ -430,6 +431,7 @@ impl LeaderState {
                     respond_to_rpc(response_tx.prepare(Ok(
                         PartitionProcessorRpcResponse::Submitted(SubmittedInvocationNotification {
                             request_id,
+                            execution_time,
                             is_new_invocation,
                         }),
                     )));

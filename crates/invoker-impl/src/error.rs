@@ -155,6 +155,103 @@ pub(crate) enum InvokerError {
     ServiceUnavailable(http::StatusCode),
 }
 
+impl InvokerError {
+    pub(crate) fn error_stacktrace(&self) -> Option<&str> {
+        match self {
+            InvokerError::Sdk(s) => {
+                s.error
+                    .stacktrace()
+                    .and_then(|s| if s.is_empty() { None } else { Some(s) })
+            }
+            InvokerError::SdkV2(s) => {
+                s.error
+                    .stacktrace()
+                    .and_then(|s| if s.is_empty() { None } else { Some(s) })
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_transient(&self) -> bool {
+        true
+    }
+
+    pub(crate) fn should_bump_start_message_retry_count_since_last_stored_entry(&self) -> bool {
+        !matches!(
+            self,
+            InvokerError::JournalReader(_)
+                | InvokerError::StateReader(_)
+                | InvokerError::NoDeploymentForService
+                | InvokerError::BadNegotiatedServiceProtocolVersion(_)
+                | InvokerError::UnknownDeployment(_)
+                | InvokerError::ResumeWithWrongServiceProtocolVersion(_)
+                | InvokerError::IncompatibleServiceEndpoint(_, _)
+        )
+    }
+
+    pub(crate) fn next_retry_interval_override(&self) -> Option<Duration> {
+        match self {
+            InvokerError::Sdk(SdkInvocationError {
+                next_retry_interval_override,
+                ..
+            }) => *next_retry_interval_override,
+            InvokerError::SdkV2(SdkInvocationErrorV2 {
+                next_retry_interval_override,
+                ..
+            }) => *next_retry_interval_override,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn into_invocation_error(self) -> InvocationError {
+        match self {
+            InvokerError::Sdk(sdk_error) => sdk_error.error,
+            InvokerError::SdkV2(sdk_error) => sdk_error.error,
+            InvokerError::EntryEnrichment(entry_index, entry_type, e) => {
+                let msg = format!(
+                    "Error when processing entry {} of type {}: {}",
+                    entry_index,
+                    entry_type,
+                    e.message()
+                );
+                let mut err = InvocationError::new(e.code(), msg);
+                if let Some(desc) = e.stacktrace() {
+                    err = err.with_stacktrace(desc);
+                }
+                err
+            }
+            e => InvocationError::internal(e),
+        }
+    }
+
+    pub(crate) fn into_invocation_error_report(mut self) -> InvocationErrorReport {
+        let doc_error_code = codederror::CodedError::code(&self);
+        let maybe_related_entry = match self {
+            InvokerError::Sdk(SdkInvocationError {
+                ref mut related_entry,
+                ..
+            }) => related_entry.take(),
+            InvokerError::SdkV2(SdkInvocationErrorV2 {
+                related_command: ref mut related_entry,
+                ..
+            }) => related_entry
+                .take()
+                .map(InvocationErrorRelatedCommandV2::best_effort_into_v1),
+            _ => None,
+        }
+        .unwrap_or_default();
+        let err = self.into_invocation_error();
+
+        InvocationErrorReport {
+            doc_error_code,
+            err,
+            related_entry_index: maybe_related_entry.related_entry_index,
+            related_entry_name: maybe_related_entry.related_entry_name,
+            related_entry_type: maybe_related_entry.related_entry_type,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(restate_errors::RT0017)]
 pub(crate) enum CommandPreconditionError {
@@ -195,7 +292,7 @@ impl fmt::Display for SdkInvocationError {
         if self.error.code() == codes::JOURNAL_MISMATCH {
             writeln!(
                 f,
-                "Detected journal mismatch. Either the code was updated without registering a new service deployment, or some code within the handler is non-deterministic."
+                "Detected journal mismatch. Either some code within the handler is non-deterministic, or the code was updated without registering a new service deployment."
             )?;
         } else {
             writeln!(
@@ -203,13 +300,18 @@ impl fmt::Display for SdkInvocationError {
                 "Got a (transient) error from the service while processing invocation."
             )?;
         }
-        writeln!(f, "{}", self.error)?;
+
+        // We don't use the default formatting of error, as we want to display the stacktrace at the bottom
+        writeln!(f, "[{}] {}.", self.error.code(), self.error.message())?;
 
         if let Some(related_entry) = &self.related_entry {
             if related_entry.entry_was_commited {
-                write!(f, "This error originated after executing {related_entry}")?;
+                write!(f, "> This error originated after executing {related_entry}")?;
             } else {
-                write!(f, "This error originated while processing {related_entry}")?;
+                write!(
+                    f,
+                    "> This error originated while processing {related_entry}"
+                )?;
             }
         }
         Ok(())
@@ -283,7 +385,7 @@ impl fmt::Display for SdkInvocationErrorV2 {
         if self.error.code() == codes::JOURNAL_MISMATCH {
             writeln!(
                 f,
-                "Detected journal mismatch. Either the code was updated without registering a new service deployment, or some code within the handler is non-deterministic."
+                "Detected journal mismatch. Either some code within the handler is non-deterministic, or the code was updated without registering a new service deployment."
             )?;
         } else {
             writeln!(
@@ -291,14 +393,20 @@ impl fmt::Display for SdkInvocationErrorV2 {
                 "Got a (transient) error from the service while processing invocation."
             )?;
         }
-        writeln!(f, "{}", self.error)?;
+
+        // We don't use the default formatting of error, as we wanna display the stacktrace at the bottom
+        writeln!(f, "[{}] {}.", self.error.code(), self.error.message())?;
+
         if let Some(related_command) = &self.related_command {
             if related_command.command_was_commited {
-                write!(f, "This error originated after executing {related_command}")?;
+                write!(
+                    f,
+                    "> This error originated after executing {related_command}"
+                )?;
             } else {
                 write!(
                     f,
-                    "This error originated while processing {related_command}"
+                    "> This error originated while processing {related_command}"
                 )?;
             }
         }
@@ -399,86 +507,5 @@ fn specialized_restate_error_code_for_invocation_error(
         codes::JOURNAL_MISMATCH => &restate_errors::RT0016,
         codes::PROTOCOL_VIOLATION => &restate_errors::RT0012,
         _ => &restate_errors::RT0007,
-    }
-}
-
-impl InvokerError {
-    pub(crate) fn is_transient(&self) -> bool {
-        true
-    }
-
-    pub(crate) fn should_bump_start_message_retry_count_since_last_stored_entry(&self) -> bool {
-        !matches!(
-            self,
-            InvokerError::JournalReader(_)
-                | InvokerError::StateReader(_)
-                | InvokerError::NoDeploymentForService
-                | InvokerError::BadNegotiatedServiceProtocolVersion(_)
-                | InvokerError::UnknownDeployment(_)
-                | InvokerError::ResumeWithWrongServiceProtocolVersion(_)
-                | InvokerError::IncompatibleServiceEndpoint(_, _)
-        )
-    }
-
-    pub(crate) fn next_retry_interval_override(&self) -> Option<Duration> {
-        match self {
-            InvokerError::Sdk(SdkInvocationError {
-                next_retry_interval_override,
-                ..
-            }) => *next_retry_interval_override,
-            InvokerError::SdkV2(SdkInvocationErrorV2 {
-                next_retry_interval_override,
-                ..
-            }) => *next_retry_interval_override,
-            _ => None,
-        }
-    }
-
-    pub(crate) fn into_invocation_error(self) -> InvocationError {
-        match self {
-            InvokerError::Sdk(sdk_error) => sdk_error.error,
-            InvokerError::SdkV2(sdk_error) => sdk_error.error,
-            InvokerError::EntryEnrichment(entry_index, entry_type, e) => {
-                let msg = format!(
-                    "Error when processing entry {} of type {}: {}",
-                    entry_index,
-                    entry_type,
-                    e.message()
-                );
-                let mut err = InvocationError::new(e.code(), msg);
-                if let Some(desc) = e.description() {
-                    err = err.with_description(desc);
-                }
-                err
-            }
-            e => InvocationError::internal(e),
-        }
-    }
-
-    pub(crate) fn into_invocation_error_report(mut self) -> InvocationErrorReport {
-        let doc_error_code = codederror::CodedError::code(&self);
-        let maybe_related_entry = match self {
-            InvokerError::Sdk(SdkInvocationError {
-                ref mut related_entry,
-                ..
-            }) => related_entry.take(),
-            InvokerError::SdkV2(SdkInvocationErrorV2 {
-                related_command: ref mut related_entry,
-                ..
-            }) => related_entry
-                .take()
-                .map(InvocationErrorRelatedCommandV2::best_effort_into_v1),
-            _ => None,
-        }
-        .unwrap_or_default();
-        let err = self.into_invocation_error();
-
-        InvocationErrorReport {
-            doc_error_code,
-            err,
-            related_entry_index: maybe_related_entry.related_entry_index,
-            related_entry_name: maybe_related_entry.related_entry_name,
-            related_entry_type: maybe_related_entry.related_entry_type,
-        }
     }
 }

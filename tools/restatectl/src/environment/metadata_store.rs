@@ -67,7 +67,7 @@ pub async fn start_metadata_server(
         .wait_for_value(NodeRpcStatus::Ready)
         .await;
 
-    let client = restate_metadata_server::local::create_client(metadata_store_client_options)
+    let client = restate_metadata_server::create_client(metadata_store_client_options)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create metadata store client: {}", e))?;
 

@@ -8,10 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
-
 use bytes::{Bytes, BytesMut};
-use restate_types::protobuf::cluster::ClusterConfiguration;
 use tonic::{async_trait, Request, Response, Status};
 use tracing::info;
 
@@ -22,6 +19,7 @@ use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY};
 use restate_types::nodes_config::NodesConfiguration;
+use restate_types::protobuf::cluster::ClusterConfiguration;
 use restate_types::storage::{StorageCodec, StorageEncode};
 use restate_types::{Version, Versioned};
 
@@ -269,9 +267,9 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 err => Status::internal(err.to_string()),
             })?;
 
-        let tail_state = tokio::time::timeout(Duration::from_secs(2), writable_loglet.find_tail())
+        let tail_state = writable_loglet
+            .find_tail()
             .await
-            .map_err(|_elapsed| Status::deadline_exceeded("Timedout finding tail"))?
             .map_err(|err| Status::internal(err.to_string()))?;
 
         let response = FindTailResponse {

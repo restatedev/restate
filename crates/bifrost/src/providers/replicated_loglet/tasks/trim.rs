@@ -10,7 +10,7 @@
 
 use restate_core::TaskCenterFutureExt;
 use tokio::task::JoinSet;
-use tracing::{debug, trace, warn};
+use tracing::{debug, instrument, trace, warn, Instrument, Span};
 
 use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_types::config::Configuration;
@@ -68,6 +68,7 @@ impl<'a> TrimTask<'a> {
         }
     }
 
+    #[instrument(level = "error", skip_all, fields(%trim_point))]
     pub async fn run<T: TransportConnect>(
         self,
         trim_point: LogletOffset,
@@ -136,6 +137,7 @@ impl<'a> TrimTask<'a> {
                     (node_id, task.run(on_trim_response, &networking).await)
                 }
                 .in_current_tc()
+                .instrument(Span::current())
             });
         }
 

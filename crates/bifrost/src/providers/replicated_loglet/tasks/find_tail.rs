@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn, Instrument, Span};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, TransportConnect};
@@ -26,6 +26,7 @@ use restate_types::PlainNodeId;
 
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
 use crate::loglet::util::TailOffsetWatch;
+use crate::providers::replicated_loglet::loglet::FindTailOptions;
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
 use crate::providers::replicated_loglet::rpc_routers::{LogServersRpc, SequencersRpc};
 
@@ -91,7 +92,7 @@ impl<T: TransportConnect> FindTailTask<T> {
     }
 
     #[instrument(skip_all)]
-    pub async fn run(self) -> FindTailResult {
+    pub async fn run(self, opts: FindTailOptions) -> FindTailResult {
         // Special case:
         // If all nodes in the nodeset is in "provisioning", we can confidently short-circuit
         // the result to LogletOffset::Oldest and the loglet is definitely unsealed.
@@ -117,6 +118,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                 segment_index: self.segment_index,
                 loglet_id: self.my_params.loglet_id,
             },
+            force_seal_check: opts == FindTailOptions::ForceSealCheck,
         };
 
         // todo: use cluster-state information when this becomes node-level available to avoid
@@ -195,6 +197,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                         task.run(&networking).await
                     }
                     .in_current_tc()
+                    .instrument(Span::current())
                 });
             }
 

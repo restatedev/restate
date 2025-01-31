@@ -494,6 +494,7 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
         match incoming.body().status {
             Status::Sealing | Status::Sealed => {
                 server.local_tail().notify_seal();
+                self.sequencer_shared_state.mark_as_maybe_sealed();
                 return Ok(StoreTaskStatus::Sealed);
             }
             _ => {

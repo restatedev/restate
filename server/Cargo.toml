@@ -78,6 +78,7 @@ restate-admin = { workspace = true, features = ["memory-loglet", "clients"] }
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-local-cluster-runner = { workspace = true }
+restate-metadata-server = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 mock-service-endpoint = { workspace = true }
@@ -85,6 +86,7 @@ mock-service-endpoint = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+bytestring = { workspace = true}
 googletest = { workspace = true }
 hyper-util = { workspace = true }
 tempfile = { workspace = true }
@@ -92,6 +94,7 @@ test-log = { workspace = true }
 tonic = { workspace = true, features = ["transport", "prost"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
