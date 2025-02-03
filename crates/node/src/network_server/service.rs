@@ -22,7 +22,6 @@ use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportCo
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_types::config::CommonOptions;
-use restate_types::health::Health;
 use restate_types::protobuf::common::NodeStatus;
 
 use super::grpc_svc_handler::{CoreNodeSvcHandler, NodeCtlSvcHandler};
@@ -34,7 +33,6 @@ pub struct NetworkServer {}
 
 impl NetworkServer {
     pub async fn run<T: TransportConnect>(
-        health: Health,
         connection_manager: ConnectionManager<T>,
         mut server_builder: NetworkServerBuilder,
         options: CommonOptions,
@@ -96,15 +94,15 @@ impl NetworkServer {
 
         server_builder.register_axum_routes(axum_router);
 
-        let node_health = health.node_status();
-        let node_rpc_health = health.node_rpc_status();
+        let (node_health, node_rpc_health) = TaskCenter::with_current(|tc| {
+            (tc.health().node_status(), tc.health().node_rpc_status())
+        });
 
         server_builder.register_grpc_service(
             NodeCtlSvcServer::new(NodeCtlSvcHandler::new(
                 TaskCenter::current(),
                 options.cluster_name().to_owned(),
                 options.roles,
-                health,
                 metadata_store_client,
             ))
             .accept_compressed(CompressionEncoding::Gzip)
