@@ -77,7 +77,7 @@ impl<'a> DataRecordDecoder<'a> {
 #[derive(derive_more::From)]
 pub(super) struct DataRecordEncoder<'a>(&'a Record);
 
-impl<'a> DataRecordEncoder<'a> {
+impl DataRecordEncoder<'_> {
     /// On-disk record layout.
     /// For the record header, byte-order is little-endian.
     ///

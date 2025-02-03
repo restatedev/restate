@@ -32,7 +32,7 @@ fn is_partition_key_column(arg: &PhysicalExprRef) -> bool {
     let Some(col) = arg.as_any().downcast_ref::<Column>() else {
         return false;
     };
-    return col.name() == "partition_key";
+    col.name() == "partition_key"
 }
 
 impl PhysicalOptimizerRule for JoinRewrite {

@@ -548,11 +548,8 @@ impl EqualSizedPartitionPartitioner {
         );
 
         // adding num_partitions - 1 to dividend is equivalent to applying ceil function to result
-        let start =
-            (partition_id * Self::PARTITION_KEY_RANGE_END + (num_partitions - 1)) / num_partitions;
-        let end = ((partition_id + 1) * Self::PARTITION_KEY_RANGE_END + (num_partitions - 1))
-            / num_partitions
-            - 1;
+        let start = (partition_id * Self::PARTITION_KEY_RANGE_END).div_ceil(num_partitions);
+        let end = ((partition_id + 1) * Self::PARTITION_KEY_RANGE_END).div_ceil(num_partitions) - 1;
 
         let start = u64::try_from(start)
             .expect("Resulting partition start '{start}' should be <= u64::MAX.");

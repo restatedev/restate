@@ -439,7 +439,7 @@ impl<T: KeyCodec> KeyCodec for Option<T> {
     }
 }
 
-impl<'a> KeyCodec for &'a [u8] {
+impl KeyCodec for &[u8] {
     fn encode<B: BufMut>(&self, target: &mut B) {
         target.put(*self);
     }

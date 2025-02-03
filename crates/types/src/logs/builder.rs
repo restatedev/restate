@@ -137,7 +137,7 @@ pub struct ChainBuilder<'a> {
     modified: &'a mut bool,
 }
 
-impl<'a> ChainBuilder<'a> {
+impl ChainBuilder<'_> {
     /// Removes and returns whole segments before `until_base_lsn`.
     /// if `until_base_lsn` falls inside a segment, the segment is kept but all previous
     /// segments will be dropped.

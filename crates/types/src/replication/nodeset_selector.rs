@@ -145,7 +145,7 @@ impl Default for NodeSetSelectorOptions<'_> {
     }
 }
 
-impl<'a> NodeSetSelectorOptions<'a> {
+impl NodeSetSelectorOptions<'_> {
     fn hash_node_id(&self, node_id: PlainNodeId) -> u64 {
         if self.consistent_hashing {
             let mut hasher = Xxh3::with_seed(self.salt);
@@ -536,7 +536,7 @@ impl<'a> OrdDomain<'a> {
     }
 }
 
-impl<'a> PartialEq for OrdDomain<'a> {
+impl PartialEq for OrdDomain<'_> {
     fn eq(&self, other: &Self) -> bool {
         if self.inner.is_top_priority != other.inner.is_top_priority {
             return false;
@@ -549,16 +549,16 @@ impl<'a> PartialEq for OrdDomain<'a> {
     }
 }
 
-impl<'a> Eq for OrdDomain<'a> {}
+impl Eq for OrdDomain<'_> {}
 
-impl<'a> PartialOrd for OrdDomain<'a> {
+impl PartialOrd for OrdDomain<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 // Note that this orders domains in reverse order for min-heap uses
-impl<'a> Ord for OrdDomain<'a> {
+impl Ord for OrdDomain<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         // Note that this is reverse ordering only for priority and num_writeable_nodes_picked,
         // but a top-priority domain (a domain with the top-priority node) goes to the top of

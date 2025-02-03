@@ -88,7 +88,7 @@ impl ReadOnlyDeduplicationTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyDeduplicationTable for PartitionStoreTransaction<'a> {
+impl ReadOnlyDeduplicationTable for PartitionStoreTransaction<'_> {
     async fn get_dedup_sequence_number(
         &mut self,
         producer_id: &ProducerId,
@@ -101,7 +101,7 @@ impl<'a> ReadOnlyDeduplicationTable for PartitionStoreTransaction<'a> {
     }
 }
 
-impl<'a> DeduplicationTable for PartitionStoreTransaction<'a> {
+impl DeduplicationTable for PartitionStoreTransaction<'_> {
     async fn put_dedup_seq_number(
         &mut self,
         producer_id: ProducerId,

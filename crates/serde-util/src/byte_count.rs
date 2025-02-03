@@ -176,7 +176,7 @@ struct ByteCountVisitor<const CAN_BE_ZERO: bool>;
 // it's actually compile-time, compiler will inline the comparison but we need
 // to make clippy happy.
 #[allow(clippy::absurd_extreme_comparisons)]
-impl<'de, const CAN_BE_ZERO: bool> Visitor<'de> for ByteCountVisitor<CAN_BE_ZERO> {
+impl<const CAN_BE_ZERO: bool> Visitor<'_> for ByteCountVisitor<CAN_BE_ZERO> {
     type Value = ByteCount<CAN_BE_ZERO>;
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("an integer or string")

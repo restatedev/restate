@@ -324,7 +324,7 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'a> {
+impl ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'_> {
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -350,7 +350,7 @@ impl<'a> ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'a> {
     }
 }
 
-impl<'a> InvocationStatusTable for PartitionStoreTransaction<'a> {
+impl InvocationStatusTable for PartitionStoreTransaction<'_> {
     async fn put_invocation_status(
         &mut self,
         invocation_id: &InvocationId,

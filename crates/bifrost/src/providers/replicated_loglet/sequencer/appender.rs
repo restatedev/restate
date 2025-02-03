@@ -406,7 +406,7 @@ struct LogServerStoreTask<'a, T> {
     timeout_at: MillisSinceEpoch,
 }
 
-impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
+impl<T: TransportConnect> LogServerStoreTask<'_, T> {
     #[instrument(
         skip_all,
         fields(

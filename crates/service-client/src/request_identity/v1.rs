@@ -121,7 +121,7 @@ impl<'key, 'aud> Signer<'key, 'aud> {
     }
 }
 
-impl<'key, 'aud> super::SignRequest for Signer<'key, 'aud> {
+impl super::SignRequest for Signer<'_, '_> {
     type Error = jsonwebtoken::errors::Error;
     fn insert_identity(self, mut headers: HeaderMap) -> Result<HeaderMap, Self::Error> {
         let jwt = jsonwebtoken::encode(

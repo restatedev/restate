@@ -551,13 +551,13 @@ impl<'a> TargetPartitionPlacementState<'a> {
     }
 }
 
-impl<'a> TargetPartitionPlacementState<'a> {
+impl TargetPartitionPlacementState<'_> {
     pub fn contains(&self, value: PlainNodeId) -> bool {
         self.node_set.contains(value)
     }
 }
 
-impl<'a> Drop for TargetPartitionPlacementState<'a> {
+impl Drop for TargetPartitionPlacementState<'_> {
     fn drop(&mut self) {
         if let Some(node_id) = self.leader.take() {
             self.node_set.set_leader(node_id);
@@ -917,7 +917,7 @@ mod tests {
         partition_table: &'a PartitionTable,
     }
 
-    impl<'a> Matcher for PartitionTableMatcher<'a> {
+    impl Matcher for PartitionTableMatcher<'_> {
         type ActualT = ObservedClusterState;
 
         fn matches(&self, actual: &Self::ActualT) -> MatcherResult {

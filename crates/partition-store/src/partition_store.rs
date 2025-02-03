@@ -557,7 +557,7 @@ pub struct PartitionStoreTransaction<'a> {
     value_buffer: &'a mut BytesMut,
 }
 
-impl<'a> PartitionStoreTransaction<'a> {
+impl PartitionStoreTransaction<'_> {
     pub(crate) fn prefix_iterator(
         &self,
         table: TableKind,
@@ -627,7 +627,7 @@ fn assert_partition_key(
             "Partition key '{partition_key}' is not part of PartitionStore's partition '{partition_key_range:?}'. This indicates a bug.");
 }
 
-impl<'a> Transaction for PartitionStoreTransaction<'a> {
+impl Transaction for PartitionStoreTransaction<'_> {
     async fn commit(self) -> Result<()> {
         // We cannot directly commit the txn because it might fail because of unrelated concurrent
         // writes to RocksDB. However, it is safe to write the WriteBatch for a given partition,
@@ -660,7 +660,7 @@ impl<'a> Transaction for PartitionStoreTransaction<'a> {
     }
 }
 
-impl<'a> StorageAccess for PartitionStoreTransaction<'a> {
+impl StorageAccess for PartitionStoreTransaction<'_> {
     type DBAccess<'b>
         = DB
     where

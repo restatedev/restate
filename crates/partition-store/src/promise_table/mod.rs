@@ -126,7 +126,7 @@ impl ReadOnlyPromiseTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyPromiseTable for PartitionStoreTransaction<'a> {
+impl ReadOnlyPromiseTable for PartitionStoreTransaction<'_> {
     async fn get_promise(
         &mut self,
         service_id: &ServiceId,
@@ -144,7 +144,7 @@ impl<'a> ReadOnlyPromiseTable for PartitionStoreTransaction<'a> {
     }
 }
 
-impl<'a> PromiseTable for PartitionStoreTransaction<'a> {
+impl PromiseTable for PartitionStoreTransaction<'_> {
     async fn put_promise(&mut self, service_id: &ServiceId, key: &ByteString, promise: &Promise) {
         self.assert_partition_key(service_id);
         put_promise(self, service_id, key, promise)
