@@ -12,25 +12,28 @@ use std::sync::Weak;
 use std::time::Duration;
 
 use tokio::time::Instant;
+use tracing::instrument;
 use tracing::{debug, trace};
 
 use restate_core::network::TransportConnect;
 use restate_types::logs::LogletId;
 
-use crate::loglet::{Loglet, OperationError};
-use crate::providers::replicated_loglet::loglet::ReplicatedLoglet;
+use crate::loglet::OperationError;
+use crate::providers::replicated_loglet::loglet::{FindTailOptions, ReplicatedLoglet};
 
 pub struct PeriodicTailChecker {}
 
 impl PeriodicTailChecker {
+    #[instrument(level = "debug", skip_all, fields(%loglet_id))]
     pub async fn run<T: TransportConnect>(
         loglet_id: LogletId,
         loglet: Weak<ReplicatedLoglet<T>>,
         duration: Duration,
+        opts: FindTailOptions,
     ) -> anyhow::Result<()> {
         debug!(
             %loglet_id,
-            "Starting a background periodic tail checker for this loglet",
+            "Started a background periodic tail checker for this loglet",
         );
         // Optimization. Don't run the check if the tail/seal has been updated recently.
         // Unfortunately this requires a litte bit more setup in the TailOffsetWatch so we don't do
@@ -50,18 +53,16 @@ impl PeriodicTailChecker {
             );
             if loglet.known_global_tail().is_sealed() {
                 // stop the task. we are sealed already.
-                trace!(
+                debug!(
                     %loglet_id,
                     is_sequencer = ?loglet.is_sequencer_local(),
                     "Loglet has been sealed, stopping the periodic tail checker",
                 );
                 return Ok(());
             }
-            tokio::time::sleep(duration).await;
             let start = Instant::now();
-            match loglet.find_tail().await {
+            match loglet.find_tail_inner(opts).await {
                 Ok(tail) => {
-                    // todo: maybe remove this.
                     trace!(
                         %loglet_id,
                         known_global_tail = %tail.offset(),
@@ -79,15 +80,16 @@ impl PeriodicTailChecker {
                     );
                     return Ok(());
                 }
-                Err(OperationError::Other(e)) => {
+                Err(OperationError::Other(err)) => {
                     trace!(
-                        ?e,
+                        %err,
                         is_sequencer = ?loglet.is_sequencer_local(),
                         %loglet_id,
                         "Couldn't determine the tail status of the loglet. Will retry in the next period",
                     );
                 }
             }
+            tokio::time::sleep(duration).await;
         }
     }
 }

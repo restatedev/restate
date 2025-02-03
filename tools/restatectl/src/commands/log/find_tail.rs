@@ -8,14 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use cling::prelude::*;
-use restate_cli_util::_comfy_table::{Cell, Color, Table};
-use restate_cli_util::ui::console::StyledTable;
 use tonic::codec::CompressionEncoding;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{FindTailRequest, TailState};
+use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
+use restate_cli_util::ui::console::StyledTable;
+use tonic::IntoRequest;
 
 use crate::app::ConnectionInfo;
 use crate::util::grpc_channel;
@@ -42,7 +45,9 @@ async fn find_tail(connection: &ConnectionInfo, opts: &FindTailOpts) -> anyhow::
 
     for log_id in opts.log_id.clone().into_iter().flatten() {
         let find_tail_request = FindTailRequest { log_id };
-        let response = match client.find_tail(find_tail_request).await {
+        let mut request = find_tail_request.into_request();
+        request.set_timeout(Duration::from_secs(10));
+        let response = match client.find_tail(request).await {
             Ok(response) => response.into_inner(),
             Err(err) => {
                 chain_table.add_row(vec![
