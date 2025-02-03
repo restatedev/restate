@@ -7139,7 +7139,7 @@ dependencies = [
  "hyper-util",
  "mock-service-endpoint",
  "pin-project",
- "rand",
+ "rand 0.9.0",
  "regex",
  "reqwest",
  "restate-admin",
@@ -9199,23 +9199,6 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
-dependencies = [
- "bitflags 2.8.0",
- "bytes",
- "http 1.2.0",
- "http-body 1.0.1",
- "http-body-util",
- "pin-project-lite",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tower-http"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "403fa3b783d4b626a8ad51d766ab03cb6d2dbfc46b1c5d4448395e6628dc9697"
@@ -10179,6 +10162,7 @@ dependencies = [
  "comfy-table",
  "criterion",
  "crossbeam-epoch",
+ "crossterm 0.28.1",
  "digest",
  "either",
  "enum-map",
@@ -10193,6 +10177,7 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "getrandom 0.2.15",
+ "getrandom 0.3.1",
  "half",
  "hashbrown 0.14.5",
  "hashbrown 0.15.2",
@@ -10228,6 +10213,7 @@ dependencies = [
  "prost",
  "prost-types",
  "protobuf",
+ "quanta",
  "quote",
  "rand 0.8.5",
  "rand_core 0.6.4",
@@ -10244,6 +10230,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "signal-hook-mio",
  "smallvec",
  "stable_deref_trait",
  "strum",
@@ -10263,7 +10250,7 @@ dependencies = [
  "tonic",
  "tower 0.4.13",
  "tower 0.5.2",
- "tower-http 0.5.2",
+ "tower-http 0.6.2",
  "tracing",
  "tracing-core",
  "tracing-log",
