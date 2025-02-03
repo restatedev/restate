@@ -2,10 +2,17 @@
 name = "restatectl"
 version.workspace = true
 authors.workspace = true
+description = "Restate administration tools"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
+
+[package.metadata.dist]
+dist = true
+formula = "restatectl"
 
 [features]
 default = ["replicated-loglet", "memory-loglet", "no-trace-logging"]

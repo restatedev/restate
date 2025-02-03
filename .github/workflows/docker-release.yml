@@ -75,14 +75,15 @@ jobs:
         run: |
           cat > Dockerfile << 'EOF'
           FROM --platform=${BUILDPLATFORM} alpine as builder
-          ADD restate-cli-aarch64-unknown-linux-musl.tar.xz /restate-arm64
-          ADD restate-cli-x86_64-unknown-linux-musl.tar.xz /restate-amd64
-          # keep output image small by removing the server binary
-          RUN rm /restate-*/restate-server
+          ADD restate-cli-aarch64-unknown-linux-musl.tar.xz /restate-cli-arm64
+          ADD restatectl-aarch64-unknown-linux-musl.tar.xz /restatectl-arm64
+          ADD restate-cli-x86_64-unknown-linux-musl.tar.xz /restate-cli-amd64
+          ADD restatectl-x86_64-unknown-linux-musl.tar.xz /restatectl-amd64
 
           FROM alpine
           ARG TARGETARCH
-          COPY --from=builder /restate-${TARGETARCH} /
+          COPY --from=builder /restate-cli-${TARGETARCH} /
+          COPY --from=builder /restatectl-${TARGETARCH}/restatectl /
           ENTRYPOINT [ "/restate" ]
           EOF
 

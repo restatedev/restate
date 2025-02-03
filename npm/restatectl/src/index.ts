@@ -21,7 +21,7 @@ function getExePath() {
 
   try {
     return require.resolve(
-      `@restatedev/restate-server-${op}-${arch}/bin/restate-server`,
+      `@restatedev/restatectl-${op}-${arch}/bin/restatectl`,
     );
   } catch (e) {
     throw new Error(
