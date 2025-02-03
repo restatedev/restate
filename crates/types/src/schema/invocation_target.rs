@@ -296,7 +296,7 @@ impl InputContentType {
     fn extract_content_type_parts<'a>(
         &'a self,
         input_content_type: &'a str,
-    ) -> Result<(&str, &str), InputValidationError> {
+    ) -> Result<(&'a str, &'a str), InputValidationError> {
         let ct_without_args = input_content_type
             .split_once(';')
             .map(|(ct, _)| ct)
