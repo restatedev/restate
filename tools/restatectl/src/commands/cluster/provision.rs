@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::app::ConnectionInfo;
 use crate::commands::cluster::config::cluster_config_string;
+use crate::connection::ConnectionInfo;
 use crate::util::grpc_channel;
 use clap::Parser;
 use cling::{Collect, Run};
@@ -18,8 +18,8 @@ use restate_cli_util::{c_error, c_println, c_warn};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest;
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind, ReplicatedLogletConfig};
-use restate_types::net::AdvertisedAddress;
 use restate_types::replication::ReplicationProperty;
+use std::cmp::Ordering;
 use std::num::NonZeroU16;
 use tonic::codec::CompressionEncoding;
 use tonic::Code;
@@ -27,10 +27,6 @@ use tonic::Code;
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "cluster_provision")]
 pub struct ProvisionOpts {
-    /// Address of the node that should be provisioned
-    #[clap(long)]
-    address: Option<AdvertisedAddress>,
-
     /// Number of partitions
     #[clap(long)]
     num_partitions: Option<NonZeroU16>,
@@ -56,14 +52,24 @@ pub struct ProvisionOpts {
 }
 
 async fn cluster_provision(
-    connection_info: &ConnectionInfo,
+    connection: &ConnectionInfo,
     provision_opts: &ProvisionOpts,
 ) -> anyhow::Result<()> {
-    let node_address = provision_opts
-        .address
-        .clone()
-        .unwrap_or_else(|| connection_info.cluster_controller.clone());
-    let channel = grpc_channel(node_address.clone());
+    let address = match connection.addresses.len().cmp(&1) {
+        Ordering::Greater => {
+            let address = &connection.addresses[0];
+            c_println!(
+                "Cluster provisioning must be performed on a single node. Using {address} for provisioning.",
+            );
+            address
+        }
+        Ordering::Equal => &connection.addresses[0],
+        Ordering::Less => {
+            anyhow::bail!("At least one address must be specified to provision");
+        }
+    };
+
+    let channel = grpc_channel(address.clone());
 
     let mut client = NodeCtlSvcClient::new(channel)
         .accept_compressed(CompressionEncoding::Gzip)

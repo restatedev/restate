@@ -15,9 +15,9 @@ use tonic::codec::CompressionEncoding;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::TrimLogRequest;
 use restate_cli_util::c_println;
+use restate_types::nodes_config::Role;
 
-use crate::app::ConnectionInfo;
-use crate::util::grpc_channel;
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
@@ -33,16 +33,18 @@ pub struct TrimLogOpts {
 }
 
 async fn trim_log(connection: &ConnectionInfo, opts: &TrimLogOpts) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
-
     let trim_request = TrimLogRequest {
         log_id: opts.log_id,
         trim_point: opts.trim_point,
     };
-    client
-        .trim_log(trim_request)
+
+    connection
+        .try_each(Some(Role::Admin), |channel| async {
+            let mut client =
+                ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+
+            client.trim_log(trim_request).await
+        })
         .await
         .with_context(|| "failed to submit trim request")?
         .into_inner();

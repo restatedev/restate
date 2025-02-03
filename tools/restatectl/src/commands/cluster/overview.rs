@@ -13,10 +13,10 @@ use cling::{Collect, Run};
 
 use restate_cli_util::c_println;
 
-use crate::app::ConnectionInfo;
 use crate::commands::log::list_logs::{list_logs, ListLogsOpts};
 use crate::commands::node::list_nodes::{list_nodes, ListNodesOpts};
 use crate::commands::partition::list::{list_partitions, ListPartitionsOpts};
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "cluster_status")]

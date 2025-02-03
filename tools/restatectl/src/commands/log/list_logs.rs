@@ -11,21 +11,16 @@
 use std::collections::BTreeMap;
 
 use cling::prelude::*;
-use tonic::codec::CompressionEncoding;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::ListLogsRequest;
 use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_types::logs::metadata::{Chain, Logs};
+use restate_types::logs::metadata::Chain;
 use restate_types::logs::LogId;
-use restate_types::storage::StorageCodec;
 use restate_types::Versioned;
 
-use crate::app::ConnectionInfo;
 use crate::commands::log::{deserialize_replicated_log_params, render_loglet_params};
-use crate::util::grpc_channel;
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "ls")]
@@ -33,17 +28,9 @@ use crate::util::grpc_channel;
 pub struct ListLogsOpts {}
 
 pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
-
-    let req = ListLogsRequest::default();
-    let response = client.list_logs(req).await?.into_inner();
+    let logs = connection.get_logs().await?;
 
     let mut logs_table = Table::new_styled();
-
-    let mut buf = response.logs;
-    let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
 
     c_println!("Log Configuration ({})", logs.version());
 

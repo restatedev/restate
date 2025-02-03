@@ -8,15 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Context;
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::CreatePartitionSnapshotRequest;
 use restate_cli_util::c_println;
+use restate_types::nodes_config::Role;
 
-use crate::app::ConnectionInfo;
-use crate::util::grpc_channel;
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "create")]
@@ -31,18 +32,20 @@ async fn create_snapshot(
     connection: &ConnectionInfo,
     opts: &CreateSnapshotOpts,
 ) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
-
     let request = CreatePartitionSnapshotRequest {
         partition_id: opts.partition_id as u32,
     };
 
-    let response = client
-        .create_partition_snapshot(request)
+    let response = connection
+        .try_each(Some(Role::Admin), |channel| async {
+            let mut client = ClusterCtrlSvcClient::new(channel)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip);
+
+            client.create_partition_snapshot(request).await
+        })
         .await
-        .map_err(|e| anyhow::anyhow!("failed to request snapshot: {:?}", e))?
+        .context("Failed to request snapshot")?
         .into_inner();
 
     c_println!("Snapshot created: {}", response.snapshot_id);

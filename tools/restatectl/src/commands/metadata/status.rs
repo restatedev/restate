@@ -8,26 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::app::ConnectionInfo;
-use crate::util::grpc_channel;
+use std::collections::BTreeMap;
+
 use clap::Parser;
 use cling::{Collect, Run};
 use itertools::Itertools;
+use tonic::codec::CompressionEncoding;
+use tonic::IntoRequest;
+
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
-use restate_core::protobuf::node_ctl_svc::GetMetadataRequest;
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_metadata_server::MemberId;
-use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::{NodesConfiguration, Role};
+use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::MetadataServerStatus;
-use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};
-use std::collections::BTreeMap;
-use tonic::codec::CompressionEncoding;
-use tonic::IntoRequest;
+
+use crate::connection::ConnectionInfo;
+use crate::util::grpc_channel;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
@@ -35,15 +34,7 @@ use tonic::IntoRequest;
 pub struct StatusOpts {}
 
 async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
-    let mut client = NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
-    let req = GetMetadataRequest {
-        kind: MetadataKind::NodesConfiguration.into(),
-        sync: false,
-    };
-    let mut response = client.get_metadata(req).await?.into_inner();
-    let nodes_configuration = StorageCodec::decode::<NodesConfiguration, _>(&mut response.encoded)?;
-
+    let nodes_configuration = connection.get_nodes_configuration().await?;
     let mut metadata_nodes_table = Table::new_styled();
     let header = vec![
         "NODE",
@@ -62,82 +53,80 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
 
     let mut unreachable_nodes = BTreeMap::default();
 
-    for (node_id, node_config) in nodes_configuration.iter() {
-        if node_config.roles.contains(Role::MetadataServer) {
-            let metadata_channel = grpc_channel(node_config.address.clone());
-            let mut metadata_client = MetadataServerSvcClient::new(metadata_channel)
-                .accept_compressed(CompressionEncoding::Gzip);
+    for (node_id, node_config) in nodes_configuration.iter_role(Role::MetadataServer) {
+        let metadata_channel = grpc_channel(node_config.address.clone());
+        let mut metadata_client = MetadataServerSvcClient::new(metadata_channel)
+            .accept_compressed(CompressionEncoding::Gzip);
 
-            let metadata_store_status = metadata_client.status(().into_request()).await;
+        let metadata_store_status = metadata_client.status(().into_request()).await;
 
-            let status = match metadata_store_status {
-                Ok(response) => response.into_inner(),
-                Err(err) => {
-                    unreachable_nodes.insert(node_id, err.to_string());
-                    continue;
-                }
-            };
+        let status = match metadata_store_status {
+            Ok(response) => response.into_inner(),
+            Err(err) => {
+                unreachable_nodes.insert(node_id, err.to_string());
+                continue;
+            }
+        };
 
-            metadata_nodes_table.add_row(vec![
-                Cell::new(node_id),
-                render_metadata_server_status(status.status()),
-                Cell::new(
-                    status
-                        .configuration
-                        .as_ref()
-                        .and_then(|config| config.version.map(Version::from))
-                        .unwrap_or(Version::INVALID),
-                ),
-                Cell::new(
-                    status
-                        .leader
-                        .map(|leader_id| PlainNodeId::new(leader_id).to_string())
-                        .unwrap_or("-".to_owned()),
-                ),
-                Cell::new(
-                    status
-                        .configuration
-                        .map(|config| {
-                            format!(
-                                "[{}]",
-                                config
-                                    .members
-                                    .into_iter()
-                                    .map(|(node_id, storage_id)| MemberId::new(
-                                        PlainNodeId::from(node_id),
-                                        storage_id
-                                    ))
-                                    .map(|member_id| member_id.to_string())
-                                    .join(",")
-                            )
-                        })
-                        .unwrap_or("[]".to_owned()),
-                ),
-                Cell::new(status.raft.map(|raft| raft.applied).unwrap_or_default()),
-                Cell::new(status.raft.map(|raft| raft.committed).unwrap_or_default()),
-                Cell::new(status.raft.map(|raft| raft.term).unwrap_or_default()),
-                // first and last index are inclusive
-                Cell::new(
-                    status
-                        .raft
-                        .map(|raft| (raft.last_index + 1) - raft.first_index)
-                        .unwrap_or_default(),
-                ),
-                Cell::new(
-                    status
-                        .snapshot
-                        .map(|snapshot| snapshot.index)
-                        .unwrap_or_default(),
-                ),
-                Cell::new(bytesize::to_string(
-                    status
-                        .snapshot
-                        .map(|snapshot| snapshot.size)
-                        .unwrap_or_default(),
-                    true,
-                )),
-            ]);
-        }
+        metadata_nodes_table.add_row(vec![
+            Cell::new(node_id),
+            render_metadata_server_status(status.status()),
+            Cell::new(
+                status
+                    .configuration
+                    .as_ref()
+                    .and_then(|config| config.version.map(Version::from))
+                    .unwrap_or(Version::INVALID),
+            ),
+            Cell::new(
+                status
+                    .leader
+                    .map(|leader_id| PlainNodeId::new(leader_id).to_string())
+                    .unwrap_or("-".to_owned()),
+            ),
+            Cell::new(
+                status
+                    .configuration
+                    .map(|config| {
+                        format!(
+                            "[{}]",
+                            config
+                                .members
+                                .into_iter()
+                                .map(|(node_id, storage_id)| MemberId::new(
+                                    PlainNodeId::from(node_id),
+                                    storage_id
+                                ))
+                                .map(|member_id| member_id.to_string())
+                                .join(",")
+                        )
+                    })
+                    .unwrap_or("[]".to_owned()),
+            ),
+            Cell::new(status.raft.map(|raft| raft.applied).unwrap_or_default()),
+            Cell::new(status.raft.map(|raft| raft.committed).unwrap_or_default()),
+            Cell::new(status.raft.map(|raft| raft.term).unwrap_or_default()),
+            // first and last index are inclusive
+            Cell::new(
+                status
+                    .raft
+                    .map(|raft| (raft.last_index + 1) - raft.first_index)
+                    .unwrap_or_default(),
+            ),
+            Cell::new(
+                status
+                    .snapshot
+                    .map(|snapshot| snapshot.index)
+                    .unwrap_or_default(),
+            ),
+            Cell::new(bytesize::to_string(
+                status
+                    .snapshot
+                    .map(|snapshot| snapshot.size)
+                    .unwrap_or_default(),
+                true,
+            )),
+        ]);
     }
 
     c_println!("{}", metadata_nodes_table);

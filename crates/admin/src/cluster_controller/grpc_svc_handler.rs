@@ -29,9 +29,8 @@ use crate::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc
 use crate::cluster_controller::protobuf::{
     ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
     CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
-    FindTailResponse, ListLogsRequest, ListLogsResponse, ListNodesRequest, ListNodesResponse,
-    SealAndExtendChainRequest, SealAndExtendChainResponse, SealedSegment, TailState,
-    TrimLogRequest,
+    FindTailResponse, ListLogsRequest, ListLogsResponse, SealAndExtendChainRequest,
+    SealAndExtendChainResponse, SealedSegment, TailState, TrimLogRequest,
 };
 
 use super::protobuf::{
@@ -139,27 +138,6 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             tail_state: 0, // TailState_UNKNOWN
             tail_offset: Lsn::INVALID.as_u64(),
             trim_point: trim_point.as_u64(),
-            nodes_configuration: serialize_value(nodes_config),
-        }))
-    }
-
-    async fn list_nodes(
-        &self,
-        _request: Request<ListNodesRequest>,
-    ) -> Result<Response<ListNodesResponse>, Status> {
-        let nodes_config = self
-            .metadata_writer
-            .metadata_store_client()
-            .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
-            .await
-            .map_err(|error| {
-                Status::unknown(format!(
-                    "Failed to get nodes configuration metadata: {error:?}"
-                ))
-            })?
-            .ok_or(Status::not_found("Missing nodes configuration"))?;
-
-        Ok(Response::new(ListNodesResponse {
             nodes_configuration: serialize_value(nodes_config),
         }))
     }

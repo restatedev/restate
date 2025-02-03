@@ -13,23 +13,19 @@ use std::num::{NonZeroU32, NonZeroU8};
 use anyhow::Context;
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{
-    ChainExtension, ListLogsRequest, SealAndExtendChainRequest,
-};
+use restate_admin::cluster_controller::protobuf::{ChainExtension, SealAndExtendChainRequest};
 use restate_cli_util::{c_eprintln, c_println};
-use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
+use restate_types::logs::metadata::{ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, LogletId};
+use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::Version;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
-use crate::app::ConnectionInfo;
-use crate::util::grpc_channel;
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "reconfigure")]
@@ -67,11 +63,6 @@ pub struct ReconfigureOpts {
 }
 
 async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
-
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
-
     let extension = match opts.provider {
         Some(provider) => {
             let params = match provider {
@@ -79,7 +70,7 @@ async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> any
                 #[cfg(any(test, feature = "memory-loglet"))]
                 ProviderKind::InMemory => rand::random::<u64>().to_string(),
                 #[cfg(feature = "replicated-loglet")]
-                ProviderKind::Replicated => replicated_loglet_params(&mut client, opts).await?,
+                ProviderKind::Replicated => replicated_loglet_params(connection, opts).await?,
             };
 
             Some(ChainExtension {
@@ -91,13 +82,20 @@ async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> any
         None => None,
     };
 
-    let response = client
-        .seal_and_extend_chain(SealAndExtendChainRequest {
-            log_id: opts.log_id,
-            min_version: Some(Version {
-                value: opts.min_version.get(),
-            }),
-            extension,
+    let request = SealAndExtendChainRequest {
+        log_id: opts.log_id,
+        min_version: Some(Version {
+            value: opts.min_version.get(),
+        }),
+        extension,
+    };
+
+    let response = connection
+        .try_each(Some(Role::Admin), |channel| async {
+            let mut client =
+                ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+
+            client.seal_and_extend_chain(request.clone()).await
         })
         .await?
         .into_inner();
@@ -134,16 +132,11 @@ async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> any
 }
 
 async fn replicated_loglet_params(
-    client: &mut ClusterCtrlSvcClient<Channel>,
+    connection: &ConnectionInfo,
     opts: &ReconfigureOpts,
 ) -> anyhow::Result<String> {
-    let mut logs_response = client
-        .list_logs(ListLogsRequest {})
-        .await
-        .context("Failed to get logs metadata")?
-        .into_inner();
+    let logs = connection.get_logs().await?;
 
-    let logs = StorageCodec::decode::<Logs, _>(&mut logs_response.logs)?;
     let log_id = LogId::from(opts.log_id);
     let chain = logs
         .chain(&log_id)

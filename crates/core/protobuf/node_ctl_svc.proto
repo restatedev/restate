@@ -78,7 +78,8 @@ message GetMetadataResponse {
 
 message ClusterHealthResponse {
   string cluster_name = 1;
-  // Some value if the cluster has been configured to use the embedded metadata store
+  // Some value if the cluster has been configured to use the embedded metadata
+  // store
   optional EmbeddedMetadataClusterHealth metadata_cluster_health = 2;
 }
 

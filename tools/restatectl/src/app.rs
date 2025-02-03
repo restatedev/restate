@@ -8,13 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::str::FromStr;
-
 use cling::prelude::*;
 
 use restate_cli_util::CliContext;
 use restate_cli_util::CommonOpts;
-use restate_types::net::AdvertisedAddress;
 
 use crate::commands::cluster::overview::ClusterStatusOpts;
 use crate::commands::cluster::Cluster;
@@ -24,6 +21,7 @@ use crate::commands::node::Nodes;
 use crate::commands::partition::Partitions;
 use crate::commands::replicated_loglet::ReplicatedLoglet;
 use crate::commands::snapshot::Snapshot;
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
@@ -35,20 +33,6 @@ pub struct CliApp {
     pub connection: ConnectionInfo,
     #[clap(subcommand)]
     pub cmd: Command,
-}
-
-#[derive(Parser, Collect, Debug, Clone)]
-pub struct ConnectionInfo {
-    // todo: rename this to be a node address for reusability across commands
-    /// Cluster Controller address
-    #[clap(
-        long,
-        value_hint = clap::ValueHint::Url,
-        default_value_t = AdvertisedAddress::from_str("http://localhost:5122/").unwrap(),
-        env = "RESTATE_CLUSTER_CONTROLLER_ADDRESS",
-        global = true
-    )]
-    pub cluster_controller: AdvertisedAddress,
 }
 
 #[derive(Run, Subcommand, Clone)]

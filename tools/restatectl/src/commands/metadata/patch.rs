@@ -24,6 +24,7 @@ use restate_types::Version;
 use crate::commands::metadata::{
     create_metadata_store_client, GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts,
 };
+use crate::connection::ConnectionInfo;
 use crate::environment::metadata_store::start_metadata_server;
 use crate::environment::task_center::run_in_task_center;
 
@@ -51,12 +52,15 @@ pub struct PatchValueOpts {
     pub dry_run: bool,
 }
 
-pub(crate) async fn patch_value(opts: &PatchValueOpts) -> anyhow::Result<()> {
+pub(crate) async fn patch_value(
+    connection: &ConnectionInfo,
+    opts: &PatchValueOpts,
+) -> anyhow::Result<()> {
     let patch = serde_json::from_str(opts.patch.as_str())
         .map_err(|e| anyhow::anyhow!("Parsing JSON patch: {}", e))?;
 
     let value = match opts.metadata.access_mode {
-        MetadataAccessMode::Remote => patch_value_remote(opts, patch).await?,
+        MetadataAccessMode::Remote => patch_value_remote(connection, opts, patch).await?,
         MetadataAccessMode::Direct => patch_value_direct(opts, patch).await?,
     };
 
@@ -67,10 +71,11 @@ pub(crate) async fn patch_value(opts: &PatchValueOpts) -> anyhow::Result<()> {
 }
 
 async fn patch_value_remote(
+    connection: &ConnectionInfo,
     opts: &PatchValueOpts,
     patch: Patch,
 ) -> anyhow::Result<Option<GenericMetadataValue>> {
-    let metadata_store_client = create_metadata_store_client(&opts.metadata).await?;
+    let metadata_store_client = create_metadata_store_client(connection, &opts.metadata).await?;
     Ok(Some(
         patch_value_inner(opts, &patch, &metadata_store_client).await?,
     ))
