@@ -33,7 +33,8 @@ use crate::util::grpc_channel;
 
 #[derive(Clone, Parser, Collect, Debug)]
 pub struct ConnectionInfo {
-    /// Specify the nodes addresses. This option can be used multiple times.
+    /// Specify the nodes addresses separated by ','. This option can be specified multiple
+    /// times.
     #[clap(
         long,
         value_hint = clap::ValueHint::Url,
@@ -44,8 +45,8 @@ pub struct ConnectionInfo {
     )]
     pub addresses: Vec<AdvertisedAddress>,
 
-    /// Ask nodes to sync its metadata with the metadata store
-    /// first before responding to metadata requests
+    /// Use this option to avoid receiving stale metadata information from the nodes by reading it
+    /// from the metadata store.
     #[arg(long)]
     pub sync_metadata: bool,
 
