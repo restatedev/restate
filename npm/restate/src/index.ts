@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 /*
  * Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
  * All rights reserved.
@@ -10,10 +12,8 @@
  * by the Apache License, Version 2.0.
  */
 
-#!/usr/bin/env node
-
 import { spawnSync } from "child_process";
-import os from 'node:os';
+import os from "node:os";
 
 function getExePath() {
   const arch = os.arch();
@@ -23,7 +23,7 @@ function getExePath() {
     return require.resolve(`@restatedev/restate-${op}-${arch}/bin/restate`);
   } catch (e) {
     throw new Error(
-      `Couldn't find application binary inside node_modules for ${op}-${arch}`
+      `Couldn't find application binary inside node_modules for ${op}-${arch}`,
     );
   }
 }

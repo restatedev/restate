@@ -21,6 +21,7 @@ jobs:
       matrix:
         app_name:
           - restate-cli
+          - restatectl
           - restate-server
         build:
           - target: aarch64-apple-darwin
@@ -96,6 +97,7 @@ jobs:
       matrix:
         app_name:
           - restate-cli
+          - restatectl
           - restate-server
     steps:
       - name: Checkout
