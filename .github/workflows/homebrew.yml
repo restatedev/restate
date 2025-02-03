@@ -1,0 +1,58 @@
+# Lifted from what dist would generate as the homebrew publish step, except rewriting the download urls to use scarf.
+
+name: Publish homebrew formulae
+
+on:
+  workflow_call:
+    inputs:
+      # comes from cargo-dist workflow call
+      plan:
+        required: true
+        type: string
+
+env:
+  PLAN: ${{ inputs.plan }}
+
+jobs:
+  publish-homebrew-formula:
+    runs-on: "ubuntu-20.04"
+    env:
+      GITHUB_USER: "Restate bot"
+      GITHUB_EMAIL: "code+bot@restate.dev"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: "restatedev/homebrew-tap"
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      # So we have access to the formula
+      - name: Fetch homebrew formulae
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-*
+          path: Formula/
+          merge-multiple: true
+      # This is extra complex because you can make your Formula name not match your app name
+      # so we need to find releases with a *.rb file, and publish with that filename.
+      - name: Commit formula files
+        run: |
+          git config --global user.name "${GITHUB_USER}"
+          git config --global user.email "${GITHUB_EMAIL}"
+
+          for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith(".rb")] | any)'); do
+            filename=$(echo "$release" | jq '.artifacts[] | select(endswith(".rb"))' --raw-output)
+            name=$(echo "$filename" | sed "s/\.rb$//")
+            version=$(echo "$release" | jq .app_version --raw-output)
+
+            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+            brew update
+
+            # Set the Scarf download URLs
+            sed -i -E 's%https://github.com/restatedev/restate/releases/download/([^/]+)/([^"]+)%https://restate.gateway.scarf.sh/\1/\2%g' "Formula/${filename}"
+
+            # We avoid reformatting user-provided data such as the app description and homepage.
+            brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/${filename}" || true
+
+            git add "Formula/${filename}"
+            git commit -m "${name} ${version}"
+          done
+          git push

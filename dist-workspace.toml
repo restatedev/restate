@@ -23,7 +23,7 @@ cache-builds = false
 
 host-jobs = ["./ci"]
 global-artifacts-jobs = ["./notarize"]
-publish-jobs = ["./docker-release", "homebrew", "./npm"]
+publish-jobs = ["./homebrew", "./docker-release", "./npm"]
 post-announce-jobs = ["./helm"]
 
 [dist.github-custom-job-permissions.ci]
