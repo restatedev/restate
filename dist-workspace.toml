@@ -21,9 +21,12 @@ include = ["NOTICE"]
 precise-builds = true
 cache-builds = false
 
-host-jobs = ["./ci"]
+# ci goes here because we want it to start early, and we don't want to create a release unless it succeeds
+local-artifacts-jobs = ["./ci"]
+# create release goes here because it needs to have happened before the host steps, which expect a draft release to already exist
 global-artifacts-jobs = ["./notarize"]
 publish-jobs = ["./homebrew", "./docker-release", "./npm"]
+# helm goes here because it shouldn't exist before docker-release happens
 post-announce-jobs = ["./helm"]
 
 [dist.github-custom-job-permissions.ci]

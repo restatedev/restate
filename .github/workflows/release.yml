@@ -190,11 +190,28 @@ jobs:
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
 
+  custom-ci:
+    needs:
+      - plan
+    if: ${{ needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload' }}
+    uses: ./.github/workflows/ci.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+    permissions:
+      "actions": "read"
+      "checks": "write"
+      "contents": "read"
+      "issues": "read"
+      "packages": "read"
+      "pull-requests": "write"
+
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
     needs:
       - plan
       - build-local-artifacts
+      - custom-ci
     runs-on: "ubuntu-20.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -240,6 +257,7 @@ jobs:
     needs:
       - plan
       - build-local-artifacts
+      - custom-ci
     uses: ./.github/workflows/notarize.yml
     with:
       plan: ${{ needs.plan.outputs.val }}
@@ -249,10 +267,11 @@ jobs:
     needs:
       - plan
       - build-local-artifacts
+      - custom-ci
       - build-global-artifacts
       - custom-notarize
     # Only run if we're "publishing", and only if local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.custom-notarize.result == 'skipped' || needs.custom-notarize.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.custom-notarize.result == 'skipped' || needs.custom-notarize.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.custom-ci.result == 'skipped' || needs.custom-ci.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-20.04"
@@ -311,29 +330,10 @@ jobs:
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
-  custom-ci:
-    needs:
-      - plan
-      - build-local-artifacts
-      - build-global-artifacts
-      - custom-notarize
-    uses: ./.github/workflows/ci.yml
-    with:
-      plan: ${{ needs.plan.outputs.val }}
-    secrets: inherit
-    permissions:
-      "actions": "read"
-      "checks": "write"
-      "contents": "read"
-      "issues": "read"
-      "packages": "read"
-      "pull-requests": "write"
-
   custom-homebrew:
     needs:
       - plan
       - host
-      - custom-ci
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     uses: ./.github/workflows/homebrew.yml
     with:
@@ -348,7 +348,6 @@ jobs:
     needs:
       - plan
       - host
-      - custom-ci
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     uses: ./.github/workflows/docker-release.yml
     with:
@@ -363,7 +362,6 @@ jobs:
     needs:
       - plan
       - host
-      - custom-ci
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     uses: ./.github/workflows/npm.yml
     with:
@@ -381,7 +379,6 @@ jobs:
       - custom-homebrew
       - custom-docker-release
       - custom-npm
-      - custom-ci
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
