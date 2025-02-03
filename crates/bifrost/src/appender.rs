@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, instrument, trace, warn};
 
-use restate_core::{Metadata, TargetVersion};
+use restate_core::{Metadata, TargetVersion, TaskCenter};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
@@ -219,6 +219,7 @@ impl Appender {
             let log_metadata_version = Metadata::with_current(|m| m.logs_version());
             if start.elapsed() > auto_recovery_threshold
                 && error_recovery_strategy >= ErrorRecoveryStrategy::ExtendChainAllowed
+                && !TaskCenter::is_shutdown_requested()
             {
                 // taking the matter into our own hands
                 let admin = BifrostAdmin::new(bifrost_inner);
