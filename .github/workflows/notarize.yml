@@ -1,0 +1,54 @@
+name: Notarize darwin binaries
+
+on:
+  workflow_call:
+    inputs:
+      # comes from cargo-dist workflow call
+      plan:
+        required: true
+        type: string
+
+env:
+  PLAN: ${{ inputs.plan }}
+
+jobs:
+  notarize:
+    runs-on: warp-macos-latest-arm64-6x
+    strategy:
+      matrix:
+        app_name:
+          - restate-cli
+          - restatectl
+          - restate-server
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: "Download GitHub Artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-*-apple-darwin
+          merge-multiple: true
+
+      - name: Extract binaries
+        run: tar -xvzf ${{ matrix.app_name }}-${{ matrix.target }}.tar.xz
+
+      - name: Add notary credentials
+        run: xcrun notarytool store-credentials --apple-id "$NOTARY_APPLE_ID" --password "$NOTARY_APP_SPECIFIC_PASSWORD" --team-id "$CODESIGN_IDENTITY" "Notarization"
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_APP_SPECIFIC_PASSWORD: ${{ secrets.NOTARY_APP_SPECIFIC_PASSWORD }}
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+
+      - name: Notarize
+        shell: bash
+        run: |
+          bin="$(echo "$PLAN" | jq -r '.artifacts["${{ matrix.app_name }}-${{ matrix.target }}.tar.xz"].assets[] | select(.kind == "executable").name')"
+
+          zip ${{ matrix.app_name }}-${{ matrix.target }}.zip "${{ matrix.app_name }}-${{ matrix.target }}/${bin}"
+
+          xcrun notarytool submit ${{ matrix.app_name }}-${{ matrix.target }}.zip --keychain-profile "Notarization"

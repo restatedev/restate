@@ -22,6 +22,7 @@ precise-builds = true
 cache-builds = false
 
 host-jobs = ["./ci"]
+global-artifacts-jobs = ["./notarize"]
 publish-jobs = ["./docker-release", "homebrew", "./npm"]
 post-announce-jobs = ["./helm"]
 
