@@ -234,14 +234,25 @@ pub struct ReplicatedLogletOptions {
 
     /// Sequencer retry policy
     ///
-    /// Backoff introduced when sequencer fail to find a suitable spread
-    /// of log servers
+    /// Backoff introduced when sequencer fail to find a suitable spread of log servers
     pub sequencer_retry_policy: RetryPolicy,
+
+    /// Sequencer inactivity timeout
+    ///
+    /// The sequencer is allowed to consider itself quiescent if it did not commit records for this period of time.
+    /// It may use this to sends pre-emptive release/seal check requests to log-servers.
+    ///
+    /// The sequencer is also allowed to use this value as interval to  send seal/release checks even if it's not quiescent.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub sequencer_inactivity_timeout: humantime::Duration,
 
     /// Log Server RPC timeout
     ///
     /// Timeout waiting on log server response
-    pub log_server_rpc_timeout: Duration,
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub log_server_rpc_timeout: humantime::Duration,
 
     /// Log Server RPC retry policy
     ///
@@ -337,11 +348,12 @@ impl Default for ReplicatedLogletOptions {
                 None,
                 Some(Duration::from_millis(5000)),
             ),
-            log_server_rpc_timeout: Duration::from_millis(5000),
+            sequencer_inactivity_timeout: Duration::from_secs(30).into(),
+            log_server_rpc_timeout: Duration::from_millis(2000).into(),
             log_server_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,
-                Some(10),
+                Some(3),
                 Some(Duration::from_millis(2000)),
             ),
             readahead_records: NonZeroUsize::new(100).unwrap(),

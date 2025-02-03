@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn, Instrument, Span};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, TransportConnect};
@@ -26,6 +26,7 @@ use restate_types::PlainNodeId;
 
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
 use crate::loglet::util::TailOffsetWatch;
+use crate::providers::replicated_loglet::loglet::FindTailOptions;
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
 use crate::providers::replicated_loglet::rpc_routers::{LogServersRpc, SequencersRpc};
 
@@ -91,7 +92,7 @@ impl<T: TransportConnect> FindTailTask<T> {
     }
 
     #[instrument(skip_all)]
-    pub async fn run(self) -> FindTailResult {
+    pub async fn run(self, opts: FindTailOptions) -> FindTailResult {
         // Special case:
         // If all nodes in the nodeset is in "provisioning", we can confidently short-circuit
         // the result to LogletOffset::Oldest and the loglet is definitely unsealed.
@@ -117,6 +118,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                 segment_index: self.segment_index,
                 loglet_id: self.my_params.loglet_id,
             },
+            force_seal_check: opts == FindTailOptions::ForceSealCheck,
         };
 
         // todo: use cluster-state information when this becomes node-level available to avoid
@@ -195,6 +197,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                         task.run(&networking).await
                     }
                     .in_current_tc()
+                    .instrument(Span::current())
                 });
             }
 
@@ -337,15 +340,17 @@ impl<T: TransportConnect> FindTailTask<T> {
                     // Not f-majority sealed, but is there any node that's sealed?
                     // Run a `SealTask` to assist in sealing.
                     if nodeset_checker.any(NodeTailStatus::is_known_sealed) {
-                        // run seal task then retry the find-tail check.
-                        let seal_task = SealTask::new(
-                            self.my_params.clone(),
-                            self.logservers_rpc.seal.clone(),
-                            self.known_global_tail.clone(),
-                        );
                         debug!("Detected unsealed nodes. Running seal task to assist in sealing loglet_id={}", self.my_params.loglet_id);
+                        // run seal task then retry the find-tail check.
                         // This returns when we have f-majority sealed.
-                        if let Err(e) = seal_task.run(self.networking.clone()).await {
+                        if let Err(e) = SealTask::run(
+                            &self.my_params,
+                            &self.logservers_rpc.seal,
+                            &self.known_global_tail,
+                            &self.networking,
+                        )
+                        .await
+                        {
                             return FindTailResult::Error(format!(
                                 "Failed to seal loglet_id={}: {:?}",
                                 self.my_params.loglet_id, e
@@ -493,7 +498,7 @@ impl<'a> FindTailOnNode<'a> {
         self,
         networking: &'a Networking<T>,
     ) -> (PlainNodeId, NodeTailStatus) {
-        let request_timeout = Configuration::pinned()
+        let request_timeout = *Configuration::pinned()
             .bifrost
             .replicated_loglet
             .log_server_rpc_timeout;
@@ -612,7 +617,7 @@ impl WaitForTailOnNode {
         requested_tail: LogletOffset,
         networking: Networking<T>,
     ) -> (PlainNodeId, NodeTailStatus) {
-        let request_timeout = Configuration::pinned()
+        let request_timeout = *Configuration::pinned()
             .bifrost
             .replicated_loglet
             .log_server_rpc_timeout;

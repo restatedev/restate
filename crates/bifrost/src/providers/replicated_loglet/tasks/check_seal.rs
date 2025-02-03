@@ -8,38 +8,45 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tracing::{info, instrument, trace};
+use std::collections::BTreeMap;
+
+use restate_types::retries::RetryPolicy;
+use restate_types::PlainNodeId;
+use tokio::task::JoinSet;
+use tracing::{debug, instrument, trace, Instrument};
 
 use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{Networking, TransportConnect};
-use restate_core::{cancellation_watcher, ShutdownError};
-use restate_types::net::log_server::GetLogletInfo;
+use restate_core::network::{Incoming, Networking, TransportConnect};
+use restate_core::{ShutdownError, TaskCenterFutureExt};
+use restate_types::net::log_server::{
+    GetLogletInfo, LogServerRequestHeader, LogServerResponseHeader, LogletInfo, Status,
+};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
-use super::{FindTailOnNode, NodeTailStatus};
+use super::util::Disposition;
 use crate::loglet::util::TailOffsetWatch;
-use crate::providers::replicated_loglet::replication::NodeSetChecker;
+use crate::providers::replicated_loglet::log_server_manager::RemoteLogServerManager;
+use crate::providers::replicated_loglet::replication::{FMajorityResult, NodeSetChecker};
+use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
 
 /// Attempts to detect if the loglet has been sealed or if there is a seal in progress by
 /// consulting nodes until it reaches f-majority, and it stops at the first sealed response
 /// from any log-server since this is a sufficient signal that a seal is on-going.
 ///
-/// the goal of this operation to get a signal on sequencer node that a seal has happened (or
-/// ongoing) if we have not been receiving appends for some time.
-///
 /// This allows PeriodicFindTail to detect seal that was triggered externally to unblock read
-/// streams running locally that rely on the sequencer's view of known_global_tail.
-///
+/// streams running locally
 ///
 /// Note that this task can return Open if it cannot reach out to any node, so we should not use it
 /// for operations that rely on absolute correctness of the tail. For those, use FindTailTask
 /// instead.
-pub struct CheckSealTask {}
+pub struct CheckSealTask;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum CheckSealOutcome {
+    FullySealed,
     Sealing,
     ProbablyOpen,
+    Open,
 }
 
 impl CheckSealTask {
@@ -47,16 +54,24 @@ impl CheckSealTask {
     pub async fn run<T: TransportConnect>(
         my_params: &ReplicatedLogletParams,
         get_loglet_info_rpc: &RpcRouter<GetLogletInfo>,
+        log_servers: &RemoteLogServerManager,
         known_global_tail: &TailOffsetWatch,
         networking: &Networking<T>,
     ) -> Result<CheckSealOutcome, ShutdownError> {
+        if known_global_tail.is_sealed() {
+            return Ok(CheckSealOutcome::FullySealed);
+        }
+        debug!(
+            loglet_id = %my_params.loglet_id,
+            "Checking seal status for loglet"
+        );
         // If all nodes in the nodeset is in "provisioning", we can confidently short-circuit
         // the result to LogletOffset::Oldest and the loglet is definitely unsealed.
         if my_params
             .nodeset
             .all_provisioning(&networking.metadata().nodes_config_ref())
         {
-            return Ok(CheckSealOutcome::ProbablyOpen);
+            return Ok(CheckSealOutcome::Open);
         }
         // todo: If effective nodeset is empty, should we consider that the loglet is implicitly
         // sealed?
@@ -65,59 +80,146 @@ impl CheckSealTask {
             .nodeset
             .to_effective(&networking.metadata().nodes_config_ref());
 
-        let mut nodeset_checker = NodeSetChecker::<NodeTailStatus>::new(
+        let mut nodeset_checker = NodeSetChecker::<bool>::new(
             &effective_nodeset,
             &networking.metadata().nodes_config_ref(),
             &my_params.replication,
         );
 
-        let mut nodes = effective_nodeset.shuffle_for_reads(networking.metadata().my_node_id());
+        let local_tails: BTreeMap<PlainNodeId, TailOffsetWatch> = effective_nodeset
+            .iter()
+            .filter_map(|node_id| {
+                log_servers
+                    .try_get_tail_offset(*node_id)
+                    .map(|w| (*node_id, w))
+            })
+            .collect();
 
-        let mut cancel = std::pin::pin!(cancellation_watcher());
-        trace!(
-            loglet_id = %my_params.loglet_id,
-            effective_nodeset = %effective_nodeset,
-            "Checking seal status for loglet",
-        );
+        // If some of the nodes are already sealed, we know our answer and we don't need to go through
+        // the rest of the nodes.
+        for (node_id, local_tail) in local_tails.iter() {
+            // do not use the unsealed signal as authoritative source here.
+            if local_tail.is_sealed() {
+                nodeset_checker.set_attribute(*node_id, true);
+            }
+        }
 
-        loop {
+        // You might be wondering, why don't we just check if any of the nodes are sealed and
+        // return here? Because we want to dispatch background tasks to update the seal/local-tail
+        // status for the rest of the nodeset. This aids with future runs of this task, and helps
+        // the sequencer get a fresh view if it didn't communicate with those nodes for some time.
+
+        let mut inflight_requests = JoinSet::new();
+        for node_id in effective_nodeset.iter().copied() {
+            // only create tasks for nodes that we think they are open
             if nodeset_checker
-                .check_fmajority(NodeTailStatus::is_known_unsealed)
-                .passed()
+                .get_attribute(&node_id)
+                .copied()
+                .unwrap_or(false)
             {
-                // once we reach f-majority of unsealed, we stop.
-                return Ok(CheckSealOutcome::ProbablyOpen);
+                // This node is known to be sealed, don't run a task for it.
+                continue;
             }
-
-            let Some(next_node) = nodes.pop() else {
-                info!(
-                    loglet_id = %my_params.loglet_id,
-                    status = %nodeset_checker,
-                    effective_nodeset = %effective_nodeset,
-                    replication = %my_params.replication,
-                    "Insufficient nodes responded to GetLogletInfo requests, we cannot determine seal status, we'll assume it's unsealed for now",
-                );
-                return Ok(CheckSealOutcome::ProbablyOpen);
+            let request = GetLogletInfo {
+                header: LogServerRequestHeader::new(
+                    my_params.loglet_id,
+                    known_global_tail.latest_offset(),
+                ),
             };
 
-            let task = FindTailOnNode {
-                node_id: next_node,
-                loglet_id: my_params.loglet_id,
-                get_loglet_info_rpc,
-                known_global_tail,
-            };
-            let tail_status = tokio::select! {
-                _ = &mut cancel => {
-                    return Err(ShutdownError);
+            inflight_requests.spawn({
+                let networking = networking.clone();
+                let rpc_router = get_loglet_info_rpc.clone();
+                let known_global_tail = known_global_tail.clone();
+                let local_tail = local_tails.get(&node_id).cloned();
+
+                async move {
+                    let task = RunOnSingleNode::new(
+                        node_id,
+                        request,
+                        &rpc_router,
+                        &known_global_tail,
+                        // do not retry
+                        RetryPolicy::None,
+                    );
+
+                    (
+                        node_id,
+                        task.run(on_info_response(local_tail), &networking).await,
+                    )
                 }
-                (_, tail_status) = task.run(networking) => { tail_status },
-            };
-            if tail_status.is_known_sealed() {
-                // we only need to see a single node sealed to declare that we are probably sealing (or
-                // sealed)
-                return Ok(CheckSealOutcome::Sealing);
+                .in_current_tc()
+                .in_current_span()
+            });
+        }
+
+        // Waiting for GetLogletInfo responses
+        loop {
+            // are we fully sealed? We use BestEffort here because we'd still want to consider a
+            // loglet sealed even if some nodes lost data. The check-seal wouldn't determine the
+            // known_global_tail, only whether the loglet is sealed or not and it's safe to do so.
+            // non-authoritative nodes cannot accept normal writes, only repair writes.
+            if nodeset_checker.check_fmajority(|attr| *attr) >= FMajorityResult::BestEffort {
+                // no need to detach, we don't need responses from the rest of the nodes
+                return Ok(CheckSealOutcome::FullySealed);
             }
-            nodeset_checker.merge_attribute(next_node, tail_status);
+
+            if nodeset_checker.check_fmajority(|attr| !(*attr)) >= FMajorityResult::BestEffort {
+                return Ok(CheckSealOutcome::Open);
+            }
+
+            // keep grabbing results
+            let Some(response) = inflight_requests.join_next().await else {
+                // no more results, since we didn't return earlier, we know that we didn't get
+                // enough responses to determine the result authoritatively
+                break;
+            };
+            let Ok((node_id, response)) = response else {
+                // task panicked or runtime is shutting down.
+                continue;
+            };
+            let Ok(response) = response else {
+                // GetLogletInfo task failed/aborted on this node. The inner task will log the error in this case.
+                continue;
+            };
+
+            nodeset_checker.set_attribute(node_id, response.sealed);
+        }
+
+        // are we partially sealed?
+        if nodeset_checker.any(|attr| *attr) {
+            return Ok(CheckSealOutcome::Sealing);
+        }
+        debug!(
+            loglet_id = %my_params.loglet_id,
+            status = %nodeset_checker,
+            effective_nodeset = %effective_nodeset,
+            replication = %my_params.replication,
+            "Insufficient nodes responded to GetLogletInfo requests, we cannot determine seal status, we'll assume it's unsealed for now",
+        );
+        return Ok(CheckSealOutcome::ProbablyOpen);
+    }
+}
+
+fn on_info_response(
+    server_local_tail: Option<TailOffsetWatch>,
+) -> impl Fn(Incoming<LogletInfo>) -> Disposition<LogServerResponseHeader> {
+    move |msg: Incoming<LogletInfo>| -> Disposition<LogServerResponseHeader> {
+        if let Status::Ok = msg.body().header.status {
+            if let Some(server_local_tail) = &server_local_tail {
+                server_local_tail.notify_offset_update(msg.body().local_tail);
+                if msg.body().header.sealed {
+                    server_local_tail.notify_seal();
+                }
+            }
+            Disposition::Return(msg.into_body().header)
+        } else {
+            trace!(
+                "GetLogletInfo request failed on node {}, status is {:?}",
+                msg.peer(),
+                msg.body().header.status
+            );
+            Disposition::Abort
         }
     }
 }
