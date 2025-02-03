@@ -399,3 +399,14 @@ jobs:
     with:
       plan: ${{ needs.plan.outputs.val }}
     secrets: inherit
+
+  custom-scarf-release-notes:
+    needs:
+      - plan
+      - announce
+    uses: ./.github/workflows/scarf-release-notes.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+    permissions:
+      "contents": "write"

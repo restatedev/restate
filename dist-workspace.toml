@@ -27,7 +27,7 @@ local-artifacts-jobs = ["./ci"]
 global-artifacts-jobs = ["./notarize"]
 publish-jobs = ["./homebrew", "./docker-release", "./npm"]
 # helm goes here because it shouldn't exist before docker-release happens
-post-announce-jobs = ["./helm"]
+post-announce-jobs = ["./helm", "./scarf-release-notes"]
 
 [dist.github-custom-job-permissions.ci]
 packages = "read"
@@ -40,6 +40,9 @@ actions = "read"
 [dist.github-custom-job-permissions.npm]
 packages = "read"
 contents = "read"
+
+[dist.github-custom-job-permissions.scarf-release-notes]
+contents = "write"
 
 [dist.dependencies.homebrew]
 protobuf = "*"
