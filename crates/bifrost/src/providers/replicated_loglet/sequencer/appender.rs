@@ -227,7 +227,8 @@ impl<T: TransportConnect> SequencerAppender<T> {
             self.sequencer_shared_state.selector.replication_property(),
         );
 
-        let store_timeout = self
+        // todo: should be exponential backoff
+        let store_timeout = *self
             .configuration
             .live_load()
             .bifrost
@@ -494,6 +495,7 @@ impl<'a, T: TransportConnect> LogServerStoreTask<'a, T> {
         match incoming.body().status {
             Status::Sealing | Status::Sealed => {
                 server.local_tail().notify_seal();
+                self.sequencer_shared_state.mark_as_maybe_sealed();
                 return Ok(StoreTaskStatus::Sealed);
             }
             _ => {
