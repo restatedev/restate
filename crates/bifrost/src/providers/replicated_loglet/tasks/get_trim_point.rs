@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use tokio::task::JoinSet;
-use tracing::trace;
+use tracing::{instrument, trace, Instrument, Span};
 
 use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_core::TaskCenterFutureExt;
@@ -57,6 +57,7 @@ impl<'a> GetTrimPointTask<'a> {
         }
     }
 
+    #[instrument(level = "debug", skip_all, fields(loglet_id))]
     pub async fn run<T: TransportConnect>(
         self,
         networking: Networking<T>,
@@ -114,6 +115,7 @@ impl<'a> GetTrimPointTask<'a> {
                     (node_id, task.run(on_info_response, &networking).await)
                 }
                 .in_current_tc()
+                .instrument(Span::current())
             });
         }
 

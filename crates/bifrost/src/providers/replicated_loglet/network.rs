@@ -30,7 +30,7 @@ use restate_types::net::replicated_loglet::{
 };
 
 use super::error::ReplicatedLogletError;
-use super::loglet::ReplicatedLoglet;
+use super::loglet::{FindTailOptions, ReplicatedLoglet};
 use super::provider::ReplicatedLogletProvider;
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{AppendError, Loglet, LogletCommit, OperationError};
@@ -119,6 +119,7 @@ impl RequestPump {
         Ok(())
     }
 
+    #[instrument(level = "debug", skip_all)]
     async fn handle_get_sequencer_state<T: TransportConnect>(
         &mut self,
         provider: &ReplicatedLogletProvider<T>,
@@ -157,7 +158,33 @@ impl RequestPump {
             return;
         }
 
-        let tail = loglet.last_known_global_tail();
+        let tail = if msg.force_seal_check {
+            match loglet
+                .find_tail_inner(FindTailOptions::ForceSealCheck)
+                .await
+            {
+                Ok(tail) => tail,
+                Err(err) => {
+                    let failure = SequencerState {
+                        header: CommonResponseHeader {
+                            known_global_tail: None,
+                            sealed: None,
+                            status: SequencerStatus::Error {
+                                retryable: true,
+                                message: err.to_string(),
+                            },
+                        },
+                    };
+                    let _ = reciprocal.prepare(failure).try_send();
+                    return;
+                }
+            }
+        } else {
+            // if we are not forced to check the seal, we can just return the last known tail from the
+            // sequencer's view
+            loglet.last_known_global_tail()
+        };
+
         let sequencer_state = SequencerState {
             header: CommonResponseHeader {
                 known_global_tail: Some(tail.offset()),

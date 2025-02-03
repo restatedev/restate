@@ -75,7 +75,7 @@ where
     }
 
     /// Send a message to a single node and handles network-related failures with retries.
-    #[instrument(skip_all, fields(loglet_id = %self.request.header().loglet_id, message = self.request.kind()))]
+    #[instrument(skip_all, fields(node_id = %self.node_id, loglet_id = %self.request.header().loglet_id, message = self.request.kind()))]
     pub async fn run<O, N: TransportConnect>(
         mut self,
         on_response: impl Fn(Incoming<T::ResponseMessage>) -> Disposition<O>,
@@ -83,7 +83,7 @@ where
     ) -> Result<O, TaskError> {
         let start = Instant::now();
         let loglet_id = self.request.header().loglet_id;
-        let request_timeout = Configuration::pinned()
+        let request_timeout = *Configuration::pinned()
             .bifrost
             .replicated_loglet
             .log_server_rpc_timeout;
@@ -137,24 +137,21 @@ where
                     return Err(TaskError::Shutdown(err));
                 }
                 // We'll retry in every other case of networking error
-                Err(e) if next_pause.is_some() => {
+                Err(err) if next_pause.is_some() => {
                     trace!(
-                        ?e,
+                        %err,
                         %attempt,
                         "Request failed. Will retry after {:?}",
                         next_pause.unwrap()
                     );
                 }
-                Err(e) => {
+                Err(err) => {
                     trace!(
-                        ?e,
+                        %err,
                         %attempt,
                         "Request failed. Exhausted attempts after spending {:?}",
                         start.elapsed(),
                     );
-                    // exhausted
-                    // give up.
-                    trace!(%attempt, "Exhausted retries");
                     return Err(TaskError::ExhaustedRetries(start.elapsed()));
                 }
             }

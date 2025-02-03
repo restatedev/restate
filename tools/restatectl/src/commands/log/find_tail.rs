@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 
@@ -17,6 +19,7 @@ use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::nodes_config::Role;
+use tonic::IntoRequest;
 
 use super::LogIdRange;
 use crate::connection::ConnectionInfo;
@@ -37,11 +40,14 @@ async fn find_tail(connection: &ConnectionInfo, opts: &FindTailOpts) -> anyhow::
 
     for log_id in opts.log_id.clone().into_iter().flatten() {
         let find_tail_request = FindTailRequest { log_id };
+
         let response = match connection
             .try_each(Some(Role::Admin), |channel| async {
                 let mut client = ClusterCtrlSvcClient::new(channel)
                     .accept_compressed(CompressionEncoding::Gzip)
                     .send_compressed(CompressionEncoding::Gzip);
+                let mut find_tail_request = find_tail_request.into_request();
+                find_tail_request.set_timeout(Duration::from_secs(10));
 
                 client.find_tail(find_tail_request).await
             })

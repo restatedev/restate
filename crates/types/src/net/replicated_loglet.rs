@@ -155,6 +155,7 @@ impl Appended {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetSequencerState {
     pub header: CommonRequestHeader,
+    pub force_seal_check: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

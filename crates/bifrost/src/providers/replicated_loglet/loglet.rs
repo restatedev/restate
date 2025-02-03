@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use tracing::{debug, info, instrument};
+use tokio::sync::Mutex;
+use tokio::time::Instant;
+use tracing::{debug, info, instrument, trace};
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_types::logs::metadata::SegmentIndex;
@@ -58,6 +60,8 @@ pub(super) struct ReplicatedLoglet<T> {
     ///   should run a proper tail search.
     known_global_tail: TailOffsetWatch,
     sequencer: SequencerAccess<T>,
+    #[debug(skip)]
+    seal_in_progress: Mutex<()>,
 }
 
 impl<T: TransportConnect> ReplicatedLoglet<T> {
@@ -112,6 +116,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
             record_cache,
             known_global_tail,
             sequencer,
+            seal_in_progress: Mutex::new(()),
         }
     }
 
@@ -138,9 +143,121 @@ pub enum SequencerAccess<T> {
     Local { handle: Sequencer<T> },
 }
 
+impl<T> SequencerAccess<T> {
+    pub fn mark_as_maybe_sealed(&self) {
+        match self {
+            SequencerAccess::Remote { handle } => handle.mark_as_maybe_sealed(),
+            SequencerAccess::Local { handle } => handle.sequencer_state().mark_as_maybe_sealed(),
+        }
+    }
+
+    pub fn maybe_sealed(&self) -> bool {
+        match self {
+            SequencerAccess::Remote { handle } => handle.maybe_sealed(),
+            SequencerAccess::Local { handle } => handle.sequencer_state().maybe_sealed(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum FindTailOptions {
+    #[default]
+    Default,
+    /// Tells the loglet provider to force a check on the seal status of the loglet. Note that the
+    /// seal flag invariants still hold. If the tail is open, we are absolutely sure that the tail
+    /// LSN is committed.
+    ForceSealCheck,
+}
+
 impl<T: TransportConnect> ReplicatedLoglet<T> {
     pub fn last_known_global_tail(&self) -> TailState<LogletOffset> {
         *self.known_global_tail.get()
+    }
+
+    pub async fn find_tail_inner(
+        &self,
+        find_tail_opts: FindTailOptions,
+    ) -> Result<TailState<LogletOffset>, OperationError> {
+        let latest_tail = *self.known_global_tail.get();
+        if latest_tail.is_sealed() {
+            return Ok(latest_tail);
+        }
+        let find_tail_opts = if self.sequencer.maybe_sealed() {
+            // auto-force seal check if we have reasons to believe that it might be sealing
+            FindTailOptions::ForceSealCheck
+        } else {
+            find_tail_opts
+        };
+
+        match self.sequencer {
+            SequencerAccess::Local { ref handle } => {
+                if find_tail_opts == FindTailOptions::ForceSealCheck {
+                    if self.sequencer.maybe_sealed() {
+                        // let's fire a seal to ensure this seal is complete.
+                        self.seal().await?;
+                    } else {
+                        // We might have been sealed by external node and the sequencer is unaware. In this
+                        // case, we run a check seal task to determine if we suspect that sealing is
+                        // happening.
+                        let result = CheckSealTask::run(
+                            &self.my_params,
+                            &self.logservers_rpc.get_loglet_info,
+                            handle.sequencer_state().remote_log_servers(),
+                            &self.known_global_tail,
+                            &self.networking,
+                        )
+                        .await?;
+                        // things might have changed during this time
+                        if self.known_global_tail.get().is_sealed() {
+                            return Ok(latest_tail);
+                        }
+                        match result {
+                            CheckSealOutcome::Sealing => {
+                                // We are likely to be sealing...
+                                // let's fire a seal to ensure this seal is complete.
+                                self.seal().await?;
+                            }
+                            CheckSealOutcome::FullySealed => {
+                                // already fully sealed, just make sure the sequencer is drained.
+                                handle.drain().await?;
+                                // note that we can only do that if we are the sequencer because
+                                // our known_global_tail is authoritative. We have no doubt about
+                                // whether the tail needs to be repaired or not.
+                                self.known_global_tail.notify_seal();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                return Ok(*self.known_global_tail.get());
+            }
+            SequencerAccess::Remote { .. } => {
+                let task = FindTailTask::new(
+                    self.log_id,
+                    self.segment_index,
+                    self.my_params.clone(),
+                    self.networking.clone(),
+                    self.logservers_rpc.clone(),
+                    self.sequencers_rpc.clone(),
+                    self.known_global_tail.clone(),
+                    self.record_cache.clone(),
+                );
+                let tail_status = task.run(find_tail_opts).await;
+                match tail_status {
+                    FindTailResult::Open { global_tail } => {
+                        self.known_global_tail.notify_offset_update(global_tail);
+                        Ok(*self.known_global_tail.get())
+                    }
+                    FindTailResult::Sealed { global_tail } => {
+                        self.known_global_tail.notify(true, global_tail);
+                        Ok(*self.known_global_tail.get())
+                    }
+                    FindTailResult::Error(reason) => {
+                        Err(ReplicatedLogletError::FindTailFailed(reason).into())
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -152,6 +269,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         from: LogletOffset,
         to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError> {
+        trace!("create_read_stream() called");
         let cache = self.record_cache.clone();
         let known_global_tail = self.known_global_tail.clone();
         let my_params = self.my_params.clone();
@@ -208,60 +326,11 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
-        match self.sequencer {
-            SequencerAccess::Local { .. } => {
-                let latest_tail = *self.known_global_tail.get();
-                if latest_tail.is_sealed() {
-                    return Ok(latest_tail);
-                }
-                // We might have been sealed by external node and the sequencer is unaware. In this
-                // case, we run a check seal task to determine if we suspect that sealing is
-                // happening.
-                let result = CheckSealTask::run(
-                    &self.my_params,
-                    &self.logservers_rpc.get_loglet_info,
-                    &self.known_global_tail,
-                    &self.networking,
-                )
-                .await?;
-                if result == CheckSealOutcome::Sealing {
-                    // We are likely to be sealing...
-                    // let's fire a seal to ensure this seal is complete.
-                    self.seal().await?;
-                }
-                return Ok(*self.known_global_tail.get());
-            }
-            SequencerAccess::Remote { .. } => {
-                let task = FindTailTask::new(
-                    self.log_id,
-                    self.segment_index,
-                    self.my_params.clone(),
-                    self.networking.clone(),
-                    self.logservers_rpc.clone(),
-                    self.sequencers_rpc.clone(),
-                    self.known_global_tail.clone(),
-                    self.record_cache.clone(),
-                );
-                let tail_status = task.run().await;
-                match tail_status {
-                    FindTailResult::Open { global_tail } => {
-                        self.known_global_tail.notify_offset_update(global_tail);
-                        Ok(*self.known_global_tail.get())
-                    }
-                    FindTailResult::Sealed { global_tail } => {
-                        self.known_global_tail.notify(true, global_tail);
-                        Ok(*self.known_global_tail.get())
-                    }
-                    FindTailResult::Error(reason) => {
-                        Err(ReplicatedLogletError::FindTailFailed(reason).into())
-                    }
-                }
-            }
-        }
+        self.find_tail_inner(FindTailOptions::default()).await
     }
 
     #[instrument(
-        level="error",
+        level="debug",
         skip_all,
         fields(
             loglet_id = %self.my_params.loglet_id,
@@ -269,6 +338,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         )
     )]
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
+        trace!("get_trim_point() called");
         GetTrimPointTask::new(
             &self.my_params,
             self.logservers_rpc.clone(),
@@ -280,7 +350,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     }
 
     #[instrument(
-        level="error",
+        level="debug",
         skip_all,
         fields(
             loglet_id = %self.my_params.loglet_id,
@@ -291,6 +361,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     /// Trim the log to the min(trim_point, last_committed_offset)
     /// trim_point is inclusive (will be trimmed)
     async fn trim(&self, trim_point: LogletOffset) -> Result<(), OperationError> {
+        trace!("trim() called");
         let trim_point = trim_point.min(self.known_global_tail.latest_offset().prev_unchecked());
 
         TrimTask::new(
@@ -308,24 +379,53 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         Ok(())
     }
 
-    async fn seal(&self) -> Result<(), OperationError> {
-        let _ = SealTask::new(
-            self.my_params.clone(),
-            self.logservers_rpc.seal.clone(),
-            self.known_global_tail.clone(),
+    #[instrument(
+        level="error",
+        skip_all,
+        fields(
+            otel.name = "replicated_loglet: seal",
         )
-        .run(self.networking.clone())
+    )]
+    async fn seal(&self) -> Result<(), OperationError> {
+        // lock-free fast-path
+        if self.known_global_tail.get().is_sealed() {
+            return Ok(());
+        }
+        trace!("seal() called");
+
+        // Ensure that only one seal operation is in progress at a time.
+        let start = Instant::now();
+        let _guard = self.seal_in_progress.lock().await;
+        trace!("seal() lock was released after {:?}", start.elapsed());
+
+        if self.known_global_tail.get().is_sealed() {
+            return Ok(());
+        }
+
+        debug!("Attempting to seal loglet");
+        let _ = SealTask::run(
+            &self.my_params,
+            &self.logservers_rpc.seal,
+            &self.known_global_tail,
+            &self.networking,
+        )
         .await?;
         // If we are the sequencer, we need to wait until the sequencer is drained.
         if let SequencerAccess::Local { handle } = &self.sequencer {
             handle.drain().await?;
             self.known_global_tail.notify_seal();
         };
+        // Primarily useful for remote sequencer to enforce seal check on the next find_tail() call
+        self.sequencer.mark_as_maybe_sealed();
         // On remote sequencer, we only set our global tail to sealed when we call find_tail and it
         // returns Sealed. We should NOT:
         // - Use AppendError::Sealed to mark our sealed global_tail
-        // - Mark our global tail as sealed on successful seal() call.
-        info!(loglet_id=%self.my_params.loglet_id, "Loglet has been sealed successfully");
+        // - Mark our global tail as sealed on successful seal() call because our view of known_global_tail might
+        //   not be up-to-date at the time we sealed. We want that to happen by find_tail() after
+        //   it consults the sequencer, or by running a full find-tail algorithm directly on log
+        //   servers.
+        debug!(loglet_id=%self.my_params.loglet_id, "seal() has completed successfully in {:?}",
+            start.elapsed());
         Ok(())
     }
 }
