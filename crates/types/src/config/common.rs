@@ -273,7 +273,7 @@ pub struct CommonOptions {
     /// # Disable telemetry
     ///
     /// Restate uses Scarf to collect anonymous usage data to help us understand how the software is being used.
-    /// You can set this flag to true to disable this collection. It can also be set with the environment variable DO_NOT_TRACK=true.
+    /// You can set this flag to true to disable this collection. It can also be set with the environment variable DO_NOT_TRACK=1.
     pub disable_telemetry: bool,
 }
 
