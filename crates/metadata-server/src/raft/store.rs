@@ -1525,7 +1525,7 @@ impl Standby {
                     None
                 }
             })
-            .choose(&mut thread_rng())
+            .choose(&mut rng())
             .map(|(node_id, node_config)| KnownLeader {
                 node_id,
                 address: node_config.address.clone(),

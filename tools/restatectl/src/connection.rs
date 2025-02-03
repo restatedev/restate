@@ -12,7 +12,7 @@ use std::{cmp::Ordering, collections::HashMap, fmt::Display, future::Future, syn
 
 use cling::{prelude::Parser, Collect};
 use itertools::{Either, Itertools};
-use rand::{seq::SliceRandom, thread_rng};
+use rand::{rng, seq::SliceRandom};
 use tokio::sync::{Mutex, MutexGuard};
 use tonic::{codec::CompressionEncoding, transport::Channel, Response, Status};
 use tracing::debug;
@@ -95,7 +95,7 @@ impl ConnectionInfo {
             .map(|(_, node)| &node.address)
             .collect::<Vec<_>>();
 
-        nodes_addresses.shuffle(&mut thread_rng());
+        nodes_addresses.shuffle(&mut rng());
 
         let cluster_size = nodes_addresses.len();
         let cached = self.cache.lock().await.keys().cloned().collect::<Vec<_>>();
