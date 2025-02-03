@@ -295,12 +295,13 @@ impl<T: TransportConnect> Service<T> {
         )?;
 
         tokio::select! {
-            _ = self.run_inner() => {
-                unreachable!("Cluster controller service has terminated unexpectedly.");
-            }
+            biased;
             _ = cancellation_watcher() => {
                 health_status.update(AdminStatus::Unknown);
                 Ok(())
+            }
+            _ = self.run_inner() => {
+                unreachable!("Cluster controller service has terminated unexpectedly.");
             }
         }
     }
