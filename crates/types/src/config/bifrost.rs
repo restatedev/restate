@@ -292,13 +292,8 @@ pub struct ReplicatedLogletOptions {
     #[serde_as(
         as = "serde_with::PickFirst<(serde_with::DisplayFromStr, ReplicationPropertyFromNonZeroU8)>"
     )]
-    // hide the configuration option from serialization if it is the default
-    #[serde(
-        default = "default_replication_property",
-        skip_serializing_if = "is_default_replication_property"
-    )]
-    // hide the configuration option by excluding it from the Json schema
-    #[cfg_attr(feature = "schemars", schemars(skip, with = "String"))]
+    #[serde(default = "default_replication_property")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub default_replication_property: ReplicationProperty,
 
     /// # Default nodeset size
@@ -331,10 +326,6 @@ fn u16_is_zero(i: &u16) -> bool {
 
 fn default_replication_property() -> ReplicationProperty {
     ReplicationProperty::new(NonZeroU8::new(1).expect("to be non-zero"))
-}
-
-fn is_default_replication_property(replication_property: &ReplicationProperty) -> bool {
-    replication_property == &ReplicationProperty::new(NonZeroU8::new(1).expect("to be non-zero"))
 }
 
 impl Default for ReplicatedLogletOptions {
