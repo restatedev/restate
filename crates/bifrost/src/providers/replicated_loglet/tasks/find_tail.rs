@@ -14,7 +14,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument, trace, warn, Instrument, Span};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{Networking, TransportConnect};
+use restate_core::network::{NetworkError, Networking, TransportConnect};
 use restate_core::TaskCenterFutureExt;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
@@ -278,7 +278,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                             // todo: If some nodes have lower global-tail than max-local-tail, then
                             // broadcast a release to max-tail to avoid unnecessary repair if
                             // underreplication happened after this point.
-                            inflight_info_requests.abort_all();
+                            drop(inflight_info_requests);
                             // Note: We don't set the known_global_tail watch to this value nor the
                             // seal bit. The caller can decide whether to do that or not based on the
                             // use-case.
@@ -356,7 +356,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                                 self.my_params.loglet_id, e
                             ));
                         }
-                        inflight_info_requests.abort_all();
+                        drop(inflight_info_requests);
                         // retry the whole find-tail procedure.
                         trace!(
                             "Restarting FindTail task after sealing f-majority for loglet_id={}",
@@ -441,7 +441,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                         if nodeset_checker.any(NodeTailStatus::is_known_sealed) {
                             // A node got sealed. Let's re-evaluate to finish up this seal before
                             // we respond. We expect to switching to `SomeSealed`
-                            inflight_tail_update_watches.abort_all();
+                            drop(inflight_tail_update_watches);
                             continue 'check_nodeset;
                         }
 
@@ -503,104 +503,65 @@ impl<'a> FindTailOnNode<'a> {
             .replicated_loglet
             .log_server_rpc_timeout;
 
-        let retry_policy = Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_retry_policy
-            .clone();
-
-        let mut retry_iter = retry_policy.into_iter();
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let request = GetLogletInfo {
-                header: LogServerRequestHeader::new(
-                    self.loglet_id,
-                    self.known_global_tail.latest_offset(),
-                ),
-            };
-            // loop and retry until this task is aborted.
-            let maybe_info = tokio::time::timeout(
-                request_timeout,
-                self.get_loglet_info_rpc
-                    .call(networking, self.node_id, request),
-            )
+        let request = GetLogletInfo {
+            header: LogServerRequestHeader::new(
+                self.loglet_id,
+                self.known_global_tail.latest_offset(),
+            ),
+        };
+        // loop and retry until this task is aborted.
+        let maybe_info = self
+            .get_loglet_info_rpc
+            .call_timeout(networking, self.node_id, request, request_timeout)
             .await;
 
-            match maybe_info {
-                Ok(Ok(msg)) => {
-                    self.known_global_tail
-                        .notify_offset_update(msg.body().header.known_global_tail);
-                    // We retry on the following errors.
-                    match msg.body().status {
-                        Status::Ok | Status::Sealed => {
-                            return (
-                                self.node_id,
-                                NodeTailStatus::Known {
-                                    local_tail: msg.body().header.local_tail,
-                                    sealed: msg.body().header.sealed,
-                                },
-                            );
-                        }
-                        // retyrable errors
-                        Status::Sealing | Status::Disabled | Status::Dropped => {
-                            // fall-through for retries
-                        }
-                        // unexpected statuses
-                        Status::SequencerMismatch | Status::OutOfBounds | Status::Malformed => {
-                            warn!(
-                                %attempt,
-                                loglet_id = %self.loglet_id,
-                                peer = %self.node_id,
-                                "Unexpected status from log-server when calling GetLogletInfo: {:?}",
-                                msg.body().status
-                            );
-                            return (self.node_id, NodeTailStatus::Unknown);
-                        }
+        match maybe_info {
+            Ok(msg) => {
+                self.known_global_tail
+                    .notify_offset_update(msg.body().header.known_global_tail);
+                // We retry on the following errors.
+                match msg.body().status {
+                    Status::Ok | Status::Sealed => {
+                        return (
+                            self.node_id,
+                            NodeTailStatus::Known {
+                                local_tail: msg.body().header.local_tail,
+                                sealed: msg.body().header.sealed,
+                            },
+                        );
+                    }
+                    // retyrable errors
+                    Status::Sealing | Status::Disabled | Status::Dropped => {
+                        // fall-through for retries
+                    }
+                    // unexpected statuses
+                    Status::SequencerMismatch | Status::OutOfBounds | Status::Malformed => {
+                        warn!(
+                            loglet_id = %self.loglet_id,
+                            peer = %self.node_id,
+                            "Unexpected status from log-server when calling GetLogletInfo: {:?}",
+                            msg.body().status
+                        );
                     }
                 }
-                Ok(Err(RpcError::SendError(e))) => {
-                    trace!(
-                        %attempt,
-                        "Failed to get loglet info from node_id={} for loglet_id={}: {:?}",
-                        self.node_id,
-                        self.loglet_id,
-                        e.original
-                    );
-                }
-                Ok(Err(RpcError::Shutdown(_))) => {
-                    // RPC router has shutdown, terminating.
-                    return (self.node_id, NodeTailStatus::Unknown);
-                }
-                Err(_timeout_error) => {
-                    trace!(
-                        %attempt,
-                        "Timeout when getting loglet info from node_id={} for loglet_id={}. Configured timeout={:?} ",
-                        self.node_id, self.loglet_id, request_timeout
-                    );
-                }
             }
-
-            // Should we retry?
-            if let Some(pause) = retry_iter.next() {
+            Err(NetworkError::Timeout(spent)) => {
                 trace!(
-                    %attempt,
-                    "Retrying to get loglet info from node_id={} and loglet_id={} after {:?}",
+                    "Timeout when getting loglet info from node_id={} for loglet_id={}. Configured timeout={:?}, spent={:?}",
+                    self.node_id, self.loglet_id, request_timeout, spent,
+                );
+            }
+            Err(err) => {
+                trace!(
+                    "Failed to get loglet info from node_id={} for loglet_id={}: {}",
                     self.node_id,
                     self.loglet_id,
-                    pause
+                    err
                 );
-                tokio::time::sleep(pause).await;
-            } else {
-                trace!(
-                    %attempt,
-                    "Exhausted retries while attempting to get loglet-info from node_id={} and loglet_id={}",
-                    self.node_id,
-                    self.loglet_id,
-                );
-                return (self.node_id, NodeTailStatus::Unknown);
             }
         }
+
+        (self.node_id, NodeTailStatus::Unknown)
     }
 }
 
