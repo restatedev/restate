@@ -22,8 +22,6 @@ service ClusterCtrlSvc {
 
   rpc DescribeLog(DescribeLogRequest) returns (DescribeLogResponse);
 
-  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
-
   rpc TrimLog(TrimLogRequest) returns (google.protobuf.Empty);
 
   rpc CreatePartitionSnapshot(CreatePartitionSnapshotRequest)
@@ -80,13 +78,6 @@ message DescribeLogResponse {
   uint64 trim_point = 4;
   // Serialized restate_types::nodes_config::NodesConfiguration
   bytes nodes_configuration = 7;
-}
-
-message ListNodesRequest {}
-
-message ListNodesResponse {
-  // Serialized restate_types::nodes_config::NodesConfiguration
-  bytes nodes_configuration = 1;
 }
 
 message TrimLogRequest {

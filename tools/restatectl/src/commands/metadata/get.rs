@@ -20,6 +20,7 @@ use restate_types::live::Live;
 use crate::commands::metadata::{
     create_metadata_store_client, GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts,
 };
+use crate::connection::ConnectionInfo;
 use crate::environment::metadata_store;
 use crate::environment::task_center::run_in_task_center;
 
@@ -35,9 +36,9 @@ pub struct GetValueOpts {
     key: String,
 }
 
-async fn get_value(opts: &GetValueOpts) -> anyhow::Result<()> {
+async fn get_value(connection: &ConnectionInfo, opts: &GetValueOpts) -> anyhow::Result<()> {
     let value = match opts.metadata.access_mode {
-        MetadataAccessMode::Remote => get_value_remote(opts).await?,
+        MetadataAccessMode::Remote => get_value_remote(connection, opts).await?,
         MetadataAccessMode::Direct => get_value_direct(opts).await?,
     };
 
@@ -47,8 +48,11 @@ async fn get_value(opts: &GetValueOpts) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn get_value_remote(opts: &GetValueOpts) -> anyhow::Result<Option<GenericMetadataValue>> {
-    let metadata_store_client = create_metadata_store_client(&opts.metadata).await?;
+async fn get_value_remote(
+    connection: &ConnectionInfo,
+    opts: &GetValueOpts,
+) -> anyhow::Result<Option<GenericMetadataValue>> {
+    let metadata_store_client = create_metadata_store_client(connection, &opts.metadata).await?;
 
     metadata_store_client
         .get(ByteString::from(opts.key.as_str()))

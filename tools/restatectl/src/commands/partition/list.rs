@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use cling::prelude::*;
 use itertools::Itertools;
+use restate_types::nodes_config::Role;
 use tonic::codec::CompressionEncoding;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
@@ -29,10 +30,9 @@ use restate_types::protobuf::cluster::{
 use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
-use crate::app::ConnectionInfo;
 use crate::commands::display_util::render_as_duration;
 use crate::commands::log::deserialize_replicated_log_params;
-use crate::util::grpc_channel;
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug, Default)]
 #[cling(run = "list_partitions")]
@@ -71,21 +71,33 @@ pub async fn list_partitions(
     connection: &ConnectionInfo,
     opts: &ListPartitionsOpts,
 ) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let cluster_state = connection
+        .try_each(Some(Role::Admin), |channel| async {
+            let mut client = ClusterCtrlSvcClient::new(channel)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip);
 
-    let cluster_state_request = ClusterStateRequest::default();
-    let cluster_state = client
-        .get_cluster_state(cluster_state_request)
+            client
+                .get_cluster_state(ClusterStateRequest::default())
+                .await
+        })
         .await?
         .into_inner()
         .cluster_state
         .ok_or_else(|| anyhow::anyhow!("no cluster state returned"))?;
 
     // we need the logs to show the current sequencer for each partition's log
-    let list_logs_request = ListLogsRequest::default();
-    let list_logs_response = client.list_logs(list_logs_request).await?.into_inner();
+    let list_logs_response = connection
+        .try_each(Some(Role::Admin), |channel| async {
+            let mut client = ClusterCtrlSvcClient::new(channel)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip);
+
+            client.list_logs(ListLogsRequest::default()).await
+        })
+        .await?
+        .into_inner();
+
     let mut buf = list_logs_response.logs;
     let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
     let logs: HashMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();

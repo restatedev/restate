@@ -17,6 +17,7 @@ use serde_json::Value;
 
 use crate::commands::metadata::patch::{patch_value, PatchValueOpts};
 use crate::commands::metadata::MetadataCommonOpts;
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
@@ -41,7 +42,7 @@ pub struct PutValueOpts {
     dry_run: bool,
 }
 
-async fn put_value(opts: &PutValueOpts) -> anyhow::Result<()> {
+async fn put_value(connection: &ConnectionInfo, opts: &PutValueOpts) -> anyhow::Result<()> {
     let opts = opts.clone();
 
     let doc_body = opts.doc.contents()?;
@@ -69,5 +70,5 @@ async fn put_value(opts: &PutValueOpts) -> anyhow::Result<()> {
         dry_run: opts.dry_run,
     };
 
-    patch_value(&patch_opts).await
+    patch_value(connection, &patch_opts).await
 }

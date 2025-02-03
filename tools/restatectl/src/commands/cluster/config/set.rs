@@ -21,11 +21,12 @@ use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
 use restate_cli_util::{c_println, c_warn};
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
+use restate_types::nodes_config::Role;
 use restate_types::replication::ReplicationProperty;
 
 use crate::commands::cluster::config::cluster_config_string;
 use crate::commands::cluster::provision::extract_default_provider;
-use crate::{app::ConnectionInfo, util::grpc_channel};
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "config_set")]
@@ -51,12 +52,16 @@ pub struct ConfigSetOpts {
 }
 
 async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let response = connection
+        .try_each(Some(Role::Admin), |channel| async {
+            let mut client = ClusterCtrlSvcClient::new(channel)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip);
 
-    let response = client
-        .get_cluster_configuration(GetClusterConfigurationRequest {})
+            client
+                .get_cluster_configuration(GetClusterConfigurationRequest {})
+                .await
+        })
         .await
         .context("Failed to get cluster configuration")?
         .into_inner();
@@ -123,10 +128,16 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
         cluster_configuration: Some(current),
     };
 
-    client
-        .set_cluster_configuration(request)
+    connection
+        .try_each(Some(Role::Admin), |channel| async {
+            let mut client = ClusterCtrlSvcClient::new(channel)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip);
+
+            client.set_cluster_configuration(request.clone()).await
+        })
         .await
-        .map_err(|err| anyhow::anyhow!("Failed to set configuration: {}", err.message()))?;
+        .context("Failed to set configuration")?;
 
     c_println!("✅ Configuration updated successfully");
 

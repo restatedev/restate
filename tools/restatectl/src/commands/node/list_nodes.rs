@@ -17,8 +17,6 @@ use itertools::Itertools;
 use tokio::task::JoinSet;
 use tonic::codec::CompressionEncoding;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::ListNodesRequest;
 use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
@@ -26,10 +24,9 @@ use restate_cli_util::ui::{duration_to_human_rough, Tense};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::IdentResponse;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::storage::StorageCodec;
 use restate_types::PlainNodeId;
 
-use crate::app::ConnectionInfo;
+use crate::connection::ConnectionInfo;
 use crate::util::grpc_channel;
 
 // Default timeout for the [optional] GetIdent call made to all nodes
@@ -46,18 +43,8 @@ pub struct ListNodesOpts {
 }
 
 pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let nodes_configuration = connection.get_nodes_configuration().await?;
 
-    let mut response = client
-        .list_nodes(ListNodesRequest::default())
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to list nodes: {:?}", e))?
-        .into_inner();
-
-    let nodes_configuration =
-        StorageCodec::decode::<NodesConfiguration, _>(&mut response.nodes_configuration)?;
     let nodes = nodes_configuration.iter().collect::<BTreeMap<_, _>>();
 
     let nodes_extra_info = if opts.extra {
@@ -78,7 +65,7 @@ pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> an
     }
     nodes_table.set_styled_header(header);
 
-    for (node_id, node_config) in nodes.clone() {
+    for (node_id, node_config) in nodes {
         let mut node_row = vec![
             Cell::new(node_id.to_string()),
             Cell::new(node_config.current_generation.generation().to_string()),

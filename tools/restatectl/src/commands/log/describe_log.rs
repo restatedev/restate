@@ -8,33 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
 use cling::prelude::*;
 use itertools::Itertools;
 use log::render_loglet_params;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{DescribeLogRequest, ListLogsRequest};
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_types::logs::metadata::{Chain, Logs, ProviderKind, Segment, SegmentIndex};
+use restate_types::logs::metadata::{Logs, ProviderKind, Segment, SegmentIndex};
+use restate_types::logs::LogId;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
-use restate_types::storage::StorageCodec;
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
+use restate_types::Versioned;
 
 use super::LogIdRange;
-use crate::app::ConnectionInfo;
 use crate::commands::log;
-use crate::util::grpc_channel;
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "describe_logs")]
 pub struct DescribeLogIdOpts {
     /// The log id or range to describe, e.g. "0", "1-4"; all logs are shown by default
-    #[arg( value_parser = value_parser!(LogIdRange))]
+    #[arg(value_parser = value_parser!(LogIdRange))]
     log_id: Vec<LogIdRange>,
 
     /// The first segment id to display
@@ -71,18 +66,11 @@ async fn describe_logs(
     connection: &ConnectionInfo,
     opts: &DescribeLogIdOpts,
 ) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
+    let nodes_config = connection.get_nodes_configuration().await?;
 
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let logs = connection.get_logs().await?;
 
     let log_ids = if opts.log_id.is_empty() {
-        let list_response = client
-            .list_logs(ListLogsRequest::default())
-            .await?
-            .into_inner();
-        let mut buf = list_response.logs;
-        let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
         logs.iter()
             .sorted_by(|a, b| Ord::cmp(a.0, b.0))
             .map(|(id, _)| LogIdRange::from(id))
@@ -93,7 +81,7 @@ async fn describe_logs(
 
     for range in log_ids {
         for log_id in range.iter() {
-            describe_log(log_id, &mut client, opts).await?;
+            describe_log(opts, &nodes_config, &logs, log_id.into()).await?;
         }
     }
 
@@ -101,17 +89,16 @@ async fn describe_logs(
 }
 
 async fn describe_log(
-    log_id: u32,
-    client: &mut ClusterCtrlSvcClient<Channel>,
     opts: &DescribeLogIdOpts,
+    nodes_configuration: &NodesConfiguration,
+    logs: &Logs,
+    log_id: LogId,
 ) -> anyhow::Result<()> {
-    let req = DescribeLogRequest { log_id };
-    let mut response = client.describe_log(req).await?.into_inner();
+    let chain = logs
+        .chain(&log_id)
+        .ok_or_else(|| anyhow::anyhow!("Failed to get log chain"))?;
 
-    let mut buf = response.chain.clone();
-    let chain = StorageCodec::decode::<Chain, _>(&mut buf).context("Failed to decode log chain")?;
-
-    c_println!("Log Id: {} (v{})", log_id, response.logs_version);
+    c_println!("Log Id: {} ({})", log_id, logs.version());
 
     let mut chain_table = Table::new_styled();
     let mut header_row = vec![
@@ -129,11 +116,7 @@ async fn describe_log(
     }
     chain_table.set_styled_header(header_row);
 
-    let last_segment = chain
-        .iter()
-        .last()
-        .map(|s| s.index())
-        .unwrap_or(SegmentIndex::from(u32::MAX));
+    let last_segment = chain.tail_index();
 
     let mut first_segment_rendered = None;
     let mut last_segment_rendered = None;
@@ -152,16 +135,12 @@ async fn describe_log(
     };
 
     let segments: Box<dyn Iterator<Item = Segment>> = if opts.all {
-        Box::new(segments)
+        segments
     } else if opts.head.is_some() {
         Box::new(segments.take(opts.head.unwrap()))
     } else {
         Box::new(segments.tail(opts.tail.unwrap()))
     };
-
-    let nodes_configuration =
-        StorageCodec::decode::<NodesConfiguration, _>(&mut response.nodes_configuration)
-            .context("Failed to decode nodes configuration")?;
 
     for segment in segments {
         if first_segment_rendered.is_none() {
@@ -182,10 +161,10 @@ async fn describe_log(
                     render_loglet_params(&params, |p| Cell::new(p.loglet_id)),
                     render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
                     render_loglet_params(&params, |p| {
-                        render_sequencer(is_tail_segment, p, &nodes_configuration)
+                        render_sequencer(is_tail_segment, p, nodes_configuration)
                     }),
                     render_loglet_params(&params, |p| {
-                        render_effective_nodeset(is_tail_segment, p, &nodes_configuration)
+                        render_effective_nodeset(is_tail_segment, p, nodes_configuration)
                     }),
                 ];
                 if opts.extra {

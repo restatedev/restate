@@ -10,40 +10,31 @@
 
 use clap::Parser;
 use cling::{Collect, Run};
-use tonic::{codec::CompressionEncoding, Code};
+use tonic::codec::CompressionEncoding;
 
 use restate_admin::cluster_controller::protobuf::{
     cluster_ctrl_svc_client::ClusterCtrlSvcClient, GetClusterConfigurationRequest,
 };
 use restate_cli_util::c_println;
+use restate_types::nodes_config::Role;
 
-use crate::{
-    app::ConnectionInfo, commands::cluster::config::cluster_config_string, util::grpc_channel,
-};
+use crate::{commands::cluster::config::cluster_config_string, connection::ConnectionInfo};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "config_get")]
 pub struct ConfigGetOpts {}
 
 async fn config_get(connection: &ConnectionInfo, _get_opts: &ConfigGetOpts) -> anyhow::Result<()> {
-    let channel = grpc_channel(connection.cluster_controller.clone());
-    let mut client =
-        ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+    let response = connection
+        .try_each(Some(Role::Admin), |channel| async {
+            let mut client =
+                ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    let response = client
-        .get_cluster_configuration(GetClusterConfigurationRequest {})
-        .await;
-
-    let response = match response {
-        Ok(response) => response,
-        Err(status) if status.code() == Code::NotFound => {
-            c_println!("👻 Cluster is not configured");
-            return Ok(());
-        }
-        Err(status) => {
-            anyhow::bail!("Failed to get cluster configuration: {status}");
-        }
-    };
+            client
+                .get_cluster_configuration(GetClusterConfigurationRequest {})
+                .await
+        })
+        .await?;
 
     let configuration = response.into_inner();
     let cluster_configuration = configuration.cluster_configuration.expect("is set");
@@ -51,6 +42,5 @@ async fn config_get(connection: &ConnectionInfo, _get_opts: &ConfigGetOpts) -> a
     let output = cluster_config_string(&cluster_configuration)?;
 
     c_println!("{}", output);
-
     Ok(())
 }
