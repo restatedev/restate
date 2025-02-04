@@ -1,5 +1,5 @@
 # Lifted from what dist would generate as the homebrew publish step, except rewriting the download urls to use scarf.
-# We also need to deliberately skip any publish steps here if this is a pre-release, as Homebrew doesn't support prereleases.'
+# We also need to deliberately skip any publish steps here if this is a pre-release, as Homebrew doesn't support prereleases.
 
 name: Publish homebrew formulae
 
