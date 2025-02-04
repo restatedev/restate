@@ -133,7 +133,7 @@ impl<T: TransportConnect> AdminRole<T> {
     pub async fn start(self) -> Result<(), anyhow::Error> {
         if let Some(cluster_controller) = self.controller {
             TaskCenter::spawn_child(
-                TaskKind::SystemService,
+                TaskKind::ClusterController,
                 "cluster-controller-service",
                 cluster_controller.run(),
             )?;

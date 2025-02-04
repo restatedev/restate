@@ -14,19 +14,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::Stream;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::{trace, warn};
 
 use restate_types::net::codec::{Targeted, WireDecode};
 use restate_types::net::CodecError;
 use restate_types::net::ProtocolVersion;
 use restate_types::net::TargetName;
 use restate_types::protobuf::node::message::BinaryMessage;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use tracing::warn;
-
-use crate::is_cancellation_requested;
 
 use super::{Incoming, RouterError};
+use crate::TaskCenter;
 
 pub type MessageStream<T> = Pin<Box<dyn Stream<Item = Incoming<T>> + Send + Sync + 'static>>;
 
@@ -247,11 +246,16 @@ where
             message.try_map(|mut m| <M as WireDecode>::decode(&mut m.payload, protocol_version))?;
         if let Err(e) = self.sender.send(message).await {
             // Can be benign if we are shutting down
-            if !is_cancellation_requested() {
+            if !TaskCenter::is_shutdown_requested() {
                 warn!(
                     "Failed to send message for target {} to stream: {}",
                     M::TARGET,
                     e
+                );
+            } else {
+                trace!(
+                    "Blackholed message {} since handler stream has been dropped",
+                    M::TARGET
                 );
             }
         }
