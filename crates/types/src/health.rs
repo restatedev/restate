@@ -10,7 +10,7 @@
 
 use tokio::sync::watch;
 
-use crate::protobuf::common::{
+pub use crate::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
     WorkerStatus,
 };
