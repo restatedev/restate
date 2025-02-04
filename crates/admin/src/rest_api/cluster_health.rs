@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::rest_api::error::GenericRestError;
 use axum::Json;
 use http::StatusCode;
 use okapi_operation::openapi;
+
+use crate::rest_api::error::GenericRestError;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::{my_node_id, Metadata};

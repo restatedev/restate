@@ -266,7 +266,7 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         placement_hints: &H,
     ) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         target_state
             .node_set
             .retain(|node_id| alive_workers.contains(node_id));
@@ -409,7 +409,7 @@ impl<T: TransportConnect> Scheduler<T> {
         preferred_leader
             .filter(|leader| leader_candidates.contains(*leader))
             .or_else(|| {
-                let mut rng = rand::thread_rng();
+                let mut rng = rand::rng();
                 leader_candidates.node_set.iter().choose(&mut rng).cloned()
             })
     }
@@ -1029,11 +1029,11 @@ mod tests {
         num_partitions: u16,
     ) -> BTreeMap<PlainNodeId, NodeState> {
         let mut result = BTreeMap::default();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut has_alive_node = false;
 
         for node_id in node_ids {
-            let node_state = if rng.gen_bool(0.66) {
+            let node_state = if rng.random_bool(0.66) {
                 let alive_node = random_alive_node(&mut rng, *node_id, num_partitions);
                 has_alive_node = true;
                 NodeState::Alive(alive_node)
@@ -1048,7 +1048,7 @@ mod tests {
 
         // make sure we have at least one alive node
         if !has_alive_node {
-            let idx = rng.gen_range(0..node_ids.len());
+            let idx = rng.random_range(0..node_ids.len());
             let node_id = node_ids[idx];
             *result.get_mut(&node_id.as_plain()).expect("must exist") =
                 NodeState::Alive(random_alive_node(&mut rng, node_id, num_partitions));
@@ -1077,10 +1077,10 @@ mod tests {
         let mut result = BTreeMap::default();
 
         for idx in 0..num_partitions {
-            if rng.gen_bool(0.5) {
+            if rng.random_bool(0.5) {
                 let mut status = PartitionProcessorStatus::new();
 
-                if rng.gen_bool(0.5) {
+                if rng.random_bool(0.5) {
                     // make the partition the leader
                     status.planned_mode = RunMode::Leader;
                     status.effective_mode = RunMode::Leader;

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use futures::never::Never;
 use rand::prelude::IteratorRandom;
-use rand::thread_rng;
+use rand::rng;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, trace, trace_span, Instrument};
@@ -379,7 +379,7 @@ pub fn build_new_replicated_loglet_configuration(
     use restate_types::replication::{NodeSetSelector, NodeSetSelectorOptions};
     use tracing::warn;
 
-    let mut rng = thread_rng();
+    let mut rng = rng();
 
     let replication = replicated_loglet_config.replication_property.clone();
 

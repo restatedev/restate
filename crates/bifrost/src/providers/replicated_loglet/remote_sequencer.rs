@@ -537,7 +537,7 @@ mod test {
                     status: self.reply_status.clone(),
                 },
             });
-            let delay = rand::thread_rng().gen_range(50..350);
+            let delay = rand::rng().random_range(50..350);
             tokio::time::sleep(Duration::from_millis(delay)).await;
             outgoing.send().await.unwrap();
         }

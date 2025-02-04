@@ -501,7 +501,7 @@ impl Channels {
     }
 
     fn choose_random(&self) -> Option<ChannelWithAddress> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let chosen_channel = self
             .channels
             .values()

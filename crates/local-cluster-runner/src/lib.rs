@@ -53,9 +53,9 @@ pub fn random_socket_address() -> io::Result<SocketAddr> {
         .map(PathBuf::from)
         .unwrap_or_else(|| env::temp_dir().join(DEFAULTS_PORTS_POOL));
 
-    // this can happen repeatedly but it's a test so it's okay
+    // this can happen repeatedly, but it's a test so it's okay
     fs::create_dir_all(&base_path)?;
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut attempts = 0;
     loop {
         attempts += 1;
@@ -63,7 +63,7 @@ pub fn random_socket_address() -> io::Result<SocketAddr> {
             return Err(io::Error::other("Max allocation attempts exahusted"));
         }
 
-        let port = rng.gen_range(10000..30000);
+        let port = rng.random_range(10000..30000);
         let port_file = base_path.join(port.to_string());
 
         match fs::OpenOptions::new()

@@ -156,7 +156,7 @@ impl From<ProviderConfiguration> for crate::protobuf::cluster::BifrostProvider {
     fn from(value: ProviderConfiguration) -> Self {
         use crate::protobuf::cluster;
 
-        let mut result = crate::protobuf::cluster::BifrostProvider::default();
+        let mut result = cluster::BifrostProvider::default();
 
         match value {
             ProviderConfiguration::Local => result.provider = ProviderKind::Local.to_string(),
@@ -610,7 +610,7 @@ flexbuffers_storage_encode_decode!(Chain);
 /// This is used in single-node bootstrap scenarios and assumes a non-running system.
 /// It must generate params that uniquely identify the new loglet instance on every call.
 pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletParams {
-    let loglet_id = rand::thread_rng().next_u64().to_string();
+    let loglet_id = rand::rng().next_u64().to_string();
     match default_provider {
         ProviderKind::Local => LogletParams::from(loglet_id),
         #[cfg(any(test, feature = "memory-loglet"))]

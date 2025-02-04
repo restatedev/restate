@@ -39,7 +39,7 @@ use raft::{
 use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
 use raft_proto::ConfChangeI;
 use rand::prelude::IteratorRandom;
-use rand::{random, thread_rng};
+use rand::{random, rng};
 use restate_core::metadata_store::{serialize_value, Precondition};
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{
@@ -1476,7 +1476,7 @@ impl Standby {
                 } else {
                     None
                 }
-            }).choose(&mut thread_rng()).ok_or(JoinError::Other("No other metadata store member present in the cluster. This indicates a misconfiguration.".into()))?;
+            }).choose(&mut rng()).ok_or(JoinError::Other("No other metadata store member present in the cluster. This indicates a misconfiguration.".into()))?;
 
             debug!(
                 "Trying to join metadata store cluster at randomly chosen node '{}'",
@@ -1525,7 +1525,7 @@ impl Standby {
                     None
                 }
             })
-            .choose(&mut thread_rng())
+            .choose(&mut rng())
             .map(|(node_id, node_config)| KnownLeader {
                 node_id,
                 address: node_config.address.clone(),

@@ -279,8 +279,8 @@ impl InvocationUuid {
     }
 }
 
-impl fmt::Display for InvocationUuid {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvocationUuid {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let raw: u128 = self.0;
         let mut buf = String::with_capacity(base62_max_length_for_type::<u128>());
         base62_encode_fixed_width(raw, &mut buf);
@@ -391,8 +391,8 @@ impl WithPartitionKey for ServiceId {
     }
 }
 
-impl fmt::Display for ServiceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ServiceId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.service_name, self.key)
     }
 }
@@ -436,7 +436,7 @@ impl InvocationId {
                     idempotency_key,
                 )
                 // If no deterministic partition key can be generated, just pick a random number
-                .unwrap_or_else(|| rand::thread_rng().next_u64());
+                .unwrap_or_else(|| rand::rng().next_u64());
 
         // --- Invocation UUID generation
         InvocationId::from_parts(
@@ -529,8 +529,8 @@ impl<T: WithInvocationId> WithPartitionKey for T {
     }
 }
 
-impl fmt::Display for InvocationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for InvocationId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // encode the id such that it is possible to do a string prefix search for a
         // partition key using the first 17 characters.
         let mut encoder = IdEncoder::<Self>::new();
@@ -716,8 +716,8 @@ impl schemars::JsonSchema for LambdaARN {
     }
 }
 
-impl fmt::Display for LambdaARN {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for LambdaARN {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let LambdaARN {
             partition,
             region,
@@ -1033,7 +1033,7 @@ impl FromStr for AwakeableIdentifier {
 }
 
 impl Display for AwakeableIdentifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut encoder = IdEncoder::<Self>::new();
         self.push_contents_to_encoder(&mut encoder);
         std::fmt::Display::fmt(&encoder.finalize(), f)
@@ -1112,7 +1112,7 @@ impl FromStr for ExternalSignalIdentifier {
 }
 
 impl Display for ExternalSignalIdentifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut encoder = IdEncoder::<Self>::new();
         self.push_contents_to_encoder(&mut encoder);
         std::fmt::Display::fmt(&encoder.finalize(), f)
@@ -1129,7 +1129,7 @@ impl WithInvocationId for ExternalSignalIdentifier {
 mod mocks {
     use super::*;
 
-    use rand::distributions::{Alphanumeric, DistString};
+    use rand::distr::{Alphanumeric, SampleString};
     use rand::Rng;
 
     impl InvocationUuid {
@@ -1149,7 +1149,7 @@ mod mocks {
 
         pub fn mock_random() -> Self {
             Self::from_parts(
-                rand::thread_rng().sample::<PartitionKey, _>(rand::distributions::Standard),
+                rand::rng().sample::<PartitionKey, _>(rand::distr::StandardUniform),
                 InvocationUuid::mock_random(),
             )
         }
@@ -1158,8 +1158,8 @@ mod mocks {
     impl ServiceId {
         pub fn mock_random() -> Self {
             Self::new(
-                Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
-                Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
+                Alphanumeric.sample_string(&mut rand::rng(), 8),
+                Alphanumeric.sample_string(&mut rand::rng(), 16),
             )
         }
 
@@ -1194,20 +1194,10 @@ mod mocks {
 
         pub fn mock_random() -> Self {
             Self::new(
-                Alphanumeric
-                    .sample_string(&mut rand::thread_rng(), 8)
-                    .into(),
-                Some(
-                    Alphanumeric
-                        .sample_string(&mut rand::thread_rng(), 16)
-                        .into(),
-                ),
-                Alphanumeric
-                    .sample_string(&mut rand::thread_rng(), 8)
-                    .into(),
-                Alphanumeric
-                    .sample_string(&mut rand::thread_rng(), 8)
-                    .into(),
+                Alphanumeric.sample_string(&mut rand::rng(), 8).into(),
+                Some(Alphanumeric.sample_string(&mut rand::rng(), 16).into()),
+                Alphanumeric.sample_string(&mut rand::rng(), 8).into(),
+                Alphanumeric.sample_string(&mut rand::rng(), 8).into(),
             )
         }
     }
@@ -1218,7 +1208,7 @@ mod tests {
     use super::*;
 
     use crate::invocation::VirtualObjectHandlerType;
-    use rand::distributions::{Alphanumeric, DistString};
+    use rand::distr::{Alphanumeric, SampleString};
 
     #[test]
     fn service_id_and_invocation_id_partition_key_should_match() {
@@ -1317,7 +1307,7 @@ mod tests {
     #[test]
     fn deterministic_invocation_id_for_idempotent_request() {
         let invocation_target = InvocationTarget::mock_service();
-        let idempotent_key = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let idempotent_key = Alphanumeric.sample_string(&mut rand::rng(), 16);
 
         assert_eq!(
             InvocationId::generate(&invocation_target, Some(&idempotent_key)),

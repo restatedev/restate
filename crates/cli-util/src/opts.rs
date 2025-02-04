@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use clap::{Args, ValueEnum};
-use clap_verbosity_flag::LogLevel;
+use clap_verbosity_flag::{LogLevel, VerbosityFilter};
 use cling::Collect;
 
 use restate_core::network::net_util::CommonClientConnectionOptions;
@@ -44,7 +44,19 @@ pub enum TimeFormat {
 #[derive(Clone, Default)]
 pub(crate) struct Quiet;
 impl LogLevel for Quiet {
-    fn default() -> Option<tracing_log::log::Level> {
+    fn default_filter() -> VerbosityFilter {
+        VerbosityFilter::Error
+    }
+
+    fn verbose_long_help() -> Option<&'static str> {
+        None
+    }
+
+    fn quiet_help() -> Option<&'static str> {
+        None
+    }
+
+    fn quiet_long_help() -> Option<&'static str> {
         None
     }
 }

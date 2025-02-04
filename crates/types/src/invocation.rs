@@ -974,12 +974,10 @@ impl WithInvocationId for NotifySignalRequest {
 mod mocks {
     use super::*;
 
-    use rand::distributions::{Alphanumeric, DistString};
+    use rand::distr::{Alphanumeric, SampleString};
 
     fn generate_string() -> ByteString {
-        Alphanumeric
-            .sample_string(&mut rand::thread_rng(), 8)
-            .into()
+        Alphanumeric.sample_string(&mut rand::rng(), 8).into()
     }
 
     impl InvocationTarget {

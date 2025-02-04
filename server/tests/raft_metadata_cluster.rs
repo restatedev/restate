@@ -12,7 +12,7 @@ use bytestring::ByteString;
 use enumset::EnumSet;
 use googletest::prelude::err;
 use googletest::{assert_that, pat, IntoTestResult};
-use rand::prelude::SliceRandom;
+use rand::seq::IndexedMutRandom;
 use restate_core::metadata_store::{Precondition, WriteError};
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_local_cluster_runner::cluster::Cluster;
@@ -164,7 +164,7 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
         loop {
             let node = cluster
                 .nodes
-                .choose_mut(&mut rand::thread_rng())
+                .choose_mut(&mut rand::rng())
                 .expect("at least one node being present");
 
             tokio::select! {
