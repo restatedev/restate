@@ -111,6 +111,26 @@ pub mod cluster {
             }
         }
     }
+
+    impl ClusterConfiguration {
+        pub fn into_inner(self) -> (u32, Option<ReplicationProperty>, Option<BifrostProvider>) {
+            (
+                self.num_partitions,
+                self.partition_replication,
+                self.bifrost_provider,
+            )
+        }
+    }
+
+    impl BifrostProvider {
+        pub fn into_inner(self) -> (String, Option<ReplicationProperty>, u32) {
+            (
+                self.provider,
+                self.replication_property,
+                self.target_nodeset_size,
+            )
+        }
+    }
 }
 
 pub mod node {

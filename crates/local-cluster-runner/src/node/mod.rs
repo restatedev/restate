@@ -798,7 +798,7 @@ impl StartedNode {
         &self,
         num_partitions: Option<NonZeroU16>,
         partition_replication: PartitionReplication,
-        log_provider: Option<ProviderConfiguration>,
+        provider_configuration: Option<ProviderConfiguration>,
     ) -> anyhow::Result<bool> {
         let channel = create_tonic_channel(
             self.node_address().clone(),
@@ -809,7 +809,18 @@ impl StartedNode {
             dry_run: false,
             num_partitions: num_partitions.map(|num| u32::from(num.get())),
             partition_replication: partition_replication.into(),
-            log_provider: log_provider.map(|log_provider| log_provider.into()),
+            log_provider: provider_configuration
+                .as_ref()
+                .map(|config| config.kind().to_string()),
+            log_replication: provider_configuration
+                .as_ref()
+                .and_then(|config| config.replication().cloned())
+                .map(Into::into),
+            target_nodeset_size: provider_configuration.as_ref().and_then(|config| {
+                config
+                    .target_nodeset_size()
+                    .map(|nodeset_size| nodeset_size.as_u32())
+            }),
         };
 
         let retry_policy = RetryPolicy::exponential(

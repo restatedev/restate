@@ -1356,7 +1356,7 @@ pub mod tests {
 
     use restate_types::locality::NodeLocation;
     use restate_types::logs::metadata::{
-        LogsConfiguration, ProviderConfiguration, ReplicatedLogletConfig,
+        LogsConfiguration, NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig,
     };
     use restate_types::logs::{LogId, LogletId};
     use restate_types::nodes_config::{
@@ -1535,7 +1535,7 @@ pub mod tests {
     fn logs_configuration(replication_factor: u8) -> LogsConfiguration {
         LogsConfiguration {
             default_provider: ProviderConfiguration::Replicated(ReplicatedLogletConfig {
-                target_nodeset_size: 0,
+                target_nodeset_size: NodeSetSize::default(),
                 replication_property: ReplicationProperty::new(
                     NonZeroU8::new(replication_factor).expect("must be non zero"),
                 ),

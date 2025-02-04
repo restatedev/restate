@@ -37,7 +37,13 @@ message ProvisionClusterRequest {
   // it's limited to the provided replication property
   optional restate.cluster.ReplicationProperty partition_replication = 3;
   // if unset then the configured cluster default log provider will be used
-  optional restate.cluster.BifrostProvider log_provider = 4;
+  optional string log_provider = 4;
+  // only used if provider = "replicated"
+  // if unset then the configured cluster default log replication will be used
+  optional restate.cluster.ReplicationProperty log_replication = 5;
+  // only used if provider = "replicated"
+  // if unset then the configured cluster default target nodeset size will be used
+  optional uint32 target_nodeset_size = 6;
 }
 
 message ProvisionClusterResponse {

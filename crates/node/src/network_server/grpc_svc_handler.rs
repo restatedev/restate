@@ -30,10 +30,11 @@ use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::config::Configuration;
 use restate_types::health::Health;
-use restate_types::logs::metadata::ProviderConfiguration;
+use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::node::Message;
+use restate_types::replication::ReplicationProperty;
 use restate_types::storage::StorageCodec;
 use restate_types::Version;
 use tokio_stream::StreamExt;
@@ -82,15 +83,36 @@ impl NodeCtlSvcHandler {
             .transpose()?
             .unwrap_or(config.common.bootstrap_num_partitions);
         let partition_replication = request.partition_replication.try_into()?;
-        let bifrost_provider = request
+
+        let log_provider = request
             .log_provider
-            .map(ProviderConfiguration::try_from)
-            .unwrap_or_else(|| Ok(ProviderConfiguration::from_configuration(config)))?;
+            .map(|log_provider| log_provider.parse())
+            .transpose()?
+            .unwrap_or(config.bifrost.default_provider);
+        let target_nodeset_size = request
+            .target_nodeset_size
+            .map(NodeSetSize::try_from)
+            .transpose()?
+            .unwrap_or(config.bifrost.replicated_loglet.default_nodeset_size);
+        let log_replication = request
+            .log_replication
+            .map(ReplicationProperty::try_from)
+            .transpose()?
+            .unwrap_or_else(|| {
+                config
+                    .bifrost
+                    .replicated_loglet
+                    .default_replication_property
+                    .clone()
+            });
+
+        let provider_configuration =
+            ProviderConfiguration::from((log_provider, log_replication, target_nodeset_size));
 
         Ok(ClusterConfiguration {
             num_partitions,
             partition_replication,
-            bifrost_provider,
+            bifrost_provider: provider_configuration,
         })
     }
 }

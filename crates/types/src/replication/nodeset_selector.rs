@@ -16,6 +16,7 @@ use tracing::{debug, error};
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::locality::{LocationScope, NodeLocation};
+use crate::logs::metadata::NodeSetSize;
 use crate::nodes_config::{NodeConfig, NodesConfiguration};
 use crate::replication::{NodeSet, ReplicationProperty};
 use crate::PlainNodeId;
@@ -25,7 +26,7 @@ use crate::PlainNodeId;
 // cluster bigger than this number of nodes is worth breaking into smaller ones.
 //
 // This value is not stored on disk and can be changed in the future if needed.
-pub const MAX_NODESET_SIZE: u32 = 128;
+pub const MAX_NODESET_SIZE: u32 = NodeSetSize::MAX.as_u32();
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NodeSelectorError {
@@ -57,7 +58,7 @@ pub struct NodeSetSelectorOptions<'a> {
     hashing_id: u64,
     /// Salt/seed for RNG/hash functions used by the nodeset selector
     salt: u64,
-    target_size: u16,
+    target_size: NodeSetSize,
     /// enabled by default, disable if you don't want repetable generation
     consistent_hashing: bool,
     top_priority_node: Option<PlainNodeId>,
@@ -77,12 +78,12 @@ impl<'a> NodeSetSelectorOptions<'a> {
         self.hashing_id
     }
 
-    pub fn with_target_size(mut self, target_size: u16) -> Self {
+    pub fn with_target_size(mut self, target_size: NodeSetSize) -> Self {
         self.target_size = target_size;
         self
     }
 
-    pub fn target_size(&self) -> u16 {
+    pub fn target_size(&self) -> NodeSetSize {
         self.target_size
     }
 
@@ -136,7 +137,7 @@ impl Default for NodeSetSelectorOptions<'_> {
     fn default() -> Self {
         Self {
             hashing_id: 0,
-            target_size: 0,
+            target_size: NodeSetSize::default(),
             salt: 14712721395741015273,
             consistent_hashing: true,
             preferred_nodes: None,
@@ -264,7 +265,7 @@ impl DomainAwareNodeSetSelector {
         // which, in some sense, provides equal write and read availability similar to
         // simple-majority quorums.
         let min_total_nodes: u32 = std::cmp::max(
-            options.target_size() as u32,
+            options.target_size().as_u32(),
             replication_property.num_copies() as u32 * 2 - 1,
         );
 
@@ -726,7 +727,7 @@ pub mod tests {
         assert_eq!(nodeset.len(), 5);
 
         // We can also generate bigger nodesets other than the default size
-        let options = options.with_target_size(10);
+        let options = options.with_target_size(NodeSetSize::new(10).expect("to be valid"));
         let nodeset = DomainAwareNodeSetSelector::select(
             &nodes_config,
             &replication,
@@ -951,24 +952,6 @@ pub mod tests {
         // identitical order of nodes.
         let delta: NodeSet = nodeset2.difference(&nodeset1).collect();
         assert_eq!(delta, NodeSet::from_single(12));
-
-        // you want bigger nodeset?
-        let options = NodeSetSelectorOptions::new(log_id)
-            .with_top_priority_node(12)
-            // we asked for 250, but limit is 128
-            .with_target_size(250);
-        let nodeset3 = DomainAwareNodeSetSelector::select(
-            &nodes_config,
-            &replication,
-            logserver_candidate_filter,
-            logserver_writeable_node_filter,
-            options,
-        )
-        .unwrap();
-        // we stop at the max allowed
-        assert_eq!(nodeset3.len(), 128);
-        // top-priority node is still here of course
-        assert!(nodeset3.contains(12));
     }
 
     #[test]
@@ -992,7 +975,7 @@ pub mod tests {
         for partition_id in 0..24 {
             let options = NodeSetSelectorOptions::new(partition_id)
                 // try to go as big as you can
-                .with_target_size(255);
+                .with_target_size(NodeSetSize::MAX);
             let nodeset = DomainAwareNodeSetSelector::select(
                 &nodes_config,
                 &replication,
@@ -1034,7 +1017,7 @@ pub mod tests {
         }
         let replication: ReplicationProperty = "{zone: 2}".parse().unwrap();
 
-        let options = NodeSetSelectorOptions::new(12).with_target_size(MAX_NODESET_SIZE as u16 * 2);
+        let options = NodeSetSelectorOptions::new(12).with_target_size(NodeSetSize::MAX);
         let nodeset = DomainAwareNodeSetSelector::select(
             &nodes_config,
             &replication,

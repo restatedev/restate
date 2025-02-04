@@ -136,17 +136,51 @@ impl ProviderConfiguration {
     }
 
     pub fn from_configuration(configuration: &Configuration) -> Self {
-        match configuration.bifrost.default_provider {
+        ProviderConfiguration::from((
+            configuration.bifrost.default_provider,
+            configuration
+                .bifrost
+                .replicated_loglet
+                .default_replication_property
+                .clone(),
+            configuration.bifrost.replicated_loglet.default_nodeset_size,
+        ))
+    }
+
+    pub fn replication(&self) -> Option<&ReplicationProperty> {
+        match self {
+            #[cfg(any(test, feature = "memory-loglet"))]
+            ProviderConfiguration::InMemory => None,
+            ProviderConfiguration::Local => None,
+            ProviderConfiguration::Replicated(config) => Some(&config.replication_property),
+        }
+    }
+
+    pub fn target_nodeset_size(&self) -> Option<NodeSetSize> {
+        match self {
+            #[cfg(any(test, feature = "memory-loglet"))]
+            ProviderConfiguration::InMemory => None,
+            ProviderConfiguration::Local => None,
+            ProviderConfiguration::Replicated(config) => Some(config.target_nodeset_size),
+        }
+    }
+}
+
+impl From<(ProviderKind, ReplicationProperty, NodeSetSize)> for ProviderConfiguration {
+    fn from(
+        (provider_kind, log_replication, target_nodeset_size): (
+            ProviderKind,
+            ReplicationProperty,
+            NodeSetSize,
+        ),
+    ) -> Self {
+        match provider_kind {
+            ProviderKind::Local => ProviderConfiguration::Local,
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderKind::InMemory => ProviderConfiguration::InMemory,
-            ProviderKind::Local => ProviderConfiguration::Local,
             ProviderKind::Replicated => ProviderConfiguration::Replicated(ReplicatedLogletConfig {
-                target_nodeset_size: configuration.bifrost.replicated_loglet.default_nodeset_size,
-                replication_property: configuration
-                    .bifrost
-                    .replicated_loglet
-                    .default_replication_property
-                    .clone(),
+                replication_property: log_replication,
+                target_nodeset_size,
             }),
         }
     }
@@ -209,8 +243,66 @@ pub struct ReplicatedLogletConfig {
     pub replication_property: ReplicationProperty,
     /// The default target for new nodesets. 0 (default) auto-chooses a nodeset-size that
     /// balances read and write availability. It's a reasonable default for most cases.
-    pub target_nodeset_size: u16,
+    pub target_nodeset_size: NodeSetSize,
 }
+
+/// New type that enforces that the nodeset size is never larger than 128.
+#[derive(
+    Debug, Clone, Copy, derive_more::Into, serde::Serialize, serde::Deserialize, Eq, PartialEq,
+)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct NodeSetSize(u16);
+
+impl NodeSetSize {
+    pub const ZERO: NodeSetSize = NodeSetSize(0);
+    pub const MAX: NodeSetSize = NodeSetSize(128);
+
+    pub fn new(value: u16) -> Option<NodeSetSize> {
+        Self::try_from(value).ok()
+    }
+
+    pub const fn as_u16(&self) -> u16 {
+        self.0
+    }
+
+    pub const fn as_u32(&self) -> u32 {
+        self.0 as u32
+    }
+}
+
+impl Default for NodeSetSize {
+    fn default() -> Self {
+        NodeSetSize::ZERO
+    }
+}
+
+impl TryFrom<u16> for NodeSetSize {
+    type Error = NodeSetSizeError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        if value > NodeSetSize::MAX.as_u16() {
+            return Err(NodeSetSizeError);
+        }
+
+        Ok(NodeSetSize(value))
+    }
+}
+
+impl TryFrom<u32> for NodeSetSize {
+    type Error = NodeSetSizeError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        if value > NodeSetSize::MAX.as_u32() {
+            return Err(NodeSetSizeError);
+        }
+
+        Ok(NodeSetSize(value as u16))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("node set size is too big, please keep it under {}", NodeSetSize::MAX.as_u16())]
+pub struct NodeSetSizeError;
 
 #[derive(
     Debug, Clone, Eq, PartialEq, Default, derive_more::From, serde::Serialize, serde::Deserialize,
@@ -272,7 +364,7 @@ impl TryFrom<LogsSerde> for Logs {
                         config = Some(LogsConfiguration {
                             default_provider: ProviderConfiguration::Replicated(
                                 ReplicatedLogletConfig {
-                                    target_nodeset_size: 0,
+                                    target_nodeset_size: NodeSetSize::default(),
                                     replication_property: ReplicationProperty::new(
                                         NonZeroU8::new(2).expect("2 is not 0"),
                                     ),

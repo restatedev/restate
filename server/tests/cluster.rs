@@ -19,7 +19,7 @@ use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
-use restate_types::logs::metadata::{ProviderConfiguration, ReplicatedLogletConfig};
+use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig};
 use restate_types::partition_table::PartitionReplication;
 use restate_types::replication::ReplicationProperty;
 use restate_types::{config::Configuration, nodes_config::Role};
@@ -55,7 +55,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
         .await?;
 
     let replicated_loglet_config = ReplicatedLogletConfig {
-        target_nodeset_size: 0,
+        target_nodeset_size: NodeSetSize::default(),
         replication_property: ReplicationProperty::new(NonZeroU8::new(2).expect("to be non-zero")),
     };
 

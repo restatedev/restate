@@ -18,7 +18,7 @@ use serde_with::{serde_as, DeserializeAs};
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
-use crate::logs::metadata::ProviderKind;
+use crate::logs::metadata::{NodeSetSize, ProviderKind};
 use crate::replication::ReplicationProperty;
 use crate::retries::RetryPolicy;
 
@@ -302,10 +302,10 @@ pub struct ReplicatedLogletOptions {
     /// nodesets for logs. Setting this to 0 will let the system choose a reasonable value based on
     /// the effective replication_property at the time of logs reconfiguration.
     // hide the configuration option from serialization if it is the default
-    #[serde(default, skip_serializing_if = "u16_is_zero")]
+    #[serde(default, skip_serializing_if = "nodeset_size_is_zero")]
     // hide the configuration option by excluding it from the Json schema
     #[cfg_attr(feature = "schemars", schemars(skip))]
-    pub default_nodeset_size: u16,
+    pub default_nodeset_size: NodeSetSize,
 }
 
 /// Helper struct to support deserializing the ReplicationProperty from a [`NonZeroU8`].
@@ -320,8 +320,8 @@ impl<'de> DeserializeAs<'de, ReplicationProperty> for ReplicationPropertyFromNon
     }
 }
 
-fn u16_is_zero(i: &u16) -> bool {
-    *i == 0
+fn nodeset_size_is_zero(i: &NodeSetSize) -> bool {
+    *i == NodeSetSize::ZERO
 }
 
 fn default_replication_property() -> ReplicationProperty {
@@ -350,7 +350,7 @@ impl Default for ReplicatedLogletOptions {
             readahead_records: NonZeroUsize::new(100).unwrap(),
             readahead_trigger_ratio: 0.5,
             default_replication_property: default_replication_property(),
-            default_nodeset_size: 0,
+            default_nodeset_size: NodeSetSize::default(),
         }
     }
 }

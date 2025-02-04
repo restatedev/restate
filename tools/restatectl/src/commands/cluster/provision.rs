@@ -17,7 +17,7 @@ use restate_cli_util::ui::console::confirm_or_exit;
 use restate_cli_util::{c_error, c_println, c_warn};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest;
-use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind, ReplicatedLogletConfig};
+use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
 use restate_types::replication::ReplicationProperty;
 use std::cmp::Ordering;
 use std::num::NonZeroU16;
@@ -42,12 +42,12 @@ pub struct ProvisionOpts {
     bifrost_provider: Option<ProviderKind>,
 
     /// Replication property of bifrost logs if using replicated as log provider
-    #[clap(long, required_if_eq("bifrost_provider", "replicated"))]
+    #[clap(long)]
     log_replication: Option<ReplicationProperty>,
 
     /// The nodeset size used for replicated log, this is an advanced feature.
     /// It's recommended to leave it unset (defaults to 0)
-    #[clap(long, required_if_eq("bifrost_provider", "replicated"))]
+    #[clap(long)]
     log_default_nodeset_size: Option<u16>,
 }
 
@@ -75,19 +75,15 @@ async fn cluster_provision(
         .accept_compressed(CompressionEncoding::Gzip)
         .send_compressed(CompressionEncoding::Gzip);
 
-    let log_provider = provision_opts.bifrost_provider.map(|bifrost_provider| {
-        extract_default_provider(
-            bifrost_provider,
-            provision_opts.log_replication.clone(),
-            provision_opts.log_default_nodeset_size.unwrap_or(0),
-        )
-    });
-
     let request = ProvisionClusterRequest {
         dry_run: true,
         num_partitions: provision_opts.num_partitions.map(|n| u32::from(n.get())),
         partition_replication: provision_opts.partition_replication.clone().map(Into::into),
-        log_provider: log_provider.map(Into::into),
+        log_provider: provision_opts
+            .bifrost_provider
+            .map(|provider| provider.to_string()),
+        log_replication: provision_opts.log_replication.clone().map(Into::into),
+        target_nodeset_size: provision_opts.log_default_nodeset_size.map(Into::into),
     };
 
     let response = match client.provision_cluster(request).await {
@@ -126,11 +122,25 @@ async fn cluster_provision(
 
     confirm_or_exit("Provision cluster with this configuration?")?;
 
+    let (num_partitions, partition_replication, bifrost_provider) =
+        cluster_configuration_to_provision.into_inner();
+    let (log_provider, log_replication, target_nodeset_size) =
+        bifrost_provider.map_or((None, None, None), |bifrost| {
+            let (log_provider, log_replication, target_nodeset_size) = bifrost.into_inner();
+            (
+                Some(log_provider),
+                log_replication,
+                Some(target_nodeset_size),
+            )
+        });
+
     let request = ProvisionClusterRequest {
         dry_run: false,
-        num_partitions: Some(cluster_configuration_to_provision.num_partitions),
-        partition_replication: cluster_configuration_to_provision.partition_replication,
-        log_provider: cluster_configuration_to_provision.bifrost_provider,
+        num_partitions: Some(num_partitions),
+        partition_replication,
+        log_provider,
+        log_replication,
+        target_nodeset_size,
     };
 
     match client.provision_cluster(request).await {
@@ -150,22 +160,4 @@ async fn cluster_provision(
     };
 
     Ok(())
-}
-
-pub fn extract_default_provider(
-    bifrost_provider: ProviderKind,
-    replication_property: Option<ReplicationProperty>,
-    target_nodeset_size: u16,
-) -> ProviderConfiguration {
-    match bifrost_provider {
-        ProviderKind::InMemory => ProviderConfiguration::InMemory,
-        ProviderKind::Local => ProviderConfiguration::Local,
-        ProviderKind::Replicated => {
-            let config = ReplicatedLogletConfig {
-                target_nodeset_size,
-                replication_property: replication_property.clone().expect("is required"),
-            };
-            ProviderConfiguration::Replicated(config)
-        }
-    }
 }

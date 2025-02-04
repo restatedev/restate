@@ -11,8 +11,6 @@
 use anyhow::Context;
 use clap::Parser;
 use cling::{Collect, Run};
-use tonic::codec::CompressionEncoding;
-
 use restate_admin::cluster_controller::protobuf::SetClusterConfigurationRequest;
 use restate_admin::cluster_controller::protobuf::{
     cluster_ctrl_svc_client::ClusterCtrlSvcClient, GetClusterConfigurationRequest,
@@ -20,12 +18,12 @@ use restate_admin::cluster_controller::protobuf::{
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
 use restate_cli_util::{c_println, c_warn};
-use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
+use restate_types::logs::metadata::ProviderKind;
 use restate_types::nodes_config::Role;
 use restate_types::replication::ReplicationProperty;
+use tonic::codec::CompressionEncoding;
 
 use crate::commands::cluster::config::cluster_config_string;
-use crate::commands::cluster::provision::extract_default_provider;
 use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -38,16 +36,16 @@ pub struct ConfigSetOpts {
     partition_replication: Option<ReplicationProperty>,
 
     /// Bifrost provider kind.
-    #[clap(long)]
+    #[clap(long, alias("log-provider"))]
     bifrost_provider: Option<ProviderKind>,
 
     /// Replication property of bifrost logs if using replicated as log provider
-    #[clap(long, required_if_eq("bifrost_provider", "replicated"))]
+    #[clap(long)]
     log_replication: Option<ReplicationProperty>,
 
     /// The nodeset size used for replicated log, this is an advanced feature.
     /// It's recommended to leave it unset (defaults to 0)
-    #[clap(long, required_if_eq("bifrost_provider", "replicated"))]
+    #[clap(long)]
     log_default_nodeset_size: Option<u16>,
 }
 
@@ -70,32 +68,35 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
 
     let current_config_string = cluster_config_string(&current)?;
 
+    // todo: It's a bit confusing that not specifying the partition replication sets the partition
+    //  replication to everywhere. Everywhere should probably be an explicit value.
     current.partition_replication = set_opts.partition_replication.clone().map(Into::into);
 
-    if let Some(provider) = set_opts.bifrost_provider {
-        let current_nodeset_size = current
-            .bifrost_provider
-            .map(|p| p.target_nodeset_size)
-            .unwrap_or(0) as u16;
-
-        let default_provider = extract_default_provider(
-            provider,
-            set_opts.log_replication.clone(),
-            set_opts
-                .log_default_nodeset_size
-                .unwrap_or(current_nodeset_size),
-        );
-
-        match default_provider {
-            ProviderConfiguration::InMemory | ProviderConfiguration::Local => {
+    set_opts.bifrost_provider.inspect(|provider| {
+        match provider {
+            ProviderKind::InMemory | ProviderKind::Local => {
                 c_warn!("You are about to reconfigure your cluster with a Bifrost provider that only supports a single node cluster.");
             }
-            ProviderConfiguration::Replicated(_) => {
+            ProviderKind::Replicated => {
                 // nothing to do
             }
         }
+    });
 
-        current.bifrost_provider = Some(default_provider.into());
+    let Some(bifrost_provider) = current.bifrost_provider.as_mut() else {
+        anyhow::bail!("The cluster has no Bifrost provider configured. This indicates a problem with the cluster.");
+    };
+
+    if let Some(provider) = set_opts.bifrost_provider {
+        bifrost_provider.provider = provider.to_string();
+    }
+
+    if let Some(log_replication) = set_opts.log_replication.clone() {
+        bifrost_provider.replication_property = Some(log_replication.into());
+    }
+
+    if let Some(nodeset_size) = set_opts.log_default_nodeset_size {
+        bifrost_provider.target_nodeset_size = u32::from(nodeset_size);
     }
 
     let updated_config_string = cluster_config_string(&current)?;
