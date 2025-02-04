@@ -12,7 +12,7 @@ env:
   PLAN: ${{ inputs.plan }}
 
 jobs:
-  scarf:
+  release-notes:
     permissions:
       contents: write
     runs-on: ubuntu-latest
