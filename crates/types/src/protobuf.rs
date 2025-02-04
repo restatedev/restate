@@ -13,6 +13,7 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 
 pub mod common {
     use crate::net::{CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION};
+    use crate::Merge;
 
     include!(concat!(env!("OUT_DIR"), "/restate.common.rs"));
 
@@ -52,6 +53,16 @@ pub mod common {
                 self,
                 MetadataServerStatus::Member | MetadataServerStatus::Standby
             )
+        }
+    }
+
+    impl Merge for NodeStatus {
+        fn merge(&mut self, other: Self) -> bool {
+            if other > *self {
+                *self = other;
+                return true;
+            }
+            false
         }
     }
 }

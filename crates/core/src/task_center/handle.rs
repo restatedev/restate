@@ -13,9 +13,11 @@ use std::future::Future;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use restate_types::identifiers::PartitionId;
 use tokio_util::sync::CancellationToken;
 use tracing::{instrument, Instrument};
+
+use restate_types::health::{Health, NodeStatus};
+use restate_types::identifiers::PartitionId;
 
 use crate::{Metadata, ShutdownError};
 
@@ -57,7 +59,28 @@ impl Handle {
     /// Attempt to set the global metadata handle. This should be called once
     /// at the startup of the node.
     pub fn try_set_global_metadata(&self, metadata: Metadata) -> bool {
+        self.inner
+            .health
+            .node_status()
+            .merge(NodeStatus::StartingUp);
         self.inner.try_set_global_metadata(metadata)
+    }
+
+    pub fn health(&self) -> &Health {
+        &self.inner.health
+    }
+
+    /// Returns true if the task center was requested to shutdown
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.inner.shutdown_requested.load(Ordering::Relaxed)
+    }
+
+    /// Returns an error if a shutdown has been requested.
+    pub fn check_shutdown(&self) -> Result<(), ShutdownError> {
+        if self.is_shutdown_requested() {
+            return Err(ShutdownError);
+        }
+        Ok(())
     }
 
     /// Sets the current task_center but doesn't create a task. Use this when you need to run a
