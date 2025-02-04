@@ -9,9 +9,11 @@ cargo-dist-version = "0.28.0"
 ci = "github"
 github-attestations = true
 # The installers to generate for each app
-installers = ["homebrew"]
+installers = ["homebrew", "npm"]
 # A GitHub repo to push Homebrew formulas to
 tap = "restatedev/homebrew-tap"
+# The npm scope that our npm packages are under
+npm-scope = "@restatedev"
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
 macos-sign = true
