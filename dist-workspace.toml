@@ -9,9 +9,11 @@ cargo-dist-version = "0.28.0"
 ci = "github"
 github-attestations = true
 # The installers to generate for each app
-installers = ["homebrew"]
+installers = ["homebrew", "npm"]
 # A GitHub repo to push Homebrew formulas to
 tap = "restatedev/homebrew-tap"
+# The npm scope that our npm packages are under
+npm-scope = "@restatedev"
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
 macos-sign = true
@@ -20,11 +22,16 @@ github-build-setup = "steps/release-build-setup.yml"
 include = ["NOTICE"]
 precise-builds = true
 cache-builds = false
+# npm and docker can handle pre-releases, we will skip homebrew manually
+publish-preleases = true
 
-host-jobs = ["./ci"]
+# ci goes here because we want it to start early, and we don't want to create a release unless it succeeds
+local-artifacts-jobs = ["./ci"]
+# create release goes here because it needs to have happened before the host steps, which expect a draft release to already exist
 global-artifacts-jobs = ["./notarize"]
-publish-jobs = ["./docker-release", "homebrew", "./npm"]
-post-announce-jobs = ["./helm"]
+publish-jobs = ["./homebrew", "./docker-release", "./npm"]
+# helm goes here because it shouldn't exist before docker-release happens
+post-announce-jobs = ["./helm", "./scarf-release-notes"]
 
 [dist.github-custom-job-permissions.ci]
 packages = "read"
@@ -37,6 +44,9 @@ actions = "read"
 [dist.github-custom-job-permissions.npm]
 packages = "read"
 contents = "read"
+
+[dist.github-custom-job-permissions.scarf-release-notes]
+contents = "write"
 
 [dist.dependencies.homebrew]
 protobuf = "*"

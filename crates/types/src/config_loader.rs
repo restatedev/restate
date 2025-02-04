@@ -95,6 +95,8 @@ impl ConfigLoader {
             )
             .merge(
                 Env::raw()
+                    // will accept true, yes, 1, on as true
+                    // and false, no, 0, off as false
                     .only(&["DO_NOT_TRACK"])
                     .map(|_| "disable-telemetry".into()),
             );

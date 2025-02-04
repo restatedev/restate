@@ -1,3 +1,6 @@
+# We do this manually instead of using dist's native npm functionality because this way, the binary is actually hosted on npm, instead
+# of being downloaded as a postinstall step. Also so that we can set --tag next on prerelease.
+
 name: Publish npm binary packages
 
 on:
@@ -59,6 +62,7 @@ jobs:
         shell: bash
         run: |
           bin="$(echo "$PLAN" | jq -r '.artifacts["${{ matrix.app_name }}-${{ matrix.build.target }}.tar.xz"].assets[] | select(.kind == "executable").name')"
+          tag="${{ fromJson(inputs.plan).announcement_is_prerelease && 'next' || 'latest' }}"
 
           cd npm
           node_os="${{ matrix.build.node_os }}"
@@ -86,7 +90,7 @@ jobs:
           cp "${dir}/README.md" "${node_pkg}"
           # publish the package
           pushd "${node_pkg}"
-          npm publish --access public
+          npm publish --access public --tag "${tag}"
           popd
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -114,6 +118,7 @@ jobs:
         run: |
           node_version=$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.app_name }}").app_version')"
           bin="$(echo "$PLAN" | jq -r '.artifacts["${{ matrix.package.artifact }}-${{ matrix.build.target }}.tar.xz"].assets[] | select(.kind == "executable").name')"
+          tag="${{ fromJson(inputs.plan).announcement_is_prerelease && 'next' || 'latest' }}"
 
           cd npm
           if npm view "@restatedev/${bin}@${node_version}"
@@ -132,7 +137,7 @@ jobs:
           curl https://raw.githubusercontent.com/restatedev/restate/main/README.md -o README.md
           npm install
           npm run build
-          npm publish --access public
+          npm publish --access public --tag "${tag}"
           popd
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
