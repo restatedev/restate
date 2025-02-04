@@ -802,6 +802,8 @@ impl TaskCenterInner {
         tokio::join!(
             self.cancel_tasks(Some(TaskKind::RpcServer), None),
             self.cancel_tasks(Some(TaskKind::ConnectionReactor), None),
+            // note that this one will shutdown after connections are terminated.
+            // It will not be aborted on the shutdown signal itself.
             self.cancel_tasks(Some(TaskKind::SocketHandler), None)
         );
         self.initiate_managed_runtimes_shutdown();

@@ -12,7 +12,6 @@ use crate::raft::network::{grpc_svc, NetworkMessage};
 use futures::StreamExt;
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -122,9 +121,8 @@ where
                     match message {
                         Some(message) => {
                             match message {
-                                Ok(message) => {
-                                    let mut cursor = Cursor::new(&message.payload);
-                                    let message = M::deserialize(&mut cursor)?;
+                                Ok(mut message) => {
+                                    let message = M::deserialize(&mut message.payload)?;
 
                                     assert_eq!(message.to(), self.connection_manager.identity, "Expect to only receive messages for peer '{}'", self.connection_manager.identity);
 

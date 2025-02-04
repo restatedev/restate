@@ -488,7 +488,7 @@ impl LogletConfiguration {
                 if sequencer_change_required {
                     debug!(
                         %log_id,
-                        loglet_id = ?params.loglet_id,
+                        loglet_id = %params.loglet_id,
                         "Replicated loglet requires a sequencer change, existing sequencer {} is presumed dead",
                         params.sequencer
                     );
@@ -517,7 +517,7 @@ impl LogletConfiguration {
                     // replication property has changed, we need to reconfigure.
                     debug!(
                         %log_id,
-                        loglet_id = ?params.loglet_id,
+                        loglet_id = %params.loglet_id,
                         current_replication = %params.replication,
                         new_replication = %config.replication_property,
                         "Replicated loglet default replication has can changed, will attempt reconfiguration"
@@ -536,7 +536,7 @@ impl LogletConfiguration {
                 if selection != *effective_nodeset {
                     debug!(
                         %log_id,
-                        loglet_id = ?params.loglet_id,
+                        loglet_id = %params.loglet_id,
                         original_nodeset = %effective_nodeset,
                         potential_nodeset = %selection,
                         "Replicated loglet nodeset can be improved, will attempt reconfiguration"
@@ -1121,7 +1121,7 @@ impl LogsController {
                     tracing::Level::INFO,
                     "Determining the tail status for all logs",
                 )
-                .with_overdue(Duration::from_secs(30), tracing::Level::WARN)
+                .with_overdue(Duration::from_secs(15), tracing::Level::WARN)
                 .instrument(trace_span!("scheduled-find-tail"))
                 .in_current_tc(),
         );
@@ -1264,8 +1264,7 @@ impl LogsController {
                             seal_lsn: sealed_segment.tail.offset(),
                         }
                     }
-                    Err(err) => {
-                        debug!(%log_id, %segment_index, %err, "Failed sealing loglet");
+                    Err(_) => {
                         Event::SealFailed {
                             log_id,
                             segment_index,
