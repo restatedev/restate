@@ -10,7 +10,6 @@
 
 use std::future::Future;
 
-use dashmap::DashMap;
 use futures::{Stream, StreamExt};
 use tonic::transport::Channel;
 use tracing::trace;
@@ -24,6 +23,8 @@ use restate_types::GenerationalNodeId;
 use super::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use super::{NetworkError, ProtocolError};
 use crate::network::net_util::create_tonic_channel;
+
+type DashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
 
 pub trait TransportConnect: Send + Sync + 'static {
     fn connect(
@@ -48,7 +49,7 @@ impl GrpcConnector {
     pub fn new(networking_options: NetworkingOptions) -> Self {
         Self {
             networking_options,
-            channel_cache: DashMap::new(),
+            channel_cache: DashMap::default(),
         }
     }
 }
