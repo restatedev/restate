@@ -79,6 +79,18 @@ impl RemoteLogServerManager {
         Self { servers }
     }
 
+    pub fn try_get_tail_offset(&self, id: PlainNodeId) -> Option<TailOffsetWatch> {
+        let server = self.servers.get(&id).expect("node is in nodeset");
+
+        if let Ok(guard) = server.try_lock() {
+            if let Some(current) = guard.deref() {
+                return Some(current.local_tail().clone());
+            }
+        }
+
+        None
+    }
+
     /// Gets a log-server instance. On first time it will initialize a new connection
     /// to log server. It will make sure all following get call holds the same
     /// connection.

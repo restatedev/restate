@@ -8,66 +8,75 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tokio::sync::mpsc;
-use tracing::{debug, trace};
+use tokio::task::JoinSet;
+use tokio::time::Instant;
+use tracing::{debug, info, instrument, trace, warn, Instrument};
 
-use restate_core::network::rpc_router::{RpcError, RpcRouter};
+use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Incoming, Networking, TransportConnect};
-use restate_core::{TaskCenter, TaskKind};
+use restate_core::TaskCenterFutureExt;
 use restate_types::config::Configuration;
-use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
+use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::NodeSet;
-use restate_types::retries::RetryPolicy;
-use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
+use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
+
+use super::util::Disposition;
 
 /// Sends a seal request to as many log-servers in the nodeset
 ///
 /// We broadcast the seal to all nodes that we can, but only wait for f-majority
-/// responses before acknowleding the seal.
+/// responses before acknowleding the seal. The rest of the seal requests are dropped if they
+/// weren't completed by that time.
 ///
 /// The seal operation is idempotent. It's safe to seal a loglet if it's already partially or fully
-/// sealed. Note that the seal task ignores the "seal" state in the input known_global_tail watch.
-pub struct SealTask {
-    my_params: ReplicatedLogletParams,
-    seal_router: RpcRouter<Seal>,
-    known_global_tail: TailOffsetWatch,
-}
+/// sealed.
+///
+/// Note 1: The seal task will ignore the "seal" state in the input `known_global_tail` watch.
+/// Note 2: The seal task will *not* set the seal flag on `known_global_tail` even if seal was
+/// successful. This is the responsibility of the caller.
+pub struct SealTask;
 
 impl SealTask {
-    pub fn new(
-        my_params: ReplicatedLogletParams,
-        seal_router: RpcRouter<Seal>,
-        known_global_tail: TailOffsetWatch,
-    ) -> Self {
-        Self {
-            my_params,
-            seal_router,
-            known_global_tail,
-        }
-    }
-
+    #[instrument(skip_all)]
     pub async fn run<T: TransportConnect>(
-        self,
-        networking: Networking<T>,
+        my_params: &ReplicatedLogletParams,
+        seal_rpc_router: &RpcRouter<Seal>,
+        known_global_tail: &TailOffsetWatch,
+        networking: &Networking<T>,
     ) -> Result<LogletOffset, ReplicatedLogletError> {
+        let start = Instant::now();
+        debug!(
+            loglet_id = %my_params.loglet_id,
+            is_sealed = known_global_tail.is_sealed(),
+            "Starting a seal task for loglet"
+        );
+        // If all nodes in the nodeset is in "provisioning", we can cannot seal.
+        if my_params
+            .nodeset
+            .all_provisioning(&networking.metadata().nodes_config_ref())
+        {
+            warn!(
+                loglet_id = %my_params.loglet_id,
+                is_sealed = known_global_tail.is_sealed(),
+                "Cannot seal the loglet as all nodeset members are in `Provisioning` storage state"
+            );
+            return Err(ReplicatedLogletError::SealFailed(my_params.loglet_id));
+        }
         // Use the entire nodeset except for StorageState::Disabled.
-        let effective_nodeset = self
-            .my_params
+        let effective_nodeset = my_params
             .nodeset
             .to_effective(&networking.metadata().nodes_config_ref());
-
-        let (tx, mut rx) = mpsc::unbounded_channel();
 
         let mut nodeset_checker = NodeSetChecker::<bool>::new(
             &effective_nodeset,
             &networking.metadata().nodes_config_ref(),
-            &self.my_params.replication,
+            &my_params.replication,
         );
 
         let retry_policy = Configuration::pinned()
@@ -76,116 +85,88 @@ impl SealTask {
             .log_server_retry_policy
             .clone();
 
-        for node in effective_nodeset.iter() {
-            let task = SealSingleNode {
-                node_id: *node,
-                loglet_id: self.my_params.loglet_id,
-                sequencer: self.my_params.sequencer,
-                seal_router: self.seal_router.clone(),
-                networking: networking.clone(),
-                known_global_tail: self.known_global_tail.clone(),
+        let mut inflight_requests = JoinSet::new();
+
+        for node_id in effective_nodeset.iter().copied() {
+            let request = Seal {
+                header: LogServerRequestHeader::new(
+                    my_params.loglet_id,
+                    known_global_tail.latest_offset(),
+                ),
+                sequencer: my_params.sequencer,
             };
-            TaskCenter::spawn_child(TaskKind::Disposable, "send-seal-request", {
+            inflight_requests.spawn({
+                let networking = networking.clone();
+                let rpc_router = seal_rpc_router.clone();
+                let known_global_tail = known_global_tail.clone();
                 let retry_policy = retry_policy.clone();
-                let tx = tx.clone();
                 async move {
-                    if let Err(e) = task.run(tx, retry_policy).await {
-                        // We only want to trace-log if an individual seal request fails.
-                        // If we leave the task to fail, task-center will log a scary error-level log
-                        // which can be misleading to users.
-                        trace!("Seal: {e}");
-                    }
-                    Ok(())
+                    let task = RunOnSingleNode::new(
+                        node_id,
+                        request,
+                        &rpc_router,
+                        &known_global_tail,
+                        retry_policy,
+                    );
+
+                    (node_id, task.run(on_seal_response, &networking).await)
                 }
-            })?;
+                .in_current_tc()
+                .in_current_span()
+            });
         }
-        drop(tx);
 
         // Max observed local-tail from sealed nodes
-        let mut max_tail = LogletOffset::OLDEST;
-        while let Some((node_id, local_tail)) = rx.recv().await {
-            max_tail = std::cmp::max(max_tail, local_tail);
+        let mut max_local_tail = LogletOffset::OLDEST;
+        while let Some(response) = inflight_requests.join_next().await {
+            let Ok((node_id, response)) = response else {
+                // task panicked or runtime is shutting down.
+                continue;
+            };
+            let Ok(response) = response else {
+                // Seal failed/aborted on this node.
+                continue;
+            };
+
+            max_local_tail = max_local_tail.max(response.header.local_tail);
+            known_global_tail.notify_offset_update(response.header.known_global_tail);
             nodeset_checker.set_attribute(node_id, true);
 
-            // Do we have f-majority responses?
-            if nodeset_checker.check_fmajority(|sealed| *sealed).passed() {
+            // todo: consider allowing the seal to pass at best-effort f-majority.
+            if nodeset_checker.check_fmajority(|attr| *attr).passed() {
                 let sealed_nodes: NodeSet = nodeset_checker
                     .filter(|sealed| *sealed)
                     .map(|(n, _)| *n)
                     .collect();
 
-                debug!(loglet_id = %self.my_params.loglet_id,
-                    max_tail = %max_tail,
-                    "Seal task completed on f-majority of nodes. Sealed log-servers '{}'",
+                info!(
+                    loglet_id = %my_params.loglet_id,
+                    replication = %my_params.replication,
+                    %effective_nodeset,
+                    %max_local_tail,
+                    global_tail = %known_global_tail.latest_offset(),
+                    "Seal task completed on f-majority of nodes in {:?}. Sealed log-servers {}",
+                    start.elapsed(),
                     sealed_nodes,
                 );
-                // note that the rest of seal requests will continue in the background
-                return Ok(max_tail);
+                // note that we drop the rest of the seal requests after return
+                return Ok(max_local_tail);
             }
         }
 
-        // no more tasks left. We this means that we failed to seal
-        Err(ReplicatedLogletError::SealFailed(self.my_params.loglet_id))
+        // no more tasks left. This means that we failed to seal
+        Err(ReplicatedLogletError::SealFailed(my_params.loglet_id))
     }
 }
 
-struct SealSingleNode<T> {
-    node_id: PlainNodeId,
-    loglet_id: LogletId,
-    sequencer: GenerationalNodeId,
-    seal_router: RpcRouter<Seal>,
-    networking: Networking<T>,
-    known_global_tail: TailOffsetWatch,
-}
-
-impl<T: TransportConnect> SealSingleNode<T> {
-    /// Returns local-tail. Note that this will _only_ return if seal was successful, otherwise,
-    /// it'll continue to retry.
-    pub async fn run(
-        self,
-        tx: mpsc::UnboundedSender<(PlainNodeId, LogletOffset)>,
-        retry_policy: RetryPolicy,
-    ) -> anyhow::Result<()> {
-        let mut retry_iter = retry_policy.into_iter();
-        loop {
-            match self.do_seal().await {
-                Ok(res) if res.body().sealed || res.body().status == Status::Ok => {
-                    let _ = tx.send((self.node_id, res.body().local_tail));
-                    self.known_global_tail
-                        .notify_offset_update(res.body().header.known_global_tail);
-                    return Ok(());
-                }
-                // not sealed, or seal has failed
-                Ok(res) => {
-                    // Sent, but sealing not successful
-                    trace!(loglet_id = %self.loglet_id, "Seal failed on node {} with status {:?}", self.node_id, res.body().status);
-                }
-                Err(_) => {
-                    trace!(loglet_id = %self.loglet_id, "Failed to send seal message to node {}", self.node_id);
-                }
-            }
-            if let Some(pause) = retry_iter.next() {
-                tokio::time::sleep(pause).await;
-            } else {
-                return Err(anyhow::anyhow!(format!(
-                    "Exhausted retries while attempting to seal the loglet {} on node {}",
-                    self.loglet_id, self.node_id
-                )));
-            }
-        }
+fn on_seal_response(msg: Incoming<Sealed>) -> Disposition<Sealed> {
+    if msg.body().header.status == Status::Ok || msg.body().sealed {
+        return Disposition::Return(msg.into_body());
     }
-
-    async fn do_seal(&self) -> Result<Incoming<Sealed>, RpcError<Seal>> {
-        let request = Seal {
-            header: LogServerRequestHeader::new(
-                self.loglet_id,
-                self.known_global_tail.latest_offset(),
-            ),
-            sequencer: self.sequencer,
-        };
-        trace!(loglet_id = %self.loglet_id, "Sending seal message to node {}", self.node_id);
-        self.seal_router
-            .call(&self.networking, self.node_id, request)
-            .await
-    }
+    trace!(
+        "Seal request failed on node {}, status is {:?}",
+        msg.peer(),
+        msg.body().header.status
+    );
+    Disposition::Abort
 }

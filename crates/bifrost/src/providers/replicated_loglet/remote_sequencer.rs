@@ -11,7 +11,7 @@
 use std::{
     ops::Deref,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
 };
@@ -50,6 +50,16 @@ pub struct RemoteSequencer<T> {
     sequencers_rpc: SequencersRpc,
     known_global_tail: TailOffsetWatch,
     connection: Arc<Mutex<Option<RemoteSequencerConnection>>>,
+    maybe_sealed: AtomicBool,
+}
+
+impl<T> RemoteSequencer<T> {
+    pub fn mark_as_maybe_sealed(&self) {
+        self.maybe_sealed.store(true, Ordering::Relaxed)
+    }
+    pub fn maybe_sealed(&self) -> bool {
+        self.maybe_sealed.load(Ordering::Relaxed)
+    }
 }
 
 impl<T> RemoteSequencer<T>
@@ -83,6 +93,7 @@ where
             sequencers_rpc,
             known_global_tail,
             connection: Arc::default(),
+            maybe_sealed: AtomicBool::new(false),
         }
     }
 

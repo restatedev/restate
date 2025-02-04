@@ -138,7 +138,7 @@ impl ReadStreamTask {
     ) -> Result<(), OperationError> {
         let mut nodes_config = networking.metadata().updateable_nodes_config();
         let my_node_id = networking.my_node_id();
-        let records_rpc_timeout = Configuration::pinned()
+        let records_rpc_timeout = *Configuration::pinned()
             .bifrost
             .replicated_loglet
             .log_server_rpc_timeout;
