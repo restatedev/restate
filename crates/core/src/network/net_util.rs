@@ -22,7 +22,7 @@ use tokio::io;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio_util::net::Listener;
 use tonic::transport::{Channel, Endpoint};
-use tracing::{debug, info, instrument, trace, Instrument, Span};
+use tracing::{debug, error_span, info, instrument, trace, Instrument, Span};
 
 use restate_types::config::{Configuration, MetadataStoreClientOptions, NetworkingOptions};
 use restate_types::errors::GenericError;
@@ -189,12 +189,12 @@ where
         tokio::select! {
             biased;
             _ = &mut shutdown => {
-                debug!("Shutdown requested, will stop listening to new connection");
+                debug!("Shutdown requested, will stop listening to new connections");
                 drop(listener);
                 break;
             }
             incoming_connection = listener.accept() => {
-                let (stream, remote_addr) = incoming_connection?;
+                let (stream, peer_addr) = incoming_connection?;
                 let io = TokioIo::new(stream);
 
                 let network_options = &configuration.live_load().networking;
@@ -206,15 +206,13 @@ where
                     .keep_alive_interval(Some(network_options.http2_keep_alive_interval.into()))
                     .keep_alive_timeout(network_options.http2_keep_alive_timeout.into());
 
-                let connection = graceful_shutdown.watch(builder
-                    .serve_connection(io, service.clone()).into_owned())
-                    .in_current_span();
 
-                // TaskCenter will wait for the parent task, we don't need individual connection
-                // handlers to be managed tasks. We just need to make sure that we actually try and
-                // shutdown connections, that's why H2Stream tasks are managed.
-                TaskCenter::spawn_unmanaged(TaskKind::SocketHandler, server_name, async move {
-                    trace!("Connection accepted from {remote_addr:?}");
+                let socket_span = error_span!("SocketHandler", ?peer_addr);
+                let connection = graceful_shutdown.watch(builder
+                    .serve_connection(io, service.clone()).into_owned());
+
+                TaskCenter::spawn(TaskKind::SocketHandler, server_name, async move {
+                    debug!("New connection accepted");
                     if let Err(e) = connection.await {
                         if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
                             if hyper_error.is_incomplete_message() {
@@ -226,7 +224,8 @@ where
                     } else {
                         trace!("Connection completed cleanly");
                     }
-                })?;
+                    Ok(())
+                }.instrument(socket_span))?;
             }
         }
     }
@@ -238,7 +237,7 @@ where
 
         },
         _ = tokio::time::sleep(Duration::from_secs(5)) => {
-            debug!("Some connections are taking longer to drain, dropping them");
+            info!("Some connections are taking longer to drain, dropping them");
         }
     }
 
