@@ -396,7 +396,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         // Ensure that only one seal operation is in progress at a time.
         let start = Instant::now();
         let _guard = self.seal_in_progress.lock().await;
-        trace!("seal() lock was released after {:?}", start.elapsed());
+        trace!("seal() lock acquired after {:?}", start.elapsed());
 
         if self.known_global_tail.get().is_sealed() {
             return Ok(());

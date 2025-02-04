@@ -182,7 +182,7 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                 let key_value = entry.insert(Arc::new(loglet));
 
                 let loglet = Arc::downgrade(key_value.value());
-                // the periodic tail checker depend on whether we are a sequencer node or not.
+                // the periodic tail checker depends on whether we are a sequencer node or not.
                 // For non-sequencer nodes, the period impacts the max lag of our read
                 // streams' view of tail. For sequencers, we only need this to do periodic
                 // releases/check-seals.

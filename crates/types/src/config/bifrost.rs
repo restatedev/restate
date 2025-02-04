@@ -242,7 +242,7 @@ pub struct ReplicatedLogletOptions {
     /// The sequencer is allowed to consider itself quiescent if it did not commit records for this period of time.
     /// It may use this to sends pre-emptive release/seal check requests to log-servers.
     ///
-    /// The sequencer is also allowed to use this value as interval to  send seal/release checks even if it's not quiescent.
+    /// The sequencer is also allowed to use this value as interval to send seal/release checks even if it's not quiescent.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub sequencer_inactivity_timeout: humantime::Duration,

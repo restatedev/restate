@@ -168,10 +168,6 @@ impl CheckSealTask {
                 return Ok(CheckSealOutcome::FullySealed);
             }
 
-            if nodeset_checker.check_fmajority(|attr| !(*attr)) >= FMajorityResult::BestEffort {
-                return Ok(CheckSealOutcome::Open);
-            }
-
             // keep grabbing results
             let Some(response) = inflight_requests.join_next().await else {
                 // no more results, since we didn't return earlier, we know that we didn't get
@@ -193,6 +189,10 @@ impl CheckSealTask {
         // are we partially sealed?
         if nodeset_checker.any(|attr| *attr) {
             return Ok(CheckSealOutcome::Sealing);
+        }
+
+        if nodeset_checker.check_fmajority(|attr| !(*attr)) >= FMajorityResult::BestEffort {
+            return Ok(CheckSealOutcome::Open);
         }
         debug!(
             loglet_id = %my_params.loglet_id,
