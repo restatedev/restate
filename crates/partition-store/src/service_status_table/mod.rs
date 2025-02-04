@@ -118,7 +118,7 @@ impl ReadOnlyVirtualObjectStatusTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyVirtualObjectStatusTable for PartitionStoreTransaction<'a> {
+impl ReadOnlyVirtualObjectStatusTable for PartitionStoreTransaction<'_> {
     async fn get_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
@@ -135,7 +135,7 @@ impl<'a> ReadOnlyVirtualObjectStatusTable for PartitionStoreTransaction<'a> {
     }
 }
 
-impl<'a> VirtualObjectStatusTable for PartitionStoreTransaction<'a> {
+impl VirtualObjectStatusTable for PartitionStoreTransaction<'_> {
     async fn put_virtual_object_status(
         &mut self,
         service_id: &ServiceId,

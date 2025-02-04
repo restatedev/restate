@@ -195,7 +195,7 @@ impl TimerTable for PartitionStore {
     }
 }
 
-impl<'a> TimerTable for PartitionStoreTransaction<'a> {
+impl TimerTable for PartitionStoreTransaction<'_> {
     async fn put_timer(&mut self, key: &TimerKey, timer: &Timer) {
         add_timer(self, self.partition_id(), key, timer)
     }

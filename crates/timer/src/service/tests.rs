@@ -325,7 +325,6 @@ async fn earlier_timers_replace_older_ones() {
 }
 
 async fn yield_to_timer_service<
-    'a,
     Timer: crate::Timer + Debug + 'static,
     Clock: crate::Clock,
     TimerReader: crate::TimerReader<Timer> + Send + 'static,

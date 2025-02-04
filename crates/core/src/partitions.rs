@@ -184,10 +184,10 @@ impl PartitionRoutingRefresher {
     }
 
     fn spawn_sync_routing_information_task(&mut self) {
-        if !self
+        if self
             .inflight_refresh_task
             .as_ref()
-            .is_some_and(|t| !t.is_finished())
+            .is_none_or(|t| t.is_finished())
         {
             let task = TaskCenter::spawn_unmanaged(
                 TaskKind::Disposable,

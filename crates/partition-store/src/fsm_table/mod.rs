@@ -82,7 +82,7 @@ impl ReadOnlyFsmTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyFsmTable for PartitionStoreTransaction<'a> {
+impl ReadOnlyFsmTable for PartitionStoreTransaction<'_> {
     async fn get_inbox_seq_number(&mut self) -> Result<MessageIndex> {
         get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::INBOX_SEQ_NUMBER)
             .map(|opt| opt.map(Into::into).unwrap_or_default())
@@ -99,7 +99,7 @@ impl<'a> ReadOnlyFsmTable for PartitionStoreTransaction<'a> {
     }
 }
 
-impl<'a> FsmTable for PartitionStoreTransaction<'a> {
+impl FsmTable for PartitionStoreTransaction<'_> {
     async fn put_applied_lsn(&mut self, lsn: Lsn) {
         put(
             self,

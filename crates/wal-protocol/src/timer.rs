@@ -114,7 +114,7 @@ impl restate_types::timer::Timer for TimerKeyValue {
 #[derive(Debug)]
 pub struct TimerKeyDisplay<'a>(pub &'a TimerKey);
 
-impl<'a> fmt::Display for TimerKeyDisplay<'a> {
+impl fmt::Display for TimerKeyDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.kind {
             TimerKeyKind::NeoInvoke { invocation_uuid } => {

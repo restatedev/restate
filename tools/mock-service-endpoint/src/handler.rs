@@ -383,7 +383,7 @@ fn error(err: FrameError) -> ProtocolMessage {
 }
 
 struct LossyDisplay<'a>(Option<&'a [u8]>);
-impl<'a> Display for LossyDisplay<'a> {
+impl Display for LossyDisplay<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             Some(bytes) => write!(f, "{}", String::from_utf8_lossy(bytes)),

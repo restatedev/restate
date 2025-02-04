@@ -1305,9 +1305,7 @@ pub struct LogsBasedPartitionProcessorPlacementHints<'a> {
     logs_controller: &'a LogsController,
 }
 
-impl<'a> scheduler::PartitionProcessorPlacementHints
-    for LogsBasedPartitionProcessorPlacementHints<'a>
-{
+impl scheduler::PartitionProcessorPlacementHints for LogsBasedPartitionProcessorPlacementHints<'_> {
     fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = &PlainNodeId> {
         let log_id = LogId::from(*partition_id);
 

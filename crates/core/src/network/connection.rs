@@ -44,7 +44,7 @@ pub struct SendPermit<'a, M> {
     _phantom: std::marker::PhantomData<M>,
 }
 
-impl<'a, M> SendPermit<'a, M>
+impl<M> SendPermit<'_, M>
 where
     M: WireEncode + Targeted,
 {
@@ -77,7 +77,7 @@ where
     }
 }
 
-impl<'a, M> SendPermit<'a, M> {
+impl<M> SendPermit<'_, M> {
     /// Sends a raw pre-serialized message over this permit.
     ///
     /// Note that sending messages over this permit won't use the peer information nor the connection

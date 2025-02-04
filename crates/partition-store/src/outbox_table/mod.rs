@@ -150,13 +150,13 @@ impl OutboxTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyOutboxTable for PartitionStoreTransaction<'a> {
+impl ReadOnlyOutboxTable for PartitionStoreTransaction<'_> {
     async fn get_outbox_head_seq_number(&mut self) -> Result<Option<u64>> {
         get_outbox_head_seq_number(self, self.partition_id())
     }
 }
 
-impl<'a> OutboxTable for PartitionStoreTransaction<'a> {
+impl OutboxTable for PartitionStoreTransaction<'_> {
     async fn put_outbox_message(&mut self, message_index: u64, outbox_message: &OutboxMessage) {
         add_message(self, self.partition_id(), message_index, outbox_message)
     }

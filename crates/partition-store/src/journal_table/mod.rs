@@ -163,7 +163,7 @@ impl ReadOnlyJournalTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyJournalTable for PartitionStoreTransaction<'a> {
+impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
     async fn get_journal_entry(
         &mut self,
         invocation_id: &InvocationId,
@@ -191,7 +191,7 @@ impl<'a> ReadOnlyJournalTable for PartitionStoreTransaction<'a> {
     }
 }
 
-impl<'a> JournalTable for PartitionStoreTransaction<'a> {
+impl JournalTable for PartitionStoreTransaction<'_> {
     async fn put_journal_entry(
         &mut self,
         invocation_id: &InvocationId,

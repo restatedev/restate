@@ -264,7 +264,7 @@ impl StateMachine {
     }
 }
 
-impl<'a, S> StateMachineApplyContext<'a, S> {
+impl<S> StateMachineApplyContext<'_, S> {
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -4187,7 +4187,7 @@ impl<'a, S> StateMachineApplyContext<'a, S> {
 // To write completions in the effects log
 struct CompletionResultFmt<'a>(&'a CompletionResult);
 
-impl<'a> fmt::Display for CompletionResultFmt<'a> {
+impl fmt::Display for CompletionResultFmt<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
             CompletionResult::Empty => write!(f, "Empty"),
