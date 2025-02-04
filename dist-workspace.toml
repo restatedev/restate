@@ -12,8 +12,6 @@ github-attestations = true
 installers = ["homebrew"]
 # A GitHub repo to push Homebrew formulas to
 tap = "restatedev/homebrew-tap"
-# The npm scope that our npm packages are under
-npm-scope = "@restatedev"
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
 macos-sign = true
@@ -31,7 +29,7 @@ local-artifacts-jobs = ["./ci"]
 global-artifacts-jobs = ["./notarize"]
 publish-jobs = ["./homebrew", "./docker-release", "./npm"]
 # helm goes here because it shouldn't exist before docker-release happens
-post-announce-jobs = ["./helm", "./scarf-release-notes"]
+post-announce-jobs = ["./helm", "./release-notes"]
 
 [dist.github-custom-job-permissions.ci]
 packages = "read"

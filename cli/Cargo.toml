@@ -15,7 +15,6 @@ build = "build.rs"
 [package.metadata.dist]
 dist = true
 formula = "restate"
-npm-package = "restate"
 
 [features]
 default = ["cloud", "no-trace-logging"]

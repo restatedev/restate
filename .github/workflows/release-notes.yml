@@ -1,0 +1,76 @@
+name: Update release description
+
+on:
+  workflow_call:
+    inputs:
+      # comes from cargo-dist workflow call
+      plan:
+        required: true
+        type: string
+
+env:
+  PLAN: ${{ inputs.plan }}
+
+jobs:
+  scarf:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Amend GitHub Release
+        run: |
+          # Download the release notes
+
+          app_version=$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "restate-server").app_version')
+
+          cat << EOM
+          # Restate ${{ fromJson(inputs.plan).announcement_title }}
+
+          ## Install
+
+          ### Pull the Docker images
+
+          \`\`\`sh
+          docker pull docker.restate.dev/restate:$app_version
+          docker pull docker.restate.dev/restate-cli:$app_version
+          \`\`\`
+
+          ### Install prebuilt binaries via Homebrew
+
+          \`\`\`sh
+          brew install restatedev/tap/restate-server
+          brew install restatedev/tap/restate
+          brew install restatedev/tap/restatectl
+          \`\`\`
+
+          ### Install prebuilt binaries into your npm project
+
+          \`\`\`sh
+          npm install @restatedev/restate-server@$app_version
+          npm install @restatedev/restate@$app_version
+          npm install @restatedev/restatectl@$app_version
+          \`\`\`
+
+          ### Download binary archives
+
+          |  File  | Platform | Checksum |
+          |--------|----------|----------|
+          | [restate-server-aarch64-apple-darwin.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restate-server-aarch64-apple-darwin.tar.xz) | Apple Silicon macOS | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restate-server-aarch64-apple-darwin.tar.xz.sha256) |
+          | [restate-server-x86_64-apple-darwin.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restate-server-x86_64-apple-darwin.tar.xz) | Intel macOS | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restate-server-x86_64-apple-darwin.tar.xz.sha256) |
+          | [restate-server-aarch64-unknown-linux-musl.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restate-server-aarch64-unknown-linux-musl.tar.xz) | ARM64 MUSL Linux | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restate-server-aarch64-unknown-linux-musl.tar.xz.sha256) |
+          | [restate-server-x86_64-unknown-linux-musl.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restate-server-x86_64-unknown-linux-musl.tar.xz) | x64 MUSL Linux | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restate-server-x86_64-unknown-linux-musl.tar.xz.sha256) |
+          | [restate-cli-aarch64-apple-darwin.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restate-cli-aarch64-apple-darwin.tar.xz) | Apple Silicon macOS | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restate-cli-aarch64-apple-darwin.tar.xz.sha256) |
+          | [restate-cli-x86_64-apple-darwin.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restate-cli-x86_64-apple-darwin.tar.xz) | Intel macOS | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restate-cli-x86_64-apple-darwin.tar.xz.sha256) |
+          | [restate-cli-aarch64-unknown-linux-musl.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restate-cli-aarch64-unknown-linux-musl.tar.xz) | ARM64 MUSL Linux | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restate-cli-aarch64-unknown-linux-musl.tar.xz.sha256) |
+          | [restate-cli-x86_64-unknown-linux-musl.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restate-cli-x86_64-unknown-linux-musl.tar.xz) | x64 MUSL Linux | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restate-cli-x86_64-unknown-linux-musl.tar.xz.sha256) |
+          | [restatectl-aarch64-apple-darwin.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restatectl-aarch64-apple-darwin.tar.xz) | Apple Silicon macOS | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restatectl-aarch64-apple-darwin.tar.xz.sha256) |
+          | [restatectl-x86_64-apple-darwin.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restatectl-x86_64-apple-darwin.tar.xz) | Intel macOS | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restatectl-x86_64-apple-darwin.tar.xz.sha256) |
+          | [restatectl-aarch64-unknown-linux-musl.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restatectl-aarch64-unknown-linux-musl.tar.xz) | ARM64 MUSL Linux | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restatectl-aarch64-unknown-linux-musl.tar.xz.sha256) |
+          | [restatectl-x86_64-unknown-linux-musl.tar.xz](https://restate.gateway.scarf.sh/${{ fromJson(inputs.plan).announcement_tag }}/restatectl-x86_64-unknown-linux-musl.tar.xz) | x64 MUSL Linux | [checksum](https://github.com/restatedev/restate/releases/download/${{ fromJson(inputs.plan).announcement_tag }}/restatectl-x86_64-unknown-linux-musl.tar.xz.sha256) |
+          EOM > "$RUNNER_TEMP/notes.txt"
+
+          # Update the release notes
+          gh release edit "${{ github.ref_name }}" --notes-file "$RUNNER_TEMP/notes.txt"
