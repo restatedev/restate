@@ -17,8 +17,8 @@ use tracing::{info, warn};
 use restate_bifrost::loglet::util::TailOffsetWatch;
 use restate_bifrost::providers::replicated_loglet::replication::NodeSetChecker;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{c_eprintln, c_println};
 use restate_log_server::protobuf::log_server_svc_client::LogServerSvcClient;
 use restate_log_server::protobuf::GetDigestRequest;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
@@ -88,12 +88,13 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
             from_offset: opts.from,
             to_offset: opts.to,
         };
-        let digest = client
-            .get_digest(req)
-            .await?
-            .into_inner()
-            .digest
-            .expect("always set by servers");
+        let digest = match client.get_digest(req).await {
+            Ok(response) => response.into_inner().digest.expect("always set by servers"),
+            Err(err) => {
+                c_eprintln!("Couldn't get digest from {}: {}", node_id, err);
+                continue;
+            }
+        };
         digests.add_digest_message(*node_id, digest.into(), &known_global_tail);
     }
     c_println!(
@@ -102,7 +103,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
     );
     c_println!("Seal Observed?: {}", known_global_tail.get().is_sealed());
     c_println!("Max Observed Trim Point: {}", digests.max_trim_point());
-    c_println!("Max Local Tail: {:?}", digests.max_local_tail());
+    c_println!("Max Local Tail: {}", digests.max_local_tail());
     c_println!();
 
     let mut records_table = Table::new_styled();

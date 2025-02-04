@@ -442,12 +442,6 @@ impl MetadataManager {
             container.store(new_value);
         } else {
             /* Do nothing, current is already newer */
-            trace!(
-                "Ignoring update of {} to {} because we are already at {}",
-                type_name::<M>(),
-                new_value.version(),
-                current_value.version(),
-            );
             maybe_new_version = current_value.version();
         }
 
