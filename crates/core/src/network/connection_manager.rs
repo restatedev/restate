@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
+use ahash::HashMap;
 use enum_map::EnumMap;
 use futures::{FutureExt, Stream, StreamExt};
 use opentelemetry::global;
@@ -26,7 +26,7 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::node::message::{self, ConnectionControl};
 use restate_types::protobuf::node::{Header, Hello, Message, Welcome};
-use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version};
+use restate_types::{GenerationalNodeId, Merge, NodeId, PlainNodeId, Version};
 
 use super::connection::{OwnedConnection, WeakConnection};
 use super::error::{NetworkError, ProtocolError};
@@ -42,6 +42,39 @@ use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
 use crate::network::{Incoming, PeerMetadataVersion};
 use crate::{Metadata, TaskCenter, TaskContext, TaskId, TaskKind};
 
+#[derive(Copy, Clone, PartialOrd, PartialEq, Default)]
+struct GenStatus {
+    generation: u32,
+    // a gone node is a node that has told us that it's shutting down. We don't expect to be able
+    // to connect to this node in the future unless a higher generation node shows up.
+    gone: bool,
+}
+
+impl GenStatus {
+    fn new(generation: u32) -> Self {
+        Self {
+            generation,
+            gone: false,
+        }
+    }
+}
+
+impl Merge for GenStatus {
+    fn merge(&mut self, other: Self) -> bool {
+        if other.generation > self.generation {
+            self.generation = other.generation;
+            self.gone = other.gone;
+            true
+        } else if other.generation == self.generation && self.gone {
+            false
+        } else if other.generation == self.generation && !self.gone {
+            self.gone.merge(other.gone)
+        } else {
+            false
+        }
+    }
+}
+
 struct ConnectionManagerInner {
     router: MessageRouter,
     connections: HashMap<TaskId, Weak<OwnedConnection>>,
@@ -49,7 +82,7 @@ struct ConnectionManagerInner {
     /// This tracks the max generation we observed from connection attempts regardless of our nodes
     /// configuration. We cannot accept connections from nodes older than ones we have observed
     /// already.
-    observed_generations: HashMap<PlainNodeId, u32>,
+    observed_generations: HashMap<PlainNodeId, GenStatus>,
 }
 
 impl ConnectionManagerInner {
@@ -271,6 +304,20 @@ impl<T: TransportConnect> ConnectionManager<T> {
         if let Some(connection) = maybe_connection {
             return Ok(connection);
         }
+
+        let is_gone = {
+            self.inner
+                .lock()
+                .observed_generations
+                .get(&node_id.as_plain())
+                .map(|status| status.generation <= node_id.generation() && status.gone)
+                .unwrap_or(false)
+            // lock is dropped.
+        };
+
+        if is_gone {
+            return Err(NetworkError::NodeIsGone(node_id));
+        }
         // We have no connection. We attempt to create a new connection.
         self.connect(node_id).await
     }
@@ -416,30 +463,41 @@ impl<T: TransportConnect> ConnectionManager<T> {
         // However, more than one connection with the same generation is allowed.
         let mut _cleanup = false;
         let mut guard = self.inner.lock();
-        let known_generation = guard
+        let known_status = guard
             .observed_generations
             .get(&connection.peer.as_plain())
             .copied()
-            .unwrap_or(connection.peer.generation());
+            .unwrap_or(GenStatus::new(connection.peer.generation()));
 
-        if known_generation > connection.peer.generation() {
+        if known_status.generation > connection.peer.generation() {
             // This peer is _older_ than the one we have seen in the past, we cannot accept
             // this connection. We terminate the stream immediately.
             return Err(NetworkError::OldPeerGeneration(format!(
                 "newer generation '{}' has been observed",
-                NodeId::new_generational(connection.peer.id(), known_generation)
+                NodeId::new_generational(connection.peer.id(), known_status.generation)
             )));
         }
-        if known_generation < connection.peer.generation() {
+
+        if known_status.generation == connection.peer.generation() && known_status.gone {
+            // This peer was observed to have shutdown before. We cannot accept new connections from this peer.
+            return Err(NetworkError::NodeIsGone(connection.peer));
+        }
+
+        if known_status.generation < connection.peer.generation() {
             // We have observed newer generation of the same node.
             // TODO: Terminate old node's connection by cancelling its reactor task,
             // and continue with this connection.
             _cleanup = true;
         }
         // update observed generation
+        let new_status = GenStatus::new(connection.peer.generation());
         guard
             .observed_generations
-            .insert(connection.peer.as_plain(), connection.peer.generation());
+            .entry(connection.peer.as_plain())
+            .and_modify(|status| {
+                status.merge(new_status);
+            })
+            .or_insert(new_status);
 
         let connection = Arc::new(connection);
         let peer_node_id = connection.peer;
@@ -501,6 +559,7 @@ where
     let mut seen_versions = MetadataVersions::default();
 
     let mut needs_drain = false;
+    let mut is_peer_shutting_down = false;
     // Receive loop
     loop {
         // read a message from the stream
@@ -561,6 +620,9 @@ where
                 ctrl_msg.signal(),
                 ctrl_msg.message
             );
+            if ctrl_msg.signal() == message::Signal::Shutdown {
+                is_peer_shutting_down = true;
+            }
             break;
         }
 
@@ -634,7 +696,7 @@ where
 
     // remove from active set
     ONGOING_DRAIN.increment(1.0);
-    on_connection_draining(&connection, &connection_manager);
+    on_connection_draining(&connection, &connection_manager, is_peer_shutting_down);
     let protocol_version = connection.protocol_version;
     let peer_node_id = connection.peer;
     let connection_created_at = connection.created;
@@ -701,6 +763,7 @@ where
 fn on_connection_draining(
     connection: &OwnedConnection,
     inner_manager: &Mutex<ConnectionManagerInner>,
+    is_peer_shutting_down: bool,
 ) {
     let mut guard = inner_manager.lock();
     if let Some(connections) = guard.connection_by_gen_id.get_mut(&connection.peer) {
@@ -710,7 +773,18 @@ fn on_connection_draining(
             c.upgrade()
                 .map(|c| c.as_ref() != connection)
                 .unwrap_or_default()
-        })
+        });
+    }
+    if is_peer_shutting_down {
+        let mut new_status = GenStatus::new(connection.peer.generation());
+        new_status.gone = true;
+        guard
+            .observed_generations
+            .entry(connection.peer.as_plain())
+            .and_modify(|status| {
+                status.merge(new_status);
+            })
+            .or_insert(new_status);
     }
 }
 
