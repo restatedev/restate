@@ -42,14 +42,16 @@ struct ReplicationFailed;
 /// state of the loglet tail.
 pub struct Digests {
     loglet_id: LogletId,
-    // inclusive. The first record we need to repair.
+    /// inclusive. The first record we need to repair.
     start_offset: LogletOffset,
-    // exclusive (this should be the durable global_tail after finishing)
+    /// exclusive (this should be the durable global_tail after finishing)
     target_tail: LogletOffset,
-    // all offsets `[start_offset..target_tail)`
+    /// all offsets `[start_offset..target_tail)`
     offsets_under_repair: BTreeMap<LogletOffset, NodeSet>,
     known_nodes: NodeSet,
     spread_selector: SpreadSelector,
+    /// number of records we have re-replicated
+    num_fixups: usize,
 }
 
 impl Digests {
@@ -81,6 +83,7 @@ impl Digests {
             known_nodes: Default::default(),
             offsets_under_repair: offsets,
             spread_selector,
+            num_fixups: 0,
         }
     }
 
@@ -94,9 +97,26 @@ impl Digests {
         self.target_tail
     }
 
+    /// Number of records that have been replicated
+    pub fn num_fixups(&self) -> usize {
+        self.num_fixups
+    }
+
+    /// The nodes that chimed in during digest
+    pub fn known_nodes(&self) -> &NodeSet {
+        &self.known_nodes
+    }
+
     /// If true, no repairs are needed
     pub fn is_finished(&self) -> bool {
-        self.start_offset >= self.target_tail
+        let res = self.start_offset >= self.target_tail;
+        if res {
+            debug_assert!(
+                self.offsets_under_repair.is_empty(),
+                "no records should be under repair if digest said we are finished"
+            );
+        }
+        res
     }
 
     /// Processes an incoming digest message from a node. Entries outside the current range under
@@ -112,10 +132,6 @@ impl Digests {
         known_global_tail.notify_offset_update(msg.header.known_global_tail);
         self.update_start_offset(known_global_tail.latest_offset());
 
-        if self.is_finished() {
-            return;
-        }
-
         if msg.header.status != Status::Ok {
             return;
         }
@@ -126,6 +142,10 @@ impl Digests {
                 node_id = %peer_node,
                 "We have received a successful digest from this node already!"
             );
+            return;
+        }
+
+        if self.is_finished() {
             return;
         }
 
@@ -247,8 +267,10 @@ impl Digests {
                     %offset,
                     "Record has been repaired"
                 );
+                self.num_fixups += 1;
                 // record has been fully replicated.
-                self.update_start_offset(offset);
+                self.update_start_offset(offset.next());
+                inflight_stores.detach_all();
                 return Ok(());
             }
 
@@ -325,6 +347,7 @@ impl Digests {
         );
         // walk backwards
         while let Some((offset, nodes)) = range.next_back() {
+            checker.fill_with_default();
             checker.set_attribute_on_each(nodes.iter().copied(), true);
             if checker.check_write_quorum(|known| *known) {
                 // this offset is good, advance to the next one
@@ -332,7 +355,21 @@ impl Digests {
                 return true;
             }
         }
-        false
+        // nothing to repair.
+        if self.is_finished() {
+            return true;
+        }
+        // when can we advance to repair from digest?
+        // - When we have digests enough to find at least a single copy of the oldest record in the
+        // repair range.
+        // - we have write-quorum of "writeable" nodes that responded to our digest requests (even if they
+        // don't have the records)
+        !self
+            .offsets_under_repair
+            .first_key_value()
+            .expect("must have at least one if we are not finished")
+            .1
+            .is_empty()
     }
 
     fn update_start_offset(&mut self, new_start_offset: LogletOffset) {
@@ -344,7 +381,7 @@ impl Digests {
     }
 
     fn truncate_range(&mut self) {
-        if self.is_finished() {
+        if self.start_offset >= self.target_tail {
             self.offsets_under_repair.clear();
         } else {
             self.offsets_under_repair = self.offsets_under_repair.split_off(&self.start_offset);
