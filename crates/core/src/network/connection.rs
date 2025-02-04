@@ -16,6 +16,7 @@ use std::time::Instant;
 use enum_map::{enum_map, EnumMap};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
+use tracing::{debug, trace};
 
 use restate_types::net::codec::Targeted;
 use restate_types::net::codec::{serialize_message, WireEncode};
@@ -146,11 +147,16 @@ impl OwnedConnection {
 
     /// Best-effort delivery of signals on the connection.
     pub fn send_control_frame(&self, control: message::ConnectionControl) {
+        let signal = control.signal();
         let msg = Message {
             header: None,
             body: Some(control.into()),
         };
-        let _ = self.sender.try_send(msg);
+
+        debug!(?msg, "Sending control frame to peer");
+        if self.sender.try_send(msg).is_ok() {
+            trace!(?signal, "Control frame was written to connection");
+        }
     }
 
     /// A handle that sends messages through that connection. This hides the
@@ -709,9 +715,8 @@ pub mod test_util {
                             break;
                         };
 
-                        // if it's a control signal, handle it, otherwise, route with message router.
+                        // If it's a control signal, we terminate the connection
                         if let message::Body::ConnectionControl(ctrl_msg) = &body {
-                            // do something
                             info!(
                                 "Terminating connection based on signal from peer: {:?} {}",
                                 ctrl_msg.signal(),
