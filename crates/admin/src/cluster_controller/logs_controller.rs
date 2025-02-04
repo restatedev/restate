@@ -517,7 +517,7 @@ impl LogletConfiguration {
                     // replication property has changed, we need to reconfigure.
                     debug!(
                         %log_id,
-                        loglet_id = ?params.loglet_id,
+                        loglet_id = %params.loglet_id,
                         current_replication = %params.replication,
                         new_replication = %config.replication_property,
                         "Replicated loglet default replication has can changed, will attempt reconfiguration"
@@ -536,7 +536,7 @@ impl LogletConfiguration {
                 if selection != *effective_nodeset {
                     debug!(
                         %log_id,
-                        loglet_id = ?params.loglet_id,
+                        loglet_id = %params.loglet_id,
                         original_nodeset = %effective_nodeset,
                         potential_nodeset = %selection,
                         "Replicated loglet nodeset can be improved, will attempt reconfiguration"
