@@ -9,7 +9,7 @@ cargo-dist-version = "0.28.0"
 ci = "github"
 github-attestations = true
 # The installers to generate for each app
-installers = ["homebrew", "npm"]
+installers = ["homebrew"]
 # A GitHub repo to push Homebrew formulas to
 tap = "restatedev/homebrew-tap"
 # The npm scope that our npm packages are under
