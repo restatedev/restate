@@ -6475,6 +6475,7 @@ dependencies = [
 name = "restate-core"
 version = "1.2.0-dev"
 dependencies = [
+ "ahash 0.8.11",
  "anyhow",
  "arc-swap",
  "assert2",
