@@ -39,7 +39,7 @@ impl<'a> FmtLevel<'a> {
     }
 }
 
-impl<'a> Display for FmtLevel<'a> {
+impl Display for FmtLevel<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.ansi {
             write!(f, "{}", level_color(self.level).paint(self.level.as_str()))
@@ -275,7 +275,7 @@ impl<'a> PrettyVisitor<'a> {
     }
 }
 
-impl<'a> field::Visit for PrettyVisitor<'a> {
+impl field::Visit for PrettyVisitor<'_> {
     fn record_str(&mut self, field: &Field, value: &str) {
         if self.writer.result.is_err() {
             return;
@@ -381,13 +381,13 @@ impl<'a> field::Visit for PrettyVisitor<'a> {
     }
 }
 
-impl<'a> VisitOutput<fmt::Result> for PrettyVisitor<'a> {
+impl VisitOutput<fmt::Result> for PrettyVisitor<'_> {
     fn finish(self) -> fmt::Result {
         self.writer.end()
     }
 }
 
-impl<'a> VisitFmt for PrettyVisitor<'a> {
+impl VisitFmt for PrettyVisitor<'_> {
     fn writer(&mut self) -> &mut dyn fmt::Write {
         &mut self.writer.writer
     }
@@ -395,7 +395,7 @@ impl<'a> VisitFmt for PrettyVisitor<'a> {
 
 struct ErrorSourceList<'a>(&'a (dyn std::error::Error + 'static));
 
-impl<'a> Display for ErrorSourceList<'a> {
+impl Display for ErrorSourceList<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut list = f.debug_list();
         let mut curr = Some(self.0);
@@ -418,7 +418,7 @@ impl<'a> RestateErrorCodeAndDetailsWriter<'a> {
     }
 }
 
-impl<'a> field::Visit for RestateErrorCodeAndDetailsWriter<'a> {
+impl field::Visit for RestateErrorCodeAndDetailsWriter<'_> {
     fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
         if field.name() == RESTATE_ERROR_CODE {
             self.0.write_padded(
@@ -443,7 +443,7 @@ impl<'a> field::Visit for RestateErrorCodeAndDetailsWriter<'a> {
     }
 }
 
-impl<'a> VisitOutput<fmt::Result> for RestateErrorCodeAndDetailsWriter<'a> {
+impl VisitOutput<fmt::Result> for RestateErrorCodeAndDetailsWriter<'_> {
     fn finish(self) -> fmt::Result {
         self.0.end()
     }

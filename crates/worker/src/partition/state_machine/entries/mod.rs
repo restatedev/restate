@@ -384,7 +384,7 @@ struct ApplyJournalCommandEffect<'e, CMD> {
     completions_to_process: &'e mut VecDeque<RawEntry>,
 }
 
-impl<'e, CMD> ApplyJournalCommandEffect<'e, CMD> {
+impl<CMD> ApplyJournalCommandEffect<'_, CMD> {
     fn then_apply_completion(&mut self, e: impl Into<Completion>) {
         self.completions_to_process
             .push_back(Entry::from(e.into()).encode::<ServiceProtocolV4Codec>())

@@ -119,7 +119,7 @@ impl ReadOnlyInboxTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyInboxTable for PartitionStoreTransaction<'a> {
+impl ReadOnlyInboxTable for PartitionStoreTransaction<'_> {
     fn peek_inbox(
         &mut self,
         service_id: &ServiceId,
@@ -144,7 +144,7 @@ impl<'a> ReadOnlyInboxTable for PartitionStoreTransaction<'a> {
     }
 }
 
-impl<'a> InboxTable for PartitionStoreTransaction<'a> {
+impl InboxTable for PartitionStoreTransaction<'_> {
     async fn put_inbox_entry(
         &mut self,
         inbox_sequence_number: MessageIndex,

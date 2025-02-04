@@ -25,7 +25,7 @@ impl<'a, DB: DBAccess> OwnedIterator<'a, DB> {
     }
 }
 
-impl<'a, DB: DBAccess> Iterator for OwnedIterator<'a, DB> {
+impl<DB: DBAccess> Iterator for OwnedIterator<'_, DB> {
     type Item = (Bytes, Bytes);
 
     #[inline]

@@ -235,7 +235,7 @@ pub struct RetryIter<'a> {
     last_retry: Option<Duration>,
 }
 
-impl<'a> Iterator for RetryIter<'a> {
+impl Iterator for RetryIter<'_> {
     type Item = Duration;
 
     /// adds up to 1/3 target duration as jitter
@@ -310,7 +310,7 @@ pub fn with_jitter(duration: Duration, max_multiplier: f32) -> Duration {
     }
 }
 
-impl<'a> ExactSizeIterator for RetryIter<'a> {}
+impl ExactSizeIterator for RetryIter<'_> {}
 
 #[cfg(test)]
 mod tests {

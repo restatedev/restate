@@ -266,7 +266,7 @@ impl DeploymentMetadata {
     // and for Lambda deployments its the ARN
     pub fn address_display(&self) -> impl Display + '_ {
         struct Wrapper<'a>(&'a DeploymentType);
-        impl<'a> Display for Wrapper<'a> {
+        impl Display for Wrapper<'_> {
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
                 match self {
                     Wrapper(DeploymentType::Http { address, .. }) => address.fmt(f),

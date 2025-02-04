@@ -120,7 +120,7 @@ impl ReadOnlyIdempotencyTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyIdempotencyTable for PartitionStoreTransaction<'a> {
+impl ReadOnlyIdempotencyTable for PartitionStoreTransaction<'_> {
     async fn get_idempotency_metadata(
         &mut self,
         idempotency_id: &IdempotencyId,
@@ -137,7 +137,7 @@ impl<'a> ReadOnlyIdempotencyTable for PartitionStoreTransaction<'a> {
     }
 }
 
-impl<'a> IdempotencyTable for PartitionStoreTransaction<'a> {
+impl IdempotencyTable for PartitionStoreTransaction<'_> {
     async fn put_idempotency_metadata(
         &mut self,
         idempotency_id: &IdempotencyId,

@@ -238,7 +238,7 @@ impl From<hyper_util::client::legacy::Error> for HttpError {
 
 struct FormatHyperError<'a>(&'a hyper_util::client::legacy::Error);
 
-impl<'a> fmt::Display for FormatHyperError<'a> {
+impl fmt::Display for FormatHyperError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(source) = self.0.source() {
             write!(f, "{}, {}", self.0, source)

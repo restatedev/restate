@@ -159,7 +159,7 @@ impl ReadOnlyStateTable for PartitionStore {
     }
 }
 
-impl<'a> ReadOnlyStateTable for PartitionStoreTransaction<'a> {
+impl ReadOnlyStateTable for PartitionStoreTransaction<'_> {
     fn get_user_state(
         &mut self,
         service_id: &ServiceId,
@@ -182,7 +182,7 @@ impl<'a> ReadOnlyStateTable for PartitionStoreTransaction<'a> {
     }
 }
 
-impl<'a> StateTable for PartitionStoreTransaction<'a> {
+impl StateTable for PartitionStoreTransaction<'_> {
     fn put_user_state(
         &mut self,
         service_id: &ServiceId,
