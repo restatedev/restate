@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use ahash::HashMap;
 use async_trait::async_trait;
 use futures::Stream;
 use tokio::sync::mpsc;
