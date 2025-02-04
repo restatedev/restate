@@ -32,8 +32,8 @@ use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
 use restate_core::partitions::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
-use restate_core::{cancellation_watcher, Metadata, TaskKind};
 use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter};
+use restate_core::{Metadata, TaskKind};
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
 use restate_metadata_server::{
@@ -41,7 +41,6 @@ use restate_metadata_server::{
 };
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::GenericError;
-use restate_types::health::Health;
 use restate_types::live::Live;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
 #[cfg(feature = "replicated-loglet")]
@@ -52,7 +51,7 @@ use restate_types::nodes_config::{
 };
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::protobuf::common::{
-    AdminStatus, IngressStatus, LogServerStatus, NodeRpcStatus, NodeStatus, WorkerStatus,
+    AdminStatus, IngressStatus, LogServerStatus, NodeRpcStatus, WorkerStatus,
 };
 use restate_types::storage::StorageEncode;
 use restate_types::{GenerationalNodeId, Version, Versioned};
@@ -115,7 +114,6 @@ pub enum BuildError {
 }
 
 pub struct Node {
-    health: Health,
     server_builder: NetworkServerBuilder,
     updateable_config: Live<Configuration>,
     metadata_manager: MetadataManager,
@@ -134,8 +132,6 @@ pub struct Node {
 
 impl Node {
     pub async fn create(updateable_config: Live<Configuration>) -> Result<Self, BuildError> {
-        let health = Health::default();
-        health.node_status().update(NodeStatus::StartingUp);
         let mut server_builder = NetworkServerBuilder::default();
         let config = updateable_config.pinned();
 
@@ -164,7 +160,7 @@ impl Node {
                         .clone()
                         .map(|config| &config.metadata_server.rocksdb)
                         .boxed(),
-                    health.metadata_server_status(),
+                    TaskCenter::with_current(|tc| tc.health().metadata_server_status()),
                     Some(metadata_writer),
                     &mut server_builder,
                 )
@@ -214,7 +210,7 @@ impl Node {
         let log_server = if config.has_role(Role::LogServer) {
             Some(
                 LogServerService::create(
-                    health.log_server_status(),
+                    TaskCenter::with_current(|tc| tc.health().log_server_status()),
                     updateable_config.clone(),
                     metadata.clone(),
                     record_cache,
@@ -230,7 +226,7 @@ impl Node {
         let worker_role = if config.has_role(Role::Worker) {
             Some(
                 WorkerRole::create(
-                    health.worker_status(),
+                    TaskCenter::with_current(|tc| tc.health().worker_status()),
                     metadata.clone(),
                     partition_routing_refresher.partition_routing(),
                     updateable_config.clone(),
@@ -260,7 +256,7 @@ impl Node {
                     .clone()
                     .map(|config| &config.ingress)
                     .boxed(),
-                health.ingress_status(),
+                TaskCenter::with_current(|tc| tc.health().ingress_status()),
                 networking.clone(),
                 metadata.updateable_schema(),
                 metadata.updateable_partition_table(),
@@ -274,7 +270,7 @@ impl Node {
         let admin_role = if config.has_role(Role::Admin) {
             Some(
                 AdminRole::create(
-                    health.admin_status(),
+                    TaskCenter::with_current(|tc| tc.health().admin_status()),
                     bifrost.clone(),
                     updateable_config.clone(),
                     partition_routing_refresher.partition_routing(),
@@ -308,7 +304,6 @@ impl Node {
             .set_message_router(message_router);
 
         Ok(Node {
-            health,
             updateable_config,
             metadata_manager,
             partition_routing_refresher,
@@ -336,13 +331,11 @@ impl Node {
 
         // spawn the node rpc server first to enable connecting to the metadata store
         TaskCenter::spawn(TaskKind::RpcServer, "node-rpc-server", {
-            let health = self.health.clone();
             let common_options = config.common.clone();
             let connection_manager = self.networking.connection_manager().clone();
             let metadata_store_client = self.metadata_store_client.clone();
             async move {
                 NetworkServer::run(
-                    health,
                     connection_manager,
                     self.server_builder,
                     common_options,
@@ -354,10 +347,8 @@ impl Node {
         })?;
 
         // wait until the node rpc server is up and running before continuing
-        self.health
-            .node_rpc_status()
-            .wait_for_value(NodeRpcStatus::Ready)
-            .await;
+        let node_rpc_status = TaskCenter::with_current(|tc| tc.health().node_rpc_status());
+        node_rpc_status.wait_for_value(NodeRpcStatus::Ready).await;
 
         if let Some(metadata_store) = self.metadata_store_role {
             TaskCenter::spawn(
@@ -462,18 +453,16 @@ impl Node {
         }
 
         if let Some(ingress_role) = self.ingress_role {
-            TaskCenter::spawn_child(TaskKind::Ingress, "ingress-http", ingress_role.run())?;
+            TaskCenter::spawn(TaskKind::IngressServer, "ingress-http", ingress_role.run())?;
         }
 
         self.base_role.start()?;
 
-        let node_status = self.health.node_status();
-        node_status.update(NodeStatus::Alive);
-
         let my_roles = my_node_config.roles;
         // Report that the node is running when all roles are ready
         let _ = TaskCenter::spawn(TaskKind::Disposable, "status-report", async move {
-            self.health
+            let health = TaskCenter::with_current(|tc| tc.health().clone());
+            health
                 .node_rpc_status()
                 .wait_for_value(NodeRpcStatus::Ready)
                 .await;
@@ -481,21 +470,21 @@ impl Node {
             for role in my_roles {
                 match role {
                     Role::Worker => {
-                        self.health
+                        health
                             .worker_status()
                             .wait_for_value(WorkerStatus::Ready)
                             .await;
                         trace!("Worker role is reporting ready");
                     }
                     Role::Admin => {
-                        self.health
+                        health
                             .admin_status()
                             .wait_for_value(AdminStatus::Ready)
                             .await;
                         trace!("Worker role is reporting ready");
                     }
                     Role::MetadataServer => {
-                        self.health
+                        health
                             .metadata_server_status()
                             .wait_for(|status| status.is_running())
                             .await;
@@ -503,14 +492,14 @@ impl Node {
                     }
 
                     Role::LogServer => {
-                        self.health
+                        health
                             .log_server_status()
                             .wait_for_value(LogServerStatus::Ready)
                             .await;
                         trace!("Log-server is reporting ready");
                     }
                     Role::HttpIngress => {
-                        self.health
+                        health
                             .ingress_status()
                             .wait_for_value(IngressStatus::Ready)
                             .await;
@@ -519,12 +508,6 @@ impl Node {
                 }
             }
             info!("Restate server is ready");
-            Ok(())
-        });
-
-        let _ = TaskCenter::spawn_child(TaskKind::Background, "node-status", async move {
-            cancellation_watcher().await;
-            node_status.update(NodeStatus::ShuttingDown);
             Ok(())
         });
 
