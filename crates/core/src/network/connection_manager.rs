@@ -13,7 +13,7 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use enum_map::EnumMap;
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use opentelemetry::global;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -500,13 +500,22 @@ where
     let mut cancellation = std::pin::pin!(current_task.cancellation_token().cancelled());
     let mut seen_versions = MetadataVersions::default();
 
+    let mut needs_drain = false;
     // Receive loop
     loop {
         // read a message from the stream
         let msg = tokio::select! {
             biased;
             _ = &mut cancellation => {
-                connection.send_control_frame(ConnectionControl::shutdown());
+                if TaskCenter::is_shutdown_requested() {
+                    // We want to make the distinction between whether we are terminating the
+                    // connection, or whether the node is shutting down.
+                    connection.send_control_frame(ConnectionControl::shutdown());
+                } else {
+                    connection.send_control_frame(ConnectionControl::connection_reset());
+                }
+                // we only drain the connection if we were the initiators of the termination
+                needs_drain = true;
                 break;
             },
             msg = incoming.next() => {
@@ -518,6 +527,7 @@ where
                         break;
                     }
                     None => {
+                        // peer terminated the connection
                         // stream has terminated cleanly.
                         break;
                     }
@@ -527,6 +537,32 @@ where
 
         MESSAGE_RECEIVED.increment(1);
         let processing_started = Instant::now();
+
+        // body are not allowed to be empty.
+        let Some(body) = msg.body else {
+            connection
+                .send_control_frame(ConnectionControl::codec_error("Body is missing on message"));
+            break;
+        };
+
+        // Welcome and hello are not allowed after handshake
+        if body.is_welcome() || body.is_hello() {
+            connection.send_control_frame(ConnectionControl::codec_error(
+                "Hello/Welcome are not allowed after handshake",
+            ));
+            break;
+        };
+
+        // if it's a control signal, handle it, otherwise, route with message router.
+        if let message::Body::ConnectionControl(ctrl_msg) = &body {
+            // do something
+            info!(
+                "Terminating connection based on signal from peer: {:?} {}",
+                ctrl_msg.signal(),
+                ctrl_msg.message
+            );
+            break;
+        }
 
         //  header is required on all messages
         let Some(header) = msg.header else {
@@ -554,32 +590,6 @@ where
                     );
                 }
             });
-
-        // body are not allowed to be empty.
-        let Some(body) = msg.body else {
-            connection
-                .send_control_frame(ConnectionControl::codec_error("Body is missing on message"));
-            break;
-        };
-
-        // Welcome and hello are not allowed after handshake
-        if body.is_welcome() || body.is_hello() {
-            connection.send_control_frame(ConnectionControl::codec_error(
-                "Hello/Welcome are not allowed after handshake",
-            ));
-            break;
-        };
-
-        // if it's a control signal, handle it, otherwise, route with message router.
-        if let message::Body::ConnectionControl(ctrl_msg) = &body {
-            // do something
-            info!(
-                "Terminating connection based on signal from peer: {:?} {}",
-                ctrl_msg.signal(),
-                ctrl_msg.message
-            );
-            break;
-        }
 
         match body.try_as_binary_body(connection.protocol_version) {
             Ok(msg) => {
@@ -632,41 +642,43 @@ where
     drop(connection);
 
     let drain_start = std::time::Instant::now();
-    trace!("Draining connection");
     let mut drain_counter = 0;
-    // Draining of incoming queue
-    while let Some(Ok(msg)) = incoming.next().await {
-        // ignore malformed messages
-        let Some(header) = msg.header else {
-            continue;
-        };
-        if let Some(body) = msg.body {
-            // we ignore non-deserializable messages (serde errors, or control signals in drain)
-            if let Ok(msg) = body.try_as_binary_body(protocol_version) {
-                drain_counter += 1;
-                let parent_context = header.span_context.as_ref().map(|span_ctx| {
-                    global::get_text_map_propagator(|propagator| propagator.extract(span_ctx))
-                });
+    if needs_drain {
+        debug!("Draining connection");
+        // Draining of incoming queue
+        while let Some(Some(Ok(msg))) = incoming.next().now_or_never() {
+            // ignore malformed messages
+            let Some(header) = msg.header else {
+                continue;
+            };
+            if let Some(body) = msg.body {
+                // we ignore non-deserializable messages (serde errors, or control signals in drain)
+                if let Ok(msg) = body.try_as_binary_body(protocol_version) {
+                    drain_counter += 1;
+                    let parent_context = header.span_context.as_ref().map(|span_ctx| {
+                        global::get_text_map_propagator(|propagator| propagator.extract(span_ctx))
+                    });
 
-                if let Err(e) = router
-                    .call(
-                        Incoming::from_parts(
-                            msg,
-                            // This is a dying connection, don't pass it down.
-                            WeakConnection::new_closed(peer_node_id),
-                            header.msg_id,
-                            header.in_response_to,
-                            PeerMetadataVersion::from(header),
+                    if let Err(e) = router
+                        .call(
+                            Incoming::from_parts(
+                                msg,
+                                // This is a dying connection, don't pass it down.
+                                WeakConnection::new_closed(peer_node_id),
+                                header.msg_id,
+                                header.in_response_to,
+                                PeerMetadataVersion::from(header),
+                            )
+                            .with_parent_context(parent_context),
+                            protocol_version,
                         )
-                        .with_parent_context(parent_context),
-                        protocol_version,
-                    )
-                    .await
-                {
-                    debug!(
-                        "Error processing message while draining connection: {:?}",
-                        e
-                    );
+                        .await
+                    {
+                        debug!(
+                            "Error processing message while draining connection: {:?}",
+                            e
+                        );
+                    }
                 }
             }
         }

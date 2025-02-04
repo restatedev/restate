@@ -797,6 +797,13 @@ impl TaskCenterInner {
         } else {
             info!(%reason, "** Shutdown requested");
         }
+        self.cancel_tasks(Some(TaskKind::ClusterController), None)
+            .await;
+        tokio::join!(
+            self.cancel_tasks(Some(TaskKind::RpcServer), None),
+            self.cancel_tasks(Some(TaskKind::ConnectionReactor), None),
+            self.cancel_tasks(Some(TaskKind::SocketHandler), None)
+        );
         self.initiate_managed_runtimes_shutdown();
         self.cancel_tasks(None, None).await;
         self.shutdown_managed_runtimes();
