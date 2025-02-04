@@ -26,10 +26,9 @@ use restate_core::protobuf::node_ctl_svc::{
     IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse,
 };
 use restate_core::task_center::TaskCenterMonitoring;
-use restate_core::{task_center, Metadata, MetadataKind, TargetVersion};
+use restate_core::{task_center, Metadata, MetadataKind, TargetVersion, TaskCenter};
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::config::Configuration;
-use restate_types::health::Health;
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
@@ -44,7 +43,6 @@ pub struct NodeCtlSvcHandler {
     task_center: task_center::Handle,
     cluster_name: String,
     roles: EnumSet<Role>,
-    health: Health,
     metadata_store_client: MetadataStoreClient,
 }
 
@@ -53,14 +51,12 @@ impl NodeCtlSvcHandler {
         task_center: task_center::Handle,
         cluster_name: String,
         roles: EnumSet<Role>,
-        health: Health,
         metadata_store_client: MetadataStoreClient,
     ) -> Self {
         Self {
             task_center,
             cluster_name,
             roles,
-            health,
             metadata_store_client,
         }
     }
@@ -98,11 +94,17 @@ impl NodeCtlSvcHandler {
 #[async_trait::async_trait]
 impl NodeCtlSvc for NodeCtlSvcHandler {
     async fn get_ident(&self, _request: Request<()>) -> Result<Response<IdentResponse>, Status> {
-        let node_status = self.health.current_node_status();
-        let admin_status = self.health.current_admin_status();
-        let worker_status = self.health.current_worker_status();
-        let metadata_server_status = self.health.current_metadata_store_status();
-        let log_server_status = self.health.current_log_server_status();
+        let (node_status, admin_status, worker_status, metadata_server_status, log_server_status) =
+            TaskCenter::with_current(|tc| {
+                let health = tc.health();
+                (
+                    health.current_node_status(),
+                    health.current_admin_status(),
+                    health.current_worker_status(),
+                    health.current_metadata_store_status(),
+                    health.current_log_server_status(),
+                )
+            });
         let age_s = self.task_center.age().as_secs();
         let metadata = Metadata::current();
         Ok(Response::new(IdentResponse {
