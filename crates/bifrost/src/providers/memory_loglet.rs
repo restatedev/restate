@@ -93,7 +93,10 @@ impl LogletProvider for MemoryLogletProvider {
                 }
 
                 // Create loglet
-                let loglet = entry.insert(MemoryLoglet::new(params.clone()));
+                let raw: u64 = params
+                    .parse()
+                    .expect("memory loglets are configured just with u64 loglet ids");
+                let loglet = entry.insert(MemoryLoglet::new(LogletId::new_unchecked(raw)));
                 Arc::clone(loglet)
             }
             hash_map::Entry::Occupied(entry) => entry.get().clone(),
@@ -111,9 +114,8 @@ impl LogletProvider for MemoryLogletProvider {
         let new_segment_index = chain
             .map(|c| c.tail_index().next())
             .unwrap_or(SegmentIndex::OLDEST);
-        Ok(LogletParams::from(
-            LogletId::new(log_id, new_segment_index).to_string(),
-        ))
+        let id = LogletId::new(log_id, new_segment_index);
+        Ok(LogletParams::from(u64::from(id).to_string()))
     }
 
     async fn shutdown(&self) -> Result<(), OperationError> {
@@ -124,8 +126,7 @@ impl LogletProvider for MemoryLogletProvider {
 
 #[derive(derive_more::Debug)]
 pub struct MemoryLoglet {
-    // We treat params as an opaque identifier for the underlying loglet.
-    params: LogletParams,
+    loglet_id: LogletId,
     #[debug(skip)]
     log: Mutex<Vec<Record>>,
     // internal offset _before_ the loglet head. Loglet head is trim_point_offset.next()
@@ -138,9 +139,9 @@ pub struct MemoryLoglet {
 }
 
 impl MemoryLoglet {
-    pub fn new(params: LogletParams) -> Arc<Self> {
+    pub fn new(loglet_id: LogletId) -> Arc<Self> {
         Arc::new(Self {
-            params,
+            loglet_id,
             log: Mutex::new(Vec::new()),
             // Trim point is 0 initially
             trim_point_offset: AtomicU32::new(0),
@@ -326,6 +327,13 @@ impl Stream for MemoryReadStream {
 
 #[async_trait]
 impl Loglet for MemoryLoglet {
+    fn id(&self) -> LogletId {
+        self.loglet_id
+    }
+
+    fn provider(&self) -> ProviderKind {
+        ProviderKind::InMemory
+    }
     async fn create_read_stream(
         self: Arc<Self>,
         filter: KeyFilter,
@@ -352,8 +360,8 @@ impl Loglet for MemoryLoglet {
         for payload in payloads.iter() {
             last_committed_offset = last_committed_offset.next();
             debug!(
-                "Appending record to in-memory loglet {:?} at offset {}",
-                self.params, last_committed_offset
+                "Appending record to in-memory loglet {} at offset {}",
+                self.loglet_id, last_committed_offset
             );
             log.push(payload.clone());
         }
@@ -430,7 +438,7 @@ mod tests {
                         .set_provider_kind(ProviderKind::InMemory)
                         .build()
                         .await;
-                    let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
+                    let loglet = MemoryLoglet::new(LogletId::new_unchecked(112));
                     crate::loglet::loglet_tests::$test(loglet).await
                 }
             }
