@@ -221,7 +221,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 tracing::Level::DEBUG,
                 format!("Updating partition table in metadata manager to {new_version}."),
             )
-            .with_overdue(Duration::from_secs(2), tracing::Level::INFO)
+            .with_overdue(Duration::from_secs(1), tracing::Level::INFO)
             .await?;
         Ok(())
     }

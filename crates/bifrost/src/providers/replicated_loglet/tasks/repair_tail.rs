@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
-
 use tokio::task::JoinSet;
-use tracing::{trace, warn, Instrument, Span};
+use tokio::time::Instant;
+use tracing::{debug, error, info, warn, Instrument};
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{ShutdownError, TaskCenterFutureExt};
@@ -118,8 +117,21 @@ impl<T: TransportConnect> RepairTail<T> {
 
     pub async fn run(mut self) -> RepairTailResult {
         if self.digests.is_finished() {
+            debug!(
+                loglet_id = %self.my_params.loglet_id,
+                known_global_tail = %self.known_global_tail.latest_offset(),
+                target_tail = %self.digests.target_tail(),
+                "Repair task completed, no records required repairing"
+            );
             return RepairTailResult::Completed;
         }
+        let start = Instant::now();
+        info!(
+            loglet_id = %self.my_params.loglet_id,
+            start_offset = %self.digests.start_offset(),
+            target_tail = %self.digests.target_tail(),
+            "Tail records are under-replicated, starting a repair tail task",
+        );
         let mut get_digest_requests = JoinSet::new();
         let effective_nodeset = self
             .my_params
@@ -141,47 +153,60 @@ impl<T: TransportConnect> RepairTail<T> {
                 let logservers_rpc = self.logservers_rpc.clone();
                 let peer = *node;
                 async move {
-                    loop {
-                        // todo: handle retries with exponential backoff...
-                        let Ok(incoming) = logservers_rpc
-                            .get_digest
-                            .call(&networking, peer, msg.clone())
-                            .await
-                        else {
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                            continue;
-                        };
-                        return incoming;
-                    }
+                    logservers_rpc
+                        .get_digest
+                        .call(&networking, peer, msg.clone())
+                        .await
                 }
                 .in_current_tc()
-                .instrument(Span::current())
+                .in_current_span()
             });
         }
 
         // # Digest Phase
         while let Some(Ok(digest_message)) = get_digest_requests.join_next().await {
+            let Ok(digest_message) = digest_message else {
+                // ignore nodes that we can't get digest from
+                continue;
+            };
             let peer_node = digest_message.peer().as_plain();
             self.digests.on_digest_message(
                 peer_node,
                 digest_message.into_body(),
                 &self.known_global_tail,
             );
+            debug!(loglet_id = %self.my_params.loglet_id, "Received digest from {}", peer_node);
             if self
                 .digests
                 .advance(&self.networking.metadata().nodes_config_ref())
             {
-                trace!(
-                    loglet_id = %self.my_params.loglet_id,
-                    node_id = %peer_node,
-                    "Digest phase completed."
-                );
                 break;
+                // can we start repair, but continue to accept digest responses as repair is on-going.
             }
-            // can we start repair, but continue to accept digest responses as repair is on-going.
+            debug!(
+                loglet_id = %self.my_params.loglet_id,
+                "Still need more nodes to chime in for offsets between {} and {}. We already heard from nodes {}",
+                self.digests.start_offset(),
+                self.digests.target_tail(),
+                self.digests.known_nodes()
+            );
         }
+        debug!(
+            loglet_id = %self.my_params.loglet_id,
+            start_offset = %self.digests.start_offset(),
+            target_tail = %self.digests.target_tail(),
+            elapsed = ?start.elapsed(),
+            "Digest phase completed."
+        );
 
         if self.digests.is_finished() {
+            debug!(
+                loglet_id = %self.my_params.loglet_id,
+                known_global_tail = %self.known_global_tail.latest_offset(),
+                target_tail = %self.digests.target_tail(),
+                elapsed = ?start.elapsed(),
+                "Repair task completed, no records required repairing"
+            );
             return RepairTailResult::Completed;
         }
 
@@ -190,6 +215,41 @@ impl<T: TransportConnect> RepairTail<T> {
             .digests
             .can_repair(&self.networking.metadata().nodes_config_ref())
         {
+            error!(
+                loglet_id = %self.my_params.loglet_id,
+                start_offset = %self.digests.start_offset(),
+                target_tail = %self.digests.target_tail(),
+                nodeset = %self.my_params.nodeset,
+                nodes_responded = %self.digests.known_nodes(),
+                replication = %self.my_params.replication,
+                elapsed = ?start.elapsed(),
+                "Couldn't repair the tail! We have records to repair but no enough writeable nodes \
+                have responded to our digest request. We'll not be able to re-replicate the missing records until \
+                they are online and responsive",
+            );
+            return RepairTailResult::DigestFailed;
+        }
+
+        // we have enough nodes to form write quorum, but we cannot repair because no nodes have
+        // reported any copies for the oldest record within the repair range.
+        // couldn't find any node with copies
+        if !self
+            .digests
+            .advance(&self.networking.metadata().nodes_config_ref())
+        {
+            error!(
+                loglet_id = %self.my_params.loglet_id,
+                start_offset = %self.digests.start_offset(),
+                target_tail = %self.digests.target_tail(),
+                nodeset = %self.my_params.nodeset,
+                nodes_responded = %self.digests.known_nodes(),
+                replication = %self.my_params.replication,
+                elapsed = ?start.elapsed(),
+                "Couldn't repair the tail! We have records to repair **and** enough nodes to repair, but \
+                 we couldn't find any node with copies for the oldest record within the repair range. \
+                 We'll not be able to re-replicate the missing records until we can read back this \
+                 record",
+            );
             return RepairTailResult::DigestFailed;
         }
 
@@ -224,7 +284,7 @@ impl<T: TransportConnect> RepairTail<T> {
             tokio::select! {
                 // we fail the readstream during shutdown only, in that case, there is not much
                 // we can do but to stop.
-                Some(Ok(entry)) = rx.recv()  => {
+                Some(Ok(entry)) = rx.recv() => {
                     // we received a record. Should we replicate it?
                     if let Err(e) = self.digests.replicate_record_and_advance(
                         entry,
@@ -236,7 +296,7 @@ impl<T: TransportConnect> RepairTail<T> {
                         break 'replication_phase;
                     }
                 }
-                Some(Ok(digest_message)) = get_digest_requests.join_next() => {
+                Some(Ok(Ok(digest_message))) = get_digest_requests.join_next() => {
                     let peer_node = digest_message.peer().as_plain();
                     self.digests.on_digest_message(
                         peer_node,
@@ -256,14 +316,28 @@ impl<T: TransportConnect> RepairTail<T> {
 
         // Are we complete?
         if self.digests.is_finished() {
+            info!(
+                loglet_id = %self.my_params.loglet_id,
+                known_global_tail = %self.known_global_tail.latest_offset(),
+                target_tail = %self.digests.target_tail(),
+                elapsed = ?start.elapsed(),
+                "Repair task completed, {} records have been repaired",
+                self.digests.num_fixups(),
+            );
             return RepairTailResult::Completed;
         }
 
         warn!(
             loglet_id = %self.my_params.loglet_id,
-            "Failed to repair the tail. The unrepaired region is from {} to {}",
+            nodeset = %self.my_params.nodeset,
+            nodes_responded = %self.digests.known_nodes(),
+            replication = %self.my_params.replication,
+            elapsed = ?start.elapsed(),
+            "Failed to repair the tail. The under-replicated region is from {} to {} [inclusive]. \
+             {} records have been repaired during the process",
             self.digests.start_offset(),
-            self.digests.target_tail().prev()
+            self.digests.target_tail().prev(),
+            self.digests.num_fixups(),
         );
         RepairTailResult::ReplicationFailed
     }
