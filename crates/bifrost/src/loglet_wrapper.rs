@@ -44,6 +44,7 @@ pub struct LogletWrapper {
     pub(crate) tail_lsn: Option<Lsn>,
     #[debug(skip)]
     pub(crate) config: LogletConfig,
+    #[debug("{}/{}", loglet.provider(), loglet.id())]
     loglet: Arc<dyn Loglet>,
 }
 
