@@ -127,9 +127,10 @@ impl MaybeRetryableError for ProvisionError {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VersionedValue {
     pub version: Version,
+    #[debug(skip)]
     pub value: Bytes,
 }
 
