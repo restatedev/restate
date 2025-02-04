@@ -19,7 +19,7 @@ use rand::prelude::IteratorRandom;
 use rand::thread_rng;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, trace_span, Instrument};
+use tracing::{debug, error, info, trace, trace_span, Instrument};
 
 use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_core::metadata_store::{Precondition, WriteError};
@@ -766,7 +766,8 @@ impl LogsControllerInner {
         )?;
 
         if let Some(logs) = builder.build_if_modified() {
-            debug!("Proposing new logs configuration: {logs:?}");
+            trace!(?logs, "Proposing new log chain version {}", logs.version());
+            debug!("Proposing new log chain version {}", logs.version());
             self.logs_write_in_progress = Some(logs.version());
             let logs = Arc::new(logs);
             effects.push(Effect::WriteLogs {
@@ -1207,16 +1208,13 @@ impl LogsController {
                 {
                     return match err {
                         WriteError::FailedPrecondition(err) => {
-                            info!(
-                                %err,
-                                "Detected a concurrent modification of the log chain. Fetching latest"
-                            );
+                            info!(%err, "Detected a concurrent modification to the log chain");
                             // Perhaps we already have a newer version, if not, fetch latest.
                             let _ = Metadata::current().sync(MetadataKind::Logs, TargetVersion::Version(previous_version.next())).await;
                             Event::NewLogs
                         }
                         err => {
-                            info!(%err, "Failed writing new log chain to metadata store, will retry");
+                            info!(%err, "Failed writing the new log chain {} to metadata store, will retry", logs.version());
                             Event::WriteLogsFailed {
                                 logs,
                                 previous_version,
