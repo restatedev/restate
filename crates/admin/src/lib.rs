@@ -16,6 +16,7 @@ mod rest_api;
 mod schema_registry;
 pub mod service;
 mod state;
+#[cfg(feature = "storage-query")]
 mod storage_query;
 #[cfg(feature = "serve-web-ui")]
 mod web_ui;

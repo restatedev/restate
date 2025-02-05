@@ -106,8 +106,8 @@ impl<T: TransportConnect> AdminRole<T> {
             config.ingress.clone(),
             service_discovery,
             config.ingress.experimental_feature_kafka_ingress_next(),
-            Some(query_context),
-        );
+        )
+        .with_query_context(query_context);
 
         let controller = if config.admin.is_cluster_controller_enabled() {
             Some(cluster_controller::Service::new(

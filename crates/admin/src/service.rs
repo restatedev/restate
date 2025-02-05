@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use axum::error_handling::HandleErrorLayer;
 use http::StatusCode;
 use restate_admin_rest_model::version::AdminApiVersion;
@@ -21,12 +19,11 @@ use tower::ServiceBuilder;
 use restate_core::network::net_util;
 use restate_core::MetadataWriter;
 use restate_service_protocol::discovery::ServiceDiscovery;
-use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::net::BindAddress;
 use restate_types::schema::subscriptions::SubscriptionValidator;
 
 use crate::schema_registry::SchemaRegistry;
-use crate::{rest_api, state, storage_query};
+use crate::{rest_api, state};
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not create the service client: {0}")]
@@ -35,7 +32,8 @@ pub struct BuildError(#[from] restate_service_client::BuildError);
 pub struct AdminService<V> {
     bifrost: Bifrost,
     schema_registry: SchemaRegistry<V>,
-    query_context: Option<QueryContext>,
+    #[cfg(feature = "storage-query")]
+    query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
     #[cfg(feature = "metadata-api")]
     metadata_writer: MetadataWriter,
 }
@@ -50,7 +48,6 @@ where
         subscription_validator: V,
         service_discovery: ServiceDiscovery,
         experimental_feature_kafka_ingress_next: bool,
-        query_context: Option<QueryContext>,
     ) -> Self {
         Self {
             bifrost,
@@ -62,7 +59,19 @@ where
                 subscription_validator,
                 experimental_feature_kafka_ingress_next,
             ),
-            query_context,
+            #[cfg(feature = "storage-query")]
+            query_context: None,
+        }
+    }
+
+    #[cfg(feature = "storage-query")]
+    pub fn with_query_context(
+        self,
+        query_context: restate_storage_query_datafusion::context::QueryContext,
+    ) -> Self {
+        Self {
+            query_context: Some(query_context),
+            ..self
         }
     }
 
@@ -74,14 +83,14 @@ where
 
         let rest_state = state::AdminServiceState::new(self.schema_registry, self.bifrost);
 
-        let router = self
-            .query_context
-            .map(|query_context| {
-                let query_state = Arc::new(state::QueryServiceState { query_context });
+        let router = axum::Router::new();
 
-                axum::Router::new().merge(storage_query::create_router(query_state))
-            })
-            .unwrap_or_default();
+        #[cfg(feature = "storage-query")]
+        let router = if let Some(query_context) = self.query_context {
+            router.merge(crate::storage_query::router(query_context))
+        } else {
+            router
+        };
 
         #[cfg(feature = "metadata-api")]
         let router = router.merge(crate::metadata_api::router(
