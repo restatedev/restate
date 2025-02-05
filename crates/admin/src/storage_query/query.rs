@@ -36,7 +36,7 @@ use serde_with::serde_as;
 
 use super::convert::{ConvertRecordBatchStream, V1_CONVERTER};
 use super::error::StorageQueryError;
-use crate::state::QueryServiceState;
+use super::QueryServiceState;
 
 #[serde_as]
 #[derive(Debug, Deserialize, JsonSchema)]

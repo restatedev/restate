@@ -101,7 +101,7 @@ serde_json = { workspace = true }
 url = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms", "profiling"] }
+tikv-jemallocator = { workspace = true }
 
 [build-dependencies]
 vergen = { version = "8.0.0", default-features = false, features = [
