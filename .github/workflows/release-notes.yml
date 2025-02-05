@@ -16,6 +16,8 @@ jobs:
     permissions:
       contents: write
     runs-on: warp-ubuntu-latest-x64-2x
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Amend GitHub Release
         shell: bash

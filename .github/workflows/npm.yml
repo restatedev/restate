@@ -64,19 +64,20 @@ jobs:
           bin="$(echo "$PLAN" | jq -r '.artifacts["${{ matrix.app_name }}-${{ matrix.build.target }}.tar.xz"].assets[] | select(.kind == "executable").name')"
           tag="${{ fromJson(inputs.plan).announcement_is_prerelease && 'next' || 'latest' }}"
 
-          cd npm
+          cd npm || exit 1
           node_os="${{ matrix.build.node_os }}"
           export node_os
           node_arch="${{ matrix.build.node_arch }}"
           export node_arch
           # set the version
-          node_version=$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.app_name }}").app_version')"
+          node_version="$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.app_name }}").app_version')"
           export node_version
           # set the package name
           export node_pkg="${bin}-${node_os}-${node_arch}"
           if npm view "@restatedev/${node_pkg}@${node_version}"
           then
-            continue
+            echo "package @restatedev/${bin}@${node_version} already exists"
+            exit 0
           fi
           # create the package directory
           mkdir -p "${node_pkg}/bin"
@@ -89,9 +90,9 @@ jobs:
           cp "${dir}/LICENSE" "${node_pkg}"
           cp "${dir}/README.md" "${node_pkg}"
           # publish the package
-          pushd "${node_pkg}"
+          pushd "${node_pkg}" || exit 1
           npm publish --access public --tag "${tag}"
-          popd
+          popd || exit 1
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -116,16 +117,17 @@ jobs:
       - name: Publish to npm
         shell: bash
         run: |
-          node_version=$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.app_name }}").app_version')"
+          node_version="$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.app_name }}").app_version')"
           bin="$(echo "$PLAN" | jq -r '.artifacts["${{ matrix.package.artifact }}-${{ matrix.build.target }}.tar.xz"].assets[] | select(.kind == "executable").name')"
           tag="${{ fromJson(inputs.plan).announcement_is_prerelease && 'next' || 'latest' }}"
 
-          cd npm
+          cd npm || exit 1
           if npm view "@restatedev/${bin}@${node_version}"
           then
-            continue
+            echo "package @restatedev/${bin}@${node_version} already exists"
+            exit 0
           fi
-          pushd "${bin}"
+          pushd "${bin}" || exit 1
           sed -i "s/\"version\": \".*\",/\"version\": \"${node_version}\",/" package.json
           for os in linux darwin
           do
@@ -138,6 +140,6 @@ jobs:
           npm install
           npm run build
           npm publish --access public --tag "${tag}"
-          popd
+          popd || exit 1
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
