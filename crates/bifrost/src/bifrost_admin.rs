@@ -173,24 +173,17 @@ impl<'a> BifrostAdmin<'a> {
             .into());
         }
 
-        while let Err(e) = loglet.seal().await {
-            match e {
-                crate::loglet::OperationError::Shutdown(e) => return Err(e.into()),
-                crate::loglet::OperationError::Other(e) if e.retryable() => {
-                    // sleep and retry later.
+        if let Err(err) = loglet.seal().await {
+            match err {
+                crate::loglet::OperationError::Shutdown(err) => return Err(err.into()),
+                crate::loglet::OperationError::Other(err) => {
                     info!(
                         log_id = %log_id,
                         segment = %segment_index,
-                        loglet = ?loglet,
-                        ?e,
-                        "Seal operation failed. Retrying later..."
+                        %err,
+                        "Seal operation failed"
                     );
-                    tokio::time::sleep(Configuration::pinned().bifrost.seal_retry_interval.into())
-                        .await;
-                }
-                crate::loglet::OperationError::Other(e) => {
-                    // give up.
-                    return Err(Error::LogletError(e));
+                    return Err(Error::LogletError(err));
                 }
             }
         }
