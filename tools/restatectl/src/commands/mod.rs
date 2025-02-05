@@ -15,5 +15,6 @@ pub mod log;
 pub mod metadata;
 pub mod node;
 pub mod partition;
+pub mod provision;
 pub mod replicated_loglet;
 pub mod snapshot;

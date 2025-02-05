@@ -8,15 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod config;
+pub(crate) mod config;
 pub(crate) mod overview;
-mod provision;
 
 use cling::prelude::*;
 use config::Config;
 
 use crate::commands::cluster::overview::ClusterStatusOpts;
-use crate::commands::cluster::provision::ProvisionOpts;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Cluster {
@@ -25,6 +23,4 @@ pub enum Cluster {
     /// Manage cluster configuration
     #[clap(subcommand)]
     Config(Config),
-    /// Provision a new cluster
-    Provision(ProvisionOpts),
 }

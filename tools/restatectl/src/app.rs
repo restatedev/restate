@@ -19,6 +19,7 @@ use crate::commands::log::Logs;
 use crate::commands::metadata::Metadata;
 use crate::commands::node::Nodes;
 use crate::commands::partition::Partitions;
+use crate::commands::provision::ProvisionOpts;
 use crate::commands::replicated_loglet::ReplicatedLoglet;
 use crate::commands::snapshot::Snapshot;
 use crate::connection::ConnectionInfo;
@@ -60,6 +61,8 @@ pub enum Command {
     /// Commands that operate on replicated loglets
     #[clap(subcommand)]
     ReplicatedLoglet(ReplicatedLoglet),
+    /// Provision a new cluster
+    Provision(ProvisionOpts),
 }
 
 fn init(common_opts: &CommonOpts) {

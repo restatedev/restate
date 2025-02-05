@@ -25,7 +25,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::Code;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
-#[cling(run = "cluster_provision")]
+#[cling(run = "provision_cluster")]
 pub struct ProvisionOpts {
     /// Number of partitions
     #[clap(long)]
@@ -51,7 +51,7 @@ pub struct ProvisionOpts {
     log_default_nodeset_size: Option<u16>,
 }
 
-async fn cluster_provision(
+async fn provision_cluster(
     connection: &ConnectionInfo,
     provision_opts: &ProvisionOpts,
 ) -> anyhow::Result<()> {
