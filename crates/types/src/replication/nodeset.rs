@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
@@ -18,7 +19,7 @@ use itertools::Itertools;
 use rand::distr::Uniform;
 use rand::prelude::*;
 
-use crate::PlainNodeId;
+use crate::{Merge, PlainNodeId};
 
 // Why? Over 50% faster in iteration than HashSet and ~40% faster than default RandomState for
 // contains() and set intersection operations. Additionally, it's 300% faster when created from
@@ -302,9 +303,48 @@ impl<V: Default> From<NodeSet> for DecoratedNodeSet<V> {
     }
 }
 
+impl<V> DecoratedNodeSet<V> {
+    pub fn merge(&mut self, node_id: impl Into<PlainNodeId>, other: V) -> bool
+    where
+        V: Merge,
+    {
+        let node_id = node_id.into();
+        match self.0.entry(node_id) {
+            Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(other);
+                true
+            }
+            Entry::Occupied(occupied_entry) => occupied_entry.into_mut().merge(other),
+        }
+    }
+
+    pub fn merge_with_iter<'a>(
+        &mut self,
+        values: impl IntoIterator<Item = (&'a PlainNodeId, &'a V)>,
+    ) where
+        V: Merge + Clone,
+        V: 'a,
+    {
+        values.into_iter().for_each(|(node_id, v)| {
+            self.0
+                .entry(*node_id)
+                .and_modify(|existing| {
+                    existing.merge(v.clone());
+                })
+                .or_insert(v.clone());
+        });
+    }
+}
+
 impl<V: Default> FromIterator<PlainNodeId> for DecoratedNodeSet<V> {
     fn from_iter<T: IntoIterator<Item = PlainNodeId>>(iter: T) -> Self {
         Self(iter.into_iter().map(|n| (n, Default::default())).collect())
+    }
+}
+
+impl<V> FromIterator<(PlainNodeId, V)> for DecoratedNodeSet<V> {
+    fn from_iter<T: IntoIterator<Item = (PlainNodeId, V)>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
     }
 }
 
@@ -358,6 +398,8 @@ fn write_nodes_sorted(nodeset: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> std
 
 #[cfg(test)]
 mod test {
+    use ahash::HashMap;
+
     use super::*;
 
     #[test]
@@ -449,5 +491,26 @@ mod test {
         nodeset1.insert(PlainNodeId::from(5), Status::Sealed);
         nodeset1.insert(PlainNodeId::from(2), Status::Sealed);
         assert_eq!(format!("{nodeset1}"), "[N1(E), N2(S), N3(E), N4(E), N5(S)]");
+    }
+
+    #[test]
+    fn decorated_nodeset_extend() {
+        #[derive(derive_more::Display, Default, Clone, Copy)]
+        enum Status {
+            #[display("S")]
+            Sealed,
+            #[default]
+            #[display("E")]
+            Error,
+        }
+        let mut nodeset1 = DecoratedNodeSet::<Status>::from(NodeSet::from_iter([2, 3, 1, 4, 5]));
+        nodeset1.insert(PlainNodeId::from(5), Status::Sealed);
+        assert_eq!(format!("{nodeset1}"), "[N1(E), N2(E), N3(E), N4(E), N5(S)]");
+        let mut status_map = HashMap::default();
+        status_map.insert(PlainNodeId::from(1), Status::Sealed);
+        status_map.insert(PlainNodeId::from(4), Status::Sealed);
+        nodeset1.extend(&status_map);
+
+        assert_eq!(format!("{nodeset1}"), "[N1(S), N2(E), N3(E), N4(S), N5(S)]");
     }
 }
