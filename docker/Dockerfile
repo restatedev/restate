@@ -35,14 +35,28 @@ ENV SCCACHE_DIR=/var/cache/sccache
 # Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
 # Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
 ARG CARGO_PROFILE_RELEASE_DEBUG=false
+# Avoids feature unification by building the three binaries individually
+ARG BUILD_INDIVIDUALLY=false
 ARG RESTATE_FEATURES=''
-RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release --bins
+RUN if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release -p restate-cli && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release -p restate-server && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release -p restatectl; \
+    else \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release -p restate-cli -p restate-server -p restatectl; \
+    fi
 COPY . .
 # Mount the sccache directory as a cache to leverage sccache during build
 # Caching layer if nothing has changed
 # Use sccache during the main build
 RUN --mount=type=cache,target=/var/cache/sccache \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release --bins && \
+    if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-cli && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-server && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restatectl; \
+    else \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-cli -p restate-server -p restatectl; \
+    fi && \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restatectl target/restatectl && \

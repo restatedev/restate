@@ -4,32 +4,37 @@ on:
   workflow_call:
     inputs:
       uploadImageAsTarball:
-        description: 'uploads the Docker image additionally as a tarball'
+        description: "uploads the Docker image additionally as a tarball"
         required: false
         default: false
         type: boolean
       platforms:
-        description: 'platforms for docker build step'
+        description: "platforms for docker build step"
         required: false
-        default: ''
+        default: ""
         type: string
       debug:
-        description: 'include debug symbols in built image'
+        description: "include debug symbols in built image"
         required: false
         default: false
         type: boolean
       parca:
-        description: 'split out debug symbols and upload to polar signals'
+        description: "split out debug symbols and upload to polar signals"
+        required: false
+        default: false
+        type: boolean
+      buildIndividually:
+        description: "build separate binaries individually to avoid feature unification"
         required: false
         default: false
         type: boolean
       features:
-        description: 'features to enable in the build'
+        description: "features to enable in the build"
         required: false
-        default: ''
+        default: ""
         type: string
       pushToDockerHub:
-        description: 'push image to DockerHub'
+        description: "push image to DockerHub"
         required: false
         default: false
         type: boolean
@@ -37,34 +42,39 @@ on:
   workflow_dispatch:
     inputs:
       uploadImageAsTarball:
-        description: 'uploads the Docker image additionally as a tarball'
+        description: "uploads the Docker image additionally as a tarball"
         required: false
         default: false
         type: boolean
       platforms:
-        description: 'platforms for docker build step'
+        description: "platforms for docker build step"
         required: false
-        default: ''
+        default: ""
         type: string
       debug:
-        description: 'include debug symbols in built image'
+        description: "include debug symbols in built image"
         required: false
         default: false
         type: boolean
       parca:
-        description: 'upload debug symbols to polar signals'
+        description: "upload debug symbols to polar signals"
+        required: false
+        default: false
+        type: boolean
+      buildIndividually:
+        description: "build separate binaries individually to avoid feature unification"
         required: false
         default: false
         type: boolean
       pushToDockerHub:
-        description: 'push image to DockerHub'
+        description: "push image to DockerHub"
         required: false
         default: false
         type: boolean
 
 env:
   REPOSITORY_OWNER: ${{ github.repository_owner }}
-  GHCR_REGISTRY: 'ghcr.io'
+  GHCR_REGISTRY: "ghcr.io"
   GHCR_REGISTRY_USERNAME: ${{ github.actor }}
   GHCR_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -76,6 +86,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install cargo-hakari
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hakari
+
+      - name: Disable hakari
+        run: cargo hakari disable
 
       # this is needed to be able to load and push a multiplatform image in one step
       - name: Set up Docker containerd snapshotter
@@ -97,7 +115,7 @@ jobs:
           # https://docs.warpbuild.com/cache/docker-layer-caching#step-1-set-up-docker-buildx-action
           driver-opts: |
             network=host
-      
+
       - name: Cache sccache
         id: cache
         uses: WarpBuilds/cache@v1
@@ -113,7 +131,7 @@ jobs:
               "sccache-cache": "/var/cache/sccache"
             }
           skip-extraction: ${{ steps.cache.outputs.cache-hit }}
-          
+
       - name: Log into GitHub container registry
         uses: docker/login-action@v3
         with:
@@ -137,7 +155,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: | 
+          images: |
             ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
             ${{ inputs.pushToDockerHub && format('docker.io/{0}/{1}', env.REPOSITORY_OWNER, env.IMAGE_NAME) || '' }}
 
@@ -166,13 +184,14 @@ jobs:
           network: host
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug || inputs.parca }}
+            BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
             UPLOAD_DEBUGINFO=${{ inputs.parca }}
             RESTATE_FEATURES=${{ inputs.features || '' }}
           secrets: |
             parca=${{ secrets.PARCA_TOKEN }}
           cache-from: type=gha,url=http://127.0.0.1:49160/
           cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max
-    
+
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball }}
         uses: actions/upload-artifact@v4

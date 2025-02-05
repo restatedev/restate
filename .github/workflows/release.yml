@@ -138,6 +138,12 @@ jobs:
         if: "${{ runner.os == 'macOS' }}"
         env:
           "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+      - name: "Install cargo-hakari"
+        uses: "taiki-e/install-action@v2"
+        with:
+          "tool": "cargo-hakari"
+      - name: "Disable hakari"
+        run: "cargo hakari disable"
       - name: "Allowlist git directory"
         if: "${{ runner.os == 'Linux' }}"
         run: "git config --global --add safe.directory /__w/restate/restate"
