@@ -314,25 +314,28 @@ impl Versioned for NodesConfiguration {
 #[strum(serialize_all = "kebab-case")]
 pub enum StorageState {
     /// The node is not expected to be a member in any write set and the node will self-provision
-    /// its log-store to `Disabled` once it's written its own storage marker on disk.
+    /// its log-store to `ReadWrite` once it's written its own storage marker on disk.
     ///
-    /// The node can never transition back to `Provisioning` once it has transitioned into
-    /// `Disabled`.
+    /// The node can never transition back to `Provisioning` once it has transitioned out of it.
     ///
     /// should read from: no
     /// can write to: no
     #[default]
     Provisioning,
     /// Node's storage is not expected to be accessed in reads nor write. The node is not
-    /// considered as part of the replicated log cluster (yet). Node can be safely decommissioned.
+    /// considered as part of the replicated log cluster. Node can be safely decommissioned.
+    ///
+    /// The node can never transition out of `Disabled` after it has transitioned into it.
     ///
     /// should read from: no
     /// can write to: no
     Disabled,
-    /// Node is not picked in new write sets and it'll reject new writes on its own storage except for
-    /// critical metadata updates.
+    /// Node is not picked in new write sets, but it may still accept writes on existing nodeset
+    /// and it's included in critical metadata updates (seal, release, etc.)
     /// should read from: yes
-    /// can write to: no
+    /// can write to: yes
+    /// **should write to: no**
+    /// **excluded from new nodesets**
     ReadOnly,
     /// Can be picked up in new write sets and accepts writes in existing write sets.
     ///
@@ -373,9 +376,9 @@ impl StorageState {
         }
     }
 
-    /// Empty nodes are automatically excluded from node sets.
+    /// Empty nodes are considered not part of the nodeset and they'll never join back.
     pub fn empty(&self) -> bool {
-        matches!(self, StorageState::Provisioning | StorageState::Disabled)
+        matches!(self, StorageState::Disabled)
     }
 }
 
