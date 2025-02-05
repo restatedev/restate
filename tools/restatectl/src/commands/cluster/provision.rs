@@ -38,8 +38,8 @@ pub struct ProvisionOpts {
     partition_replication: Option<ReplicationProperty>,
 
     /// Default log provider kind
-    #[clap(long, alias = "log-provider")]
-    bifrost_provider: Option<ProviderKind>,
+    #[clap(long)]
+    log_provider: Option<ProviderKind>,
 
     /// Replication property of bifrost logs if using replicated as log provider
     #[clap(long)]
@@ -80,7 +80,7 @@ async fn cluster_provision(
         num_partitions: provision_opts.num_partitions.map(|n| u32::from(n.get())),
         partition_replication: provision_opts.partition_replication.clone().map(Into::into),
         log_provider: provision_opts
-            .bifrost_provider
+            .log_provider
             .map(|provider| provider.to_string()),
         log_replication: provision_opts.log_replication.clone().map(Into::into),
         target_nodeset_size: provision_opts.log_default_nodeset_size.map(Into::into),

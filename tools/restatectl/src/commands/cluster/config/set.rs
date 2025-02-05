@@ -36,8 +36,8 @@ pub struct ConfigSetOpts {
     partition_replication: Option<ReplicationProperty>,
 
     /// Bifrost provider kind.
-    #[clap(long, alias("log-provider"))]
-    bifrost_provider: Option<ProviderKind>,
+    #[clap(long)]
+    log_provider: Option<ProviderKind>,
 
     /// Replication property of bifrost logs if using replicated as log provider
     #[clap(long)]
@@ -72,7 +72,7 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
     //  replication to everywhere. Everywhere should probably be an explicit value.
     current.partition_replication = set_opts.partition_replication.clone().map(Into::into);
 
-    set_opts.bifrost_provider.inspect(|provider| {
+    set_opts.log_provider.inspect(|provider| {
         match provider {
             ProviderKind::InMemory | ProviderKind::Local => {
                 c_warn!("You are about to reconfigure your cluster with a Bifrost provider that only supports a single node cluster.");
@@ -87,7 +87,7 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
         anyhow::bail!("The cluster has no Bifrost provider configured. This indicates a problem with the cluster.");
     };
 
-    if let Some(provider) = set_opts.bifrost_provider {
+    if let Some(provider) = set_opts.log_provider {
         bifrost_provider.provider = provider.to_string();
     }
 
