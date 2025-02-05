@@ -54,6 +54,8 @@ pub enum NetworkError {
     ConnectError(tonic::Status),
     #[error("new node generation exists: {0}")]
     OldPeerGeneration(String),
+    #[error("node {0} was shut down")]
+    NodeIsGone(GenerationalNodeId),
     #[error("connection lost to peer {0}")]
     ConnectionClosed(GenerationalNodeId),
     #[error("cannot send messages to this node: {0}")]
@@ -118,6 +120,7 @@ impl From<NetworkError> for tonic::Status {
             NetworkError::ProtocolError(e) => e.into(),
             NetworkError::Timeout(_) => tonic::Status::deadline_exceeded(value.to_string()),
             NetworkError::OldPeerGeneration(e) => tonic::Status::already_exists(e),
+            NetworkError::NodeIsGone(_) => tonic::Status::already_exists(value.to_string()),
             NetworkError::ConnectError(s) => s,
             NetworkError::UnknownNode(err @ NodesConfigError::GenerationMismatch { .. }) => {
                 tonic::Status::failed_precondition(err.to_string())
