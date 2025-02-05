@@ -273,6 +273,10 @@ impl PlainNodeId {
         PlainNodeId(id)
     }
 
+    pub fn is_valid(self) -> bool {
+        self.0 != 0
+    }
+
     pub fn with_generation(self, generation: u32) -> GenerationalNodeId {
         GenerationalNodeId(self, generation)
     }
@@ -311,6 +315,10 @@ impl GenerationalNodeId {
 
     pub fn id(self) -> u32 {
         self.0.into()
+    }
+
+    pub fn is_valid(self) -> bool {
+        self.0.is_valid() && self.1 != 0
     }
 
     pub fn generation(self) -> u32 {
