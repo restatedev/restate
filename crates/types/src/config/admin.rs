@@ -76,7 +76,7 @@ pub struct AdminOptions {
     /// Note that this value only impacts the cluster initial provisioning and will not be respected after
     /// the cluster has been provisioned.
     ///
-    /// For provisioned clusters, use the `restatectl` utility to update it.
+    /// To update existing clusters use the `restatectl` utility.
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub default_partition_replication: PartitionReplication,
 

@@ -20,7 +20,9 @@ use serde_with::serde_as;
 
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 
-use super::{AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions};
+use super::{
+    print_warning_deprecated_config_option, AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions,
+};
 use crate::locality::NodeLocation;
 use crate::net::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
@@ -40,7 +42,7 @@ static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(default))]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", from = "CommonOptionsShadow")]
 #[builder(default)]
 pub struct CommonOptions {
     /// Defines the roles which this Restate node should run, by default the node
@@ -101,7 +103,6 @@ pub struct CommonOptions {
     /// This can also be explicitly disabled by setting this value to false.
     ///
     /// Default: true
-    #[serde(alias = "allow-bootstrap")]
     pub auto_provision: bool,
 
     /// The working directory which this Restate node should use for relative paths. The default is
@@ -135,8 +136,6 @@ pub struct CommonOptions {
     /// NOTE 2: This will be renamed to `default-num-partitions` by default as of v1.3+
     ///
     /// Default: 24
-    // todo switch to serializing as "default_num_partitions" in version 1.3
-    #[serde(alias = "bootstrap-num-partitions")]
     pub default_num_partitions: NonZeroU16,
 
     /// # Shutdown grace timeout
@@ -747,6 +746,138 @@ impl Default for TracingOptions {
             tracing_json_path: None,
             tracing_filter: "info".to_owned(),
             tracing_headers: SerdeableHeaderHashMap::default(),
+        }
+    }
+}
+
+/// Used to deserialize the [`CommonOptions`] in backwards compatible way.
+///
+/// | Current Name             | Backwards Compatible Aliases  |
+/// |--------------------------|------------------------------|
+/// | `auto_provision`        | `allow_bootstrap`           |
+/// | `default_num_partitions` | `bootstrap_num_partitions`  |
+///
+/// Once we no longer support the backwards compatible aliases, we can remove this struct.
+#[serde_as]
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CommonOptionsShadow {
+    roles: EnumSet<Role>,
+    node_name: Option<String>,
+    location: Option<NodeLocation>,
+    force_node_id: Option<PlainNodeId>,
+    cluster_name: String,
+    base_dir: Option<PathBuf>,
+    #[serde(flatten)]
+    metadata_store_client: MetadataStoreClientOptions,
+    bind_address: Option<BindAddress>,
+    advertised_address: AdvertisedAddress,
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    shutdown_timeout: humantime::Duration,
+    default_thread_pool_size: Option<usize>,
+    #[serde(flatten)]
+    tracing: TracingOptions,
+    log_filter: String,
+    log_format: LogFormat,
+    log_disable_ansi_codes: bool,
+    tokio_console_bind_address: Option<BindAddress>,
+    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    histogram_inactivity_timeout: Option<humantime::Duration>,
+    #[serde(flatten)]
+    service_client: ServiceClientOptions,
+    disable_prometheus: bool,
+    storage_high_priority_bg_threads: Option<NonZeroUsize>,
+    storage_low_priority_bg_threads: Option<NonZeroUsize>,
+    #[serde_as(as = "NonZeroByteCount")]
+    rocksdb_total_memory_size: NonZeroUsize,
+    rocksdb_total_memtables_ratio: f32,
+    rocksdb_bg_threads: Option<NonZeroU32>,
+    rocksdb_high_priority_bg_threads: NonZeroU32,
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    rocksdb_write_stall_threshold: humantime::Duration,
+    rocksdb_enable_stall_on_memory_limit: bool,
+    rocksdb_perf_level: PerfStatsLevel,
+    #[serde(flatten)]
+    rocksdb: RocksDbOptions,
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    metadata_update_interval: humantime::Duration,
+    network_error_retry_policy: RetryPolicy,
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    initialization_timeout: humantime::Duration,
+    disable_telemetry: bool,
+
+    auto_provision: bool,
+    // todo drop in version 1.3
+    allow_bootstrap: Option<bool>,
+
+    default_num_partitions: NonZeroU16,
+    // todo drop in version 1.3
+    bootstrap_num_partitions: Option<NonZeroU16>,
+}
+
+impl From<CommonOptionsShadow> for CommonOptions {
+    fn from(value: CommonOptionsShadow) -> Self {
+        let auto_provision = value
+            // it's a pity that we give precedence to older options names but there is no way to
+            // figure out whether auto_provision was set or not by the user because of the default
+            // values and the production profile :-(
+            .allow_bootstrap
+            .inspect(|_value| {
+                // todo: Add macro for casing the variable names correctly
+                print_warning_deprecated_config_option("allow-bootstrap", Some("auto-provision"));
+            })
+            .unwrap_or(value.auto_provision);
+        let default_num_partitions = value
+            // it's a pity that we give precedence to older options names but there is no way to
+            // figure out whether default_num_partitions was set or not by the user because of the default
+            // values and the production profile :-(
+            .bootstrap_num_partitions
+            .inspect(|_value| {
+                // todo: Add macro for casing the variable names correctly
+                print_warning_deprecated_config_option(
+                    "boostrap-num-partitions",
+                    Some("default-num-partitions"),
+                );
+            })
+            .unwrap_or(value.default_num_partitions);
+
+        CommonOptions {
+            roles: value.roles,
+            node_name: value.node_name,
+            location: value.location,
+            force_node_id: value.force_node_id,
+            cluster_name: value.cluster_name,
+            base_dir: value.base_dir,
+            metadata_store_client: value.metadata_store_client,
+            bind_address: value.bind_address,
+            advertised_address: value.advertised_address,
+            shutdown_timeout: value.shutdown_timeout,
+            default_thread_pool_size: value.default_thread_pool_size,
+            tracing: value.tracing,
+            log_filter: value.log_filter,
+            log_format: value.log_format,
+            log_disable_ansi_codes: value.log_disable_ansi_codes,
+            tokio_console_bind_address: value.tokio_console_bind_address,
+            histogram_inactivity_timeout: value.histogram_inactivity_timeout,
+            service_client: value.service_client,
+            disable_prometheus: value.disable_prometheus,
+            storage_high_priority_bg_threads: value.storage_high_priority_bg_threads,
+            storage_low_priority_bg_threads: value.storage_low_priority_bg_threads,
+            rocksdb_total_memory_size: value.rocksdb_total_memory_size,
+            rocksdb_total_memtables_ratio: value.rocksdb_total_memtables_ratio,
+            rocksdb_bg_threads: value.rocksdb_bg_threads,
+            rocksdb_high_priority_bg_threads: value.rocksdb_high_priority_bg_threads,
+            rocksdb_write_stall_threshold: value.rocksdb_write_stall_threshold,
+            rocksdb_enable_stall_on_memory_limit: value.rocksdb_enable_stall_on_memory_limit,
+            rocksdb_perf_level: value.rocksdb_perf_level,
+            rocksdb: value.rocksdb,
+            metadata_update_interval: value.metadata_update_interval,
+            network_error_retry_policy: value.network_error_retry_policy,
+            initialization_timeout: value.initialization_timeout,
+            disable_telemetry: value.disable_telemetry,
+
+            auto_provision,
+            default_num_partitions,
         }
     }
 }

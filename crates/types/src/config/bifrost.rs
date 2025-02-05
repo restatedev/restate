@@ -286,12 +286,12 @@ pub struct ReplicatedLogletOptions {
 
     /// # Default log replication factor
     ///
-    /// [__PREVIEW FEATURE__]
     /// Configures the default replication factor to be used by the replicated loglets.
     ///
     /// Note that this value only impacts the cluster initial provisioning and will not be respected after
     /// the cluster has been provisioned.
-    /// For provisioned clusters, use the `restatectl` utility to update it.
+    ///
+    /// To update existing clusters use the `restatectl` utility.
     // Also allow to specify the replication property as non-zero u8 value to make it simpler to
     // pass it in via an env variable.
     #[serde_as(
@@ -303,13 +303,14 @@ pub struct ReplicatedLogletOptions {
 
     /// # Default nodeset size
     ///
-    /// [__PREVIEW FEATURE__]
     /// Configures the target nodeset size used by the replicated loglet when generating new
     /// nodesets for logs. Setting this to 0 will let the system choose a reasonable value based on
     /// the effective replication_property at the time of logs reconfiguration.
     ///
     /// Note that this value only impacts the cluster initial provisioning and will not be respected after
     /// the cluster has been provisioned.
+    ///
+    /// To update existing clusters use the `restatectl` utility.
     // hide the configuration option from serialization if it is the default
     #[serde(default, skip_serializing_if = "nodeset_size_is_zero")]
     // hide the configuration option by excluding it from the Json schema
