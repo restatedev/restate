@@ -10,6 +10,7 @@
 
 pub mod grpc;
 pub mod local;
+mod metric_definitions;
 pub mod raft;
 mod util;
 
@@ -241,6 +242,8 @@ pub async fn create_metadata_server(
     metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<BoxedMetadataStoreService> {
+    metric_definitions::describe_metrics();
+
     match metadata_server_options.kind {
         MetadataServerKind::Local => local::create_server(
             metadata_server_options,
