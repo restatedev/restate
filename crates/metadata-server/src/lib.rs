@@ -60,8 +60,8 @@ pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
 pub type ProvisionSender = mpsc::Sender<ProvisionRequest>;
 pub type ProvisionReceiver = mpsc::Receiver<ProvisionRequest>;
 
-type StatusWatch = watch::Receiver<MetadataStoreSummary>;
-type StatusSender = watch::Sender<MetadataStoreSummary>;
+type StatusWatch = watch::Receiver<MetadataServerSummary>;
+type StatusSender = watch::Sender<MetadataServerSummary>;
 
 pub const KNOWN_LEADER_KEY: &str = "x-restate-known-leader";
 
@@ -553,9 +553,9 @@ impl Display for MemberId {
     }
 }
 
-/// Status summary of the metadata store.
+/// Status summary of the metadata server.
 #[derive(Clone, Debug, Default)]
-enum MetadataStoreSummary {
+enum MetadataServerSummary {
     #[default]
     Starting,
     Provisioning,

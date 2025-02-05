@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc::handler::MetadataStoreHandler;
+use crate::grpc::handler::MetadataServerHandler;
 use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::MetadataServerSnapshot;
@@ -21,14 +21,14 @@ use crate::metric_definitions::{
 use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::network::grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient;
 use crate::raft::network::{
-    ConnectionManager, MetadataServerNetworkSvcServer, MetadataStoreNetworkHandler, Networking,
+    ConnectionManager, MetadataServerNetworkHandler, MetadataServerNetworkSvcServer, Networking,
 };
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{network, storage, RaftConfiguration};
 use crate::{
     grpc, prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError,
     JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinError, KnownLeader, MemberId,
-    MetadataServer, MetadataServerConfiguration, MetadataStoreRequest, MetadataStoreSummary,
+    MetadataServer, MetadataServerConfiguration, MetadataServerSummary, MetadataStoreRequest,
     ProvisionError, ProvisionReceiver, RaftSummary, Request, RequestError, RequestKind,
     RequestReceiver, SnapshotSummary, StatusSender, StorageId, WriteRequest,
 };
@@ -167,7 +167,7 @@ impl RaftMetadataServer {
         let (request_tx, request_rx) = mpsc::channel(2);
         let (provision_tx, provision_rx) = mpsc::channel(1);
         let (join_cluster_tx, join_cluster_rx) = mpsc::channel(1);
-        let (status_tx, status_rx) = watch::channel(MetadataStoreSummary::default());
+        let (status_tx, status_rx) = watch::channel(MetadataServerSummary::default());
 
         let mut metadata_store_options =
             Configuration::updateable().map(|configuration| &configuration.metadata_server);
@@ -195,7 +195,7 @@ impl RaftMetadataServer {
         let connection_manager = Arc::default();
 
         server_builder.register_grpc_service(
-            MetadataServerNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
+            MetadataServerNetworkSvcServer::new(MetadataServerNetworkHandler::new(
                 Arc::clone(&connection_manager),
                 Some(JoinClusterHandle::new(join_cluster_tx)),
             ))
@@ -204,7 +204,7 @@ impl RaftMetadataServer {
             network::FILE_DESCRIPTOR_SET,
         );
         server_builder.register_grpc_service(
-            MetadataServerSvcServer::new(MetadataStoreHandler::new(
+            MetadataServerSvcServer::new(MetadataServerHandler::new(
                 request_tx,
                 Some(provision_tx),
                 Some(status_rx),
@@ -233,7 +233,7 @@ impl RaftMetadataServer {
 
         let result = tokio::select! {
             _ = &mut shutdown => {
-                debug!("Shutting down RaftMetadataStore");
+                debug!("Shutting down RaftMetadataServer");
                 Ok(())
             },
             result = self.run_inner(&health_status) => {
@@ -278,7 +278,7 @@ impl RaftMetadataServer {
     }
 
     async fn await_provisioning(mut self) -> Result<Provisioned, Error> {
-        let _ = self.status_tx.send(MetadataStoreSummary::Provisioning);
+        let _ = self.status_tx.send(MetadataServerSummary::Provisioning);
         let mut provision_rx = self.provision_rx.take().expect("must be present");
 
         let result = if let Some(configuration) = self.storage.get_raft_configuration()? {
@@ -604,7 +604,7 @@ impl Member {
             snapshot_summary,
         };
 
-        member.validate_metadata_store_configuration();
+        member.validate_metadata_server_configuration();
 
         Ok(member)
     }
@@ -885,7 +885,7 @@ impl Member {
             &mut self.kv_storage,
         )?;
 
-        self.validate_metadata_store_configuration();
+        self.validate_metadata_server_configuration();
 
         self.raw_node.mut_store().apply_snapshot(snapshot).await?;
 
@@ -1032,7 +1032,7 @@ impl Member {
         );
         self.configuration = new_configuration;
 
-        self.validate_metadata_store_configuration();
+        self.validate_metadata_server_configuration();
 
         self.update_membership_in_nodes_configuration();
 
@@ -1046,7 +1046,7 @@ impl Member {
         Ok(())
     }
 
-    fn validate_metadata_store_configuration(&self) {
+    fn validate_metadata_server_configuration(&self) {
         assert_eq!(
             self.configuration.members.len(),
             self.raw_node.raft.prs().conf().voters().ids().len(),
@@ -1057,7 +1057,7 @@ impl Member {
                 self.configuration
                     .members
                     .contains_key(&to_plain_node_id(voter)),
-                "voter '{}' in Raft configuration not found in MetadataStoreConfiguration",
+                "voter '{}' in Raft configuration not found in MetadataServerConfiguration",
                 voter
             );
         }
@@ -1223,7 +1223,7 @@ impl Member {
                 Some(to_plain_node_id(self.raw_node.raft.leader_id))
             };
 
-            if let MetadataStoreSummary::Member {
+            if let MetadataServerSummary::Member {
                 leader,
                 configuration,
                 raft,
@@ -1239,7 +1239,7 @@ impl Member {
             } else {
                 let raft = self.raft_summary();
 
-                *current_status = MetadataStoreSummary::Member {
+                *current_status = MetadataServerSummary::Member {
                     leader: current_leader,
                     configuration: self.configuration.clone(),
                     raft,
@@ -1251,8 +1251,8 @@ impl Member {
         self.record_summary_metrics(&self.status_tx.borrow());
     }
 
-    fn record_summary_metrics(&self, summary: &MetadataStoreSummary) {
-        let MetadataStoreSummary::Member {
+    fn record_summary_metrics(&self, summary: &MetadataServerSummary) {
+        let MetadataServerSummary::Member {
             leader,
             raft,
             snapshot,
@@ -1382,7 +1382,7 @@ impl Standby {
             status_tx,
         } = self;
 
-        let _ = status_tx.send(MetadataStoreSummary::Standby);
+        let _ = status_tx.send(MetadataServerSummary::Standby);
 
         // todo make configurable
         let mut join_retry_policy = RetryPolicy::exponential(

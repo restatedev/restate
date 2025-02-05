@@ -35,22 +35,23 @@ use crate::metric_definitions::{
     STATUS_COMPLETED, STATUS_FAILED,
 };
 use crate::{
-    prepare_initial_nodes_configuration, MetadataStoreRequest, MetadataStoreSummary,
+    prepare_initial_nodes_configuration, MetadataServerSummary, MetadataStoreRequest,
     ProvisionError, ProvisionRequest, ProvisionSender, RequestError, RequestSender, StatusWatch,
 };
-/// Grpc svc handler for the metadata store.
+
+/// Grpc svc handler for the metadata server.
 #[derive(Debug)]
-pub struct MetadataStoreHandler {
+pub struct MetadataServerHandler {
     request_tx: RequestSender,
     provision_tx: Option<ProvisionSender>,
     status_watch: Option<StatusWatch>,
 }
 
-impl MetadataStoreHandler {
+impl MetadataServerHandler {
     pub fn new(
         request_tx: RequestSender,
         provision_tx: Option<ProvisionSender>,
-        status_watch: Option<watch::Receiver<MetadataStoreSummary>>,
+        status_watch: Option<watch::Receiver<MetadataServerSummary>>,
     ) -> Self {
         Self {
             request_tx,
@@ -61,7 +62,7 @@ impl MetadataStoreHandler {
 }
 
 #[async_trait]
-impl MetadataServerSvc for MetadataStoreHandler {
+impl MetadataServerSvc for MetadataServerHandler {
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let start_time = Instant::now();
 

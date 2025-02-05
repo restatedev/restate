@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc::handler::MetadataStoreHandler;
+use crate::grpc::handler::MetadataServerHandler;
 use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 use crate::{
     grpc, util, MetadataServer, MetadataStoreRequest, PreconditionViolation, RequestError,
@@ -87,7 +87,7 @@ impl LocalMetadataServer {
             .expect("metadata store db is open");
 
         server_builder.register_grpc_service(
-            MetadataServerSvcServer::new(MetadataStoreHandler::new(request_tx, None, None))
+            MetadataServerSvcServer::new(MetadataServerHandler::new(request_tx, None, None))
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip),
             grpc::FILE_DESCRIPTOR_SET,
