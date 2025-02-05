@@ -553,7 +553,7 @@ impl Member {
 
         let_assert!(
             MetadataServerKind::Raft(raft_options) = &Configuration::pinned().metadata_server.kind,
-            "Expecting that the embedded/raft metadata server has been configured"
+            "Expecting that the replicated/raft metadata server has been configured"
         );
 
         let mut config = Config {

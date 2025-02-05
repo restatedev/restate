@@ -72,7 +72,8 @@ pub struct MetadataServerOptions {
 pub enum MetadataServerKind {
     #[default]
     Local,
-    #[serde(alias = "embedded")]
+    // make the Raft based metadata server primarily known as the replicated metadata server
+    #[serde(rename = "replicated")]
     Raft(RaftOptions),
 }
 
