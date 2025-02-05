@@ -136,7 +136,6 @@ impl SealTask {
             nodeset_checker.set_attribute(node_id, true);
             nodeset_status.insert(node_id, NodeSealStatus::Sealed);
 
-            // todo: consider allowing the seal to pass at best-effort f-majority.
             if nodeset_checker.check_fmajority(|attr| *attr).passed() {
                 info!(
                     loglet_id = %my_params.loglet_id,
