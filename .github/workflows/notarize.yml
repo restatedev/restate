@@ -35,7 +35,7 @@ jobs:
           merge-multiple: true
 
       - name: Extract binaries
-        run: tar -xvzf ${{ matrix.app_name }}-${{ matrix.target }}.tar.xz
+        run: tar -xvf ${{ matrix.app_name }}-${{ matrix.target }}.tar.xz
 
       - name: Add notary credentials
         run: xcrun notarytool store-credentials --apple-id "$NOTARY_APPLE_ID" --password "$NOTARY_APP_SPECIFIC_PASSWORD" --team-id "$CODESIGN_IDENTITY" "Notarization"
