@@ -20,6 +20,7 @@ pub use builder::*;
 pub use extensions::*;
 pub use handle::*;
 pub use monitoring::*;
+use restate_types::health::{Health, NodeStatus};
 pub use runtime::*;
 pub use task::*;
 pub use task_kind::*;
@@ -120,6 +121,16 @@ impl TaskCenter {
     /// at the startup of the node.
     pub fn try_set_global_metadata(metadata: Metadata) -> bool {
         Self::with_current(|tc| tc.try_set_global_metadata(metadata))
+    }
+
+    /// Returns true if the task center was requested to shutdown
+    pub fn is_shutdown_requested() -> bool {
+        Self::with_current(|tc| tc.is_shutdown_requested())
+    }
+
+    /// Returns an error if a shutdown has been requested.
+    pub fn check_shutdown() -> Result<(), ShutdownError> {
+        Self::with_current(|tc| tc.check_shutdown())
     }
 
     /// Launch a new task
@@ -277,6 +288,7 @@ struct TaskCenterInner {
     current_exit_code: AtomicI32,
     managed_tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
     global_metadata: OnceLock<Metadata>,
+    health: Health,
     root_task_context: TaskContext,
 }
 
@@ -313,6 +325,7 @@ impl TaskCenterInner {
             managed_runtimes: Mutex::new(HashMap::with_capacity(64)),
             root_task_context,
             pause_time,
+            health: Health::default(),
         }
     }
 
@@ -591,7 +604,6 @@ impl TaskCenterInner {
                     root_future(),
                 )));
 
-                debug!("Runtime {} completed", runtime_name);
                 drop(rt_handle);
                 tc.drop_runtime(runtime_name);
 
@@ -776,6 +788,7 @@ impl TaskCenterInner {
             // already shutting down....
             return;
         }
+        self.health.node_status().merge(NodeStatus::ShuttingDown);
         let start = Instant::now();
         self.current_exit_code.store(exit_code, Ordering::Relaxed);
 
