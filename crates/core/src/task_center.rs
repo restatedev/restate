@@ -44,9 +44,7 @@ use tracing::{debug, error, info, trace, warn};
 use restate_types::identifiers::PartitionId;
 use restate_types::GenerationalNodeId;
 
-use crate::metric_definitions::{
-    self, TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED,
-};
+use crate::metric_definitions::{self, STATUS_COMPLETED, STATUS_FAILED, TC_FINISHED, TC_SPAWN};
 use crate::{Metadata, ShutdownError, ShutdownSourceErr};
 
 const EXIT_CODE_FAILURE: i32 = 1;
@@ -729,7 +727,7 @@ impl TaskCenterInner {
             match result {
                 Ok(Ok(())) => {
                     trace!(kind = ?task.kind(), name = ?task.name(), "Task {} exited normally", task_id);
-                    counter!(TC_FINISHED, "kind" => kind_str, "status" => TC_STATUS_COMPLETED)
+                    counter!(TC_FINISHED, "kind" => kind_str, "status" => STATUS_COMPLETED)
                         .increment(1);
                 }
                 Ok(Err(err)) => {
@@ -752,11 +750,11 @@ impl TaskCenterInner {
                     } else {
                         error!(kind = ?task.kind(), name = ?task.name(), "Task {} failed with: {:?}", task_id, err);
                     }
-                    counter!(TC_FINISHED, "kind" => kind_str, "status" => TC_STATUS_FAILED)
+                    counter!(TC_FINISHED, "kind" => kind_str, "status" => STATUS_FAILED)
                         .increment(1);
                 }
                 Err(err) => {
-                    counter!(TC_FINISHED, "kind" => kind_str, "status" => TC_STATUS_FAILED)
+                    counter!(TC_FINISHED, "kind" => kind_str, "status" => STATUS_FAILED)
                         .increment(1);
                     if should_shutdown_on_error {
                         error!(kind = ?task.kind(), name = ?task.name(), "Shutting down: task {} panicked: {:?}", task_id, err);

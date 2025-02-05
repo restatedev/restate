@@ -10,6 +10,12 @@
 
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::MetadataServerSnapshot;
+use crate::metric_definitions::{
+    METADATA_SERVER_REPLICATED_APPLIED_LSN, METADATA_SERVER_REPLICATED_COMMITTED_LSN,
+    METADATA_SERVER_REPLICATED_FIRST_INDEX, METADATA_SERVER_REPLICATED_LAST_INDEX,
+    METADATA_SERVER_REPLICATED_LEADER_ID, METADATA_SERVER_REPLICATED_SNAPSHOT_SIZE_BYTES,
+    METADATA_SERVER_REPLICATED_TERM,
+};
 use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::network::grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient;
 use crate::raft::network::{ConnectionManager, Networking};
@@ -30,6 +36,7 @@ use futures::future::{FusedFuture, OptionFuture};
 use futures::never::Never;
 use futures::FutureExt;
 use futures::TryFutureExt;
+use metrics::gauge;
 use prost::{DecodeError, EncodeError, Message as ProstMessage};
 use protobuf::{Message as ProtobufMessage, ProtobufError};
 use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
@@ -160,7 +167,7 @@ impl RaftMetadataServer {
         let (request_tx, request_rx) = mpsc::channel(2);
         let (provision_tx, provision_rx) = mpsc::channel(1);
         let (join_cluster_tx, join_cluster_rx) = mpsc::channel(1);
-        let (status_tx, _status_rx) = watch::channel(MetadataStoreSummary::default());
+        let (status_tx, _) = watch::channel(MetadataStoreSummary::default());
 
         let mut metadata_store_options =
             Configuration::updateable().map(|configuration| &configuration.metadata_server);
@@ -1252,6 +1259,38 @@ impl Member {
                 };
             }
         });
+
+        self.record_summary_metrics(&self.status_tx.borrow());
+    }
+
+    fn record_summary_metrics(&self, summary: &MetadataStoreSummary) {
+        let MetadataStoreSummary::Member {
+            leader,
+            raft,
+            snapshot,
+            ..
+        } = summary
+        else {
+            return;
+        };
+
+        if let Some(id) = leader {
+            gauge!(METADATA_SERVER_REPLICATED_LEADER_ID).set(u32::from(*id) as f64);
+        } else {
+            gauge!(METADATA_SERVER_REPLICATED_LEADER_ID).set(INVALID_ID as f64);
+        }
+
+        if let Some(snapshot) = snapshot {
+            gauge!(METADATA_SERVER_REPLICATED_SNAPSHOT_SIZE_BYTES).set(snapshot.size as f64);
+        } else {
+            gauge!(METADATA_SERVER_REPLICATED_SNAPSHOT_SIZE_BYTES).set(0);
+        }
+
+        gauge!(METADATA_SERVER_REPLICATED_TERM).set(raft.term as f64);
+        gauge!(METADATA_SERVER_REPLICATED_APPLIED_LSN).set(raft.applied as f64);
+        gauge!(METADATA_SERVER_REPLICATED_COMMITTED_LSN).set(raft.committed as f64);
+        gauge!(METADATA_SERVER_REPLICATED_FIRST_INDEX).set(raft.first_index as f64);
+        gauge!(METADATA_SERVER_REPLICATED_LAST_INDEX).set(raft.last_index as f64);
     }
 
     fn raft_summary(&self) -> RaftSummary {

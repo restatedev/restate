@@ -11,11 +11,16 @@
 pub mod providers;
 mod test_util;
 
-#[cfg(any(test, feature = "test-util"))]
-use crate::metadata_store::test_util::InMemoryMetadataStore;
+use std::future::Future;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
+use metrics::{counter, histogram};
+use tokio::time::Instant;
+use tracing::debug;
+
 use restate_types::errors::{
     BoxedMaybeRetryableError, GenericError, IntoMaybeRetryable, MaybeRetryableError,
 };
@@ -24,9 +29,15 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, StorageEncodeError};
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
-use std::future::Future;
-use std::sync::Arc;
-use tracing::debug;
+
+#[cfg(any(test, feature = "test-util"))]
+use crate::metadata_store::test_util::InMemoryMetadataStore;
+use crate::metric_definitions::{
+    METADATA_CLIENT_DELETE_DURATION, METADATA_CLIENT_DELETE_TOTAL, METADATA_CLIENT_GET_DURATION,
+    METADATA_CLIENT_GET_TOTAL, METADATA_CLIENT_GET_VERSION_DURATION,
+    METADATA_CLIENT_GET_VERSION_TOTAL, METADATA_CLIENT_PUT_DURATION, METADATA_CLIENT_PUT_TOTAL,
+    STATUS_COMPLETED, STATUS_FAILED,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
@@ -300,28 +311,57 @@ impl MetadataStoreClient {
         &self,
         key: ByteString,
     ) -> Result<Option<T>, ReadError> {
-        let value = self.inner.get(key).await?;
+        let start_time = Instant::now();
+        let key_str = key.to_string();
+        let result = {
+            let value = self.inner.get(key).await?;
 
-        if let Some(mut versioned_value) = value {
-            let value = StorageCodec::decode::<T, _>(&mut versioned_value.value)
-                .map_err(|err| ReadError::Codec(err.into()))?;
+            if let Some(mut versioned_value) = value {
+                let value = StorageCodec::decode::<T, _>(&mut versioned_value.value)
+                    .map_err(|err| ReadError::Codec(err.into()))?;
 
-            assert_eq!(
-                versioned_value.version,
-                value.version(),
-                "versions must align"
-            );
+                assert_eq!(
+                    versioned_value.version,
+                    value.version(),
+                    "versions must align"
+                );
 
-            Ok(Some(value))
+                Ok(Some(value))
+            } else {
+                Ok(None)
+            }
+        };
+
+        let status = if result.is_ok() {
+            STATUS_COMPLETED
         } else {
-            Ok(None)
-        }
+            STATUS_FAILED
+        };
+
+        histogram!(METADATA_CLIENT_GET_DURATION).record(start_time.elapsed());
+        counter!(METADATA_CLIENT_GET_TOTAL, "key" => key_str, "status" => status).increment(1);
+
+        result
     }
 
     /// Gets the current version for the given key. If key-value pair is not present, then return
     /// [`None`].
     pub async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
-        self.inner.get_version(key).await
+        let start_time = Instant::now();
+        let key_str = key.to_string();
+        let result = self.inner.get_version(key).await;
+
+        let status = if result.is_ok() {
+            STATUS_COMPLETED
+        } else {
+            STATUS_FAILED
+        };
+
+        histogram!(METADATA_CLIENT_GET_VERSION_DURATION).record(start_time.elapsed());
+        counter!(METADATA_CLIENT_GET_VERSION_TOTAL, "key" => key_str, "status" => status)
+            .increment(1);
+
+        result
     }
 
     /// Puts the versioned value under the given key following the provided precondition. If the
@@ -335,10 +375,25 @@ impl MetadataStoreClient {
     where
         T: Versioned + StorageEncode,
     {
-        let versioned_value =
-            serialize_value(value).map_err(|err| WriteError::Codec(err.into()))?;
+        let start_time = Instant::now();
+        let key_str = key.to_string();
+        let result = {
+            let versioned_value =
+                serialize_value(value).map_err(|err| WriteError::Codec(err.into()))?;
 
-        self.inner.put(key, versioned_value, precondition).await
+            self.inner.put(key, versioned_value, precondition).await
+        };
+
+        let status = if result.is_ok() {
+            STATUS_COMPLETED
+        } else {
+            STATUS_FAILED
+        };
+
+        histogram!(METADATA_CLIENT_PUT_DURATION).record(start_time.elapsed());
+        counter!(METADATA_CLIENT_PUT_TOTAL, "key" => key_str, "status" => status).increment(1);
+
+        result
     }
 
     /// Deletes the key-value pair for the given key following the provided precondition. If the
@@ -348,7 +403,20 @@ impl MetadataStoreClient {
         key: ByteString,
         precondition: Precondition,
     ) -> Result<(), WriteError> {
-        self.inner.delete(key, precondition).await
+        let start_time = Instant::now();
+        let key_str = key.to_string();
+        let result = self.inner.delete(key, precondition).await;
+
+        let status = if result.is_ok() {
+            STATUS_COMPLETED
+        } else {
+            STATUS_FAILED
+        };
+
+        histogram!(METADATA_CLIENT_DELETE_DURATION).record(start_time.elapsed());
+        counter!(METADATA_CLIENT_DELETE_TOTAL,"key" => key_str,  "status" => status).increment(1);
+
+        result
     }
 
     /// Gets the value under the specified key or inserts a new value if it is not present into the

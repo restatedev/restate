@@ -6913,6 +6913,7 @@ dependencies = [
  "futures",
  "googletest",
  "http 1.2.0",
+ "metrics",
  "parking_lot",
  "prost",
  "prost-dto",

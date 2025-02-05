@@ -8,26 +8,36 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::Deref;
+
+use async_trait::async_trait;
+use metrics::{counter, histogram};
+use tokio::sync::{oneshot, watch};
+use tokio::time::Instant;
+use tonic::{Request, Response, Status};
+
+use restate_core::metadata_store::{serialize_value, Precondition};
+use restate_types::config::Configuration;
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::storage::StorageCodec;
+
 use crate::grpc::metadata_server_svc_server::MetadataServerSvc;
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse,
     ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest, StatusResponse,
 };
+use crate::metric_definitions::{
+    METADATA_SERVER_DELETE_DURATION, METADATA_SERVER_DELETE_TOTAL, METADATA_SERVER_GET_DURATION,
+    METADATA_SERVER_GET_TOTAL, METADATA_SERVER_GET_VERSION_DURATION,
+    METADATA_SERVER_GET_VERSION_TOTAL, METADATA_SERVER_PUT_DURATION, METADATA_SERVER_PUT_TOTAL,
+    STATUS_COMPLETED, STATUS_FAILED,
+};
 use crate::{
     prepare_initial_nodes_configuration, MetadataStoreRequest, MetadataStoreSummary,
     ProvisionError, ProvisionRequest, ProvisionSender, RequestError, RequestSender, StatusWatch,
 };
-use async_trait::async_trait;
-use restate_core::metadata_store::{serialize_value, Precondition};
-use restate_types::config::Configuration;
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::storage::StorageCodec;
-use std::ops::Deref;
-use tokio::sync::{oneshot, watch};
-use tonic::{Request, Response, Status};
-
 /// Grpc svc handler for the metadata store.
 #[derive(Debug)]
 pub struct MetadataStoreHandler {
@@ -53,101 +63,164 @@ impl MetadataStoreHandler {
 #[async_trait]
 impl MetadataServerSvc for MetadataStoreHandler {
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
-        let (result_tx, result_rx) = oneshot::channel();
+        let start_time = Instant::now();
 
-        let request = request.into_inner();
-        self.request_tx
-            .send(MetadataStoreRequest::Get {
-                key: request.key.into(),
-                result_tx,
-            })
-            .await
-            .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+        let result = {
+            let (result_tx, result_rx) = oneshot::channel();
 
-        let result = result_rx
-            .await
-            .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+            let request = request.into_inner();
+            self.request_tx
+                .send(MetadataStoreRequest::Get {
+                    key: request.key.into(),
+                    result_tx,
+                })
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
 
-        Ok(Response::new(GetResponse {
-            value: result.map(Into::into),
-        }))
+            let result = result_rx
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+
+            Ok(Response::new(GetResponse {
+                value: result.map(Into::into),
+            }))
+        };
+
+        let status = if result.is_ok() {
+            STATUS_COMPLETED
+        } else {
+            STATUS_FAILED
+        };
+
+        histogram!(METADATA_SERVER_GET_DURATION).record(start_time.elapsed());
+        counter!(METADATA_SERVER_GET_TOTAL, "status" => status).increment(1);
+
+        result
     }
 
     async fn get_version(
         &self,
         request: Request<GetRequest>,
     ) -> Result<Response<GetVersionResponse>, Status> {
-        let (result_tx, result_rx) = oneshot::channel();
+        let start_time = Instant::now();
+        let result = {
+            let (result_tx, result_rx) = oneshot::channel();
 
-        let request = request.into_inner();
-        self.request_tx
-            .send(MetadataStoreRequest::GetVersion {
-                key: request.key.into(),
-                result_tx,
-            })
-            .await
-            .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+            let request = request.into_inner();
+            self.request_tx
+                .send(MetadataStoreRequest::GetVersion {
+                    key: request.key.into(),
+                    result_tx,
+                })
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
 
-        let result = result_rx
-            .await
-            .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+            let result = result_rx
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
 
-        Ok(Response::new(GetVersionResponse {
-            version: result.map(Into::into),
-        }))
+            Ok(Response::new(GetVersionResponse {
+                version: result.map(Into::into),
+            }))
+        };
+
+        let status = if result.is_ok() {
+            STATUS_COMPLETED
+        } else {
+            STATUS_FAILED
+        };
+
+        histogram!(METADATA_SERVER_GET_VERSION_DURATION).record(start_time.elapsed());
+        counter!(METADATA_SERVER_GET_VERSION_TOTAL, "status" => status).increment(1);
+
+        result
     }
 
     async fn put(&self, request: Request<PutRequest>) -> Result<Response<()>, Status> {
-        let (result_tx, result_rx) = oneshot::channel();
+        let start_time = Instant::now();
+        let result = {
+            let (result_tx, result_rx) = oneshot::channel();
 
-        let request = request.into_inner();
-        self.request_tx
-            .send(MetadataStoreRequest::Put {
-                key: request.key.into(),
-                value: request
-                    .value
-                    .ok_or_else(|| Status::invalid_argument("missing value field"))?
-                    .try_into()
-                    .map_err(|err: ConversionError| Status::invalid_argument(err.to_string()))?,
-                precondition: request
-                    .precondition
-                    .ok_or_else(|| Status::invalid_argument("missing precondition field"))?
-                    .try_into()
-                    .map_err(|err: ConversionError| Status::invalid_argument(err.to_string()))?,
-                result_tx,
-            })
-            .await
-            .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+            let request = request.into_inner();
+            self.request_tx
+                .send(MetadataStoreRequest::Put {
+                    key: request.key.into(),
+                    value: request
+                        .value
+                        .ok_or_else(|| Status::invalid_argument("missing value field"))?
+                        .try_into()
+                        .map_err(|err: ConversionError| {
+                            Status::invalid_argument(err.to_string())
+                        })?,
+                    precondition: request
+                        .precondition
+                        .ok_or_else(|| Status::invalid_argument("missing precondition field"))?
+                        .try_into()
+                        .map_err(|err: ConversionError| {
+                            Status::invalid_argument(err.to_string())
+                        })?,
+                    result_tx,
+                })
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
 
-        result_rx
-            .await
-            .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+            result_rx
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
 
-        Ok(Response::new(()))
+            Ok(Response::new(()))
+        };
+
+        let status = if result.is_ok() {
+            STATUS_COMPLETED
+        } else {
+            STATUS_FAILED
+        };
+
+        histogram!(METADATA_SERVER_PUT_DURATION).record(start_time.elapsed());
+        counter!(METADATA_SERVER_PUT_TOTAL, "status" => status).increment(1);
+
+        result
     }
 
     async fn delete(&self, request: Request<DeleteRequest>) -> Result<Response<()>, Status> {
-        let (result_tx, result_rx) = oneshot::channel();
+        let start_time = Instant::now();
+        let result = {
+            let (result_tx, result_rx) = oneshot::channel();
 
-        let request = request.into_inner();
-        self.request_tx
-            .send(MetadataStoreRequest::Delete {
-                key: request.key.into(),
-                precondition: request
-                    .precondition
-                    .ok_or_else(|| Status::invalid_argument("missing precondition field"))?
-                    .try_into()
-                    .map_err(|err: ConversionError| Status::invalid_argument(err.to_string()))?,
-                result_tx,
-            })
-            .await
-            .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+            let request = request.into_inner();
+            self.request_tx
+                .send(MetadataStoreRequest::Delete {
+                    key: request.key.into(),
+                    precondition: request
+                        .precondition
+                        .ok_or_else(|| Status::invalid_argument("missing precondition field"))?
+                        .try_into()
+                        .map_err(|err: ConversionError| {
+                            Status::invalid_argument(err.to_string())
+                        })?,
+                    result_tx,
+                })
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
 
-        result_rx
-            .await
-            .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+            result_rx
+                .await
+                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
 
-        Ok(Response::new(()))
+            Ok(Response::new(()))
+        };
+
+        let status = if result.is_ok() {
+            STATUS_COMPLETED
+        } else {
+            STATUS_FAILED
+        };
+
+        histogram!(METADATA_SERVER_DELETE_DURATION).record(start_time.elapsed());
+        counter!(METADATA_SERVER_DELETE_TOTAL, "status" => status).increment(1);
+
+        result
     }
 
     async fn provision(
