@@ -326,7 +326,19 @@ pub fn logserver_candidate_filter(_node_id: PlainNodeId, config: &NodeConfig) ->
     // the role was removed by mistake (although some protection should be added for this)
     match config.log_server_config.storage_state {
         StorageState::ReadWrite => true,
-        StorageState::Provisioning if config.has_role(Role::LogServer) => true,
+        // Why is this being commented out?
+        // Just being conservative to avoid polluting nodesets with nodes that might have started
+        // and crashed and never became log-servers. If enough nodes in this state were added to
+        // nodesets, we might never be able to seal those loglets unless we actually start those
+        // nodes.
+        // The origin of allowing those nodes to be in new nodesets came from the need to
+        // swap log-servers with new ones on rolling upgrades (N5 starts up to replace N1 for instance).
+        // This requires that we drain N1 (marking it read-only) and start up N5. New nodesets
+        // after this point should not include N1 and will include N5. For now, I prefer to
+        // constraint this until we have the full story on how those operations will be
+        // coordinated.
+        //
+        // StorageState::Provisioning if config.has_role(Role::LogServer) => true,
         // explicit match to make it clear that we are excluding nodes with the following states,
         // any new states added will force the compiler to fail
         StorageState::Provisioning
