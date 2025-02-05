@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument, warn};
 
 use restate_core::metadata_store::retry_on_retryable_error;
 use restate_core::{Metadata, MetadataKind};
