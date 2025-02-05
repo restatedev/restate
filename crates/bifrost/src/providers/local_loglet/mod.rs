@@ -25,11 +25,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use metrics::{counter, histogram, Histogram};
+use restate_types::logs::metadata::ProviderKind;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use restate_core::ShutdownError;
-use restate_types::logs::{KeyFilter, LogletOffset, Record, SequenceNumber, TailState};
+use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
 
 use self::log_store::LogStoreError;
 use self::log_store::RocksDbLogStore;
@@ -121,6 +122,14 @@ impl LocalLoglet {
 
 #[async_trait]
 impl Loglet for LocalLoglet {
+    fn id(&self) -> LogletId {
+        LogletId::from(self.loglet_id)
+    }
+
+    fn provider(&self) -> ProviderKind {
+        ProviderKind::Local
+    }
+
     async fn create_read_stream(
         self: Arc<Self>,
         filter: KeyFilter,

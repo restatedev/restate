@@ -46,7 +46,7 @@ impl<'a> BifrostAdmin<'a> {
     /// Trim the log prefix up to and including the `trim_point`.
     /// Set `trim_point` to the value returned from `find_tail()` or `Lsn::MAX` to
     /// trim all records of the log.
-    #[instrument(level = "debug", skip(self), err)]
+    #[instrument(level = "debug", skip(self))]
     pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<()> {
         self.inner.fail_if_shutting_down()?;
         self.inner.trim(log_id, trim_point).await
@@ -59,7 +59,7 @@ impl<'a> BifrostAdmin<'a> {
     ///   If the intention is to create the log, then `segment_index` must be set to `None`.
     ///
     /// This will continue to retry sealing for seal retryable errors automatically.
-    #[instrument(level = "debug", skip(self), err)]
+    #[instrument(level = "debug", skip(self))]
     pub async fn seal_and_auto_extend_chain(
         &self,
         log_id: LogId,
@@ -115,7 +115,7 @@ impl<'a> BifrostAdmin<'a> {
     ///   - if segment_index is set, the tail loglet must match segment_index.
     ///
     /// This will continue to retry sealing for seal retryable errors automatically.
-    #[instrument(level = "debug", skip(self), err)]
+    #[instrument(level = "debug", skip(self, params))]
     pub async fn seal_and_extend_chain(
         &self,
         log_id: LogId,
@@ -201,7 +201,7 @@ impl<'a> BifrostAdmin<'a> {
     ///
     /// The loglet must be sealed first. This operations assumes that the loglet with
     /// `last_segment_index` has been sealed prior to this call.
-    #[instrument(level = "debug", skip(self), err)]
+    #[instrument(level = "debug", skip(self))]
     async fn add_segment_with_params(
         &self,
         log_id: LogId,
@@ -248,7 +248,7 @@ impl<'a> BifrostAdmin<'a> {
     }
 
     /// Adds a new log if it doesn't exist.
-    #[instrument(level = "debug", skip(self), err)]
+    #[instrument(level = "debug", skip(self, params))]
     async fn add_log(
         &self,
         log_id: LogId,
