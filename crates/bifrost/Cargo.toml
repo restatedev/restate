@@ -56,7 +56,7 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-log-server = { workspace = true }
 restate-metadata-server = { workspace = true }
-restate-storage-api = { workspace = true } 
+restate-storage-api = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 restate-wal-protocol = { workspace = true, features = ["serde"] }
@@ -76,7 +76,7 @@ tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
-tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms", "profiling"] }
+tikv-jemallocator = { workspace = true }
 
 
 [[bench]]

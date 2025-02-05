@@ -7080,6 +7080,7 @@ dependencies = [
  "strum",
  "thiserror 2.0.11",
  "threadpool",
+ "tikv-jemalloc-sys",
  "tokio",
  "tracing",
  "workspace-hack",
