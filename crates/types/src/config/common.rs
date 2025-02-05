@@ -110,8 +110,7 @@ pub struct CommonOptions {
     #[builder(setter(strip_option))]
     base_dir: Option<PathBuf>,
 
-    #[serde(flatten)]
-    pub metadata_store_client: MetadataStoreClientOptions,
+    pub metadata_client: MetadataClientOptions,
 
     /// Address to bind for the Node server. Derived from the advertised address, defaulting
     /// to `0.0.0.0:$PORT` (where the port will be inferred from the URL scheme).
@@ -405,12 +404,12 @@ impl Default for CommonOptions {
             location: None,
             force_node_id: None,
             cluster_name: "localcluster".to_owned(),
-            // boot strap the cluster by default. This is very likely to change in the future to be
+            // auto provision the cluster by default. This is very likely to change in the future to be
             // false by default. For now, this is true to make the converged deployment backward
             // compatible and easy for users.
             auto_provision: true,
             base_dir: None,
-            metadata_store_client: MetadataStoreClientOptions::default(),
+            metadata_client: MetadataClientOptions::default(),
             bind_address: None,
             advertised_address: AdvertisedAddress::from_str(DEFAULT_ADVERTISED_ADDRESS).unwrap(),
             default_num_partitions: NonZeroU16::new(24).expect("is not zero"),
@@ -497,44 +496,65 @@ pub enum LogFormat {
     Json,
 }
 
-/// # Service Client options
+/// # Metadata client options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "schemars",
-    schemars(rename = "MetadataStoreClientOptions", default)
+    schemars(rename = "MetadataClientOptions", default)
 )]
 #[builder(default)]
-#[serde(rename_all = "kebab-case")]
-pub struct MetadataStoreClientOptions {
-    /// # Metadata store
+#[serde(rename_all = "kebab-case", default)]
+pub struct MetadataClientOptions {
+    /// # Metadata client type
     ///
-    /// Metadata store server kind.
-    pub metadata_store_client: MetadataStoreClient,
+    /// Which metadata client type to use for the cluster.
+    #[serde(flatten)]
+    pub kind: MetadataClientKind,
 
     /// # Connect timeout
     ///
     /// TCP connection timeout for connecting to the metadata store.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub metadata_store_connect_timeout: humantime::Duration,
+    pub connect_timeout: humantime::Duration,
 
     /// # Metadata Store Keep Alive Interval
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub metadata_store_keep_alive_interval: humantime::Duration,
+    pub keep_alive_interval: humantime::Duration,
 
     /// # Metadata Store Keep Alive Timeout
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub metadata_store_keep_alive_timeout: humantime::Duration,
+    pub keep_alive_timeout: humantime::Duration,
 
-    /// # Backoff policy used by the metadata store client
+    /// # Backoff policy used by the metadata client
     ///
-    /// Backoff policy used by the metadata store client when it encounters concurrent
-    /// modifications.
-    pub metadata_store_client_backoff_policy: RetryPolicy,
+    /// Backoff policy used by the metadata client when it encounters concurrent modifications.
+    pub backoff_policy: RetryPolicy,
+}
+
+impl Default for MetadataClientOptions {
+    fn default() -> Self {
+        Self {
+            kind: MetadataClientKind::Native {
+                addresses: vec![DEFAULT_ADVERTISED_ADDRESS
+                    .parse()
+                    .expect("valid metadata store address")],
+            },
+            connect_timeout: Duration::from_secs(3).into(),
+            keep_alive_interval: Duration::from_secs(5).into(),
+            keep_alive_timeout: Duration::from_secs(5).into(),
+            backoff_policy: RetryPolicy::exponential(
+                Duration::from_millis(250),
+                2.0,
+                Some(10),
+                Some(Duration::from_millis(3000)),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -563,29 +583,30 @@ pub enum ObjectStoreCredentials {
     tag = "type",
     rename_all = "kebab-case",
     rename_all_fields = "kebab-case",
-    try_from = "MetadataStoreClientShadow"
+    try_from = "MetadataClientKindShadow"
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "schemars",
     schemars(
-        title = "Metadata Store",
-        description = "Definition of a bootstrap metadata store"
+        title = "Metadata client type",
+        description = "The metadata client type to store metadata"
     )
 )]
-pub enum MetadataStoreClient {
-    /// Connects to an embedded metadata store that is run by nodes that run with the MetadataStore role.
-    Embedded {
+pub enum MetadataClientKind {
+    /// Store metadata on the native metadata store that runs on nodes with the metadata-server role.
+    Native {
         #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
         addresses: Vec<AdvertisedAddress>,
     },
-    /// Uses external etcd as metadata store.
+    /// Store metadata on an external etcd cluster.
+    ///
     /// The addresses are formatted as `host:port`
     Etcd {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         addresses: Vec<String>,
     },
-    /// Uses an object store as a metadata store.
+    /// Store metadata on an external object store.
     ObjectStore {
         credentials: ObjectStoreCredentials,
 
@@ -603,40 +624,38 @@ pub enum MetadataStoreClient {
 )]
 // TODO(azmy): Remove this Shadow struct once we no longer support
 // the `address` configuration param.
-enum MetadataStoreClientShadow {
-    /// Connects to an embedded metadata store that is run by nodes that run with the MetadataStore role.
-    Embedded {
+enum MetadataClientKindShadow {
+    #[serde(alias = "embedded")]
+    Native {
         address: Option<AdvertisedAddress>,
         addresses: Vec<AdvertisedAddress>,
     },
-    /// Uses external etcd as metadata store.
-    /// The addresses are formatted as `host:port`
-    Etcd { addresses: Vec<String> },
-    /// Uses an object store as a metadata store.
+    Etcd {
+        addresses: Vec<String>,
+    },
     ObjectStore {
         credentials: ObjectStoreCredentials,
-        /// # The bucket name to use for storage
         bucket: String,
     },
 }
 
-impl TryFrom<MetadataStoreClientShadow> for MetadataStoreClient {
+impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
     type Error = &'static str;
-    fn try_from(value: MetadataStoreClientShadow) -> Result<Self, Self::Error> {
+    fn try_from(value: MetadataClientKindShadow) -> Result<Self, Self::Error> {
         let result = match value {
-            MetadataStoreClientShadow::ObjectStore {
+            MetadataClientKindShadow::ObjectStore {
                 credentials,
                 bucket,
             } => Self::ObjectStore {
                 credentials,
                 bucket,
             },
-            MetadataStoreClientShadow::Etcd { addresses } => Self::Etcd { addresses },
-            MetadataStoreClientShadow::Embedded { address, addresses } => {
+            MetadataClientKindShadow::Etcd { addresses } => Self::Etcd { addresses },
+            MetadataClientKindShadow::Native { address, addresses } => {
                 let default_address: AdvertisedAddress =
                     DEFAULT_ADVERTISED_ADDRESS.parse().unwrap();
 
-                Self::Embedded {
+                Self::Native {
                     addresses: match address {
                         Some(address) if addresses == vec![default_address] => vec![address],
                         Some(_) => return Err("Conflicting configuration, embedded metadata-store-client cannot have both `address` and `addresses`"),
@@ -647,27 +666,6 @@ impl TryFrom<MetadataStoreClientShadow> for MetadataStoreClient {
         };
 
         Ok(result)
-    }
-}
-
-impl Default for MetadataStoreClientOptions {
-    fn default() -> Self {
-        Self {
-            metadata_store_client: MetadataStoreClient::Embedded {
-                addresses: vec![DEFAULT_ADVERTISED_ADDRESS
-                    .parse()
-                    .expect("valid metadata store address")],
-            },
-            metadata_store_connect_timeout: Duration::from_secs(3).into(),
-            metadata_store_keep_alive_interval: Duration::from_secs(5).into(),
-            metadata_store_keep_alive_timeout: Duration::from_secs(5).into(),
-            metadata_store_client_backoff_policy: RetryPolicy::exponential(
-                Duration::from_millis(250),
-                2.0,
-                Some(10),
-                Some(Duration::from_millis(3000)),
-            ),
-        }
     }
 }
 
@@ -768,8 +766,6 @@ pub struct CommonOptionsShadow {
     force_node_id: Option<PlainNodeId>,
     cluster_name: String,
     base_dir: Option<PathBuf>,
-    #[serde(flatten)]
-    metadata_store_client: MetadataStoreClientOptions,
     bind_address: Option<BindAddress>,
     advertised_address: AdvertisedAddress,
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -806,6 +802,21 @@ pub struct CommonOptionsShadow {
     initialization_timeout: humantime::Duration,
     disable_telemetry: bool,
 
+    metadata_client: MetadataClientOptions,
+    // todo drop in version 1.3
+    metadata_store_client: Option<MetadataClientOptions>,
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    // todo drop in version 1.3
+    metadata_store_connect_timeout: Option<humantime::Duration>,
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    // todo drop in version 1.3
+    metadata_store_keep_alive_interval: Option<humantime::Duration>,
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    // todo drop in version 1.3
+    metadata_store_keep_alive_timeout: Option<humantime::Duration>,
+    // todo drop in version 1.3
+    metadata_store_backoff_policy: Option<RetryPolicy>,
+
     auto_provision: bool,
     // todo drop in version 1.3
     allow_bootstrap: Option<bool>,
@@ -841,6 +852,48 @@ impl From<CommonOptionsShadow> for CommonOptions {
             })
             .unwrap_or(value.default_num_partitions);
 
+        let mut metadata_client = value
+            .metadata_store_client
+            .inspect(|_| {
+                print_warning_deprecated_config_option(
+                    "metadata-store-client",
+                    Some("metadata-client"),
+                );
+            })
+            .unwrap_or(value.metadata_client);
+
+        if let Some(backoff_policy) = value.metadata_store_backoff_policy {
+            print_warning_deprecated_config_option(
+                "metadata-store-backoff-policy",
+                Some("metadata-client.backoff-policy"),
+            );
+            metadata_client.backoff_policy = backoff_policy;
+        }
+
+        if let Some(connect_timeout) = value.metadata_store_connect_timeout {
+            print_warning_deprecated_config_option(
+                "metadata-store-connect-timeout",
+                Some("metadata-client.connect-timeout"),
+            );
+            metadata_client.connect_timeout = connect_timeout;
+        }
+
+        if let Some(keep_alive_interval) = value.metadata_store_keep_alive_interval {
+            print_warning_deprecated_config_option(
+                "metadata-store-keep-alive-interval",
+                Some("metadata-client.keep-alive-interval"),
+            );
+            metadata_client.keep_alive_interval = keep_alive_interval;
+        }
+
+        if let Some(keep_alive_timeout) = value.metadata_store_keep_alive_timeout {
+            print_warning_deprecated_config_option(
+                "metadata-store-keep-alive-timeout",
+                Some("metadata-client.keep-alive-timeout"),
+            );
+            metadata_client.keep_alive_timeout = keep_alive_timeout;
+        }
+
         CommonOptions {
             roles: value.roles,
             node_name: value.node_name,
@@ -848,7 +901,7 @@ impl From<CommonOptionsShadow> for CommonOptions {
             force_node_id: value.force_node_id,
             cluster_name: value.cluster_name,
             base_dir: value.base_dir,
-            metadata_store_client: value.metadata_store_client,
+            metadata_client,
             bind_address: value.bind_address,
             advertised_address: value.advertised_address,
             shutdown_timeout: value.shutdown_timeout,

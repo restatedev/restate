@@ -22,7 +22,7 @@ use restate_core::metadata_store::{
 };
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
-use restate_types::config::{Configuration, MetadataStoreClientOptions};
+use restate_types::config::{Configuration, MetadataClientOptions};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
@@ -70,7 +70,7 @@ pub struct GrpcMetadataServerClient {
 impl GrpcMetadataServerClient {
     pub fn new(
         metadata_store_addresses: Vec<AdvertisedAddress>,
-        client_options: MetadataStoreClientOptions,
+        client_options: MetadataClientOptions,
     ) -> Self {
         let channel_manager = ChannelManager::new(metadata_store_addresses, client_options);
         let svc_client = Arc::new(Mutex::new(
@@ -362,13 +362,13 @@ impl StatusError {
 #[derive(Clone, Debug)]
 struct ChannelManager {
     channels: Arc<Mutex<Channels>>,
-    client_options: MetadataStoreClientOptions,
+    client_options: MetadataClientOptions,
 }
 
 impl ChannelManager {
     fn new(
         initial_addresses: Vec<AdvertisedAddress>,
-        client_options: MetadataStoreClientOptions,
+        client_options: MetadataClientOptions,
     ) -> Self {
         let initial_channels: Vec<_> = initial_addresses
             .into_iter()

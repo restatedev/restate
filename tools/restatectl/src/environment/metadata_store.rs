@@ -15,14 +15,14 @@ use restate_core::network::NetworkServerBuilder;
 use restate_core::{TaskCenter, TaskKind};
 use restate_metadata_server::MetadataServer;
 use restate_types::config;
-use restate_types::config::{MetadataServerOptions, MetadataStoreClientOptions, RocksDbOptions};
+use restate_types::config::{MetadataClientOptions, MetadataServerOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::protobuf::common::NodeRpcStatus;
 
 pub async fn start_metadata_server(
-    mut metadata_store_client_options: MetadataStoreClientOptions,
+    mut metadata_store_client_options: MetadataClientOptions,
     opts: &MetadataServerOptions,
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
 ) -> anyhow::Result<MetadataStoreClient> {
@@ -40,7 +40,7 @@ pub async fn start_metadata_server(
     // right now we only support running a local metadata store
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
-    metadata_store_client_options.metadata_store_client = config::MetadataStoreClient::Embedded {
+    metadata_store_client_options.kind = config::MetadataClientKind::Native {
         addresses: vec![AdvertisedAddress::Uds(uds)],
     };
 

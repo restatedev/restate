@@ -145,7 +145,7 @@ impl Node {
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
         let metadata_store_client =
-            restate_metadata_server::create_client(config.common.metadata_store_client.clone())
+            restate_metadata_server::create_client(config.common.metadata_client.clone())
                 .await
                 .map_err(BuildError::MetadataStoreClient)?;
         let metadata_manager =

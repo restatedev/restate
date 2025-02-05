@@ -24,7 +24,7 @@ use tokio_util::net::Listener;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, error_span, info, instrument, trace, Instrument, Span};
 
-use restate_types::config::{Configuration, MetadataStoreClientOptions, NetworkingOptions};
+use restate_types::config::{Configuration, MetadataClientOptions, NetworkingOptions};
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 
@@ -292,9 +292,9 @@ impl CommonClientConnectionOptions for NetworkingOptions {
     }
 }
 
-impl CommonClientConnectionOptions for MetadataStoreClientOptions {
+impl CommonClientConnectionOptions for MetadataClientOptions {
     fn connect_timeout(&self) -> Duration {
-        self.metadata_store_connect_timeout.into()
+        self.connect_timeout.into()
     }
 
     fn request_timeout(&self) -> Option<Duration> {
@@ -302,11 +302,11 @@ impl CommonClientConnectionOptions for MetadataStoreClientOptions {
     }
 
     fn keep_alive_interval(&self) -> Duration {
-        self.metadata_store_keep_alive_interval.into()
+        self.keep_alive_interval.into()
     }
 
     fn keep_alive_timeout(&self) -> Duration {
-        self.metadata_store_keep_alive_timeout.into()
+        self.keep_alive_timeout.into()
     }
 
     fn http2_adaptive_window(&self) -> bool {

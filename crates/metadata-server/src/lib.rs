@@ -33,8 +33,7 @@ pub use restate_core::metadata_store::{
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
 use restate_types::config::{
-    Configuration, MetadataServerKind, MetadataServerOptions, MetadataStoreClientOptions,
-    RocksDbOptions,
+    Configuration, MetadataClientOptions, MetadataServerKind, MetadataServerOptions, RocksDbOptions,
 };
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
@@ -615,25 +614,21 @@ impl Default for MetadataServerConfiguration {
 
 /// Creates a [`MetadataStoreClient`] for configured metadata store.
 pub async fn create_client(
-    metadata_store_client_options: MetadataStoreClientOptions,
+    metadata_store_client_options: MetadataClientOptions,
 ) -> Result<MetadataStoreClient, GenericError> {
-    let backoff_policy = Some(
-        metadata_store_client_options
-            .metadata_store_client_backoff_policy
-            .clone(),
-    );
+    let backoff_policy = Some(metadata_store_client_options.backoff_policy.clone());
 
-    let client = match metadata_store_client_options.metadata_store_client.clone() {
-        config::MetadataStoreClient::Embedded { addresses } => {
+    let client = match metadata_store_client_options.kind.clone() {
+        config::MetadataClientKind::Native { addresses } => {
             let inner_client =
                 GrpcMetadataServerClient::new(addresses, metadata_store_client_options);
             MetadataStoreClient::new(inner_client, backoff_policy)
         }
-        config::MetadataStoreClient::Etcd { addresses } => {
+        config::MetadataClientKind::Etcd { addresses } => {
             let store = EtcdMetadataStore::new(addresses, &metadata_store_client_options).await?;
             MetadataStoreClient::new(store, backoff_policy)
         }
-        conf @ config::MetadataStoreClient::ObjectStore { .. } => {
+        conf @ config::MetadataClientKind::ObjectStore { .. } => {
             let store = create_object_store_based_meta_store(conf).await?;
             MetadataStoreClient::new(store, backoff_policy)
         }

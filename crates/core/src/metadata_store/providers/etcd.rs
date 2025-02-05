@@ -16,7 +16,7 @@ use etcd_client::{
     TxnOp,
 };
 
-use restate_types::config::MetadataStoreClientOptions;
+use restate_types::config::MetadataClientOptions;
 use restate_types::errors::GenericError;
 
 use crate::metadata_store::{
@@ -73,7 +73,7 @@ pub struct EtcdMetadataStore {
 impl EtcdMetadataStore {
     pub async fn new<S: AsRef<[A]>, A: AsRef<str>>(
         addresses: S,
-        metadata_options: &MetadataStoreClientOptions,
+        metadata_options: &MetadataClientOptions,
     ) -> anyhow::Result<Self> {
         let opts = ConnectOptions::new()
             .with_connect_timeout(metadata_options.connect_timeout())
@@ -323,7 +323,7 @@ impl ProvisionedMetadataStore for EtcdMetadataStore {
 mod test {
     use bytes::Bytes;
     use bytestring::ByteString;
-    use restate_types::{config::MetadataStoreClientOptions, Version};
+    use restate_types::{config::MetadataClientOptions, Version};
 
     use super::EtcdMetadataStore;
     use crate::metadata_store::{MetadataStore, Precondition, VersionedValue, WriteError};
@@ -337,7 +337,7 @@ mod test {
     #[ignore]
     #[tokio::test]
     async fn test_put_does_not_exist() {
-        let opts = MetadataStoreClientOptions::default();
+        let opts = MetadataClientOptions::default();
         let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
 
         let key: ByteString = "put_does_not_exist".into();
@@ -364,7 +364,7 @@ mod test {
     #[ignore]
     #[tokio::test]
     async fn test_put_with_version() {
-        let opts = MetadataStoreClientOptions::default();
+        let opts = MetadataClientOptions::default();
         let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
 
         let key: ByteString = "put_with_version".into();
@@ -422,7 +422,7 @@ mod test {
     #[ignore]
     #[tokio::test]
     async fn test_put_force() {
-        let opts = MetadataStoreClientOptions::default();
+        let opts = MetadataClientOptions::default();
         let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
 
         let key: ByteString = "put_force".into();
@@ -466,7 +466,7 @@ mod test {
     #[ignore]
     #[tokio::test]
     async fn test_delete() {
-        let opts = MetadataStoreClientOptions::default();
+        let opts = MetadataClientOptions::default();
         let client = EtcdMetadataStore::new(&TEST_ADDRESS, &opts).await.unwrap();
 
         let key: ByteString = "put_delete_me".into();

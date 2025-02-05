@@ -17,8 +17,8 @@ use restate_core::network::{FailingConnector, NetworkServerBuilder};
 use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    self, reset_base_temp_dir_and_retain, Configuration, MetadataServerOptions,
-    MetadataStoreClientOptions, RocksDbOptions,
+    self, reset_base_temp_dir_and_retain, Configuration, MetadataClientOptions,
+    MetadataServerOptions, RocksDbOptions,
 };
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxedLiveLoad, Live};
@@ -209,7 +209,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     // reset RocksDbManager to allow restarting the metadata store
     RocksDbManager::get().reset().await?;
 
-    let metadata_store_client_opts = MetadataStoreClientOptions::default();
+    let metadata_store_client_opts = MetadataClientOptions::default();
     let metadata_store_opts = opts.clone();
     let metadata_store_opts = Live::from_value(metadata_store_opts);
     let client = start_metadata_server(
@@ -258,7 +258,7 @@ async fn create_test_environment(
     RocksDbManager::init(config.clone().map(|c| &c.common));
 
     let client = start_metadata_server(
-        config.pinned().common.metadata_store_client.clone(),
+        config.pinned().common.metadata_client.clone(),
         &config.pinned().metadata_server,
         config.clone().map(|c| &c.metadata_server.rocksdb).boxed(),
     )
@@ -268,7 +268,7 @@ async fn create_test_environment(
 }
 
 async fn start_metadata_server(
-    mut metadata_store_client_options: MetadataStoreClientOptions,
+    mut metadata_store_client_options: MetadataClientOptions,
     opts: &MetadataServerOptions,
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
 ) -> anyhow::Result<MetadataStoreClient> {
@@ -283,7 +283,7 @@ async fn start_metadata_server(
 
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
-    metadata_store_client_options.metadata_store_client = config::MetadataStoreClient::Embedded {
+    metadata_store_client_options.kind = config::MetadataClientKind::Native {
         addresses: vec![AdvertisedAddress::Uds(uds)],
     };
 
@@ -307,8 +307,8 @@ async fn start_metadata_server(
     )?;
 
     assert2::let_assert!(
-        config::MetadataStoreClient::Embedded { addresses } =
-            metadata_store_client_options.metadata_store_client.clone()
+        config::MetadataClientKind::Native { addresses } =
+            metadata_store_client_options.kind.clone()
     );
 
     rpc_server_health_status
@@ -319,7 +319,7 @@ async fn start_metadata_server(
         GrpcMetadataServerClient::new(addresses, metadata_store_client_options.clone());
     let client = MetadataStoreClient::new(
         grpc_client,
-        Some(metadata_store_client_options.metadata_store_client_backoff_policy),
+        Some(metadata_store_client_options.backoff_policy),
     );
 
     Ok(client)
