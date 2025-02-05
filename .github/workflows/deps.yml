@@ -16,7 +16,7 @@ on:
 jobs:
   advisories:
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-2x
     continue-on-error: true
     steps:
     - uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
 
   bans:
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-2x
     steps:
     - uses: actions/checkout@v4
     - uses: EmbarkStudios/cargo-deny-action@v1

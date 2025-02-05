@@ -22,7 +22,7 @@ jobs:
 
   docker-cli:
     name: Push CLI Docker image
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     env:
       REPOSITORY_OWNER: ${{ github.repository_owner }}
       GHCR_REGISTRY: "ghcr.io"

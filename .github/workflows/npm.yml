@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-2x
     strategy:
       matrix:
         app_name:
@@ -97,7 +97,7 @@ jobs:
 
   publish-npm-base:
     needs: publish-npm-binaries
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-2x
     strategy:
       matrix:
         app_name:
