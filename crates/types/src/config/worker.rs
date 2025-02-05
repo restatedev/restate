@@ -363,7 +363,8 @@ impl Default for StorageOptions {
 }
 
 /// # Snapshot options.
-/// Configures the worker store partition snapshot mechanism.
+///
+/// Partition store snapshotting settings.
 #[serde_as]
 #[derive(Default, Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -373,11 +374,15 @@ impl Default for StorageOptions {
 pub struct SnapshotsOptions {
     /// # Destination
     ///
-    /// Where snapshots are moved after they get created. This property support URLs with either
-    /// `s3://` or `file://` protocol scheme. The URL is parsed with
+    /// Newly produced snapshots are published to this location. Supports `s3://` and `file://`
+    /// protocol scheme.
     ///
-    /// Example: `s3://snapshots-bucket/restate/cluster` will send snapshots to the specified
-    /// bucket, prefixing keys with the URL path.
+    /// For S3 bucket destinations, Restate will use the AWS credentials available from the
+    /// environment, or the configuration profile specified by `AWS_PROFILE` environment variable,
+    /// falling back to the default AWS profile.
+    ///
+    /// Example: `s3://bucket/prefix` will put snapshots in the specified bucket and (optional)
+    /// prefix.
     ///
     /// Default: `None`
     pub destination: Option<String>,
