@@ -80,6 +80,13 @@ fn write_default_provider<W: fmt::Write>(
                 "Replication property",
                 config.replication_property.to_string(),
             )?;
+            write_leaf(
+                w,
+                depth,
+                true,
+                "Nodeset size",
+                config.target_nodeset_size.to_string(),
+            )?;
         }
     }
     Ok(())

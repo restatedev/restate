@@ -48,6 +48,7 @@ tokio-util = { workspace = true }
 tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
 tracing = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
+rand = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

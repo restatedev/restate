@@ -158,7 +158,7 @@ impl<'a> BifrostAdmin<'a> {
         self.inner.writeable_loglet(log_id).await
     }
 
-    #[instrument(level = "debug", skip(self), err)]
+    #[instrument(level = "debug", skip(self))]
     pub async fn seal(&self, log_id: LogId, segment_index: SegmentIndex) -> Result<SealedSegment> {
         self.inner.fail_if_shutting_down()?;
         // first find the tail segment for this log.
@@ -177,7 +177,7 @@ impl<'a> BifrostAdmin<'a> {
             match err {
                 crate::loglet::OperationError::Shutdown(err) => return Err(err.into()),
                 crate::loglet::OperationError::Other(err) => {
-                    info!(
+                    warn!(
                         log_id = %log_id,
                         segment = %segment_index,
                         %err,

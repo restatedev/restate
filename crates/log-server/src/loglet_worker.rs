@@ -316,7 +316,6 @@ impl<S: LogStore> LogletWorker<S> {
         if !body.flags.contains(StoreFlags::IgnoreSeal) && self.loglet_state.is_sealed() {
             return (Status::Sealed, None);
         }
-
         // even if ignore-seal is set, we must wait for the in-flight seal before we can accept
         // writes.
         if *sealing_in_progress {
