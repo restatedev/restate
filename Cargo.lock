@@ -4013,7 +4013,6 @@ dependencies = [
  "percent-encoding",
  "referencing",
  "regex-syntax 0.8.5",
- "reqwest",
  "serde",
  "serde_json",
  "uuid-simd",
@@ -6266,7 +6265,6 @@ checksum = "43e734407157c3c2034e0258f5e4473ddb361b1e85f95a66690d67264d7cd1da"
 dependencies = [
  "base64 0.22.1",
  "bytes",
- "futures-channel",
  "futures-core",
  "futures-util",
  "h2 0.4.7",
