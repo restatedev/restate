@@ -12,7 +12,6 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use dashmap::mapref::entry::Entry;
-use dashmap::DashMap;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use restate_types::NodeId;
@@ -22,6 +21,8 @@ use tracing::{error, warn};
 
 use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
 use restate_types::net::RpcRequest;
+
+type DashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
 
 use super::{
     HasConnection, Incoming, MessageHandler, MessageRouterBuilder, NetworkError, NetworkSendError,
