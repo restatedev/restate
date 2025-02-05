@@ -18,6 +18,7 @@ pub mod util;
 pub use error::*;
 use futures::stream::BoxStream;
 pub use provider::{LogletProvider, LogletProviderFactory};
+use restate_types::logs::metadata::ProviderKind;
 use tokio::sync::oneshot;
 
 use std::pin::Pin;
@@ -28,7 +29,7 @@ use async_trait::async_trait;
 use futures::{FutureExt, Stream};
 
 use restate_core::ShutdownError;
-use restate_types::logs::{KeyFilter, LogletOffset, Record, TailState};
+use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, TailState};
 
 use crate::LogEntry;
 use crate::Result;
@@ -68,7 +69,7 @@ use crate::Result;
 /// ```
 
 #[async_trait]
-pub trait Loglet: Send + Sync + std::fmt::Debug {
+pub trait Loglet: Send + Sync {
     /// Create a read stream that streams record from a single loglet instance.
     ///
     /// `to`: The offset of the last record to be read (inclusive). If `None`, the
@@ -79,6 +80,12 @@ pub trait Loglet: Send + Sync + std::fmt::Debug {
         from: LogletOffset,
         to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError>;
+
+    /// A string representation of the id of this loglet
+    fn id(&self) -> LogletId;
+
+    /// What is the provider of this loglet
+    fn provider(&self) -> ProviderKind;
 
     /// Create a stream watching the state of tail for this loglet
     ///

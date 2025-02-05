@@ -19,10 +19,10 @@ use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
-use restate_types::replication::NodeSet;
+use restate_types::replication::DecoratedNodeSet;
 
 use crate::loglet::util::TailOffsetWatch;
-use crate::providers::replicated_loglet::error::ReplicatedLogletError;
+use crate::providers::replicated_loglet::error::{NodeSealStatus, ReplicatedLogletError};
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
 use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
 
@@ -66,7 +66,7 @@ impl SealTask {
                 is_sealed = known_global_tail.is_sealed(),
                 "Cannot seal the loglet as all nodeset members are in `Provisioning` storage state"
             );
-            return Err(ReplicatedLogletError::SealFailed(my_params.loglet_id));
+            return Err(ReplicatedLogletError::SealFailed(Default::default()));
         }
         // Use the entire nodeset except for StorageState::Disabled.
         let effective_nodeset = my_params
@@ -116,6 +116,8 @@ impl SealTask {
             });
         }
 
+        let mut nodeset_status = DecoratedNodeSet::from_iter(effective_nodeset.clone());
+
         // Max observed local-tail from sealed nodes
         let mut max_local_tail = LogletOffset::OLDEST;
         while let Some(response) = inflight_requests.join_next().await {
@@ -125,29 +127,26 @@ impl SealTask {
             };
             let Ok(response) = response else {
                 // Seal failed/aborted on this node.
+                nodeset_status.insert(node_id, NodeSealStatus::Error);
                 continue;
             };
 
             max_local_tail = max_local_tail.max(response.header.local_tail);
             known_global_tail.notify_offset_update(response.header.known_global_tail);
             nodeset_checker.set_attribute(node_id, true);
+            nodeset_status.insert(node_id, NodeSealStatus::Sealed);
 
             // todo: consider allowing the seal to pass at best-effort f-majority.
             if nodeset_checker.check_fmajority(|attr| *attr).passed() {
-                let sealed_nodes: NodeSet = nodeset_checker
-                    .filter(|sealed| *sealed)
-                    .map(|(n, _)| *n)
-                    .collect();
-
                 info!(
                     loglet_id = %my_params.loglet_id,
                     replication = %my_params.replication,
                     %effective_nodeset,
                     %max_local_tail,
                     global_tail = %known_global_tail.latest_offset(),
-                    "Seal task completed on f-majority of nodes in {:?}. Sealed log-servers {}",
+                    "Seal task completed on f-majority of nodes in {:?}. Nodeset status {}",
                     start.elapsed(),
-                    sealed_nodes,
+                    nodeset_status,
                 );
                 // note that we drop the rest of the seal requests after return
                 return Ok(max_local_tail);
@@ -155,7 +154,7 @@ impl SealTask {
         }
 
         // no more tasks left. This means that we failed to seal
-        Err(ReplicatedLogletError::SealFailed(my_params.loglet_id))
+        Err(ReplicatedLogletError::SealFailed(nodeset_status))
     }
 }
 
