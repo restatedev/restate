@@ -22,10 +22,13 @@ jobs:
     runs-on: warp-ubuntu-latest-x64-2x
     strategy:
       matrix:
-        app_name:
-          - restate-cli
-          - restatectl
-          - restate-server
+        package:
+          - app_name: restate-cli
+            binary: restate
+          - app_name: restatectl
+            binary: restatectl
+          - app_name: restate-server
+            binary: restate-server
         build:
           - target: aarch64-apple-darwin
             node_arch: arm64
@@ -56,12 +59,12 @@ jobs:
           merge-multiple: true
 
       - name: Extract binaries
-        run: tar -xvf ${{ matrix.app_name }}-${{ matrix.build.target }}.tar.xz
+        run: tar -xvf ${{ matrix.package.app_name }}-${{ matrix.build.target }}.tar.xz
 
       - name: Publish to NPM
         shell: bash
         run: |
-          bin="$(echo "$PLAN" | jq -r '.artifacts["${{ matrix.app_name }}-${{ matrix.build.target }}.tar.xz"].assets[] | select(.kind == "executable").name')"
+          bin="${{ matrix.package.binary }}"
           tag="${{ fromJson(inputs.plan).announcement_is_prerelease && 'next' || 'latest' }}"
 
           cd npm || exit 1
@@ -70,7 +73,7 @@ jobs:
           node_arch="${{ matrix.build.node_arch }}"
           export node_arch
           # set the version
-          node_version="$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.app_name }}").app_version')"
+          node_version="$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.package.app_name }}").app_version')"
           export node_version
           # set the package name
           export node_pkg="${bin}-${node_os}-${node_arch}"
@@ -84,7 +87,7 @@ jobs:
           # generate package.json from the template
           envsubst < package.json.tmpl > "${node_pkg}/package.json"
           # copy the binary into the package
-          dir="../${{ matrix.app_name }}-${{ matrix.build.target }}"
+          dir="../${{ matrix.package.app_name }}-${{ matrix.build.target }}"
           cp "${dir}/${bin}" "${node_pkg}/bin"
           cp "${dir}/NOTICE" "${node_pkg}"
           cp "${dir}/LICENSE" "${node_pkg}"
@@ -101,10 +104,13 @@ jobs:
     runs-on: warp-ubuntu-latest-x64-2x
     strategy:
       matrix:
-        app_name:
-          - restate-cli
-          - restatectl
-          - restate-server
+        package:
+          - app_name: restate-cli
+            binary: restate
+          - app_name: restatectl
+            binary: restatectl
+          - app_name: restate-server
+            binary: restate-server
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -117,8 +123,8 @@ jobs:
       - name: Publish to npm
         shell: bash
         run: |
-          node_version="$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.app_name }}").app_version')"
-          bin="$(echo "$PLAN" | jq -r '.artifacts["${{ matrix.package.artifact }}-${{ matrix.build.target }}.tar.xz"].assets[] | select(.kind == "executable").name')"
+          node_version="$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.package.app_name }}").app_version')"
+          bin="${{ matrix.package.binary }}"
           tag="${{ fromJson(inputs.plan).announcement_is_prerelease && 'next' || 'latest' }}"
 
           cd npm || exit 1
