@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::grpc::handler::MetadataStoreHandler;
+use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::MetadataServerSnapshot;
 use crate::metric_definitions::{
@@ -18,16 +20,17 @@ use crate::metric_definitions::{
 };
 use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::network::grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient;
-use crate::raft::network::{ConnectionManager, Networking};
+use crate::raft::network::{
+    ConnectionManager, MetadataServerNetworkSvcServer, MetadataStoreNetworkHandler, Networking,
+};
 use crate::raft::storage::RocksDbStorage;
-use crate::raft::{storage, RaftConfiguration};
+use crate::raft::{network, storage, RaftConfiguration};
 use crate::{
     grpc, prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError,
-    JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinClusterSender, JoinError,
-    KnownLeader, MemberId, MetadataServerBackend, MetadataServerConfiguration,
-    MetadataStoreRequest, MetadataStoreSummary, ProvisionError, ProvisionReceiver, ProvisionSender,
-    RaftSummary, Request, RequestError, RequestKind, RequestReceiver, RequestSender,
-    SnapshotSummary, StatusSender, StatusWatch, StorageId, WriteRequest,
+    JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinError, KnownLeader, MemberId,
+    MetadataServer, MetadataServerConfiguration, MetadataStoreRequest, MetadataStoreSummary,
+    ProvisionError, ProvisionReceiver, RaftSummary, Request, RequestError, RequestKind,
+    RequestReceiver, SnapshotSummary, StatusSender, StorageId, WriteRequest,
 };
 use arc_swap::ArcSwapOption;
 use assert2::let_assert;
@@ -35,7 +38,6 @@ use bytes::BytesMut;
 use futures::future::{FusedFuture, OptionFuture};
 use futures::never::Never;
 use futures::FutureExt;
-use futures::TryFutureExt;
 use metrics::gauge;
 use prost::{DecodeError, EncodeError, Message as ProstMessage};
 use protobuf::{Message as ProtobufMessage, ProtobufError};
@@ -49,6 +51,7 @@ use rand::prelude::IteratorRandom;
 use rand::{random, rng};
 use restate_core::metadata_store::{serialize_value, Precondition};
 use restate_core::network::net_util::create_tonic_channel;
+use restate_core::network::NetworkServerBuilder;
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind,
 };
@@ -64,7 +67,6 @@ use restate_types::retries::RetryPolicy;
 use restate_types::{PlainNodeId, Version};
 use slog::o;
 use std::collections::{HashMap, VecDeque};
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -144,13 +146,10 @@ pub struct RaftMetadataServer {
     metadata_writer: Option<MetadataWriter>,
     health_status: Option<HealthStatus<MetadataServerStatus>>,
 
-    request_tx: RequestSender,
     request_rx: RequestReceiver,
 
-    provision_tx: ProvisionSender,
     provision_rx: Option<ProvisionReceiver>,
 
-    join_cluster_tx: JoinClusterSender,
     join_cluster_rx: JoinClusterReceiver,
 
     status_tx: StatusSender,
@@ -161,13 +160,14 @@ impl RaftMetadataServer {
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
         metadata_writer: Option<MetadataWriter>,
         health_status: HealthStatus<MetadataServerStatus>,
+        server_builder: &mut NetworkServerBuilder,
     ) -> Result<Self, BuildError> {
         health_status.update(MetadataServerStatus::StartingUp);
 
         let (request_tx, request_rx) = mpsc::channel(2);
         let (provision_tx, provision_rx) = mpsc::channel(1);
         let (join_cluster_tx, join_cluster_rx) = mpsc::channel(1);
-        let (status_tx, _) = watch::channel(MetadataStoreSummary::default());
+        let (status_tx, status_rx) = watch::channel(MetadataStoreSummary::default());
 
         let mut metadata_store_options =
             Configuration::updateable().map(|configuration| &configuration.metadata_server);
@@ -192,40 +192,39 @@ impl RaftMetadataServer {
 
         debug!("Obtained storage id: {storage_id}");
 
+        let connection_manager = Arc::default();
+
+        server_builder.register_grpc_service(
+            MetadataServerNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
+                Arc::clone(&connection_manager),
+                Some(JoinClusterHandle::new(join_cluster_tx)),
+            ))
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip),
+            network::FILE_DESCRIPTOR_SET,
+        );
+        server_builder.register_grpc_service(
+            MetadataServerSvcServer::new(MetadataStoreHandler::new(
+                request_tx,
+                Some(provision_tx),
+                Some(status_rx),
+            ))
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip),
+            grpc::FILE_DESCRIPTOR_SET,
+        );
+
         Ok(Self {
-            connection_manager: Arc::default(),
+            connection_manager,
             storage,
             storage_id,
             health_status: Some(health_status),
             request_rx,
-            request_tx,
-            provision_tx,
             provision_rx: Some(provision_rx),
-            join_cluster_tx,
             join_cluster_rx,
             status_tx,
             metadata_writer,
         })
-    }
-
-    pub(crate) fn request_sender(&self) -> RequestSender {
-        self.request_tx.clone()
-    }
-
-    pub(crate) fn provision_sender(&self) -> ProvisionSender {
-        self.provision_tx.clone()
-    }
-
-    pub(crate) fn join_cluster_handle(&self) -> JoinClusterHandle {
-        JoinClusterHandle::new(self.join_cluster_tx.clone())
-    }
-
-    pub(crate) fn status_watch(&self) -> StatusWatch {
-        self.status_tx.subscribe()
-    }
-
-    pub(crate) fn connection_manager(&self) -> Arc<ArcSwapOption<ConnectionManager<Message>>> {
-        Arc::clone(&self.connection_manager)
     }
 
     pub async fn run(mut self) -> Result<(), Error> {
@@ -473,21 +472,10 @@ impl RaftMetadataServer {
     }
 }
 
-impl MetadataServerBackend for RaftMetadataServer {
-    fn request_sender(&self) -> RequestSender {
-        self.request_sender()
-    }
-
-    fn provision_sender(&self) -> Option<ProvisionSender> {
-        Some(self.provision_sender())
-    }
-
-    fn status_watch(&self) -> Option<StatusWatch> {
-        Some(self.status_watch())
-    }
-
-    fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
-        self.run().map_err(anyhow::Error::from)
+#[async_trait::async_trait]
+impl MetadataServer for RaftMetadataServer {
+    async fn run(self) -> anyhow::Result<()> {
+        self.run().await.map_err(Into::into)
     }
 }
 

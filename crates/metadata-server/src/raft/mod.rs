@@ -10,44 +10,15 @@
 
 mod kv_memory_storage;
 mod network;
+mod server;
 mod storage;
-mod store;
 
-use crate::raft::store::BuildError;
-use crate::{MemberId, MetadataServerRunner};
+use crate::MemberId;
 use anyhow::Context;
 use bytes::{Buf, BufMut};
-use network::{MetadataServerNetworkSvcServer, MetadataStoreNetworkHandler, NetworkMessage};
+use network::NetworkMessage;
 use protobuf::Message as ProtobufMessage;
-use restate_core::network::NetworkServerBuilder;
-use restate_core::MetadataWriter;
-use restate_types::config::RocksDbOptions;
-use restate_types::health::HealthStatus;
-use restate_types::live::BoxedLiveLoad;
-use restate_types::protobuf::common::MetadataServerStatus;
-pub use store::RaftMetadataServer;
-use tonic::codec::CompressionEncoding;
-
-pub(crate) async fn create_server(
-    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    health_status: HealthStatus<MetadataServerStatus>,
-    metadata_writer: Option<MetadataWriter>,
-    server_builder: &mut NetworkServerBuilder,
-) -> Result<MetadataServerRunner<RaftMetadataServer>, BuildError> {
-    let store = RaftMetadataServer::create(rocksdb_options, metadata_writer, health_status).await?;
-
-    server_builder.register_grpc_service(
-        MetadataServerNetworkSvcServer::new(MetadataStoreNetworkHandler::new(
-            store.connection_manager(),
-            Some(store.join_cluster_handle()),
-        ))
-        .accept_compressed(CompressionEncoding::Gzip)
-        .send_compressed(CompressionEncoding::Gzip),
-        network::FILE_DESCRIPTOR_SET,
-    );
-
-    Ok(MetadataServerRunner::new(store, server_builder))
-}
+pub use server::RaftMetadataServer;
 
 impl NetworkMessage for raft::prelude::Message {
     fn to(&self) -> u64 {

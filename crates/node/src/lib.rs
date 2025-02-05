@@ -37,7 +37,7 @@ use restate_core::{Metadata, TaskKind};
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
 use restate_metadata_server::{
-    BoxedMetadataStoreService, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
+    BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
 };
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::GenericError;
@@ -120,7 +120,7 @@ pub struct Node {
     partition_routing_refresher: PartitionRoutingRefresher,
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
-    metadata_store_role: Option<BoxedMetadataStoreService>,
+    metadata_store_role: Option<BoxedMetadataServer>,
     base_role: BaseRole,
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole>,

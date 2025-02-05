@@ -15,8 +15,8 @@ pub mod raft;
 mod util;
 
 use crate::grpc::client::GrpcMetadataServerClient;
-use crate::grpc::handler::MetadataStoreHandler;
-use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
+use crate::local::LocalMetadataServer;
+use crate::raft::RaftMetadataServer;
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -48,14 +48,12 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{config, GenerationalNodeId, PlainNodeId, Version};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::future::Future;
 use tokio::sync::{mpsc, oneshot, watch};
-use tonic::codec::CompressionEncoding;
 use tonic::Status;
 use tracing::debug;
 use ulid::Ulid;
 
-pub type BoxedMetadataStoreService = Box<dyn MetadataServer>;
+pub type BoxedMetadataServer = Box<dyn MetadataServer>;
 
 pub type RequestSender = mpsc::Sender<MetadataStoreRequest>;
 pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
@@ -139,7 +137,7 @@ impl<T: MetadataServer> MetadataServerBoxed for T {
 pub trait MetadataServer: MetadataServerBoxed + Send {
     async fn run(self) -> anyhow::Result<()>;
 
-    fn boxed(self) -> BoxedMetadataStoreService
+    fn boxed(self) -> BoxedMetadataServer
     where
         Self: Sized + 'static,
     {
@@ -183,69 +181,16 @@ pub struct ProvisionRequest {
     result_tx: oneshot::Sender<Result<bool, ProvisionError>>,
 }
 
-trait MetadataServerBackend {
-    /// Create a request sender for this backend.
-    fn request_sender(&self) -> RequestSender;
-
-    /// Create a provision sender for this backend.
-    fn provision_sender(&self) -> Option<ProvisionSender>;
-
-    /// Create a status watch for this backend.
-    fn status_watch(&self) -> Option<StatusWatch>;
-
-    /// Run the metadata store backend
-    fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static;
-}
-
-struct MetadataServerRunner<S> {
-    store: S,
-}
-
-impl<S> MetadataServerRunner<S>
-where
-    S: MetadataServerBackend,
-{
-    pub fn new(store: S, server_builder: &mut NetworkServerBuilder) -> Self {
-        server_builder.register_grpc_service(
-            MetadataServerSvcServer::new(MetadataStoreHandler::new(
-                store.request_sender(),
-                store.provision_sender(),
-                store.status_watch(),
-            ))
-            .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Gzip),
-            grpc::FILE_DESCRIPTOR_SET,
-        );
-
-        Self { store }
-    }
-}
-
-#[async_trait::async_trait]
-impl<S> MetadataServer for MetadataServerRunner<S>
-where
-    S: MetadataServerBackend + Send,
-{
-    async fn run(self) -> anyhow::Result<()> {
-        let MetadataServerRunner { store } = self;
-
-        store.run().await?;
-
-        Ok(())
-    }
-}
-
 pub async fn create_metadata_server(
     metadata_server_options: &MetadataServerOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataServerStatus>,
     metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
-) -> anyhow::Result<BoxedMetadataStoreService> {
+) -> anyhow::Result<BoxedMetadataServer> {
     metric_definitions::describe_metrics();
-
     match metadata_server_options.kind {
-        MetadataServerKind::Local => local::create_server(
+        MetadataServerKind::Local => LocalMetadataServer::create(
             metadata_server_options,
             rocksdb_options,
             health_status,
@@ -253,16 +198,16 @@ pub async fn create_metadata_server(
         )
         .await
         .map_err(anyhow::Error::from)
-        .map(|store| store.boxed()),
-        MetadataServerKind::Raft { .. } => raft::create_server(
+        .map(|server| server.boxed()),
+        MetadataServerKind::Raft { .. } => RaftMetadataServer::create(
             rocksdb_options,
-            health_status,
             metadata_writer,
+            health_status,
             server_builder,
         )
         .await
         .map_err(anyhow::Error::from)
-        .map(|store| store.boxed()),
+        .map(|server| server.boxed()),
     }
 }
 impl MetadataStoreRequest {
