@@ -13,9 +13,21 @@ use std::sync::Arc;
 use restate_core::ShutdownError;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{LogId, LogletId};
+use restate_types::logs::LogId;
+use restate_types::replication::DecoratedNodeSet;
 
 use crate::loglet::OperationError;
+
+#[derive(Default, derive_more::Display, derive_more::Debug)]
+pub enum NodeSealStatus {
+    #[display("E")]
+    Error,
+    #[display("S")]
+    Sealed,
+    #[display("?")]
+    #[default]
+    Unknown,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ReplicatedLogletError {
@@ -23,8 +35,10 @@ pub(crate) enum ReplicatedLogletError {
     LogletParamsParsingError(LogId, SegmentIndex, serde_json::Error),
     #[error("cannot find the tail of the loglet: {0}")]
     FindTailFailed(String),
-    #[error("could not seal loglet_id={0}, insufficient nodes available for seal")]
-    SealFailed(LogletId),
+    #[error(
+        "could not seal loglet because insufficient nodes confirmed the seal. The nodeset status is {0}"
+    )]
+    SealFailed(DecoratedNodeSet<NodeSealStatus>),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }
