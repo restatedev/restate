@@ -18,7 +18,7 @@ jobs:
   publish-homebrew-formula:
     # homebrew only really has a single 'latest' version, so we must skip prereleases
     if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
-    runs-on: "ubuntu-20.04"
+    runs-on: "warp-ubuntu-latest-x64-2x"
     env:
       GITHUB_USER: "Restate bot"
       GITHUB_EMAIL: "code+bot@restate.dev"

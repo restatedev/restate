@@ -23,7 +23,7 @@ env:
 
 jobs:
   release-helm-chart:
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-2x
     steps:
       - name: Checkout
         uses: actions/checkout@v4

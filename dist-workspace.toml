@@ -51,6 +51,9 @@ contents = "write"
 [dist.dependencies.homebrew]
 protobuf = "*"
 
+[dist.github-custom-runners.global]
+runner = "warp-ubuntu-latest-arm64-2x"
+
 [dist.github-custom-runners.aarch64-apple-darwin]
 runner = "warp-macos-latest-arm64-6x"
 
