@@ -84,7 +84,7 @@ jobs:
           # generate package.json from the template
           envsubst < package.json.tmpl > "${node_pkg}/package.json"
           # copy the binary into the package
-          dir="../${{ matrix.app_name }}-${{ matrix.target }}"
+          dir="../${{ matrix.app_name }}-${{ matrix.build.target }}"
           cp "${dir}/${bin}" "${node_pkg}/bin"
           cp "${dir}/NOTICE" "${node_pkg}"
           cp "${dir}/LICENSE" "${node_pkg}"
