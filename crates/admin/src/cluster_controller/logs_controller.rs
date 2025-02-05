@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use futures::future;
+use futures::never::Never;
+use rand::prelude::IteratorRandom;
+use rand::rng;
 use std::collections::HashMap;
 use std::iter;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
-
-use futures::never::Never;
-use rand::prelude::IteratorRandom;
-use rand::rng;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, trace, trace_span, Instrument};
@@ -1070,44 +1070,45 @@ impl LogsController {
         let logs = Arc::clone(&self.inner.current_logs);
         let bifrost = self.bifrost.clone();
         let find_tail = async move {
-            let mut updates = LogsTailUpdates::default();
-            for (log_id, chain) in logs.iter() {
+            let updates = future::join_all(logs.iter().map(|(log_id, chain)| {
+                let log_id = *log_id;
                 let tail_segment = chain.tail();
+                let bifrost = bifrost.clone();
 
-                let writeable_loglet = match bifrost.admin().writeable_loglet(*log_id).await {
-                    Ok(loglet) => loglet,
-                    Err(BifrostError::Shutdown(_)) => break,
-                    Err(err) => {
-                        debug!(error=%err, %log_id, segment_index=%tail_segment.index(), "Failed to find writable loglet");
-                        continue;
+                async move {
+                    let writeable_loglet = match bifrost.admin().writeable_loglet(log_id).await {
+                        Ok(loglet) => loglet,
+                        Err(BifrostError::Shutdown(_)) => return None,
+                        Err(err) => {
+                            debug!(error=%err, %log_id, segment_index=%tail_segment.index(), "Failed to find writable loglet");
+                            return None;
+                        }
+                    };
+
+                    if writeable_loglet.segment_index() != tail_segment.index() {
+                        // writable segment in bifrost is probably ahead of our snapshot.
+                        // then there is probably a new metadata update that will fix this
+                        // for now we just ignore this segment
+                        debug!(%log_id, segment_index=%tail_segment.index(), "Segment is not tail segment, skip finding tail");
+                        return None;
                     }
-                };
 
-                if writeable_loglet.segment_index() != tail_segment.index() {
-                    // writable segment in bifrost is probably ahead of our snapshot.
-                    // then there is probably a new metadata update that will fix this
-                    // for now we just ignore this segment
-                    debug!(%log_id, segment_index=%tail_segment.index(), "Segment is not tail segment, skip finding tail");
-                    continue;
+                    debug!(%log_id, segment_index=%writeable_loglet.segment_index(), "Attempting to find tail for loglet");
+                    let found_tail = match writeable_loglet.find_tail().await {
+                        Ok(tail) => tail,
+                        Err(err) => {
+                            debug!(error=%err, %log_id, segment_index=%writeable_loglet.segment_index(), "Failed to find tail for loglet");
+                            return None;
+                        }
+                    };
+
+                    Some((log_id, LogTailUpdate {
+                        segment_index: writeable_loglet.segment_index(),
+                        tail: found_tail,
+                    }))
                 }
+            })).await.into_iter().flatten().collect();
 
-                debug!(%log_id, segment_index=%writeable_loglet.segment_index(), "Attempting to find tail for loglet");
-                let found_tail = match writeable_loglet.find_tail().await {
-                    Ok(tail) => tail,
-                    Err(err) => {
-                        debug!(error=%err, %log_id, segment_index=%writeable_loglet.segment_index(), "Failed to find tail for loglet");
-                        continue;
-                    }
-                };
-
-                // send message
-                let update = LogTailUpdate {
-                    segment_index: writeable_loglet.segment_index(),
-                    tail: found_tail,
-                };
-
-                updates.insert(*log_id, update);
-            }
             // we explicitly drop the permit here to make sure
             // it's moved to the future closure
             drop(permit);
