@@ -56,7 +56,7 @@ jobs:
           merge-multiple: true
 
       - name: Extract binaries
-        run: tar -xvzf ${{ matrix.app_name }}-${{ matrix.build.target }}.tar.xz
+        run: tar -xvf ${{ matrix.app_name }}-${{ matrix.build.target }}.tar.xz
 
       - name: Publish to NPM
         shell: bash

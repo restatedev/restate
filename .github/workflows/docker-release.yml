@@ -82,8 +82,8 @@ jobs:
 
           FROM alpine
           ARG TARGETARCH
-          COPY --from=builder /restate-cli-${TARGETARCH} /
-          COPY --from=builder /restatectl-${TARGETARCH}/restatectl /
+          COPY --from=builder /restatectl-${TARGETARCH}/*/restatectl /
+          COPY --from=builder /restate-cli-${TARGETARCH}/*/* /
           ENTRYPOINT [ "/restate" ]
           EOF
 
