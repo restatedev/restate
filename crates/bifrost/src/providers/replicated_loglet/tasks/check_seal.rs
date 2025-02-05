@@ -26,7 +26,7 @@ use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use super::util::Disposition;
 use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::log_server_manager::RemoteLogServerManager;
-use crate::providers::replicated_loglet::replication::{FMajorityResult, NodeSetChecker};
+use crate::providers::replicated_loglet::replication::NodeSetChecker;
 use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
 
 /// Attempts to detect if the loglet has been sealed or if there is a seal in progress by
@@ -163,7 +163,7 @@ impl CheckSealTask {
             // loglet sealed even if some nodes lost data. The check-seal wouldn't determine the
             // known_global_tail, only whether the loglet is sealed or not and it's safe to do so.
             // non-authoritative nodes cannot accept normal writes, only repair writes.
-            if nodeset_checker.check_fmajority(|attr| *attr) >= FMajorityResult::BestEffort {
+            if nodeset_checker.check_fmajority(|attr| *attr).passed() {
                 // no need to detach, we don't need responses from the rest of the nodes
                 return Ok(CheckSealOutcome::FullySealed);
             }
@@ -191,7 +191,7 @@ impl CheckSealTask {
             return Ok(CheckSealOutcome::Sealing);
         }
 
-        if nodeset_checker.check_fmajority(|attr| !(*attr)) >= FMajorityResult::BestEffort {
+        if nodeset_checker.check_fmajority(|attr| !(*attr)).passed() {
             return Ok(CheckSealOutcome::Open);
         }
 
