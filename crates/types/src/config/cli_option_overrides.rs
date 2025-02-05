@@ -88,7 +88,7 @@ pub struct CommonOptionCliOverride {
     /// This can also be explicitly disabled by setting this value to false.
     ///
     /// Default: true
-    #[clap(long, global = true, alias = "allow_bootstrap")]
+    #[clap(long, global = true, alias = "allow-bootstrap")]
     pub auto_provision: Option<bool>,
 
     /// The working directory which this Restate node should use for relative paths. The default is

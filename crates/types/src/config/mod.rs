@@ -159,7 +159,7 @@ pub fn set_current_config(config: Configuration) {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(default))]
 #[builder(default)]
-#[serde(rename_all = "kebab-case", try_from = "ConfigurationShadow")]
+#[serde(rename_all = "kebab-case", from = "ConfigurationShadow")]
 pub struct Configuration {
     #[serde(flatten)]
     pub common: CommonOptions,
@@ -265,19 +265,18 @@ pub struct ConfigurationShadow {
     log_server: LogServerOptions,
 }
 
-impl TryFrom<ConfigurationShadow> for Configuration {
-    type Error = anyhow::Error;
-
-    fn try_from(value: ConfigurationShadow) -> Result<Self, Self::Error> {
+impl From<ConfigurationShadow> for Configuration {
+    fn from(value: ConfigurationShadow) -> Self {
         let metadata_server = if value.metadata_server == MetadataServerOptions::default()
             && value.metadata_store.is_some()
         {
+            print_warning_deprecated_config_option("metadata-store", Some("metadata-server"));
             value.metadata_store.unwrap()
         } else {
             value.metadata_server
         };
 
-        Ok(Configuration {
+        Configuration {
             common: value.common,
             worker: value.worker,
             admin: value.admin,
@@ -286,6 +285,15 @@ impl TryFrom<ConfigurationShadow> for Configuration {
             metadata_server,
             networking: value.networking,
             log_server: value.log_server,
-        })
+        }
+    }
+}
+
+fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<&str>) {
+    // we can't use tracing since config loading happens before tracing is initialized
+    if let Some(replacement) = replacement {
+        eprintln!("Using the deprecated config option '{deprecated}' instead of '{replacement}'. Please update the config to use '{replacement}' instead.");
+    } else {
+        eprintln!("Using the deprecated config option '{deprecated}'.");
     }
 }
