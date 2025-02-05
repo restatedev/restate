@@ -92,11 +92,7 @@ impl CheckSealTask {
 
         let local_tails: BTreeMap<PlainNodeId, TailOffsetWatch> = effective_nodeset
             .iter()
-            .filter_map(|node_id| {
-                log_servers
-                    .try_get_tail_offset(*node_id)
-                    .map(|w| (*node_id, w))
-            })
+            .map(|node_id| (*node_id, log_servers.get_tail_offset(*node_id).clone()))
             .collect();
 
         // If some of the nodes are already sealed, we know our answer and we don't need to go through

@@ -6427,6 +6427,7 @@ dependencies = [
 name = "restate-bifrost"
 version = "1.2.0-dev"
 dependencies = [
+ "ahash 0.8.11",
  "anyhow",
  "async-trait",
  "bytes",
@@ -6873,6 +6874,7 @@ dependencies = [
  "prost",
  "prost-dto",
  "prost-types",
+ "rand 0.9.0",
  "restate-bifrost",
  "restate-core",
  "restate-metadata-server",

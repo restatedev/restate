@@ -8,36 +8,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::{
-    cmp::Ordering,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{cmp::Ordering, fmt::Display, sync::Arc, time::Duration};
 
-use futures::{stream::FuturesUnordered, StreamExt};
-use tokio::{sync::OwnedSemaphorePermit, time::timeout};
-use tracing::{instrument, trace};
+use tokio::time::Instant;
+use tokio::{sync::OwnedSemaphorePermit, task::JoinSet};
+use tracing::{debug, info, instrument, trace, warn};
 
 use restate_core::{
     cancellation_token,
-    network::{
-        rpc_router::{RpcError, RpcRouter},
-        Incoming, NetworkError, Networking, Outgoing, TransportConnect,
-    },
-    ShutdownError,
+    network::{rpc_router::RpcRouter, Incoming, NetworkError, Networking, TransportConnect},
+    ShutdownError, TaskCenterFutureExt,
 };
 use restate_types::{
     config::Configuration,
     live::Live,
     logs::{LogletOffset, Record, SequenceNumber, TailState},
     net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
-    replicated_loglet::Spread,
-    replication::NodeSet,
+    replication::{DecoratedNodeSet, NodeSet},
     time::MillisSinceEpoch,
-    PlainNodeId,
+    Merge, PlainNodeId,
 };
 
 use super::{RecordsExt, SequencerSharedState};
+use crate::providers::replicated_loglet::metric_definitions::BIFROST_SEQ_APPEND_DURATION;
 use crate::{
     loglet::{AppendError, LogletCommitResolver},
     providers::replicated_loglet::{
@@ -51,7 +44,7 @@ use crate::{
 
 const DEFAULT_BACKOFF_TIME: Duration = Duration::from_millis(1000);
 
-enum SequencerAppenderState {
+enum State {
     Wave {
         // nodes that should be avoided by the spread selector
         graylist: NodeSet,
@@ -69,6 +62,9 @@ pub(crate) struct SequencerAppender<T> {
     networking: Networking<T>,
     first_offset: LogletOffset,
     records: Arc<[Record]>,
+    checker: NodeSetChecker<NodeAttributes>,
+    nodeset_status: DecoratedNodeSet<PerNodeStatus>,
+    current_wave: usize,
     // permit is held during the entire live
     // of the batch to limit the number of
     // inflight batches
@@ -88,10 +84,25 @@ impl<T: TransportConnect> SequencerAppender<T> {
         permit: OwnedSemaphorePermit,
         commit_resolver: LogletCommitResolver,
     ) -> Self {
+        // todo: in the future, we should update the checker's view over nodes configuration before
+        // each wave. At the moment this is not required as nodes will not change their storage
+        // state after the nodeset has been created until the loglet is sealed.
+        let checker = NodeSetChecker::<NodeAttributes>::new(
+            sequencer_shared_state.selector.nodeset(),
+            &networking.metadata().nodes_config_ref(),
+            sequencer_shared_state.selector.replication_property(),
+        );
+
+        let nodeset_status =
+            DecoratedNodeSet::from(sequencer_shared_state.selector.nodeset().clone());
+
         Self {
             sequencer_shared_state,
             store_router,
             networking,
+            checker,
+            nodeset_status,
+            current_wave: 0,
             first_offset,
             records,
             permit: Some(permit),
@@ -112,15 +123,14 @@ impl<T: TransportConnect> SequencerAppender<T> {
         )
     )]
     pub async fn run(mut self) {
-        let mut wave = 0;
+        let start = Instant::now();
         // initial wave has 0 replicated and 0 gray listed node
-        let mut state = SequencerAppenderState::Wave {
+        let mut state = State::Wave {
             graylist: NodeSet::default(),
         };
 
         let cancellation = cancellation_token();
 
-        let mut cancelled = std::pin::pin!(cancellation.cancelled());
         let retry_policy = self
             .configuration
             .live_load()
@@ -135,36 +145,42 @@ impl<T: TransportConnect> SequencerAppender<T> {
         let final_state = loop {
             state = match state {
                 // termination conditions
-                SequencerAppenderState::Done
-                | SequencerAppenderState::Cancelled
-                | SequencerAppenderState::Sealed => break state,
-                SequencerAppenderState::Wave { graylist } => {
-                    wave += 1;
-                    tokio::select! {
-                        next_state = self.wave(graylist, wave) => {next_state},
-                        _ = &mut cancelled => {
-                            break SequencerAppenderState::Cancelled;
-                        }
-                    }
+                State::Done | State::Cancelled | State::Sealed => break state,
+                State::Wave { graylist } => {
+                    self.current_wave += 1;
+                    let Some(next_state) = cancellation
+                        .run_until_cancelled(self.send_wave(graylist))
+                        .await
+                    else {
+                        break State::Cancelled;
+                    };
+                    next_state
                 }
-                SequencerAppenderState::Backoff => {
+                State::Backoff => {
                     // since backoff can be None, or run out of iterations,
                     // but appender should never give up we fall back to fixed backoff
                     let delay = retry.next().unwrap_or(DEFAULT_BACKOFF_TIME);
-                    tracing::info!(
-                        delay = ?delay,
-                        %wave,
-                        "Append wave failed, retrying with a new wave after delay"
-                    );
+                    if self.current_wave > 5 {
+                        warn!(
+                            wave = %self.current_wave,
+                            "Append wave failed, retrying with a new wave after {:?}. Status is {}", delay, self.nodeset_status
+                        );
+                    } else {
+                        debug!(
+                            wave = %self.current_wave,
+                            "Append wave failed, retrying with a new wave after {:?}. Status is {}", delay, self.nodeset_status
+                        );
+                    }
 
-                    tokio::select! {
-                        _ = tokio::time::sleep(delay) => {},
-                        _ = &mut cancelled => {
-                            break SequencerAppenderState::Cancelled;
-                        }
+                    if cancellation
+                        .run_until_cancelled(tokio::time::sleep(delay))
+                        .await
+                        .is_none()
+                    {
+                        break State::Cancelled;
                     };
 
-                    SequencerAppenderState::Wave {
+                    State::Wave {
                         graylist: NodeSet::default(),
                     }
                 }
@@ -172,35 +188,42 @@ impl<T: TransportConnect> SequencerAppender<T> {
         };
 
         match final_state {
-            SequencerAppenderState::Done => {
+            State::Done => {
                 assert!(self.commit_resolver.is_none());
 
                 metrics::counter!(BIFROST_SEQ_RECORDS_COMMITTED_TOTAL)
                     .increment(self.records.len() as u64);
                 metrics::counter!(BIFROST_SEQ_RECORDS_COMMITTED_BYTES)
                     .increment(self.records.estimated_encode_size() as u64);
+                metrics::histogram!(BIFROST_SEQ_APPEND_DURATION).record(start.elapsed());
 
-                tracing::trace!("SequencerAppender task completed");
+                trace!(
+                    wave = %self.current_wave,
+                    "Append succeeded in {:?}, status {}",
+                    start.elapsed(),
+                    self.nodeset_status
+                );
             }
-            SequencerAppenderState::Cancelled => {
-                tracing::trace!("SequencerAppender task cancelled");
+            State::Cancelled => {
+                trace!("Append cancelled");
                 if let Some(commit_resolver) = self.commit_resolver.take() {
                     commit_resolver.error(AppendError::Shutdown(ShutdownError));
                 }
             }
-            SequencerAppenderState::Sealed => {
-                tracing::debug!("SequencerAppender ended because of sealing");
+            State::Sealed => {
+                trace!("Append ended because of sealing");
                 if let Some(commit_resolver) = self.commit_resolver.take() {
                     commit_resolver.sealed();
                 }
             }
-            SequencerAppenderState::Backoff | SequencerAppenderState::Wave { .. } => {
+            State::Backoff | State::Wave { .. } => {
                 unreachable!()
             }
         }
     }
 
-    async fn wave(&mut self, mut graylist: NodeSet, wave: usize) -> SequencerAppenderState {
+    #[instrument(skip_all, fields(wave = %self.current_wave))]
+    async fn send_wave(&mut self, mut graylist: NodeSet) -> State {
         // select the spread
         let spread = match self.sequencer_shared_state.selector.select(
             &mut rand::rng(),
@@ -210,22 +233,16 @@ impl<T: TransportConnect> SequencerAppender<T> {
             Ok(spread) => spread,
             Err(_) => {
                 graylist.clear();
-                return SequencerAppenderState::Backoff;
+                trace!(
+                    %graylist,
+                    "Cannot select a spread, perhaps too many nodes are graylisted, will clear the list and try again"
+                );
+                return State::Backoff;
             }
         };
 
-        tracing::trace!(%graylist, %spread, %wave, "Sending store wave");
-        self.send_wave(spread, wave).await
-    }
-
-    async fn send_wave(&mut self, spread: Spread, wave: usize) -> SequencerAppenderState {
+        trace!(%graylist, %spread, "Sending append wave");
         let last_offset = self.records.last_offset(self.first_offset).unwrap();
-
-        let mut checker = NodeSetChecker::<NodeAttributes>::new(
-            self.sequencer_shared_state.selector.nodeset(),
-            &self.networking.metadata().nodes_config_ref(),
-            self.sequencer_shared_state.selector.replication_property(),
-        );
 
         // todo: should be exponential backoff
         let store_timeout = *self
@@ -235,98 +252,106 @@ impl<T: TransportConnect> SequencerAppender<T> {
             .replicated_loglet
             .log_server_rpc_timeout;
 
-        let timeout_at = MillisSinceEpoch::after(store_timeout);
         // track the in flight server ids
         let mut pending_servers = NodeSet::from_iter(spread.iter().copied());
-        let mut store_tasks = FuturesUnordered::new();
+        let mut store_tasks = JoinSet::new();
 
-        for node_id in &spread {
-            store_tasks.push(
-                LogServerStoreTask {
-                    node_id: *node_id,
-                    sequencer_shared_state: &self.sequencer_shared_state,
-                    networking: &self.networking,
-                    first_offset: self.first_offset,
-                    records: &self.records,
-                    rpc_router: &self.store_router,
-                    timeout_at,
+        for node_id in spread.iter().copied() {
+            // do not attempt on nodes that we know they're committed || sealed
+            if let Some(status) = self.checker.get_attribute(&node_id) {
+                if status.committed || status.sealed {
+                    pending_servers.remove(node_id);
+                    continue;
                 }
-                .run(),
-            );
+            }
+            store_tasks.spawn({
+                let store_task = LogServerStoreTask {
+                    node_id,
+                    sequencer_shared_state: self.sequencer_shared_state.clone(),
+                    networking: self.networking.clone(),
+                    first_offset: self.first_offset,
+                    records: self.records.clone(),
+                    rpc_router: self.store_router.clone(),
+                    store_timeout,
+                };
+                async move { (node_id, store_task.run().await) }.in_current_tc()
+            });
         }
 
-        loop {
-            let store_result = match timeout(store_timeout, store_tasks.next()).await {
-                Ok(Some(result)) => result,
-                Ok(None) => break, // no more tasks
-                Err(_) => {
-                    // if we have already acknowledged this append, it's okay to retire.
-                    if self.commit_resolver.is_none() {
-                        tracing::debug!(%pending_servers, %wave, %spread, responses=?checker, "Some servers didn't store this batch, but append was committed, giving up");
-                        return SequencerAppenderState::Done;
-                    }
-
-                    if self.sequencer_shared_state.known_global_tail.is_sealed() {
-                        tracing::debug!(%pending_servers, %wave, %spread, responses=?checker, "Some servers didn't store this batch, but this loglet was sealed, giving up");
-                        return SequencerAppenderState::Sealed;
-                    }
-                    // timed out!
-                    // none of the pending tasks has finished in time! we will assume all pending server
-                    // are graylisted and try again
-                    tracing::debug!(%pending_servers, %wave, %spread, responses=?checker, "Timeout waiting on store response");
-                    return SequencerAppenderState::Wave {
-                        graylist: pending_servers,
-                    };
-                }
+        while let Some(store_result) = store_tasks.join_next().await {
+            // unlikely to happen, but it's there for completeness
+            if self.sequencer_shared_state.known_global_tail.is_sealed() {
+                trace!(%pending_servers, %spread, "Loglet was sealed, stopping this sequencer appender");
+                return State::Sealed;
+            }
+            let Ok((node_id, store_result)) = store_result else {
+                // task panicked, ignore
+                continue;
             };
 
-            let LogServerStoreTaskResult {
-                node_id: peer,
-                status,
-            } = store_result;
-
-            let response = match status {
+            let stored = match store_result {
                 StoreTaskStatus::Error(NetworkError::Shutdown(_)) => {
-                    return SequencerAppenderState::Cancelled;
+                    return State::Cancelled;
+                }
+                StoreTaskStatus::Error(NetworkError::Timeout(_)) => {
+                    trace!(peer = %node_id, "Timeout waiting for node {} to commit a batch", node_id);
+                    self.nodeset_status.merge(node_id, PerNodeStatus::timeout());
+                    graylist.insert(node_id);
+                    continue;
                 }
                 StoreTaskStatus::Error(err) => {
                     // couldn't send store command to remote server
-                    tracing::debug!(%peer, error=%err, "Failed to send batch to node");
+                    // todo: only log if number of attempts is high.
+                    debug!(peer = %node_id, %err, "Failed to send batch to node");
+                    self.nodeset_status.merge(node_id, PerNodeStatus::failed());
+                    graylist.insert(node_id);
                     continue;
                 }
                 StoreTaskStatus::Sealed => {
-                    tracing::debug!(%peer, "Store task cancelled, the node is sealed");
-                    checker.set_attribute(peer, NodeAttributes::sealed());
+                    debug!(peer = %node_id, "Store task cancelled, the node is sealed");
+                    self.checker
+                        .set_attribute(node_id, NodeAttributes::sealed());
+                    self.nodeset_status.merge(node_id, PerNodeStatus::Sealed);
                     continue;
                 }
                 StoreTaskStatus::Stored(stored) => {
-                    tracing::trace!(%peer, "Store task completed");
+                    trace!(peer = %node_id, "Store task completed");
                     stored
                 }
             };
 
             // we had a response from this node and there is still a lot we can do
-            match response.status {
+            match stored.status {
                 Status::Ok => {
                     // only if status is okay that we remove this node
                     // from the gray list, and move to replicated list
-                    checker.set_attribute(peer, NodeAttributes::committed());
-                    pending_servers.remove(peer);
+                    self.checker
+                        .set_attribute(node_id, NodeAttributes::committed());
+                    self.nodeset_status.merge(node_id, PerNodeStatus::Committed);
+                    pending_servers.remove(node_id);
                 }
                 Status::Sealed | Status::Sealing => {
-                    checker.set_attribute(peer, NodeAttributes::sealed());
+                    self.checker
+                        .set_attribute(node_id, NodeAttributes::sealed());
+                    graylist.insert(node_id);
                 }
-                Status::Disabled
-                | Status::Dropped
-                | Status::SequencerMismatch
-                | Status::Malformed
-                | Status::OutOfBounds => {
-                    // just leave this log server in graylist (pending)
-                    tracing::debug!(%peer, status=?response.status, "Store task returned an error status");
+                Status::Dropped => {
+                    // overloaded, or request expired
+                    debug!(peer = %node_id, status=?stored.status, "Store failed on peer. Peer is load shedding");
+                    graylist.insert(node_id);
+                }
+                Status::Disabled => {
+                    // overloaded, or request expired
+                    debug!(peer = %node_id, status=?stored.status, "Store failed on peer. Peer's log-store is disabled");
+                    graylist.insert(node_id);
+                }
+                Status::SequencerMismatch | Status::Malformed | Status::OutOfBounds => {
+                    warn!(peer = %node_id, status=?stored.status, "Store failed on peer due to unexpected error, please check logs of the peer to investigate");
+                    graylist.insert(node_id);
                 }
             }
 
-            if self.commit_resolver.is_some() && checker.check_write_quorum(|attr| attr.committed) {
+            if self.checker.check_write_quorum(|attr| attr.committed) {
                 // resolve the commit if not resolved yet
                 if let Some(resolver) = self.commit_resolver.take() {
                     self.sequencer_shared_state
@@ -334,20 +359,107 @@ impl<T: TransportConnect> SequencerAppender<T> {
                         .notify_offset_update(last_offset.next());
                     resolver.offset(last_offset);
                 }
-
                 // drop the permit
                 self.permit.take();
+                return State::Done;
             }
         }
 
-        if checker.check_write_quorum(|attr| attr.committed) {
-            SequencerAppenderState::Done
-        } else if checker.check_fmajority(|attr| attr.sealed).passed() {
-            SequencerAppenderState::Sealed
+        if self.checker.check_fmajority(|attr| attr.sealed).passed() {
+            State::Sealed
         } else {
-            SequencerAppenderState::Wave {
-                graylist: pending_servers,
+            // We couldn't achieve write quorum with this wave. We will try again, as fast as
+            // possible until the graylist eats up enough nodes such that we won't be able to
+            // generate node nodesets. Only then we backoff.
+            State::Wave { graylist }
+        }
+    }
+}
+
+#[derive(Default, Debug, PartialEq, Clone, Copy)]
+enum PerNodeStatus {
+    #[default]
+    NotAttempted,
+    Failed {
+        attempts: usize,
+    },
+    Timeout {
+        attempts: usize,
+    },
+    Committed,
+    Sealed,
+}
+
+impl Display for PerNodeStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PerNodeStatus::NotAttempted => write!(f, ""),
+            PerNodeStatus::Failed { attempts } => write!(f, "E({})", attempts),
+            PerNodeStatus::Committed => write!(f, "X"),
+            PerNodeStatus::Timeout { attempts } => write!(f, "TIMEDOUT({})", attempts),
+            PerNodeStatus::Sealed => write!(f, "SEALED"),
+        }
+    }
+}
+
+impl PerNodeStatus {
+    fn timeout() -> Self {
+        Self::Timeout { attempts: 1 }
+    }
+    fn failed() -> Self {
+        Self::Failed { attempts: 1 }
+    }
+}
+
+impl Merge for PerNodeStatus {
+    fn merge(&mut self, other: Self) -> bool {
+        use PerNodeStatus::*;
+        match (*self, other) {
+            (NotAttempted, NotAttempted) => false,
+            (Committed, Committed) => false,
+            (NotAttempted, e) => {
+                *self = e;
+                true
             }
+            // we will not transition from committed to seal because
+            // committed is more important for showing where did we write. Not that this is likely
+            // to ever happen though.
+            (Committed, _) => false,
+            (Failed { attempts }, Failed { .. }) => {
+                *self = Failed {
+                    attempts: attempts + 1,
+                };
+                true
+            }
+            (Failed { attempts }, Timeout { .. }) => {
+                *self = Timeout {
+                    attempts: attempts + 1,
+                };
+                true
+            }
+            (Timeout { attempts }, Failed { .. }) => {
+                *self = Failed {
+                    attempts: attempts + 1,
+                };
+                true
+            }
+            (Timeout { attempts }, Timeout { .. }) => {
+                *self = Timeout {
+                    attempts: attempts + 1,
+                };
+                true
+            }
+            (_, Committed) => {
+                *self = Committed;
+                true
+            }
+            (Sealed, Sealed) => false,
+            (_, Sealed) => {
+                *self = Sealed;
+                true
+            }
+            (Sealed, _) => false,
+            _ => false,
         }
     }
 }
@@ -374,6 +486,18 @@ impl NodeAttributes {
     }
 }
 
+impl Display for NodeAttributes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.committed, self.sealed) {
+            // legend X = committed to be consistent with restatectl digest output
+            (true, true) => write!(f, "X(S)"),
+            (true, false) => write!(f, "X"),
+            (false, true) => write!(f, "-(S)"),
+            (false, false) => write!(f, ""),
+        }
+    }
+}
+
 #[derive(Debug)]
 enum StoreTaskStatus {
     Sealed,
@@ -390,24 +514,19 @@ impl From<Result<StoreTaskStatus, NetworkError>> for StoreTaskStatus {
     }
 }
 
-struct LogServerStoreTaskResult {
-    pub node_id: PlainNodeId,
-    pub status: StoreTaskStatus,
-}
-
 /// The task will retry to connect to the remote server if connection
 /// was lost.
-struct LogServerStoreTask<'a, T> {
+struct LogServerStoreTask<T> {
     node_id: PlainNodeId,
-    sequencer_shared_state: &'a Arc<SequencerSharedState>,
-    networking: &'a Networking<T>,
+    sequencer_shared_state: Arc<SequencerSharedState>,
+    networking: Networking<T>,
     first_offset: LogletOffset,
-    records: &'a Arc<[Record]>,
-    rpc_router: &'a RpcRouter<Store>,
-    timeout_at: MillisSinceEpoch,
+    records: Arc<[Record]>,
+    rpc_router: RpcRouter<Store>,
+    store_timeout: Duration,
 }
 
-impl<T: TransportConnect> LogServerStoreTask<'_, T> {
+impl<T: TransportConnect> LogServerStoreTask<T> {
     #[instrument(
         skip_all,
         fields(
@@ -418,7 +537,7 @@ impl<T: TransportConnect> LogServerStoreTask<'_, T> {
             peer=%self.node_id,
         )
     )]
-    async fn run(mut self) -> LogServerStoreTaskResult {
+    async fn run(mut self) -> StoreTaskStatus {
         let result = self.send().await;
         match &result {
             Ok(status) => {
@@ -435,18 +554,14 @@ impl<T: TransportConnect> LogServerStoreTask<'_, T> {
             }
         }
 
-        LogServerStoreTaskResult {
-            node_id: self.node_id,
-            status: result.into(),
-        }
+        result.into()
     }
 
     async fn send(&mut self) -> Result<StoreTaskStatus, NetworkError> {
-        let mut server = self
+        let server = self
             .sequencer_shared_state
             .log_server_manager
-            .get(self.node_id, self.networking)
-            .await?;
+            .get(self.node_id);
         let server_local_tail = server
             .local_tail()
             .wait_for_offset_or_seal(self.first_offset);
@@ -481,7 +596,7 @@ impl<T: TransportConnect> LogServerStoreTask<'_, T> {
             }
         }
 
-        let incoming = match self.try_send(&mut server).await {
+        let incoming = match self.try_send(server).await {
             Ok(incoming) => incoming,
             Err(err) => {
                 return Err(err);
@@ -506,10 +621,11 @@ impl<T: TransportConnect> LogServerStoreTask<'_, T> {
         Ok(StoreTaskStatus::Stored(incoming.into_body()))
     }
 
-    async fn try_send(
-        &mut self,
-        server: &mut RemoteLogServer,
-    ) -> Result<Incoming<Stored>, NetworkError> {
+    async fn try_send(&self, server: &RemoteLogServer) -> Result<Incoming<Stored>, NetworkError> {
+        // let the log-server keep the store message a little longer than our own timeout, since
+        // our timeout includes the connection time, the server should still try and store it even
+        // if we timeout locally.
+        let timeout_at = MillisSinceEpoch::after(self.store_timeout * 2);
         let store = Store {
             header: LogServerRequestHeader::new(
                 *self.sequencer_shared_state.loglet_id(),
@@ -520,53 +636,24 @@ impl<T: TransportConnect> LogServerStoreTask<'_, T> {
             first_offset: self.first_offset,
             flags: StoreFlags::empty(),
             known_archived: LogletOffset::INVALID,
-            payloads: Arc::clone(self.records),
+            payloads: Arc::clone(&self.records),
             sequencer: *self.sequencer_shared_state.sequencer(),
-            timeout_at: Some(self.timeout_at),
+            timeout_at: Some(timeout_at),
         };
 
-        let mut msg = Outgoing::new(self.node_id, store);
+        let store_start_time = Instant::now();
 
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-
-            let with_connection = msg.assign_connection(server.connection().clone());
-            let store_start_time = Instant::now();
-
-            let result = match self.rpc_router.call_on_connection(with_connection).await {
-                Ok(incoming) => Ok(incoming),
-                Err(RpcError::Shutdown(shutdown)) => Err(NetworkError::Shutdown(shutdown)),
-                Err(RpcError::SendError(err)) => {
-                    msg = err.original.forget_connection();
-
-                    match err.source {
-                        NetworkError::ConnectionClosed(_)
-                        | NetworkError::ConnectError(_)
-                        | NetworkError::Timeout(_) => {
-                            trace!(
-                                %attempt,
-                                "Failed to send store to log server, trying to create a new connection"
-                            );
-                            self.sequencer_shared_state
-                                .log_server_manager
-                                .renew(server, self.networking)
-                                .await?;
-                            trace!(
-                                %attempt,
-                                "Reconnected to log-server, retrying the store"
-                            );
-                            // try again
-                            continue;
-                        }
-                        _ => Err(err.source),
-                    }
-                }
-            };
-
-            server.store_latency().record(store_start_time.elapsed());
-
-            return result;
+        match self
+            .rpc_router
+            .call_timeout(&self.networking, self.node_id, store, self.store_timeout)
+            .await
+        {
+            Ok(incoming) => {
+                server.store_latency().record(store_start_time.elapsed());
+                Ok(incoming)
+            }
+            Err(NetworkError::Shutdown(shutdown)) => Err(NetworkError::Shutdown(shutdown)),
+            Err(err) => Err(err),
         }
     }
 }
