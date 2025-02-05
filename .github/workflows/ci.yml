@@ -16,7 +16,7 @@ on:
 jobs:
   workspace-hack-check:
     name: Check workspace-hack
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -215,7 +215,7 @@ jobs:
 
   restate-ui:
     name: Validate Restate UI artifact
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-arm64-2x
     permissions:
       contents: read
     steps:
