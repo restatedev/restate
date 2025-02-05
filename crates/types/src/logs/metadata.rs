@@ -248,9 +248,18 @@ pub struct ReplicatedLogletConfig {
 
 /// New type that enforces that the nodeset size is never larger than 128.
 #[derive(
-    Debug, Clone, Copy, derive_more::Into, serde::Serialize, serde::Deserialize, Eq, PartialEq,
+    Debug,
+    Clone,
+    Copy,
+    derive_more::Into,
+    serde::Serialize,
+    serde::Deserialize,
+    Eq,
+    PartialEq,
+    derive_more::Display,
 )]
 #[serde(try_from = "u16", into = "u16")]
+#[display("{_0}")]
 pub struct NodeSetSize(u16);
 
 impl NodeSetSize {
