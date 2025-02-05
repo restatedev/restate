@@ -330,6 +330,34 @@ jobs:
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
+  publish-npm:
+    needs:
+      - plan
+      - host
+    runs-on: "ubuntu-20.04"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PLAN: ${{ needs.plan.outputs.val }}
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    steps:
+      - name: Fetch npm packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-*
+          path: npm/
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          registry-url: 'https://registry.npmjs.org'
+      - run: |
+          for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith("-npm-package.tar.gz")] | any)'); do
+            pkg=$(echo "$release" | jq '.artifacts[] | select(endswith("-npm-package.tar.gz"))' --raw-output)
+            npm publish --access public "./npm/${pkg}"
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   custom-homebrew:
     needs:
       - plan
@@ -344,15 +372,60 @@ jobs:
       "id-token": "write"
       "packages": "write"
 
+  custom-docker-release:
+    needs:
+      - plan
+      - host
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    uses: ./.github/workflows/docker-release.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+    # publish jobs get escalated permissions
+    permissions:
+      "id-token": "write"
+      "packages": "write"
+
+  custom-npm:
+    needs:
+      - plan
+      - host
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    uses: ./.github/workflows/npm.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+    # publish jobs get escalated permissions
+    permissions:
+      "contents": "read"
+      "packages": "read"
+
+  custom-release-notes:
+    needs:
+      - plan
+      - host
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    uses: ./.github/workflows/release-notes.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+    # publish jobs get escalated permissions
+    permissions:
+      "contents": "write"
+
   announce:
     needs:
       - plan
       - host
+      - publish-npm
       - custom-homebrew
+      - custom-docker-release
+      - custom-npm
+      - custom-release-notes
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && (needs.custom-homebrew.result == 'skipped' || needs.custom-homebrew.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.publish-npm.result == 'skipped' || needs.publish-npm.result == 'success') && (needs.custom-homebrew.result == 'skipped' || needs.custom-homebrew.result == 'success') && (needs.custom-docker-release.result == 'skipped' || needs.custom-docker-release.result == 'success') && (needs.custom-npm.result == 'skipped' || needs.custom-npm.result == 'success') && (needs.custom-release-notes.result == 'skipped' || needs.custom-release-notes.result == 'success') }}
     runs-on: "ubuntu-20.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -360,15 +433,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-  custom-docker-release:
-    needs:
-      - plan
-      - announce
-    uses: ./.github/workflows/docker-release.yml
-    with:
-      plan: ${{ needs.plan.outputs.val }}
-    secrets: inherit
 
   custom-helm:
     needs:
@@ -378,24 +442,3 @@ jobs:
     with:
       plan: ${{ needs.plan.outputs.val }}
     secrets: inherit
-
-  custom-release-notes:
-    needs:
-      - plan
-      - announce
-    uses: ./.github/workflows/release-notes.yml
-    with:
-      plan: ${{ needs.plan.outputs.val }}
-    secrets: inherit
-
-  custom-npm:
-    needs:
-      - plan
-      - announce
-    uses: ./.github/workflows/npm.yml
-    with:
-      plan: ${{ needs.plan.outputs.val }}
-    secrets: inherit
-    permissions:
-      "contents": "read"
-      "packages": "read"
