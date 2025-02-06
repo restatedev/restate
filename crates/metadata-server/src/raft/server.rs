@@ -320,8 +320,7 @@ impl RaftMetadataServer {
                                 Ok(my_member_id) => {
                                     let _ = request.result_tx.send(Ok(true));
                                     debug!(member_id = %my_member_id, "Successfully provisioned the metadata store");
-                                    let mut member = self.become_member(my_member_id)?;
-                                    member.campaign_immediately()?;
+                                    let member = self.become_member(my_member_id)?;
                                     break Provisioned::Member(member);
                                 },
                                 Err(err) => {
@@ -587,7 +586,19 @@ impl Member {
         }
 
         config.validate()?;
-        let raw_node = RawNode::new(&config, storage, &logger)?;
+        let mut raw_node = RawNode::new(&config, storage, &logger)?;
+
+        if raw_node
+            .raft
+            .prs()
+            .conf()
+            .voters()
+            .contains(to_raft_id(my_member_id.node_id))
+        {
+            // Campaign if we are part of the voters to quickly become leader if there is none. This
+            // won't cause the current leader to step down since pre-vote is enabled.
+            raw_node.campaign()?;
+        }
 
         let mut tick_interval = time::interval(raft_options.raft_tick_interval.into());
         tick_interval.set_missed_tick_behavior(MissedTickBehavior::Burst);
@@ -617,12 +628,6 @@ impl Member {
         member.validate_metadata_server_configuration();
 
         Ok(member)
-    }
-
-    /// Sets the Raft node up to start right away with a leader election.
-    pub fn campaign_immediately(&mut self) -> Result<(), Error> {
-        self.raw_node.campaign()?;
-        Ok(())
     }
 
     #[instrument(level = "info", skip_all, fields(member_id = %self.my_member_id))]
@@ -896,6 +901,7 @@ impl Member {
             &mut self.configuration,
             &mut self.kv_storage,
         )?;
+        info!(configuration = %self.configuration, "Restored configuration from snapshot");
 
         self.validate_metadata_server_configuration();
 
@@ -921,8 +927,6 @@ impl Member {
             .take()
             .map(MetadataServerConfiguration::from)
             .expect("configuration metadata expected");
-
-        info!(%configuration, "Restored configuration from snapshot");
 
         kv_storage.restore(snapshot)?;
         Ok(())
