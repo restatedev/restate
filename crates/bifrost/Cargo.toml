@@ -25,6 +25,7 @@ restate-rocksdb = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-types = { workspace = true }
 
+ahash = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }

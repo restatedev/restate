@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 
+use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use itertools::Itertools;
+use restate_types::replication::DecoratedNodeSet;
 use tracing::warn;
 
 use restate_types::locality::{LocationScope, NodeLocation};
@@ -731,6 +733,22 @@ impl<Attr: Eq + Hash> LocationScopeState<Attr> {
             node_to_fd: HashMap::default(),
             replication_fds: HashMap::default(),
         }
+    }
+}
+
+impl<'a, Attr> IntoIterator for &'a NodeSetChecker<Attr> {
+    type Item = (&'a PlainNodeId, &'a Attr);
+
+    type IntoIter = <&'a HashMap<PlainNodeId, Attr> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.node_to_attr.iter()
+    }
+}
+
+impl<Attr> From<NodeSetChecker<Attr>> for DecoratedNodeSet<Attr> {
+    fn from(val: NodeSetChecker<Attr>) -> DecoratedNodeSet<Attr> {
+        DecoratedNodeSet::from_iter(val.node_to_attr)
     }
 }
 
