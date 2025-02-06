@@ -656,8 +656,11 @@ impl Member {
         self.is_leader = self.raw_node.raft.leader_id == self.raw_node.raft.id;
 
         if previous_is_leader && !self.is_leader {
-            debug!("Lost metadata store leadership");
             let known_leader = self.known_leader();
+            info!(
+                possible_leader = ?known_leader,
+                "Lost metadata store leadership"
+            );
 
             // todo we might fail some of the request too eagerly here because the answer might be
             //  stored in the unapplied log entries. Better to fail the callbacks based on
@@ -670,7 +673,7 @@ impl Member {
             self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
             self.read_index_to_request_id.clear();
         } else if !previous_is_leader && self.is_leader {
-            debug!("Won metadata store leadership");
+            info!("Won metadata store leadership");
         }
     }
 

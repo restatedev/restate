@@ -8,14 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::raft::RaftConfiguration;
-use crate::{util, StorageId};
+use std::array::TryFromSliceError;
+use std::cell::RefCell;
+use std::mem::size_of;
+use std::sync::Arc;
+use std::{error, mem};
+
 use bytes::{BufMut, BytesMut};
 use flexbuffers::{DeserializationError, SerializationError};
 use protobuf::{Message, ProtobufError};
 use raft::eraftpb::{ConfState, Entry, Snapshot};
 use raft::prelude::HardState;
 use raft::{GetEntriesContext, RaftState, Storage, StorageError};
+use rocksdb::{BoundColumnFamily, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions, DB};
+use tracing::debug;
+
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
@@ -24,13 +31,9 @@ use restate_types::config::{data_dir, MetadataServerOptions, RocksDbOptions};
 use restate_types::errors::GenericError;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::nodes_config::NodesConfiguration;
-use rocksdb::{BoundColumnFamily, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions, DB};
-use std::array::TryFromSliceError;
-use std::cell::RefCell;
-use std::mem::size_of;
-use std::sync::Arc;
-use std::{error, mem};
-use tracing::debug;
+
+use crate::raft::RaftConfiguration;
+use crate::{util, StorageId};
 
 const DB_NAME: &str = "raft-metadata-store";
 const RAFT_CF: &str = "raft";
@@ -117,6 +120,7 @@ impl RocksDbStorage {
             util::cf_options(options.rocksdb_memory_budget()),
         )
         .ensure_column_families(cfs)
+        .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
         .build()
         .expect("valid spec");
 
