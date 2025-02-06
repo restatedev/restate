@@ -11,54 +11,19 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use chrono::Utc;
 use tokio::sync::watch;
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::logstore::LogStore;
 use restate_bifrost::loglet::util::TailOffsetWatch;
 use restate_bifrost::loglet::OperationError;
 use restate_core::ShutdownError;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
+use restate_types::storage::StorageMarker;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
-use crate::logstore::LogStore;
-
 /// A marker stored in log-server-level loglet storage
-///
-/// The marker is used to sanity-check if the loglet storage is correctly initialized and whether
-/// we lost the database or not.
-///
-/// The marker is stored as Json to help with debugging.
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct LogStoreMarker {
-    my_node_id: PlainNodeId,
-    created_at: chrono::DateTime<Utc>,
-}
-
-impl LogStoreMarker {
-    pub fn new(my_node_id: PlainNodeId) -> Self {
-        Self {
-            my_node_id,
-            created_at: Utc::now(),
-        }
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("infallible serde")
-    }
-
-    pub fn from_slice(data: impl AsRef<[u8]>) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(data.as_ref())
-    }
-
-    pub fn node_id(&self) -> PlainNodeId {
-        self.my_node_id
-    }
-
-    pub fn created_at(&self) -> chrono::DateTime<Utc> {
-        self.created_at
-    }
-}
+pub type LogStoreMarker = StorageMarker<PlainNodeId>;
 
 /// Caches loglet state in memory
 #[derive(Default, Clone)]

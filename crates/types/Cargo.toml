@@ -32,6 +32,7 @@ base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }

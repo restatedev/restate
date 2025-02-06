@@ -7439,6 +7439,7 @@ dependencies = [
  "bitflags 2.8.0",
  "bytes",
  "bytestring",
+ "chrono",
  "clap",
  "codederror",
  "derive_builder",

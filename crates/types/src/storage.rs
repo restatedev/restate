@@ -12,6 +12,7 @@ use std::mem;
 use std::sync::Arc;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use chrono::Utc;
 use downcast_rs::{impl_downcast, DowncastSync};
 use serde::de::{DeserializeOwned, Error as DeserializationError};
 use serde::ser::Error as SerializationError;
@@ -390,6 +391,46 @@ pub fn decode_from_flexbuffers<T: DeserializeOwned, B: Buf>(
             err.into_inner()
         })?;
         Ok(result)
+    }
+}
+
+/// A marker stored in the storage
+///
+/// The marker is used to sanity-check if the storage is correctly initialized and whether
+/// we lost the database or not.
+///
+/// The marker is stored as Json to help with debugging.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StorageMarker<T> {
+    id: T,
+    created_at: chrono::DateTime<Utc>,
+}
+
+impl<T> StorageMarker<T>
+where
+    T: serde::Serialize + for<'a> serde::Deserialize<'a>,
+{
+    pub fn new(id: T) -> Self {
+        Self {
+            id,
+            created_at: Utc::now(),
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("infallible serde")
+    }
+
+    pub fn from_slice(data: impl AsRef<[u8]>) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(data.as_ref())
+    }
+
+    pub fn id(&self) -> &T {
+        &self.id
+    }
+
+    pub fn created_at(&self) -> chrono::DateTime<Utc> {
+        self.created_at
     }
 }
 

@@ -151,10 +151,10 @@ impl LogServerService {
             .context("Cannot load log-server marker from log-store")?;
         // If we have a marker, it must match our own node id.
         if let Some(marker) = maybe_marker {
-            if marker.node_id() != my_node_id.as_plain() {
+            if *marker.id() != my_node_id.as_plain() {
                 return Err(anyhow::anyhow!(
                     "LogStoreMarker doesn't match our own node-id. Found NodeId {} while our node is {}",
-                    marker.node_id(),
+                    marker.id(),
                     my_node_id.as_plain()
                 ));
             } else {
