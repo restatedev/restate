@@ -128,6 +128,7 @@ pub struct Node {
     #[cfg(feature = "replicated-loglet")]
     log_server: Option<LogServerService>,
     networking: Networking<GrpcConnector>,
+    is_provisioned: bool,
 }
 
 impl Node {
@@ -142,7 +143,8 @@ impl Node {
         let is_set = TaskCenter::try_set_global_metadata(metadata.clone());
         debug_assert!(is_set, "Global metadata was already set");
 
-        cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
+        let is_provisioned =
+            cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
         let metadata_store_client =
             restate_metadata_server::create_client(config.common.metadata_client.clone())
@@ -318,6 +320,7 @@ impl Node {
             log_server,
             server_builder,
             networking,
+            is_provisioned,
         })
     }
 
@@ -359,40 +362,47 @@ impl Node {
         }
 
         if config.common.auto_provision {
-            TaskCenter::spawn(TaskKind::SystemBoot, "auto-provision-cluster", {
-                let cluster_configuration = ClusterConfiguration::from_configuration(&config);
-                let metadata_store_client = self.metadata_store_client.clone();
-                let common_opts = config.common.clone();
-                async move {
-                    let response = provision_cluster_metadata(
-                        &metadata_store_client,
-                        &common_opts,
-                        &cluster_configuration,
-                    )
-                    .await;
+            if self.is_provisioned {
+                debug!(
+                    "No need to auto-provision cluster '{}' because it has been provisioned before",
+                    config.common.cluster_name()
+                );
+            } else {
+                TaskCenter::spawn(TaskKind::SystemBoot, "auto-provision-cluster", {
+                    let cluster_configuration = ClusterConfiguration::from_configuration(&config);
+                    let metadata_store_client = self.metadata_store_client.clone();
+                    let common_opts = config.common.clone();
+                    async move {
+                        let response = provision_cluster_metadata(
+                            &metadata_store_client,
+                            &common_opts,
+                            &cluster_configuration,
+                        )
+                        .await;
 
-                    match response {
-                        Ok(provisioned) => {
-                            if provisioned {
-                                info!(
-                                    "Cluster '{}' has been automatically provisioned",
-                                    common_opts.cluster_name()
+                        match response {
+                            Ok(provisioned) => {
+                                if provisioned {
+                                    info!(
+                                        "Cluster '{}' has been automatically provisioned",
+                                        common_opts.cluster_name()
+                                    );
+                                } else {
+                                    debug!("The cluster is already provisioned");
+                                }
+                            }
+                            Err(err) => {
+                                warn!(
+                                    %err,
+                                    "Failed to auto provision the cluster. In order to continue you have to provision the cluster manually"
                                 );
-                            } else {
-                                debug!("The cluster is already provisioned");
                             }
                         }
-                        Err(err) => {
-                            warn!(
-                                %err,
-                                "Failed to auto provision the cluster. In order to continue you have to provision the cluster manually"
-                            );
-                        }
-                    }
 
-                    Ok(())
-                }
-            })?;
+                        Ok(())
+                    }
+                })?;
+            }
         }
 
         let initialization_timeout = config.common.initialization_timeout.into();
@@ -402,6 +412,7 @@ impl Node {
             NodeInit::new(
                 &self.metadata_store_client,
                 &metadata_writer,
+                self.is_provisioned,
             )
             .init(),
         )

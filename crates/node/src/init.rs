@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::cluster_marker::mark_cluster_as_provisioned;
 use restate_core::metadata_store::{MetadataStoreClient, ReadWriteError};
 use restate_core::{
-    cancellation_watcher, Metadata, MetadataWriter, ShutdownError, SyncError, TargetVersion,
+    cancellation_token, Metadata, MetadataWriter, ShutdownError, SyncError, TargetVersion,
 };
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::MaybeRetryableError;
@@ -23,7 +24,7 @@ use restate_types::retries::RetryPolicy;
 use restate_types::PlainNodeId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, enabled, info, trace, warn, Level};
 
 #[derive(Debug, thiserror::Error)]
 enum JoinError {
@@ -48,30 +49,42 @@ enum JoinError {
 pub struct NodeInit<'a> {
     metadata_store_client: &'a MetadataStoreClient,
     metadata_writer: &'a MetadataWriter,
+    is_provisioned: bool,
 }
 
 impl<'a> NodeInit<'a> {
     pub fn new(
         metadata_store_client: &'a MetadataStoreClient,
         metadata_writer: &'a MetadataWriter,
+        is_provisioned: bool,
     ) -> Self {
         Self {
             metadata_store_client,
             metadata_writer,
+            is_provisioned,
         }
     }
 
     pub async fn init(self) -> anyhow::Result<()> {
         let config = Configuration::pinned().into_arc();
 
-        let join_cluster = Self::join_cluster(self.metadata_store_client, &config.common);
+        let join_cluster = Self::join_cluster(
+            self.metadata_store_client,
+            &config.common,
+            self.is_provisioned,
+        );
 
-        let nodes_configuration = tokio::select! {
-                _ = cancellation_watcher() => {
-                    return Err(ShutdownError.into());
-                },
-                result = join_cluster => result?,
-        };
+        let nodes_configuration = cancellation_token()
+            .run_until_cancelled(join_cluster)
+            .await
+            .ok_or(ShutdownError)??;
+
+        if !self.is_provisioned {
+            // If we fail at this point, then we might restart as if the cluster has not been
+            // provisioned yet. This is not a problem because the provisioning operation is
+            // idempotent.
+            mark_cluster_as_provisioned()?;
+        }
 
         // Find my node in nodes configuration.
         let my_node_config = nodes_configuration
@@ -134,8 +147,19 @@ impl<'a> NodeInit<'a> {
     async fn join_cluster(
         metadata_store_client: &MetadataStoreClient,
         common_opts: &CommonOptions,
+        is_provisioned: bool,
     ) -> anyhow::Result<NodesConfiguration> {
-        info!("Trying to join cluster '{}'", common_opts.cluster_name());
+        if is_provisioned {
+            info!(
+                "Trying to join the provisioned cluster '{}'",
+                common_opts.cluster_name()
+            );
+        } else {
+            info!(
+                "Trying to join the cluster '{}'",
+                common_opts.cluster_name()
+            );
+        }
 
         // todo make configurable
         // Never give up trying to join the cluster. Users of this struct will set a timeout if
@@ -148,19 +172,41 @@ impl<'a> NodeInit<'a> {
         );
 
         let join_start = Instant::now();
-        let mut printed_provision_message = false;
+        let mut next_info_message = Duration::from_secs(10);
+        let tone_escalation_after = Duration::from_secs(120);
 
         join_retry
             .retry_if(
                 || Self::join_cluster_inner(metadata_store_client, common_opts),
                 |err| {
-                    if join_start.elapsed() < Duration::from_secs(10) {
-                        trace!("Failed joining the cluster: {err}; retrying");
-                    } else if !printed_provision_message {
-                        info!("Can't join the cluster, yet. Did you forget to provision it? Still trying to join...");
-                        printed_provision_message = true;
+                    let elapsed_since_join_start = join_start.elapsed();
+                    if elapsed_since_join_start < next_info_message {
+                        debug!(%err, "Failed joining the cluster; retrying");
                     } else {
-                        debug!("Failed joining cluster: {err}; retrying");
+                        if is_provisioned {
+                            if elapsed_since_join_start <= tone_escalation_after {
+                                if enabled!(Level::DEBUG) {
+                                    info!(%err, "Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", common_opts.cluster_name());
+                                } else {
+                                    info!("Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", common_opts.cluster_name());
+                                }
+                            } else if enabled!(Level::DEBUG) {
+                                warn!(%err, "Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", common_opts.cluster_name());
+                            } else {
+                                warn!("Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", common_opts.cluster_name());
+                            }
+                        } else if elapsed_since_join_start <= tone_escalation_after {
+                            if enabled!(Level::DEBUG) {
+                                info!(%err, "Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", common_opts.cluster_name());
+                            } else {
+                                info!("Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", common_opts.cluster_name());
+                            }
+                        } else if enabled!(Level::DEBUG) {
+                            warn!(%err, "Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", common_opts.cluster_name());
+                        } else {
+                            warn!("Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", common_opts.cluster_name());
+                        }
+                        next_info_message += Duration::from_secs(30);
                     }
                     match err {
                         JoinError::MissingNodesConfiguration => true,
@@ -341,7 +387,7 @@ mod tests {
         let metadata_store_client = node_env.metadata_store_client.clone();
         let metadata_writer = node_env.metadata_writer.clone();
 
-        let init = NodeInit::new(&metadata_store_client, &metadata_writer);
+        let init = NodeInit::new(&metadata_store_client, &metadata_writer, true);
         let result = init.init().await;
 
         assert_that!(
@@ -371,7 +417,7 @@ mod tests {
         let metadata_store_client = node_env.metadata_store_client.clone();
         let metadata_writer = node_env.metadata_writer.clone();
 
-        let init = NodeInit::new(&metadata_store_client, &metadata_writer);
+        let init = NodeInit::new(&metadata_store_client, &metadata_writer, true);
         let result = init.init().await;
 
         assert_that!(
