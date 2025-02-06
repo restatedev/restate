@@ -235,6 +235,26 @@ pub struct RetryIter<'a> {
     last_retry: Option<Duration>,
 }
 
+impl RetryIter<'_> {
+    /// The number of attempts on this retry iterator so far
+    pub fn attempts(&self) -> usize {
+        self.attempts
+    }
+
+    pub fn max_attempts(&self) -> usize {
+        let max_attempts = match self.policy.as_ref() {
+            RetryPolicy::None => return 0,
+            RetryPolicy::FixedDelay { max_attempts, .. } => max_attempts,
+            RetryPolicy::Exponential { max_attempts, .. } => max_attempts,
+        };
+        max_attempts.unwrap_or(NonZeroUsize::MAX).into()
+    }
+
+    pub fn remaining_attempts(&self) -> usize {
+        self.max_attempts() - self.attempts()
+    }
+}
+
 impl Iterator for RetryIter<'_> {
     type Item = Duration;
 
