@@ -30,8 +30,10 @@ use restate_types::schema::subscriptions::{
     SubscriptionValidator,
 };
 use restate_types::schema::Schema;
+use serde_json::Value;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::error::Error;
 use tracing::{debug, info, warn};
 
 /// Responsible for updating the provided [`Schema`] with new
@@ -796,7 +798,10 @@ impl DiscoveredHandlerMetadata {
         {
             if let Some(schema) = schema.json_schema {
                 // Validate schema is valid
-                if let Err(e) = jsonschema::validator_for(&schema) {
+                if let Err(e) = jsonschema::options()
+                    .with_retriever(UnsupportedExternalRefRetriever)
+                    .build(&schema)
+                {
                     return Err(ServiceError::BadJsonSchema {
                         service: svc_name.to_owned(),
                         handler: handler_name.to_owned(),
@@ -826,7 +831,10 @@ impl DiscoveredHandlerMetadata {
     ) -> Result<OutputRules, ServiceError> {
         Ok(if let Some(ct) = schema.content_type {
             if let Some(schema) = &schema.json_schema {
-                if let Err(e) = jsonschema::validator_for(schema) {
+                if let Err(e) = jsonschema::options()
+                    .with_retriever(UnsupportedExternalRefRetriever)
+                    .build(schema)
+                {
                     return Err(ServiceError::BadJsonSchema {
                         service: svc_name.to_owned(),
                         handler: handler_name.to_owned(),
@@ -883,6 +891,18 @@ impl DiscoveredHandlerMetadata {
                 )
             })
             .collect()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("the schema contains an external reference {0}. This is not supported, all schemas uploaded to Restate should be normalized first, bundling the external references.")]
+struct UnsupportedExternalRefRetrieveError(String);
+
+struct UnsupportedExternalRefRetriever;
+
+impl jsonschema::Retrieve for UnsupportedExternalRefRetriever {
+    fn retrieve(&self, uri: &jsonschema::Uri<&str>) -> Result<Value, Box<dyn Error + Send + Sync>> {
+        Err(UnsupportedExternalRefRetrieveError(uri.to_string()).into())
     }
 }
 
