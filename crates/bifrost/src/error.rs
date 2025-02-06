@@ -25,8 +25,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub enum Error {
     #[error("metadata store doesn't have an entry for log metadata")]
     LogsMetadataNotProvisioned,
-    #[error("log '{0}' is sealed")]
-    LogSealed(LogId),
+    // #[error("log '{0}' is sealed")]
+    // LogSealed(LogId),
     #[error("unknown log '{0}'")]
     UnknownLogId(LogId),
     #[error("invalid log sequence number '{0}'")]
