@@ -15,11 +15,11 @@ use crate::journal_v2::{
 };
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// See [`Notification`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NotificationId {
     CompletionId(CompletionId),
     SignalIndex(SignalIndex),
@@ -54,7 +54,7 @@ impl fmt::Display for NotificationId {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotificationType {
     Completion(CompletionType),
     Signal,
@@ -81,7 +81,7 @@ pub trait NotificationMetadata {
 }
 
 #[enum_dispatch(NotificationMetadata, EntryMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Notification {
     Completion(Completion),
     Signal(Signal),
@@ -102,7 +102,7 @@ impl Notification {
 }
 
 #[enum_dispatch(NotificationMetadata, EntryMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants, Serialize, Deserialize)]
 #[strum_discriminants(vis(pub))]
 #[strum_discriminants(name(CompletionType))]
 #[strum_discriminants(derive(serde::Serialize, serde::Deserialize))]
@@ -189,43 +189,43 @@ macro_rules! impl_completion_accessors {
 
 // --- Actual implementation of individual notifications
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetLazyStateCompletion {
     pub completion_id: CompletionId,
     pub result: GetStateResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GetStateResult {
     Void,
     Success(Bytes),
 }
 impl_completion_accessors!(GetLazyState);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetLazyStateKeysCompletion {
     pub completion_id: CompletionId,
     pub state_keys: Vec<String>,
 }
 impl_completion_accessors!(GetLazyStateKeys);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetPromiseCompletion {
     pub completion_id: CompletionId,
     pub result: GetPromiseResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GetPromiseResult {
     Success(Bytes),
     Failure(Failure),
 }
 impl_completion_accessors!(GetPromise);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeekPromiseCompletion {
     pub completion_id: CompletionId,
     pub result: PeekPromiseResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeekPromiseResult {
     Void,
     Success(Bytes),
@@ -233,73 +233,73 @@ pub enum PeekPromiseResult {
 }
 impl_completion_accessors!(PeekPromise);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletePromiseCompletion {
     pub completion_id: CompletionId,
     pub result: CompletePromiseResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompletePromiseResult {
     Void,
     Failure(Failure),
 }
 impl_completion_accessors!(CompletePromise);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SleepCompletion {
     pub completion_id: CompletionId,
 }
 impl_completion_accessors!(Sleep);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallInvocationIdCompletion {
     pub completion_id: CompletionId,
     pub invocation_id: InvocationId,
 }
 impl_completion_accessors!(CallInvocationId);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallCompletion {
     pub completion_id: CompletionId,
     pub result: CallResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallResult {
     Success(Bytes),
     Failure(Failure),
 }
 impl_completion_accessors!(Call);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunCompletion {
     pub completion_id: CompletionId,
     pub result: RunResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunResult {
     Success(Bytes),
     Failure(Failure),
 }
 impl_completion_accessors!(Run);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachInvocationCompletion {
     pub completion_id: CompletionId,
     pub result: AttachInvocationResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachInvocationResult {
     Success(Bytes),
     Failure(Failure),
 }
 impl_completion_accessors!(AttachInvocation);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetInvocationOutputCompletion {
     pub completion_id: CompletionId,
     pub result: GetInvocationOutputResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GetInvocationOutputResult {
     Void,
     Success(Bytes),
@@ -310,6 +310,7 @@ impl_completion_accessors!(GetInvocationOutput);
 // Signal
 
 #[repr(u32)]
+#[derive(Debug, strum::FromRepr)]
 pub enum BuiltInSignal {
     Cancel = 1,
 }
@@ -319,10 +320,25 @@ pub const CANCEL_SIGNAL: Notification = Notification::Signal(Signal::new(
     SignalResult::Void,
 ));
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignalId {
     Index(SignalIndex),
     Name(SignalName),
+}
+
+impl fmt::Display for SignalId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SignalId::Index(idx) => {
+                if let Some(built_in_signal) = BuiltInSignal::from_repr(*idx) {
+                    write!(f, "{:?}", built_in_signal)
+                } else {
+                    write!(f, "index {}", idx)
+                }
+            }
+            SignalId::Name(name) => write!(f, "{}", name),
+        }
+    }
 }
 
 impl SignalId {
@@ -339,7 +355,7 @@ impl SignalId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signal {
     pub id: SignalId,
     pub result: SignalResult,
@@ -381,7 +397,7 @@ impl From<Signal> for Entry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignalResult {
     Void,
     Success(Bytes),

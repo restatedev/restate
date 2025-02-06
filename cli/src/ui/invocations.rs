@@ -8,6 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::clients::datafusion_helpers::{
+    Invocation, InvocationState, JournalEntry, JournalEntryV2,
+};
+use crate::clients::datafusion_helpers::{InvocationCompletion, JournalEntryTypeV1};
+use crate::clients::datafusion_helpers::{JournalEntryV1, SimpleInvocation};
 use chrono_humanize::Tense;
 use comfy_table::{Attribute, Cell, Table};
 use dialoguer::console::Style as DStyle;
@@ -19,10 +24,14 @@ use restate_cli_util::c_println;
 use restate_cli_util::ui::console::Icon;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::duration_to_human_precise;
-
-use crate::clients::datafusion_helpers::{Invocation, InvocationState};
-use crate::clients::datafusion_helpers::{InvocationCompletion, JournalEntryType};
-use crate::clients::datafusion_helpers::{JournalEntry, SimpleInvocation};
+use restate_types::invocation::InvocationQuery;
+use restate_types::journal_v2::{
+    AttachInvocationCommand, CallCommand, ClearStateCommand, Command, CompleteAwakeableCommand,
+    CompletePromiseCommand, Entry, GetEagerStateCommand, GetInvocationOutputCommand,
+    GetLazyStateCommand, GetPromiseCommand, OneWayCallCommand, PeekPromiseCommand,
+    SendSignalCommand, SetStateCommand, SleepCommand,
+};
+use std::time::SystemTime;
 
 pub fn invocation_status_note(invocation: &Invocation) -> String {
     let mut msg = String::new();
@@ -273,9 +282,16 @@ pub fn render_invocation_compact(invocation: &Invocation) {
 }
 
 pub fn format_journal_entry(entry: &JournalEntry) -> String {
+    match entry {
+        JournalEntry::V1(v1) => format_journal_entry_v1(v1),
+        JournalEntry::V2(v2) => format_journal_entry_v2(v2),
+    }
+}
+
+pub fn format_journal_entry_v1(entry: &JournalEntryV1) -> String {
     let state_icon = if entry.is_completed() {
         Icon("☑️ ", "[DONE]")
-    } else if matches!(entry.entry_type, JournalEntryType::Sleep { .. }) {
+    } else if matches!(entry.entry_type, JournalEntryTypeV1::Sleep { .. }) {
         Icon("⏰", "[PENDING]")
     } else {
         Icon("⏸️ ", "[PENDING]")
@@ -298,13 +314,13 @@ pub fn format_journal_entry(entry: &JournalEntry) -> String {
         state_icon,
         type_style.apply_to(seq),
         type_style.apply_to(entry_ty_and_name),
-        format_entry_type_details(&entry.entry_type)
+        format_entry_type_v1_details(&entry.entry_type)
     )
 }
 
-pub fn format_entry_type_details(entry_type: &JournalEntryType) -> String {
+fn format_entry_type_v1_details(entry_type: &JournalEntryTypeV1) -> String {
     match entry_type {
-        JournalEntryType::Sleep {
+        JournalEntryTypeV1::Sleep {
             wakeup_at: Some(wakeup_at),
         } => {
             let left = wakeup_at.signed_duration_since(chrono::Local::now());
@@ -315,18 +331,95 @@ pub fn format_entry_type_details(entry_type: &JournalEntryType) -> String {
                 format!("until {}", style(wakeup_at).dim())
             }
         }
-        JournalEntryType::Call(inv) | JournalEntryType::OneWayCall(inv) => {
+        JournalEntryTypeV1::Call(inv) | JournalEntryTypeV1::OneWayCall(inv) => {
             format!(
                 "{} {}",
                 inv.invoked_target.as_ref().unwrap(),
                 inv.invocation_id.as_deref().unwrap_or(""),
             )
         }
-        JournalEntryType::Awakeable(awakeable_id) => {
+        JournalEntryTypeV1::Awakeable(awakeable_id) => {
             format!("{}", style(awakeable_id.to_string()).cyan())
         }
-        JournalEntryType::GetPromise(Some(promise_name)) => {
+        JournalEntryTypeV1::GetPromise(Some(promise_name)) => {
             format!("{}", style(promise_name).cyan())
+        }
+        _ => String::new(),
+    }
+}
+
+pub fn format_journal_entry_v2(entry: &JournalEntryV2) -> String {
+    let seq_and_time = if let Some(timestamp) = &entry.appended_at {
+        let date_style = DStyle::new().dim();
+        format!("#{} [{}]", entry.seq, date_style.apply_to(timestamp))
+    } else {
+        format!("#{}", entry.seq)
+    };
+    let entry_ty_and_name = if let Some(name) = &entry.name {
+        if !name.is_empty() {
+            format!("{} [{}]", entry.entry_type, name)
+        } else {
+            entry.entry_type.clone()
+        }
+    } else {
+        entry.entry_type.clone()
+    };
+
+    format!(
+        " {} {} {}",
+        seq_and_time,
+        entry_ty_and_name,
+        format_entry_type_v2_details(&entry.entry)
+    )
+}
+
+fn format_entry_type_v2_details(entry: &Option<Entry>) -> String {
+    if entry.is_none() {
+        return "".to_owned();
+    }
+    match entry.as_ref().unwrap() {
+        Entry::Command(Command::Sleep(SleepCommand { wake_up_time, .. })) => {
+            let wakeup_at: chrono::DateTime<chrono::Local> =
+                chrono::DateTime::from(SystemTime::from(*wake_up_time));
+            let left = wakeup_at.signed_duration_since(chrono::Local::now());
+            if left.num_milliseconds() >= 0 {
+                let left = duration_to_human_precise(left, Tense::Present);
+                format!("until {} ({} left)", wakeup_at, style(left).cyan())
+            } else {
+                format!("until {}", style(wakeup_at).dim())
+            }
+        }
+        Entry::Command(Command::Call(CallCommand { request, .. }))
+        | Entry::Command(Command::OneWayCall(OneWayCallCommand { request, .. })) => {
+            format!("{} {}", request.invocation_target, request.invocation_id)
+        }
+        Entry::Command(Command::CompleteAwakeable(CompleteAwakeableCommand { id, .. })) => {
+            format!("id {}", id)
+        }
+        Entry::Command(Command::SendSignal(SendSignalCommand {
+            target_invocation_id,
+            signal_id,
+            ..
+        })) => {
+            format!("signal {} to {}", signal_id, target_invocation_id)
+        }
+        Entry::Command(Command::GetLazyState(GetLazyStateCommand { key, .. }))
+        | Entry::Command(Command::GetEagerState(GetEagerStateCommand { key, .. }))
+        | Entry::Command(Command::SetState(SetStateCommand { key, .. }))
+        | Entry::Command(Command::ClearState(ClearStateCommand { key, .. }))
+        | Entry::Command(Command::GetPromise(GetPromiseCommand { key, .. }))
+        | Entry::Command(Command::PeekPromise(PeekPromiseCommand { key, .. }))
+        | Entry::Command(Command::CompletePromise(CompletePromiseCommand { key, .. })) => {
+            format!("key {}", style(key).cyan())
+        }
+        Entry::Command(Command::AttachInvocation(AttachInvocationCommand { target, .. }))
+        | Entry::Command(Command::GetInvocationOutput(GetInvocationOutputCommand {
+            target, ..
+        })) => {
+            format!(
+                "{}",
+                InvocationQuery::from(target.clone()).to_invocation_id()
+            )
         }
         _ => String::new(),
     }

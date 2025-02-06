@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::errors::IdDecodeError;
 use crate::identifiers::{
     AwakeableIdentifier, ExternalSignalIdentifier, IdempotencyId, InvocationId, ServiceId,
 };
@@ -21,17 +22,19 @@ use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use bytestring::ByteString;
 use enum_dispatch::enum_dispatch;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 use std::time::Duration;
 
 #[enum_dispatch]
 pub trait CommandMetadata {
     fn related_completion_ids(&self) -> Vec<CompletionId>;
+    fn name(&self) -> &str;
 }
 
 #[enum_dispatch(EntryMetadata, CommandMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants, Serialize, Deserialize)]
 #[strum_discriminants(vis(pub))]
 #[strum_discriminants(name(CommandType))]
 #[strum_discriminants(derive(serde::Serialize, serde::Deserialize))]
@@ -119,6 +122,10 @@ macro_rules! impl_command_accessors {
             fn related_completion_ids(&self) -> Vec<CompletionId> {
                 vec![]
             }
+
+            fn name(&self) -> &str {
+                &self.name
+            }
         }
         impl_command_accessors!($ty -> [$($tail)*]);
     };
@@ -126,6 +133,10 @@ macro_rules! impl_command_accessors {
         impl CommandMetadata for paste::paste! { [< $ty Command >] } {
             fn related_completion_ids(&self) -> Vec<CompletionId> {
                 vec![self.completion_id]
+            }
+
+            fn name(&self) -> &str {
+                &self.name
             }
         }
         impl_command_accessors!($ty -> [$($tail)*]);
@@ -139,7 +150,7 @@ macro_rules! impl_command_accessors {
 
 // --- Actual implementation of individual commands
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputCommand {
     pub headers: Vec<Header>,
     pub payload: Bytes,
@@ -147,19 +158,19 @@ pub struct InputCommand {
 }
 impl_command_accessors!(Input -> [@metadata @from_entry @no_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputCommand {
     pub result: OutputResult,
     pub name: ByteString,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputResult {
     Success(Bytes),
     Failure(Failure),
 }
 impl_command_accessors!(Output -> [@metadata @from_entry @no_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetLazyStateCommand {
     pub key: ByteString,
     pub completion_id: CompletionId,
@@ -167,7 +178,7 @@ pub struct GetLazyStateCommand {
 }
 impl_command_accessors!(GetLazyState -> [@metadata @from_entry @result_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetStateCommand {
     pub key: ByteString,
     pub value: Bytes,
@@ -175,27 +186,27 @@ pub struct SetStateCommand {
 }
 impl_command_accessors!(SetState -> [@metadata @from_entry @no_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClearStateCommand {
     pub key: ByteString,
     pub name: ByteString,
 }
 impl_command_accessors!(ClearState -> [@metadata @from_entry @no_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClearAllStateCommand {
     pub name: ByteString,
 }
 impl_command_accessors!(ClearAllState -> [@metadata @from_entry @no_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetLazyStateKeysCommand {
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
 impl_command_accessors!(GetLazyStateKeys -> [@metadata @from_entry @result_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetEagerStateCommand {
     pub key: ByteString,
     pub result: GetStateResult,
@@ -203,14 +214,14 @@ pub struct GetEagerStateCommand {
 }
 impl_command_accessors!(GetEagerState -> [@metadata @from_entry @no_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetEagerStateKeysCommand {
     pub state_keys: Vec<String>,
     pub name: ByteString,
 }
 impl_command_accessors!(GetEagerStateKeys -> [@metadata @from_entry @no_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetPromiseCommand {
     pub key: ByteString,
     pub completion_id: CompletionId,
@@ -218,7 +229,7 @@ pub struct GetPromiseCommand {
 }
 impl_command_accessors!(GetPromise -> [@metadata @from_entry @result_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeekPromiseCommand {
     pub key: ByteString,
     pub completion_id: CompletionId,
@@ -226,21 +237,21 @@ pub struct PeekPromiseCommand {
 }
 impl_command_accessors!(PeekPromise -> [@metadata @from_entry @result_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletePromiseCommand {
     pub key: ByteString,
     pub value: CompletePromiseValue,
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompletePromiseValue {
     Success(Bytes),
     Failure(Failure),
 }
 impl_command_accessors!(CompletePromise -> [@metadata @from_entry @result_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SleepCommand {
     pub wake_up_time: MillisSinceEpoch,
     pub completion_id: CompletionId,
@@ -248,7 +259,7 @@ pub struct SleepCommand {
 }
 impl_command_accessors!(Sleep -> [@metadata @from_entry @result_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallRequest {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
@@ -259,7 +270,7 @@ pub struct CallRequest {
     pub completion_retention_duration: Duration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallCommand {
     pub request: CallRequest,
     pub invocation_id_completion_id: CompletionId,
@@ -271,9 +282,13 @@ impl CommandMetadata for CallCommand {
     fn related_completion_ids(&self) -> Vec<CompletionId> {
         vec![self.invocation_id_completion_id, self.result_completion_id]
     }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OneWayCallCommand {
     pub request: CallRequest,
     pub invoke_time: MillisSinceEpoch,
@@ -285,9 +300,13 @@ impl CommandMetadata for OneWayCallCommand {
     fn related_completion_ids(&self) -> Vec<CompletionId> {
         vec![self.invocation_id_completion_id]
     }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendSignalCommand {
     pub target_invocation_id: InvocationId,
     pub signal_id: SignalId,
@@ -296,14 +315,14 @@ pub struct SendSignalCommand {
 }
 impl_command_accessors!(SendSignal -> [@metadata @from_entry @no_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunCommand {
     pub completion_id: CompletionId,
     pub name: ByteString,
 }
 impl_command_accessors!(Run -> [@metadata @from_entry @result_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttachInvocationTarget {
     InvocationId(InvocationId),
     IdempotentRequest(IdempotencyId),
@@ -328,7 +347,7 @@ impl From<InvocationQuery> for AttachInvocationTarget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachInvocationCommand {
     pub target: AttachInvocationTarget,
     pub completion_id: CompletionId,
@@ -336,7 +355,7 @@ pub struct AttachInvocationCommand {
 }
 impl_command_accessors!(AttachInvocation -> [@metadata @from_entry @result_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetInvocationOutputCommand {
     pub target: AttachInvocationTarget,
     pub completion_id: CompletionId,
@@ -344,7 +363,7 @@ pub struct GetInvocationOutputCommand {
 }
 impl_command_accessors!(GetInvocationOutput -> [@metadata @from_entry @result_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompleteAwakeableCommand {
     pub id: CompleteAwakeableId,
     pub result: CompleteAwakeableResult,
@@ -352,11 +371,14 @@ pub struct CompleteAwakeableCommand {
 }
 impl_command_accessors!(CompleteAwakeable -> [@metadata @from_entry @no_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde_with::SerializeDisplay, serde_with::DeserializeFromStr,
+)]
 pub enum CompleteAwakeableId {
     Old(AwakeableIdentifier),
     New(ExternalSignalIdentifier),
 }
+
 impl fmt::Display for CompleteAwakeableId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -366,7 +388,17 @@ impl fmt::Display for CompleteAwakeableId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+impl FromStr for CompleteAwakeableId {
+    type Err = IdDecodeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        AwakeableIdentifier::from_str(s)
+            .map(CompleteAwakeableId::Old)
+            .or_else(|_| ExternalSignalIdentifier::from_str(s).map(CompleteAwakeableId::New))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompleteAwakeableResult {
     Success(Bytes),
     Failure(Failure),

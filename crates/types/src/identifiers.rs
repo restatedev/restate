@@ -14,7 +14,6 @@ use base64::Engine;
 use bytes::{BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fmt::{Display, Formatter};
@@ -961,7 +960,9 @@ ulid_backed_id!(Subscription @with_resource_id);
 ulid_backed_id!(PartitionProcessorRpcRequest);
 ulid_backed_id!(Snapshot @with_resource_id);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde_with::SerializeDisplay, serde_with::DeserializeFromStr,
+)]
 pub struct AwakeableIdentifier {
     invocation_id: InvocationId,
     entry_index: EntryIndex,
@@ -1040,7 +1041,9 @@ impl Display for AwakeableIdentifier {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde_with::SerializeDisplay, serde_with::DeserializeFromStr,
+)]
 pub struct ExternalSignalIdentifier {
     invocation_id: InvocationId,
     signal_index: u32,

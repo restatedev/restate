@@ -92,14 +92,13 @@ impl ConfigLoader {
                 Env::raw()
                     .only(&["MEMORY_LIMIT"])
                     .map(|_| "rocksdb-total-memory-limit".into()),
-            )
-            .merge(
-                Env::raw()
-                    // will accept true, yes, 1, on as true
-                    // and false, no, 0, off as false
-                    .only(&["DO_NOT_TRACK"])
-                    .map(|_| "disable-telemetry".into()),
             );
+
+        let fig = match Env::var("DO_NOT_TRACK").as_deref() {
+            Some("yes" | "1" | "true") => fig.join(("disable-telemetry", true)),
+            Some("no" | "0" | "false") => fig.join(("disable-telemetry", false)),
+            _ => fig,
+        };
 
         if let Some(no_proxy) = Env::var("NO_PROXY") {
             fig.join((
