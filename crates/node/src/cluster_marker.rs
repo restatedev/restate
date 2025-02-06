@@ -13,7 +13,7 @@ use semver::Version;
 use std::cmp::Ordering;
 use std::fs::OpenOptions;
 use std::path::Path;
-use tracing::info;
+use tracing::debug;
 
 const CLUSTER_MARKER_FILE_NAME: &str = ".cluster-marker";
 const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
@@ -141,7 +141,7 @@ fn validate_and_update_cluster_marker_inner(
             .map_err(ClusterValidationError::CreateFile)?;
         serde_json::from_reader(&cluster_marker_file).map_err(ClusterValidationError::Decode)?
     } else {
-        info!(
+        debug!(
             "Did not find existing cluster marker. Creating a new one under '{}'.",
             cluster_marker_filepath.display()
         );

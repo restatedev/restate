@@ -270,10 +270,10 @@ where
 {
     #[instrument(
         level = "error", skip_all,
-        fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty)
+        fields(partition_id = %self.partition_id)
     )]
     pub async fn run(mut self) -> Result<(), ProcessorError> {
-        info!("Starting the partition processor.");
+        debug!("Starting the partition processor.");
 
         let res = tokio::select! {
             res = self.run_inner() => {
@@ -416,7 +416,7 @@ where
         let mut action_collector = ActionCollector::default();
         let mut command_buffer = Vec::with_capacity(self.max_command_batch_size);
 
-        info!("PartitionProcessor starting event loop.");
+        info!("Partition {} started", self.partition_id);
 
         loop {
             tokio::select! {

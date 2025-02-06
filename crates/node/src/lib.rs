@@ -374,13 +374,19 @@ impl Node {
                     match response {
                         Ok(provisioned) => {
                             if provisioned {
-                                info!("Auto provisioned cluster '{}'.", common_opts.cluster_name());
+                                info!(
+                                    "Cluster '{}' has been automatically provisioned",
+                                    common_opts.cluster_name()
+                                );
                             } else {
-                                debug!("The cluster is already provisioned.");
+                                debug!("The cluster is already provisioned");
                             }
                         }
                         Err(err) => {
-                            warn!("Failed to auto provision the cluster. In order to continue you have to provision the cluster manually: {err}");
+                            warn!(
+                                %err,
+                                "Failed to auto provision the cluster. In order to continue you have to provision the cluster manually"
+                            );
                         }
                     }
 
@@ -400,8 +406,8 @@ impl Node {
             .init(),
         )
         .await
-            .context("Giving up trying to initialize the node. Make sure that it can reach the metadata store and don't forget to provision the cluster on a fresh start.")?
-            .context("Failed initializing the node.")?;
+            .context("Giving up trying to initialize the node. Make sure that it can reach the metadata store and don't forget to provision the cluster on a fresh start")?
+            .context("Failed initializing the node")?;
 
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
         let my_node_id = Metadata::with_current(|m| m.my_node_id());
@@ -428,7 +434,7 @@ impl Node {
                     "announce-node-at-admin-node",
                     async move {
                         if let Err(err) = networking.node_connection(admin_node_id).await {
-                            info!("Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}");
+                            debug!("Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}");
                         }
                     },
                 )?;
@@ -507,7 +513,7 @@ impl Node {
                     }
                 }
             }
-            info!("Restate server is ready");
+            info!("Restate node roles [{}] were started", my_roles);
             Ok(())
         });
 

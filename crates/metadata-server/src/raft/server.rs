@@ -282,7 +282,7 @@ impl RaftMetadataServer {
         let mut provision_rx = self.provision_rx.take().expect("must be present");
 
         let result = if let Some(configuration) = self.storage.get_raft_configuration()? {
-            debug!(member_id = %configuration.my_member_id, "Found existing metadata store configuration.");
+            debug!(member_id = %configuration.my_member_id, "Found existing metadata store configuration");
             Provisioned::Member(self.become_member(configuration)?)
         } else {
             let mut nodes_config_watcher =
@@ -291,16 +291,18 @@ impl RaftMetadataServer {
             if *nodes_config_watcher.borrow_and_update() > Version::INVALID {
                 // The metadata store must have been provisioned if there exists a
                 // NodesConfiguration. So let's move on.
-                debug!("Detected a valid NodesConfiguration. This indicates that the metadata store cluster has been provisioned.");
+                debug!("Detected a valid nodes configuration. This indicates that the metadata store cluster has been provisioned");
                 Provisioned::Standby(self.become_standby())
             } else {
-                info!("Cluster has not been provisioned, yet. Awaiting the provision signal.");
+                if !Configuration::pinned().common.auto_provision {
+                    info!("Cluster has not been provisioned, yet. Awaiting provisioning via `restatectl provision`");
+                }
                 loop {
                     tokio::select! {
                         Some(request) = self.request_rx.recv() => {
                             // fail incoming requests while we are waiting for the provision signal
                             let request = request.into_request();
-                            request.fail(RequestError::Unavailable("Metadata store has not been provisioned yet.".into(), None))
+                            request.fail(RequestError::Unavailable("Metadata store has not been provisioned yet".into(), None))
                         },
                         Some(request) = self.join_cluster_rx.recv() => {
                             let _ = request.response_tx.send(Err(JoinClusterError::NotMember(None)));
@@ -309,7 +311,7 @@ impl RaftMetadataServer {
                             match self.initialize_storage(request.nodes_configuration).await {
                                 Ok(raft_configuration) => {
                                     let _ = request.result_tx.send(Ok(true));
-                                    debug!(member_id = %raft_configuration.my_member_id, "Successfully provisioned the metadata store.");
+                                    debug!(member_id = %raft_configuration.my_member_id, "Successfully provisioned the metadata store");
                                     let mut member = self.become_member(raft_configuration)?;
                                     member.campaign_immediately()?;
                                     break Provisioned::Member(member);
@@ -324,7 +326,7 @@ impl RaftMetadataServer {
                             if *nodes_config_watcher.borrow_and_update() > Version::INVALID {
                                 // The metadata store must have been provisioned if there exists a
                                 // NodesConfiguration. So let's move on.
-                                debug!("Detected a valid NodesConfiguration. This indicates that the metadata store cluster has been provisioned.");
+                                debug!("Detected a valid nodes configuration. This indicates that the metadata store cluster has been provisioned");
                                 break Provisioned::Standby(self.become_standby())
                             }
                         }
@@ -353,7 +355,7 @@ impl RaftMetadataServer {
 
         let raft_configuration = self.derive_initial_configuration(&mut nodes_configuration)?;
 
-        debug!("Initialize storage with nodes configuration: {nodes_configuration:?}");
+        debug!("Initialize storage with nodes configuration");
 
         let initial_conf_state = ConfState::from((
             vec![to_raft_id(raft_configuration.my_member_id.node_id)],
@@ -659,7 +661,7 @@ impl Member {
             let known_leader = self.known_leader();
             info!(
                 possible_leader = ?known_leader,
-                "Lost metadata store leadership"
+                "Lost metadata cluster leadership"
             );
 
             // todo we might fail some of the request too eagerly here because the answer might be
@@ -673,7 +675,7 @@ impl Member {
             self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
             self.read_index_to_request_id.clear();
         } else if !previous_is_leader && self.is_leader {
-            info!("Won metadata store leadership");
+            info!("Won metadata cluster leadership");
         }
     }
 

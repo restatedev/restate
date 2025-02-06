@@ -68,8 +68,8 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let worker_1 = &nodes[0];
     let worker_2 = &nodes[1];
 
-    let mut worker_1_ready = worker_1.lines("PartitionProcessor starting event loop".parse()?);
-    let mut worker_2_ready = worker_2.lines("PartitionProcessor starting event loop".parse()?);
+    let mut worker_1_ready = worker_1.lines("Partition [0-9]+ started".parse()?);
+    let mut worker_2_ready = worker_2.lines("Partition [0-0]+ started".parse()?);
 
     let mut cluster = Cluster::builder()
         .temp_base_dir()
