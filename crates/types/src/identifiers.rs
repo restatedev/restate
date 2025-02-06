@@ -1156,11 +1156,23 @@ mod mocks {
                 InvocationUuid::mock_random(),
             )
         }
+
+        pub fn mock_with_partition_key(partition_key: PartitionKey) -> Self {
+            Self::from_parts(partition_key, InvocationUuid::mock_random())
+        }
     }
 
     impl ServiceId {
         pub fn mock_random() -> Self {
             Self::new(
+                Alphanumeric.sample_string(&mut rand::rng(), 8),
+                Alphanumeric.sample_string(&mut rand::rng(), 16),
+            )
+        }
+
+        pub fn mock_with_partition_key(partition_key: PartitionKey) -> Self {
+            Self::with_partition_key(
+                partition_key,
                 Alphanumeric.sample_string(&mut rand::rng(), 8),
                 Alphanumeric.sample_string(&mut rand::rng(), 16),
             )

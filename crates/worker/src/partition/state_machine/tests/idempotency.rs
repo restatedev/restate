@@ -726,12 +726,15 @@ async fn attach_command(#[case] experimental_features: EnumSet<ExperimentalFeatu
 
 #[restate_core::test]
 async fn attach_command_without_blocking_inflight() {
-    let mut test_env = TestEnv::create().await;
+    let mut test_env = TestEnvBuilder::new()
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let completion_retention = Duration::from_secs(60) * 60 * 24;
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
+    let invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
 
     // Send fresh invocation with idempotency key
     let actions = test_env
@@ -755,7 +758,7 @@ async fn attach_command_without_blocking_inflight() {
     );
 
     // Latch to existing invocation without blocking on inflight invocation
-    let caller_invocation_id = InvocationId::mock_random();
+    let caller_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
     let actions = test_env
         .apply(Command::AttachInvocation(AttachInvocationRequest {
             invocation_query: InvocationQuery::Invocation(invocation_id),

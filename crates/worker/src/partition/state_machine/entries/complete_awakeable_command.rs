@@ -62,10 +62,12 @@ where
 #[cfg(test)]
 mod tests {
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
-    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnvBuilder};
     use bytes::Bytes;
     use googletest::prelude::{assert_that, contains, eq};
-    use restate_types::identifiers::{AwakeableIdentifier, ExternalSignalIdentifier, InvocationId};
+    use restate_types::identifiers::{
+        AwakeableIdentifier, ExternalSignalIdentifier, InvocationId, PartitionKey,
+    };
     use restate_types::invocation::ResponseResult;
     use restate_types::journal_v2::{
         CompleteAwakeableCommand, CompleteAwakeableId, CompleteAwakeableResult, Signal, SignalId,
@@ -74,11 +76,16 @@ mod tests {
 
     #[restate_core::test]
     async fn complete_old_awakeable() {
-        let mut test_env = TestEnv::create().await;
-        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        let mut test_env = TestEnvBuilder::new()
+            .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+            .build()
+            .await;
+        let caller_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
+        fixtures::mock_start_invocation_with_invocation_id(&mut test_env, caller_invocation_id)
+            .await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, caller_invocation_id).await;
 
-        let callee_invocation_id = InvocationId::mock_random();
+        let callee_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
         let callee_entry_index = 10;
         let awakeable_identifier =
             AwakeableIdentifier::new(callee_invocation_id, callee_entry_index);
@@ -86,7 +93,7 @@ mod tests {
 
         let actions = test_env
             .apply(invoker_entry_effect(
-                invocation_id,
+                caller_invocation_id,
                 CompleteAwakeableCommand {
                     id: CompleteAwakeableId::Old(awakeable_identifier),
                     result: CompleteAwakeableResult::Success(result_value.clone()),
@@ -110,11 +117,16 @@ mod tests {
 
     #[restate_core::test]
     async fn complete_new_awakeable() {
-        let mut test_env = TestEnv::create().await;
-        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        let mut test_env = TestEnvBuilder::new()
+            .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+            .build()
+            .await;
+        let caller_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
+        fixtures::mock_start_invocation_with_invocation_id(&mut test_env, caller_invocation_id)
+            .await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, caller_invocation_id).await;
 
-        let callee_invocation_id = InvocationId::mock_random();
+        let callee_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
         let callee_signal_index = 10;
         let awakeable_identifier =
             ExternalSignalIdentifier::new(callee_invocation_id, callee_signal_index);
@@ -122,7 +134,7 @@ mod tests {
 
         let actions = test_env
             .apply(invoker_entry_effect(
-                invocation_id,
+                caller_invocation_id,
                 CompleteAwakeableCommand {
                     id: CompleteAwakeableId::New(awakeable_identifier),
                     result: CompleteAwakeableResult::Success(result_value.clone()),

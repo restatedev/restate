@@ -113,8 +113,39 @@ pub async fn mock_start_invocation_with_invocation_target(
     state_machine: &mut TestEnv,
     invocation_target: InvocationTarget,
 ) -> InvocationId {
-    let invocation_id = InvocationId::mock_generate(&invocation_target);
+    start_invocation(
+        state_machine,
+        InvocationId::mock_generate(&invocation_target),
+        invocation_target,
+    )
+    .await
+}
 
+pub async fn mock_start_invocation(state_machine: &mut TestEnv) -> InvocationId {
+    mock_start_invocation_with_invocation_target(
+        state_machine,
+        InvocationTarget::mock_virtual_object(),
+    )
+    .await
+}
+
+pub async fn mock_start_invocation_with_invocation_id(
+    state_machine: &mut TestEnv,
+    invocation_id: InvocationId,
+) -> InvocationId {
+    start_invocation(
+        state_machine,
+        invocation_id,
+        InvocationTarget::mock_service(),
+    )
+    .await
+}
+
+pub async fn start_invocation(
+    state_machine: &mut TestEnv,
+    invocation_id: InvocationId,
+    invocation_target: InvocationTarget,
+) -> InvocationId {
     let actions = state_machine
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
@@ -141,14 +172,6 @@ pub async fn mock_start_invocation_with_invocation_target(
     );
 
     invocation_id
-}
-
-pub async fn mock_start_invocation(state_machine: &mut TestEnv) -> InvocationId {
-    mock_start_invocation_with_invocation_target(
-        state_machine,
-        InvocationTarget::mock_virtual_object(),
-    )
-    .await
 }
 
 pub async fn mock_pinned_deployment_v4(state_machine: &mut TestEnv, invocation_id: InvocationId) {
