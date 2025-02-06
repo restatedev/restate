@@ -73,7 +73,7 @@ impl SealTask {
             .nodeset
             .to_effective(&networking.metadata().nodes_config_ref());
 
-        let mut nodeset_checker = NodeSetChecker::<bool>::new(
+        let mut nodeset_checker = NodeSetChecker::<NodeSealStatus>::new(
             &effective_nodeset,
             &networking.metadata().nodes_config_ref(),
             &my_params.replication,
@@ -116,8 +116,6 @@ impl SealTask {
             });
         }
 
-        let mut nodeset_status = DecoratedNodeSet::from_iter(effective_nodeset.clone());
-
         // Max observed local-tail from sealed nodes
         let mut max_local_tail = LogletOffset::OLDEST;
         while let Some(response) = inflight_requests.join_next().await {
@@ -127,20 +125,23 @@ impl SealTask {
             };
             let Ok(response) = response else {
                 // Seal failed/aborted on this node.
-                nodeset_status.insert(node_id, NodeSealStatus::Error);
+                nodeset_checker.set_attribute(node_id, NodeSealStatus::Error);
                 continue;
             };
 
             max_local_tail = max_local_tail.max(response.header.local_tail);
             known_global_tail.notify_offset_update(response.header.known_global_tail);
-            nodeset_checker.set_attribute(node_id, true);
-            nodeset_status.insert(node_id, NodeSealStatus::Sealed);
+            nodeset_checker.set_attribute(node_id, NodeSealStatus::Sealed);
 
-            if nodeset_checker.check_fmajority(|attr| *attr).passed() {
+            if nodeset_checker
+                .check_fmajority(|attr| *attr == NodeSealStatus::Sealed)
+                .passed()
+            {
+                let mut nodeset_status = DecoratedNodeSet::from_iter(effective_nodeset);
+                nodeset_status.extend(&nodeset_checker);
                 info!(
                     loglet_id = %my_params.loglet_id,
                     replication = %my_params.replication,
-                    %effective_nodeset,
                     %max_local_tail,
                     global_tail = %known_global_tail.latest_offset(),
                     "Seal task completed on f-majority of nodes in {:?}. Nodeset status {}",
@@ -152,6 +153,8 @@ impl SealTask {
             }
         }
 
+        let mut nodeset_status = DecoratedNodeSet::from_iter(effective_nodeset);
+        nodeset_status.extend(&nodeset_checker);
         // no more tasks left. This means that we failed to seal
         Err(ReplicatedLogletError::SealFailed(nodeset_status))
     }
