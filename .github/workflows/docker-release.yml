@@ -19,6 +19,7 @@ jobs:
     with:
       pushToDockerHub: true
       parca: true
+      buildIndividually: true
 
   docker-cli:
     name: Push CLI Docker image
