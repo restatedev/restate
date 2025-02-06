@@ -1413,12 +1413,6 @@ impl Standby {
             .created_at()
             .timestamp_millis();
 
-        // Persist latest NodesConfiguration so that we know about the MetadataServerState at least
-        // as of now when restarting.
-        storage
-            .store_nodes_configuration(&Metadata::with_current(|m| m.nodes_config_ref()))
-            .await?;
-
         let mut join_cluster: std::pin::Pin<&mut OptionFuture<_>> = std::pin::pin!(None.into());
 
         let mut nodes_config_watcher =
@@ -1484,6 +1478,12 @@ impl Standby {
                         if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
                             if join_cluster.is_terminated() {
                                 debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
+
+                                // Persist latest NodesConfiguration so that we know about the MetadataServerState at least
+                                // as of now when restarting.
+                                storage
+                                    .store_nodes_configuration(&nodes_config)
+                                    .await?;
                                 join_cluster.set(Some(Self::join_cluster(None, None, my_member_id.expect("MemberId to be known")).fuse()).into());
                             }
                         } else {
