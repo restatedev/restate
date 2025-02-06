@@ -20,7 +20,7 @@ use restate_types::nodes_config::Role;
 
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_metadata_server::create_client;
-use restate_types::config::MetadataStoreClientOptions;
+use restate_types::config::MetadataClientOptions;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 use crate::connection::ConnectionInfo;
@@ -119,16 +119,16 @@ pub async fn create_metadata_store_client(
                 .iter_role(Role::MetadataServer)
                 .map(|(_, node)| node.address.clone())
                 .collect();
-            restate_types::config::MetadataStoreClient::Embedded { addresses }
+            restate_types::config::MetadataClientKind::Native { addresses }
         }
-        RemoteServiceType::Etcd => restate_types::config::MetadataStoreClient::Etcd {
+        RemoteServiceType::Etcd => restate_types::config::MetadataClientKind::Etcd {
             addresses: opts.etcd.clone(),
         },
     };
 
-    let metadata_store_client_options = MetadataStoreClientOptions {
-        metadata_store_client: client,
-        ..MetadataStoreClientOptions::default()
+    let metadata_store_client_options = MetadataClientOptions {
+        kind: client,
+        ..MetadataClientOptions::default()
     };
 
     create_client(metadata_store_client_options)

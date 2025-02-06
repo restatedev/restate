@@ -13,7 +13,7 @@ use crate::metadata_store::providers::objstore::optimistic_store::OptimisticLock
 use crate::metadata_store::providers::objstore::version_repository::VersionRepository;
 use crate::metadata_store::MetadataStore;
 use crate::{TaskCenter, TaskKind};
-use restate_types::config::MetadataStoreClient;
+use restate_types::config::MetadataClientKind;
 use restate_types::errors::GenericError;
 
 mod glue;
@@ -22,7 +22,7 @@ mod optimistic_store;
 mod version_repository;
 
 pub async fn create_object_store_based_meta_store(
-    configuration: MetadataStoreClient,
+    configuration: MetadataClientKind,
 ) -> Result<impl MetadataStore, GenericError> {
     // obtain an instance of a version repository from the configuration.
     // we use an object_store backed version repository.

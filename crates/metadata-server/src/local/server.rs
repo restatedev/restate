@@ -8,15 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::grpc::handler::MetadataServerHandler;
+use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 use crate::{
-    util, MetadataServerBackend, MetadataStoreRequest, PreconditionViolation, ProvisionSender,
-    RequestError, RequestReceiver, RequestSender, StatusWatch,
+    grpc, util, MetadataServer, MetadataStoreRequest, PreconditionViolation, RequestError,
+    RequestReceiver,
 };
 use bytes::BytesMut;
 use bytestring::ByteString;
-use futures::FutureExt;
 use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{serialize_value, Precondition, VersionedValue};
+use restate_core::network::NetworkServerBuilder;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
@@ -30,9 +32,9 @@ use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::Version;
 use rocksdb::{BoundColumnFamily, WriteBatch, WriteOptions, DB};
-use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, trace};
 
 const DB_NAME: &str = "local-metadata-store";
@@ -49,9 +51,6 @@ pub struct LocalMetadataServer {
     request_rx: RequestReceiver,
     buffer: BytesMut,
     health_status: HealthStatus<MetadataServerStatus>,
-
-    // for creating other senders
-    request_tx: RequestSender,
 }
 
 impl LocalMetadataServer {
@@ -59,6 +58,7 @@ impl LocalMetadataServer {
         options: &MetadataServerOptions,
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
         health_status: HealthStatus<MetadataServerStatus>,
+        server_builder: &mut NetworkServerBuilder,
     ) -> Result<Self, RocksError> {
         health_status.update(MetadataServerStatus::StartingUp);
         let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
@@ -86,6 +86,13 @@ impl LocalMetadataServer {
             .get_db(db_name)
             .expect("metadata store db is open");
 
+        server_builder.register_grpc_service(
+            MetadataServerSvcServer::new(MetadataServerHandler::new(request_tx, None, None))
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+            grpc::FILE_DESCRIPTOR_SET,
+        );
+
         Ok(Self {
             db,
             rocksdb,
@@ -93,7 +100,6 @@ impl LocalMetadataServer {
             buffer: BytesMut::default(),
             health_status,
             request_rx,
-            request_tx,
         })
     }
 
@@ -111,10 +117,6 @@ impl LocalMetadataServer {
         write_opts
     }
 
-    pub fn request_sender(&self) -> RequestSender {
-        self.request_tx.clone()
-    }
-
     pub async fn run(mut self) {
         debug!("Running LocalMetadataStore");
         self.health_status.update(MetadataServerStatus::Member);
@@ -127,8 +129,7 @@ impl LocalMetadataServer {
 
         loop {
             tokio::select! {
-                request = self.request_rx.recv() => {
-                    let request = request.expect("receiver should not be closed since we own one clone.");
+                Some(request) = self.request_rx.recv() => {
                     self.handle_request(request).await;
                 },
                 _ = cancellation_watcher() => {
@@ -367,20 +368,10 @@ impl LocalMetadataServer {
     }
 }
 
-impl MetadataServerBackend for LocalMetadataServer {
-    fn request_sender(&self) -> RequestSender {
-        self.request_sender()
-    }
-
-    fn provision_sender(&self) -> Option<ProvisionSender> {
-        None
-    }
-
-    fn status_watch(&self) -> Option<StatusWatch> {
-        None
-    }
-
-    fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
-        self.run().map(Ok)
+#[async_trait::async_trait]
+impl MetadataServer for LocalMetadataServer {
+    async fn run(self) -> anyhow::Result<()> {
+        self.run().await;
+        Ok(())
     }
 }

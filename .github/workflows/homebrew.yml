@@ -1,5 +1,5 @@
 # Lifted from what dist would generate as the homebrew publish step, except rewriting the download urls to use scarf.
-# We also need to deliberately skip any publish steps here if this is a pre-release, as Homebrew doesn't support prereleases.
+# We also need to deliberately skip the git push this is a pre-release, as Homebrew doesn't support prereleases.
 
 name: Publish homebrew formulae
 
@@ -16,9 +16,7 @@ env:
 
 jobs:
   publish-homebrew-formula:
-    # homebrew only really has a single 'latest' version, so we must skip prereleases
-    if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
-    runs-on: "warp-ubuntu-latest-x64-2x"
+    runs-on: ubuntu-20.04 # linuxbrew doesn't seem to be working on warpbuild
     env:
       GITHUB_USER: "Restate bot"
       GITHUB_EMAIL: "code+bot@restate.dev"
@@ -58,4 +56,8 @@ jobs:
             git add "Formula/${filename}"
             git commit -m "${name} ${version}"
           done
-          git push
+
+      - name: Push formula files
+        # homebrew only really has a single 'latest' version, so we must skip prereleases
+        if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
+        run: git push

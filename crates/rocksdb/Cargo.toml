@@ -38,6 +38,10 @@ threadpool = { version = "1.8" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+# rocksdb = { workspace = true } brings this in implicitly, but we want to ensure it uses the workspace features
+tikv-jemalloc-sys = { workspace = true }
+
 [dev-dependencies]
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }

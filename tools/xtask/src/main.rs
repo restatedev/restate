@@ -115,7 +115,6 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
                 .unwrap(),
         ),
         false,
-        None,
     );
 
     TaskCenter::spawn(

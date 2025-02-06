@@ -90,7 +90,7 @@ async fn patch_value_direct(
         debug!("RocksDB Initialized");
 
         let metadata_store_client = start_metadata_server(
-            config.common.metadata_store_client.clone(),
+            config.common.metadata_client.clone(),
             &config.metadata_server,
             Live::from_value(config.metadata_server.clone())
                 .map(|c| &c.rocksdb)

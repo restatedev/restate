@@ -17,17 +17,17 @@ use crate::metadata_store::providers::objstore::version_repository::{
     TaggedValue, VersionRepository, VersionRepositoryError,
 };
 use crate::metadata_store::{Precondition, ReadError, VersionedValue, WriteError};
-use restate_types::config::MetadataStoreClient;
+use restate_types::config::MetadataClientKind;
 use restate_types::Version;
 
 pub(crate) struct OptimisticLockingMetadataStoreBuilder {
     pub(crate) version_repository: Box<dyn VersionRepository>,
-    pub(crate) configuration: MetadataStoreClient,
+    pub(crate) configuration: MetadataClientKind,
 }
 
 impl OptimisticLockingMetadataStoreBuilder {
     pub(crate) async fn build(self) -> anyhow::Result<OptimisticLockingMetadataStore> {
-        let MetadataStoreClient::ObjectStore { .. } = self.configuration else {
+        let MetadataClientKind::ObjectStore { .. } = self.configuration else {
             anyhow::bail!("unexpected configuration value");
         };
         Ok(OptimisticLockingMetadataStore::new(self.version_repository))

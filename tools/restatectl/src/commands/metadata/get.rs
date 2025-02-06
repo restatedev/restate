@@ -66,7 +66,7 @@ async fn get_value_direct(opts: &GetValueOpts) -> anyhow::Result<Option<GenericM
         debug!("RocksDB Initialized");
 
         let metadata_store_client = metadata_store::start_metadata_server(
-            config.common.metadata_store_client.clone(),
+            config.common.metadata_client.clone(),
             &config.metadata_server,
             Live::from_value(config.metadata_server.clone())
                 .map(|c| &c.rocksdb)

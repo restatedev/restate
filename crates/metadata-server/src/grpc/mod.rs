@@ -18,7 +18,7 @@ pub mod pb_conversions {
     use crate::grpc::{
         GetResponse, GetVersionResponse, PreconditionKind, Ulid, WriteRequest, WriteRequestKind,
     };
-    use crate::{grpc, MetadataStoreSummary};
+    use crate::{grpc, MetadataServerSummary};
     use restate_core::metadata_store::{Precondition, VersionedValue};
     use restate_types::Version;
 
@@ -131,10 +131,10 @@ pub mod pb_conversions {
         }
     }
 
-    impl From<MetadataStoreSummary> for grpc::StatusResponse {
-        fn from(value: MetadataStoreSummary) -> Self {
+    impl From<MetadataServerSummary> for grpc::StatusResponse {
+        fn from(value: MetadataServerSummary) -> Self {
             match value {
-                MetadataStoreSummary::Starting => grpc::StatusResponse {
+                MetadataServerSummary::Starting => grpc::StatusResponse {
                     status: restate_types::protobuf::common::MetadataServerStatus::StartingUp
                         .into(),
                     configuration: None,
@@ -142,7 +142,7 @@ pub mod pb_conversions {
                     raft: None,
                     snapshot: None,
                 },
-                MetadataStoreSummary::Provisioning => grpc::StatusResponse {
+                MetadataServerSummary::Provisioning => grpc::StatusResponse {
                     status:
                         restate_types::protobuf::common::MetadataServerStatus::AwaitingProvisioning
                             .into(),
@@ -151,14 +151,14 @@ pub mod pb_conversions {
                     raft: None,
                     snapshot: None,
                 },
-                MetadataStoreSummary::Standby => grpc::StatusResponse {
+                MetadataServerSummary::Standby => grpc::StatusResponse {
                     status: restate_types::protobuf::common::MetadataServerStatus::Standby.into(),
                     configuration: None,
                     leader: None,
                     raft: None,
                     snapshot: None,
                 },
-                MetadataStoreSummary::Member {
+                MetadataServerSummary::Member {
                     configuration,
                     leader,
                     raft,

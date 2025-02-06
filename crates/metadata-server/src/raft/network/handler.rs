@@ -23,12 +23,12 @@ use tonic::{Request, Response, Status, Streaming};
 pub const PEER_METADATA_KEY: &str = "x-restate-metadata-server-peer";
 
 #[derive(Debug)]
-pub struct MetadataStoreNetworkHandler<M> {
+pub struct MetadataServerNetworkHandler<M> {
     connection_manager: Arc<ArcSwapOption<ConnectionManager<M>>>,
     join_cluster_handle: Option<JoinClusterHandle>,
 }
 
-impl<M> MetadataStoreNetworkHandler<M> {
+impl<M> MetadataServerNetworkHandler<M> {
     pub fn new(
         connection_manager: Arc<ArcSwapOption<ConnectionManager<M>>>,
         join_cluster_handle: Option<JoinClusterHandle>,
@@ -41,7 +41,7 @@ impl<M> MetadataStoreNetworkHandler<M> {
 }
 
 #[async_trait::async_trait]
-impl<M> MetadataServerNetworkSvc for MetadataStoreNetworkHandler<M>
+impl<M> MetadataServerNetworkSvc for MetadataServerNetworkHandler<M>
 where
     M: NetworkMessage + Send + 'static,
 {

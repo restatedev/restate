@@ -15,11 +15,18 @@ mod query;
 use axum::{routing::post, Router};
 use std::sync::Arc;
 
-use crate::state::QueryServiceState;
+use restate_storage_query_datafusion::context::QueryContext;
 
-pub fn create_router(state: Arc<QueryServiceState>) -> Router<()> {
+#[derive(Clone)]
+pub struct QueryServiceState {
+    pub query_context: QueryContext,
+}
+
+pub fn router(query_context: QueryContext) -> Router {
+    let query_state = Arc::new(QueryServiceState { query_context });
+
     // Setup the router
     axum::Router::new()
         .route("/query", post(query::query))
-        .with_state(state)
+        .with_state(query_state)
 }

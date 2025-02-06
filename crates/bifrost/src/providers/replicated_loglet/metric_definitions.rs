@@ -12,7 +12,6 @@
 /// the metrics' sink.
 use metrics::{describe_counter, describe_histogram, Unit};
 
-pub(crate) const BIFROST_REPLICATED_APPEND: &str = "restate.bifrost.replicatedloglet.appends.total";
 pub(crate) const BIFROST_REPLICATED_READ_CACHE_HIT: &str =
     "restate.bifrost.replicatedloglet.read_record_cache_hit.total";
 pub(crate) const BIFROST_REPLICATED_READ_CACHE_FILTERED: &str =
@@ -32,12 +31,6 @@ pub(crate) const BIFROST_SEQ_STORE_DURATION: &str = "restate.bifrost.sequencer.s
 pub(crate) const BIFROST_SEQ_APPEND_DURATION: &str = "restate.bifrost.sequencer.append_duration";
 
 pub(crate) fn describe_metrics() {
-    describe_counter!(
-        BIFROST_REPLICATED_APPEND,
-        Unit::Count,
-        "Number of append requests to bifrost's replicated loglet"
-    );
-
     describe_counter!(
         BIFROST_REPLICATED_READ_CACHE_HIT,
         Unit::Count,

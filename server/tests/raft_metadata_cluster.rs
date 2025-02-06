@@ -20,7 +20,7 @@ use restate_local_cluster_runner::node::{BinarySource, HealthCheck, Node};
 use restate_metadata_server::create_client;
 use restate_metadata_server::tests::Value;
 use restate_types::config::{
-    Configuration, MetadataServerKind, MetadataStoreClient, MetadataStoreClientOptions, RaftOptions,
+    Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind, RaftOptions,
 };
 use restate_types::Versioned;
 use std::num::NonZeroUsize;
@@ -54,9 +54,9 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
         .map(|node| node.node_address().clone())
         .collect();
 
-    let metadata_store_client_options = MetadataStoreClientOptions {
-        metadata_store_client: MetadataStoreClient::Embedded { addresses },
-        ..MetadataStoreClientOptions::default()
+    let metadata_store_client_options = MetadataClientOptions {
+        kind: MetadataClientKind::Native { addresses },
+        ..MetadataClientOptions::default()
     };
     let client = create_client(metadata_store_client_options)
         .await
@@ -148,9 +148,9 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
         .map(|node| node.node_address().clone())
         .collect();
 
-    let metadata_store_client_options = MetadataStoreClientOptions {
-        metadata_store_client: MetadataStoreClient::Embedded { addresses },
-        ..MetadataStoreClientOptions::default()
+    let metadata_store_client_options = MetadataClientOptions {
+        kind: MetadataClientKind::Native { addresses },
+        ..MetadataClientOptions::default()
     };
     let client = create_client(metadata_store_client_options)
         .await

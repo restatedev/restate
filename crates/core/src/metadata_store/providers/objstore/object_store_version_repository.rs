@@ -18,7 +18,7 @@ use object_store::{Error, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVe
 use crate::metadata_store::providers::objstore::version_repository::{
     Tag, TaggedValue, VersionRepository, VersionRepositoryError,
 };
-use restate_types::config::{MetadataStoreClient, ObjectStoreCredentials};
+use restate_types::config::{MetadataClientKind, ObjectStoreCredentials};
 
 #[derive(Debug)]
 pub(crate) struct ObjectStoreVersionRepository {
@@ -26,8 +26,8 @@ pub(crate) struct ObjectStoreVersionRepository {
 }
 
 impl ObjectStoreVersionRepository {
-    pub(crate) fn from_configuration(configuration: MetadataStoreClient) -> anyhow::Result<Self> {
-        let MetadataStoreClient::ObjectStore {
+    pub(crate) fn from_configuration(configuration: MetadataClientKind) -> anyhow::Result<Self> {
+        let MetadataClientKind::ObjectStore {
             credentials,
             bucket,
             ..

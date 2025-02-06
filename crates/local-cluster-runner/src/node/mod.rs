@@ -24,7 +24,7 @@ use restate_types::partition_table::PartitionReplication;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::retries::RetryPolicy;
 use restate_types::{
-    config::{Configuration, MetadataStoreClient},
+    config::{Configuration, MetadataClientKind},
     errors::GenericError,
     metadata_store::keys::NODES_CONFIG_KEY,
     net::{AdvertisedAddress, BindAddress},
@@ -132,12 +132,8 @@ impl Node {
         &self.base_config.common.advertised_address
     }
 
-    pub fn metadata_store_client_mut(&mut self) -> &mut MetadataStoreClient {
-        &mut self
-            .base_config
-            .common
-            .metadata_store_client
-            .metadata_store_client
+    pub fn metadata_store_client_mut(&mut self) -> &mut MetadataClientKind {
+        &mut self.base_config.common.metadata_client.kind
     }
 
     pub fn config(&self) -> &Configuration {
@@ -231,7 +227,7 @@ impl Node {
 
         // update nodes with the addresses of the other nodes
         for node in &mut nodes {
-            *node.metadata_store_client_mut() = MetadataStoreClient::Embedded {
+            *node.metadata_store_client_mut() = MetadataClientKind::Native {
                 addresses: node_addresses.clone(),
             }
         }
@@ -251,11 +247,8 @@ impl Node {
         let base_dir = base_dir.into();
 
         // ensure file paths are relative to the base dir
-        if let MetadataStoreClient::Embedded { addresses } = &mut self
-            .base_config
-            .common
-            .metadata_store_client
-            .metadata_store_client
+        if let MetadataClientKind::Native { addresses } =
+            &mut self.base_config.common.metadata_client.kind
         {
             for advertised_address in addresses {
                 if let AdvertisedAddress::Uds(file) = advertised_address {
@@ -721,8 +714,7 @@ impl StartedNode {
     pub async fn metadata_client(
         &self,
     ) -> Result<restate_metadata_server::MetadataStoreClient, GenericError> {
-        restate_metadata_server::create_client(self.config().common.metadata_store_client.clone())
-            .await
+        restate_metadata_server::create_client(self.config().common.metadata_client.clone()).await
     }
 
     /// Check to see if the admin address is healthy. Returns false if this node has no admin role.

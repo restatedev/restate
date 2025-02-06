@@ -30,7 +30,7 @@ bytestring = { workspace = true }
 chrono = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
-datafusion-functions-json = { version = "0.44.1" }
+datafusion-functions-json = { version = "0.44.2" }
 derive_more = { workspace = true }
 futures = { workspace = true }
 paste = { workspace = true }

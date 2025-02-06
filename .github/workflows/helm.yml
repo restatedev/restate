@@ -19,7 +19,7 @@ on:
         type: string
 
 env:
-  PLAN: '${{ inputs.plan || ''{"releases": [{"app_name": "restate-server", "app_version": "${{ inputs.version }}"}]}'' }}'
+  PLAN: ${{ inputs.plan }}
 
 jobs:
   release-helm-chart:
@@ -30,6 +30,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
       - name: Write release version
+        if: ${{ inputs.plan }}
         id: version
         run: |
           VERSION="$(echo "$PLAN" | jq -r '[.releases[] | select(.app_name == "restate-server")][0].app_version')"
@@ -37,13 +38,13 @@ jobs:
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
       - name: Check helm versions
         run: |
-          grep -qF 'version: "${{ steps.version.outputs.VERSION }}"' charts/restate-helm/Chart.yaml
+          grep -qF 'version: "${{ inputs.version || steps.version.outputs.VERSION }}"' charts/restate-helm/Chart.yaml
       - name: Push helm chart
         uses: appany/helm-oci-chart-releaser@v0.4.2
         with:
           name: restate-helm
           repository: restatedev
-          tag: ${{ steps.version.outputs.VERSION }}
+          tag: ${{ inputs.version || steps.version.outputs.VERSION }}
           registry: ghcr.io
           registry_username: ${{ github.actor }}
           registry_password: ${{ secrets.GITHUB_TOKEN }}

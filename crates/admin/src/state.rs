@@ -10,17 +10,11 @@
 
 use crate::schema_registry::SchemaRegistry;
 use restate_bifrost::Bifrost;
-use restate_storage_query_datafusion::context::QueryContext;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct AdminServiceState<V> {
     pub schema_registry: SchemaRegistry<V>,
     pub bifrost: Bifrost,
-}
-
-#[derive(Clone)]
-pub struct QueryServiceState {
-    pub query_context: QueryContext,
 }
 
 impl<V> AdminServiceState<V> {

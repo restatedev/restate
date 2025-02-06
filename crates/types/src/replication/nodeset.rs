@@ -277,8 +277,8 @@ impl std::fmt::Display for NodeSet {
     /// The alternate format displays a *sorted* list of short-form plain node ids, suitable for human-friendly output.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match f.alternate() {
-            false => write_nodes(self, f),
-            true => write_nodes_sorted(self, f),
+            false => write_nodes(self.0.iter(), f),
+            true => write_nodes(self.0.iter().sorted(), f),
         }
     }
 }
@@ -350,47 +350,56 @@ impl<V> FromIterator<(PlainNodeId, V)> for DecoratedNodeSet<V> {
 
 impl<V: Display> Display for DecoratedNodeSet<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[")?;
-        for (pos, (node_id, v)) in self.0.iter().with_position() {
-            write!(f, "{node_id}({v})")?;
-            if pos != itertools::Position::Last {
-                write!(f, ", ")?;
-            }
-        }
-        write!(f, "]")
+        write_nodes_decorated_display(self.0.iter(), f)
     }
 }
 
 impl<V: std::fmt::Debug> std::fmt::Debug for DecoratedNodeSet<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[")?;
-        for (pos, (node_id, v)) in self.0.iter().with_position() {
-            write!(f, "{node_id}({v:?})")?;
-            if pos != itertools::Position::Last {
-                write!(f, ", ")?;
-            }
-        }
-        write!(f, "]")
+        write_nodes_decorated_debug(self.0.iter(), f)
     }
 }
 
-fn write_nodes(nodeset: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+fn write_nodes_decorated_display<'a, V: std::fmt::Display + 'a>(
+    iter: impl Iterator<Item = (&'a PlainNodeId, &'a V)>,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    use itertools::Position;
     write!(f, "[")?;
-    for (pos, node_id) in nodeset.0.iter().with_position() {
-        write!(f, "{node_id}")?;
-        if pos != itertools::Position::Last {
-            write!(f, ", ")?;
+    for (pos, (node_id, v)) in iter.with_position() {
+        match pos {
+            Position::Only | Position::Last => write!(f, "{node_id}({v})")?,
+            Position::First | Position::Middle => write!(f, "{node_id}({v}), ")?,
         }
     }
     write!(f, "]")
 }
 
-fn write_nodes_sorted(nodeset: &NodeSet, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+fn write_nodes_decorated_debug<'a, V: std::fmt::Debug + 'a>(
+    iter: impl Iterator<Item = (&'a PlainNodeId, &'a V)>,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    use itertools::Position;
     write!(f, "[")?;
-    for (pos, node_id) in nodeset.0.iter().sorted().with_position() {
-        write!(f, "{node_id}")?;
-        if pos != itertools::Position::Last {
-            write!(f, ", ")?;
+    for (pos, (node_id, v)) in iter.with_position() {
+        match pos {
+            Position::Only | Position::Last => write!(f, "{node_id}({v:?})")?,
+            Position::First | Position::Middle => write!(f, "{node_id}({v:?}), ")?,
+        }
+    }
+    write!(f, "]")
+}
+
+fn write_nodes<'a>(
+    iter: impl Iterator<Item = &'a PlainNodeId>,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    use itertools::Position;
+    write!(f, "[")?;
+    for (pos, node_id) in iter.with_position() {
+        match pos {
+            Position::Only | Position::Last => write!(f, "{node_id}")?,
+            Position::First | Position::Middle => write!(f, "{node_id}, ")?,
         }
     }
     write!(f, "]")
@@ -470,9 +479,21 @@ mod test {
 
     #[test]
     fn nodeset_display() {
-        let nodeset1 = NodeSet::from_iter([2, 3, 1, 4, 5]);
-        assert_eq!(nodeset1.to_string(), "[N2, N3, N1, N4, N5]");
-        assert_eq!(format!("{nodeset1:#}"), "[N1, N2, N3, N4, N5]");
+        let nodeset = NodeSet::from_iter([2, 3, 1, 4, 5]);
+        assert_eq!(nodeset.to_string(), "[N2, N3, N1, N4, N5]");
+        assert_eq!(format!("{nodeset:#}"), "[N1, N2, N3, N4, N5]");
+
+        let nodeset = NodeSet::from_iter([2]);
+        assert_eq!(nodeset.to_string(), "[N2]");
+        assert_eq!(format!("{nodeset:#}"), "[N2]");
+
+        let nodeset = NodeSet::from_iter([2]);
+        assert_eq!(nodeset.to_string(), "[N2]");
+        assert_eq!(format!("{nodeset:#}"), "[N2]");
+
+        let nodeset = NodeSet::new();
+        assert_eq!(nodeset.to_string(), "[]");
+        assert_eq!(format!("{nodeset:#}"), "[]");
     }
 
     #[test]
@@ -485,12 +506,39 @@ mod test {
             #[display("E")]
             Error,
         }
-        let mut nodeset1 = DecoratedNodeSet::<Status>::from(NodeSet::from_iter([2, 3, 1, 4, 5]));
+        let mut nodeset = DecoratedNodeSet::<Status>::from(NodeSet::from_iter([2, 3, 1, 4, 5]));
 
-        assert_eq!(format!("{nodeset1}"), "[N1(E), N2(E), N3(E), N4(E), N5(E)]");
+        assert_eq!(format!("{nodeset}"), "[N1(E), N2(E), N3(E), N4(E), N5(E)]");
+        nodeset.insert(PlainNodeId::from(5), Status::Sealed);
+        nodeset.insert(PlainNodeId::from(2), Status::Sealed);
+        assert_eq!(format!("{nodeset}"), "[N1(E), N2(S), N3(E), N4(E), N5(S)]");
+
+        let nodeset = DecoratedNodeSet::<Status>::from(NodeSet::from_iter([3]));
+        assert_eq!(format!("{nodeset}"), "[N3(E)]");
+
+        let nodeset = DecoratedNodeSet::<Status>::from(NodeSet::new());
+        assert_eq!(format!("{nodeset}"), "[]");
+    }
+
+    #[test]
+    fn decorated_nodeset_extend() {
+        #[derive(derive_more::Display, Default, Clone, Copy)]
+        enum Status {
+            #[display("S")]
+            Sealed,
+            #[default]
+            #[display("E")]
+            Error,
+        }
+        let mut nodeset1 = DecoratedNodeSet::<Status>::from(NodeSet::from_iter([2, 3, 1, 4, 5]));
         nodeset1.insert(PlainNodeId::from(5), Status::Sealed);
-        nodeset1.insert(PlainNodeId::from(2), Status::Sealed);
-        assert_eq!(format!("{nodeset1}"), "[N1(E), N2(S), N3(E), N4(E), N5(S)]");
+        assert_eq!(format!("{nodeset1}"), "[N1(E), N2(E), N3(E), N4(E), N5(S)]");
+        let mut status_map = HashMap::default();
+        status_map.insert(PlainNodeId::from(1), Status::Sealed);
+        status_map.insert(PlainNodeId::from(4), Status::Sealed);
+        nodeset1.extend(&status_map);
+
+        assert_eq!(format!("{nodeset1}"), "[N1(S), N2(E), N3(E), N4(S), N5(S)]");
     }
 
     #[test]
