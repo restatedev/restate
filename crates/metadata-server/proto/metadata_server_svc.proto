@@ -86,7 +86,7 @@ message StatusResponse {
 
 message MetadataServerConfiguration {
   restate.common.Version version = 1;
-  map<uint32, uint64> members = 2;
+  map<uint32, int64> members = 2;
 }
 
 message SnapshotSummary {

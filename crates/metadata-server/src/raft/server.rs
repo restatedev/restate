@@ -24,13 +24,13 @@ use crate::raft::network::{
     ConnectionManager, MetadataServerNetworkHandler, MetadataServerNetworkSvcServer, Networking,
 };
 use crate::raft::storage::RocksDbStorage;
-use crate::raft::{network, storage, RaftConfiguration};
+use crate::raft::{network, storage, RaftConfiguration, StorageMarker};
 use crate::{
-    grpc, prepare_initial_nodes_configuration, InvalidConfiguration, JoinClusterError,
-    JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinError, KnownLeader, MemberId,
-    MetadataServer, MetadataServerConfiguration, MetadataServerSummary, MetadataStoreRequest,
-    ProvisionError, ProvisionReceiver, RaftSummary, Request, RequestError, RequestKind,
-    RequestReceiver, SnapshotSummary, StatusSender, StorageId, WriteRequest,
+    grpc, prepare_initial_nodes_configuration, CreatedAtMillis, InvalidConfiguration,
+    JoinClusterError, JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinError,
+    KnownLeader, MemberId, MetadataServer, MetadataServerConfiguration, MetadataServerSummary,
+    MetadataStoreRequest, ProvisionError, ProvisionReceiver, RaftSummary, Request, RequestError,
+    RequestKind, RequestReceiver, SnapshotSummary, StatusSender, WriteRequest,
 };
 use arc_swap::ArcSwapOption;
 use assert2::let_assert;
@@ -48,7 +48,7 @@ use raft::{
 use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
 use raft_proto::ConfChangeI;
 use rand::prelude::IteratorRandom;
-use rand::{random, rng};
+use rand::rng;
 use restate_core::metadata_store::{serialize_value, Precondition};
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::network::NetworkServerBuilder;
@@ -142,7 +142,6 @@ pub struct RaftMetadataServer {
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
     storage: RocksDbStorage,
 
-    storage_id: StorageId,
     metadata_writer: Option<MetadataWriter>,
     health_status: Option<HealthStatus<MetadataServerStatus>>,
 
@@ -174,23 +173,31 @@ impl RaftMetadataServer {
         let mut storage =
             RocksDbStorage::create(metadata_store_options.live_load(), rocksdb_options).await?;
 
-        // todo unify with LogServer logic; turn into timestamp?
         // make sure that the storage is initialized with a storage id to be able to detect disk losses
-        let storage_id = if let Some(storage_id) = storage
-            .get_storage_id()
+        if let Some(storage_marker) = storage
+            .get_marker()
             .map_err(|err| BuildError::InitStorage(err.to_string()))?
         {
-            storage_id
+            if storage_marker.id() != Configuration::pinned().common.node_name() {
+                return Err(BuildError::InitStorage(format!("StorageMarker does not match our own node name. Found node name '{}' while our node name is '{}'", storage_marker.id(), Configuration::pinned().common.node_name())));
+            } else {
+                debug!(
+                    "Found matching StorageMarker in raft-storage, written at '{}'",
+                    storage_marker.created_at()
+                );
+            }
         } else {
-            let storage_id = random();
+            let storage_marker =
+                StorageMarker::new(Configuration::pinned().common.node_name().to_owned());
             storage
-                .store_storage_id(storage_id)
+                .store_marker(&storage_marker)
                 .await
                 .map_err(|err| BuildError::InitStorage(err.to_string()))?;
-            storage_id
+            debug!(
+                "Stored StorageMarker in raft-storage for node '{}'",
+                storage_marker.id()
+            );
         };
-
-        debug!("Obtained storage id: {storage_id}");
 
         let connection_manager = Arc::default();
 
@@ -217,7 +224,6 @@ impl RaftMetadataServer {
         Ok(Self {
             connection_manager,
             storage,
-            storage_id,
             health_status: Some(health_status),
             request_rx,
             provision_rx: Some(provision_rx),
@@ -353,7 +359,15 @@ impl RaftMetadataServer {
             "storage must be empty to get initialized"
         );
 
-        let raft_configuration = self.derive_initial_configuration(&mut nodes_configuration)?;
+        let created_at_millis = self
+            .storage
+            .get_marker()?
+            .expect("StorageMarker to be present")
+            .created_at()
+            .timestamp_millis();
+
+        let raft_configuration =
+            self.derive_initial_configuration(created_at_millis, &mut nodes_configuration)?;
 
         debug!("Initialize storage with nodes configuration");
 
@@ -367,7 +381,7 @@ impl RaftMetadataServer {
         let mut members = HashMap::default();
         members.insert(
             raft_configuration.my_member_id.node_id,
-            raft_configuration.my_member_id.storage_id,
+            raft_configuration.my_member_id.created_at_millis,
         );
         let metadata_store_snapshot = MetadataServerSnapshot {
             configuration: Some(grpc::MetadataServerConfiguration::from(
@@ -414,6 +428,7 @@ impl RaftMetadataServer {
 
     fn derive_initial_configuration(
         &self,
+        created_at_millis: CreatedAtMillis,
         nodes_configuration: &mut NodesConfiguration,
     ) -> Result<RaftConfiguration, InvalidConfiguration> {
         let configuration = Configuration::pinned();
@@ -422,7 +437,7 @@ impl RaftMetadataServer {
         // set our own raft node id to be Restate's plain node id
         let my_member_id = MemberId {
             node_id,
-            storage_id: self.storage_id,
+            created_at_millis,
         };
 
         Ok(RaftConfiguration { my_member_id })
@@ -435,7 +450,6 @@ impl RaftMetadataServer {
             request_rx,
             join_cluster_rx,
             metadata_writer,
-            storage_id,
             status_tx,
             ..
         } = self;
@@ -446,7 +460,6 @@ impl RaftMetadataServer {
             request_rx,
             join_cluster_rx,
             metadata_writer,
-            storage_id,
             status_tx,
         )
     }
@@ -719,9 +732,7 @@ impl Member {
     }
 
     fn handle_join_request(&mut self, join_cluster_request: JoinClusterRequest) {
-        let (response_tx, joining_node_id, joining_storage_id) = join_cluster_request.into_inner();
-        let joining_member_id =
-            MemberId::new(PlainNodeId::from(joining_node_id), joining_storage_id);
+        let (response_tx, joining_member_id) = join_cluster_request.into_inner();
 
         trace!("Handle join request from node '{}'", joining_member_id);
 
@@ -788,9 +799,10 @@ impl Member {
 
         let mut next_configuration = self.configuration.clone();
         next_configuration.version = next_configuration.version.next();
-        next_configuration
-            .members
-            .insert(joining_member_id.node_id, joining_member_id.storage_id);
+        next_configuration.members.insert(
+            joining_member_id.node_id,
+            joining_member_id.created_at_millis,
+        );
 
         let next_configuration_bytes =
             grpc::MetadataServerConfiguration::from(next_configuration).encode_to_vec();
@@ -1298,7 +1310,7 @@ impl Member {
     }
 
     fn is_member(&self, member_id: MemberId) -> bool {
-        self.configuration.members.get(&member_id.node_id) == Some(&member_id.storage_id)
+        self.configuration.members.get(&member_id.node_id) == Some(&member_id.created_at_millis)
     }
 
     fn is_member_plain_node_id(&self, node_id: PlainNodeId) -> bool {
@@ -1347,7 +1359,6 @@ struct Standby {
     request_rx: RequestReceiver,
     join_cluster_rx: JoinClusterReceiver,
     metadata_writer: Option<MetadataWriter>,
-    storage_id: StorageId,
     status_tx: StatusSender,
 }
 
@@ -1358,7 +1369,6 @@ impl Standby {
         request_rx: RequestReceiver,
         join_cluster_rx: JoinClusterReceiver,
         metadata_writer: Option<MetadataWriter>,
-        storage_id: StorageId,
         status_tx: StatusSender,
     ) -> Self {
         connection_manager.store(None);
@@ -1369,7 +1379,6 @@ impl Standby {
             request_rx,
             join_cluster_rx,
             metadata_writer,
-            storage_id,
             status_tx,
         }
     }
@@ -1384,7 +1393,6 @@ impl Standby {
             mut request_rx,
             mut join_cluster_rx,
             metadata_writer,
-            storage_id,
             status_tx,
         } = self;
 
@@ -1399,6 +1407,12 @@ impl Standby {
         )
         .into_iter();
 
+        let created_at_millis = storage
+            .get_marker()?
+            .expect("StorageMarker must be present")
+            .created_at()
+            .timestamp_millis();
+
         // Persist latest NodesConfiguration so that we know about the MetadataServerState at least
         // as of now when restarting.
         storage
@@ -1411,7 +1425,7 @@ impl Standby {
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
         nodes_config_watcher.mark_changed();
         let my_node_name = Configuration::pinned().common.node_name().to_owned();
-        let mut my_node_id = None;
+        let mut my_member_id = None;
 
         loop {
             tokio::select! {
@@ -1427,9 +1441,9 @@ impl Standby {
                 }
                 Some(join_result) = &mut join_cluster => {
                     match join_result {
-                        Ok(()) => {
+                        Ok(my_member_id) => {
                             let raft_configuration = RaftConfiguration {
-                                my_member_id: MemberId::new(my_node_id.expect("must be set before"), storage_id),
+                                my_member_id,
                             };
                             storage.store_raft_configuration(&raft_configuration).await?;
 
@@ -1448,10 +1462,10 @@ impl Standby {
                             match err {
                                JoinError::Rpc(_, known_leader) => {
                                     // if we have learned about a new leader, then try immediately rejoining
-                                    join_cluster.set(Some(Self::join_cluster(known_leader, None, my_node_id.expect("must be set before"), storage_id).fuse()).into());
+                                    join_cluster.set(Some(Self::join_cluster(known_leader, None, my_member_id.expect("to be known")).fuse()).into());
                                 }
                                 _ => {
-                                    join_cluster.set(Some(Self::join_cluster(None, join_retry_policy.next(), my_node_id.expect("must be set before"), storage_id).fuse()).into());
+                                    join_cluster.set(Some(Self::join_cluster(None, join_retry_policy.next(), my_member_id.expect("to be known")).fuse()).into());
                                 }
                             }
 
@@ -1461,15 +1475,16 @@ impl Standby {
                 _ = nodes_config_watcher.changed() => {
                     let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
                     if let Some(node_config) = nodes_config.find_node_by_name(&my_node_name) {
-                        if my_node_id.is_none() {
-                            my_node_id = Some(node_config.current_generation.as_plain());
-                            Span::current().record("member_id", MemberId::new(my_node_id.unwrap(), self.storage_id).to_string());
+                        if my_member_id.is_none() {
+                            let member_id = MemberId::new(node_config.current_generation.as_plain(), created_at_millis);
+                            Span::current().record("member_id", member_id.to_string());
+                            my_member_id = Some(member_id);
                         }
 
                         if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
                             if join_cluster.is_terminated() {
                                 debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
-                                join_cluster.set(Some(Self::join_cluster(None, None, my_node_id.unwrap(), storage_id).fuse()).into());
+                                join_cluster.set(Some(Self::join_cluster(None, None, my_member_id.expect("MemberId to be known")).fuse()).into());
                             }
                         } else {
                             debug!("Node is not part of the metadata store cluster. Waiting to become a candidate.");
@@ -1486,13 +1501,11 @@ impl Standby {
     async fn join_cluster(
         known_leader: Option<KnownLeader>,
         join_delay: Option<Duration>,
-        my_node_id: PlainNodeId,
-        storage_id: StorageId,
-    ) -> Result<(), JoinError> {
+        member_id: MemberId,
+    ) -> Result<MemberId, JoinError> {
         if let Some(delay) = join_delay {
             time::sleep(delay).await
         }
-
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
 
         let address = if let Some(known_leader) = known_leader {
@@ -1504,7 +1517,7 @@ impl Standby {
         } else {
             // pick random metadata store member node
             let member_node = nodes_config.iter().filter_map(|(node, config)| {
-                if config.has_role(Role::MetadataServer) && node != my_node_id && matches!(config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
+                if config.has_role(Role::MetadataServer) && node != member_id.node_id && matches!(config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
                     Some(node)
                 } else {
                     None
@@ -1531,8 +1544,8 @@ impl Standby {
 
         if let Err(status) = client
             .join_cluster(crate::raft::network::grpc_svc::JoinClusterRequest {
-                node_id: u32::from(my_node_id),
-                storage_id,
+                node_id: u32::from(member_id.node_id),
+                created_at_millis: member_id.created_at_millis,
             })
             .await
         {
@@ -1540,7 +1553,7 @@ impl Standby {
             Err(JoinError::Rpc(status, known_leader))?
         };
 
-        Ok(())
+        Ok(member_id)
     }
 
     /// Returns a random metadata store member from the current nodes configuration.

@@ -476,14 +476,13 @@ impl KnownLeader {
 }
 
 struct JoinClusterRequest {
-    node_id: u32,
-    storage_id: u64,
+    member_id: MemberId,
     response_tx: oneshot::Sender<Result<(), JoinClusterError>>,
 }
 
 impl JoinClusterRequest {
-    fn into_inner(self) -> (oneshot::Sender<Result<(), JoinClusterError>>, u32, u64) {
-        (self.response_tx, self.node_id, self.storage_id)
+    fn into_inner(self) -> (oneshot::Sender<Result<(), JoinClusterError>>, MemberId) {
+        (self.response_tx, self.member_id)
     }
 }
 
@@ -497,17 +496,12 @@ impl JoinClusterHandle {
         JoinClusterHandle { join_cluster_tx }
     }
 
-    pub async fn join_cluster(
-        &self,
-        node_id: u32,
-        storage_id: u64,
-    ) -> Result<(), JoinClusterError> {
+    pub async fn join_cluster(&self, member_id: MemberId) -> Result<(), JoinClusterError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.join_cluster_tx
             .send(JoinClusterRequest {
-                node_id,
-                storage_id,
+                member_id,
                 response_tx,
             })
             .await
@@ -517,27 +511,28 @@ impl JoinClusterHandle {
     }
 }
 
-/// Identifier to detect the loss of a disk.
-type StorageId = u64;
+type CreatedAtMillis = i64;
 
+/// A member of the replicated metadata store is identified by its `node_id` and a durable
+/// timestamp when it was first started.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemberId {
     node_id: PlainNodeId,
-    storage_id: StorageId,
+    created_at_millis: CreatedAtMillis,
 }
 
 impl MemberId {
-    pub fn new(node_id: PlainNodeId, storage_id: StorageId) -> Self {
+    pub fn new(node_id: PlainNodeId, created_at_millis: CreatedAtMillis) -> Self {
         MemberId {
             node_id,
-            storage_id,
+            created_at_millis,
         }
     }
 }
 
 impl Display for MemberId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{:x}", self.node_id, self.storage_id & 0x0ffff)
+        write!(f, "{}:{:x}", self.node_id, self.created_at_millis & 0x0ffff)
     }
 }
 
@@ -588,7 +583,7 @@ impl SnapshotSummary {
 struct MetadataServerConfiguration {
     #[prost(required)]
     version: Version,
-    members: HashMap<PlainNodeId, StorageId>,
+    members: HashMap<PlainNodeId, CreatedAtMillis>,
 }
 
 impl Default for MetadataServerConfiguration {

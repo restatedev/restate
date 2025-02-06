@@ -8,21 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::array::TryFromSliceError;
-use std::cell::RefCell;
-use std::mem::size_of;
-use std::sync::Arc;
-use std::{error, mem};
-
+use crate::raft::{RaftConfiguration, StorageMarker};
+use crate::util;
 use bytes::{BufMut, BytesMut};
 use flexbuffers::{DeserializationError, SerializationError};
 use protobuf::{Message, ProtobufError};
 use raft::eraftpb::{ConfState, Entry, Snapshot};
 use raft::prelude::HardState;
 use raft::{GetEntriesContext, RaftState, Storage, StorageError};
-use rocksdb::{BoundColumnFamily, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions, DB};
-use tracing::debug;
-
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
@@ -31,9 +24,12 @@ use restate_types::config::{data_dir, MetadataServerOptions, RocksDbOptions};
 use restate_types::errors::GenericError;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::nodes_config::NodesConfiguration;
-
-use crate::raft::RaftConfiguration;
-use crate::{util, StorageId};
+use rocksdb::{BoundColumnFamily, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions, DB};
+use std::cell::RefCell;
+use std::mem::size_of;
+use std::sync::Arc;
+use std::{error, mem};
+use tracing::debug;
 
 const DB_NAME: &str = "raft-metadata-store";
 const RAFT_CF: &str = "raft";
@@ -43,7 +39,7 @@ const FIRST_RAFT_INDEX: u64 = 1;
 const RAFT_ENTRY_DISCRIMINATOR: u8 = 0x01;
 const HARD_STATE_DISCRIMINATOR: u8 = 0x02;
 const CONF_STATE_DISCRIMINATOR: u8 = 0x03;
-const STORAGE_ID: u8 = 0x04;
+const STORAGE_MARKER: u8 = 0x04;
 const RAFT_CONFIGURATION: u8 = 0x05;
 const NODES_CONFIGURATION: u8 = 0x06;
 const SNAPSHOT: u8 = 0x07;
@@ -187,19 +183,16 @@ impl RocksDbStorage {
             .map(|hard_state| hard_state.unwrap_or_default())
     }
 
-    pub async fn store_storage_id(&mut self, storage_id: StorageId) -> Result<(), Error> {
-        let key = Self::storage_id_key();
-        self.put_bytes(key, storage_id.to_le_bytes()).await
+    pub async fn store_marker(&mut self, storage_marker: &StorageMarker) -> Result<(), Error> {
+        let key = Self::storage_marker_key();
+        self.put_bytes(key, storage_marker.to_bytes()).await
     }
 
-    pub fn get_storage_id(&self) -> Result<Option<StorageId>, Error> {
-        if let Some(bytes) = self.get_bytes(Self::storage_id_key())? {
-            Ok(Some(StorageId::from_le_bytes(
-                bytes
-                    .as_ref()
-                    .try_into()
-                    .map_err(|err: TryFromSliceError| Error::Decode(err.into()))?,
-            )))
+    pub fn get_marker(&self) -> Result<Option<StorageMarker>, Error> {
+        if let Some(bytes) = self.get_bytes(Self::storage_marker_key())? {
+            Ok(Some(
+                StorageMarker::from_slice(&bytes).map_err(|err| Error::Decode(err.into()))?,
+            ))
         } else {
             Ok(None)
         }
@@ -416,8 +409,8 @@ impl RocksDbStorage {
         [CONF_STATE_DISCRIMINATOR]
     }
 
-    fn storage_id_key() -> [u8; 1] {
-        [STORAGE_ID]
+    fn storage_marker_key() -> [u8; 1] {
+        [STORAGE_MARKER]
     }
 
     fn raft_configuration_key() -> [u8; 1] {

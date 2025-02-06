@@ -20,6 +20,8 @@ use network::NetworkMessage;
 use protobuf::Message as ProtobufMessage;
 pub use server::RaftMetadataServer;
 
+type StorageMarker = restate_types::storage::StorageMarker<String>;
+
 impl NetworkMessage for raft::prelude::Message {
     fn to(&self) -> u64 {
         self.to

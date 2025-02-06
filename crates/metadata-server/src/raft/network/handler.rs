@@ -12,9 +12,10 @@ use crate::raft::network::connection_manager::ConnectionError;
 use crate::raft::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
 use crate::raft::network::grpc_svc::JoinClusterRequest;
 use crate::raft::network::{grpc_svc, ConnectionManager, NetworkMessage};
-use crate::{JoinClusterError, JoinClusterHandle};
+use crate::{JoinClusterError, JoinClusterHandle, MemberId};
 use arc_swap::access::Access;
 use arc_swap::ArcSwapOption;
+use restate_types::PlainNodeId;
 use std::str::FromStr;
 use std::sync::Arc;
 use tonic::codegen::BoxStream;
@@ -82,7 +83,10 @@ where
         if let Some(join_handle) = self.join_cluster_handle.as_ref() {
             let request = request.into_inner();
             join_handle
-                .join_cluster(request.node_id, request.storage_id)
+                .join_cluster(MemberId::new(
+                    PlainNodeId::from(request.node_id),
+                    request.created_at_millis,
+                ))
                 .await?;
 
             Ok(Response::new(()))
