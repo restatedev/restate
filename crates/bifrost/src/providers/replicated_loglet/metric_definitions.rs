@@ -28,6 +28,7 @@ pub(crate) const BIFROST_SEQ_RECORDS_COMMITTED_TOTAL: &str =
 pub(crate) const BIFROST_SEQ_RECORDS_COMMITTED_BYTES: &str =
     "restate.bifrost.sequencer.committed_records.bytes";
 pub(crate) const BIFROST_SEQ_STORE_DURATION: &str = "restate.bifrost.sequencer.store_duration";
+pub(crate) const BIFROST_SEQ_APPEND_DURATION: &str = "restate.bifrost.sequencer.append_duration";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -70,6 +71,12 @@ pub(crate) fn describe_metrics() {
         BIFROST_SEQ_RECORDS_COMMITTED_BYTES,
         Unit::Bytes,
         "Size of records committed"
+    );
+
+    describe_histogram!(
+        BIFROST_SEQ_APPEND_DURATION,
+        Unit::Seconds,
+        "Append batch duration in seconds as measured by the sequencer"
     );
 
     describe_histogram!(
