@@ -248,7 +248,7 @@ impl RocksDbManager {
         while let Some(res) = tasks.join_next().await {
             match res {
                 Ok(name) => {
-                    info!(
+                    debug!(
                         db = %name,
                         "Rocksdb database shutdown completed, {} remaining", tasks.len());
                 }

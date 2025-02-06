@@ -17,7 +17,7 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{
     new_debouncer, DebounceEventResult, DebouncedEvent, Debouncer, RecommendedCache,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::config::Configuration;
 
@@ -133,7 +133,7 @@ impl ConfigLoader {
             return;
         };
 
-        info!("Installing watcher for config changes: {}", path.display());
+        debug!("Installing watcher for config changes: {}", path.display());
         if let Err(e) = debouncer.watch(&path, notify::RecursiveMode::NonRecursive) {
             warn!("Couldn't install configuration watcher: {}", e);
             return;
@@ -144,7 +144,7 @@ impl ConfigLoader {
             .spawn(move || {
                 // It's important that we capture the watcher in the thread,
                 // otherwise it'll be dropped and we won't be watching anything!
-                info!("Configuration watcher thread has started");
+                debug!("Configuration watcher thread has started");
                 let mut should_run = true;
                 while should_run {
                     match rx.recv() {
@@ -157,7 +157,7 @@ impl ConfigLoader {
                         }
                     }
                 }
-                info!("Config watcher thread has terminated");
+                debug!("Config watcher thread has terminated");
             })
             .expect("start config watcher thread");
     }

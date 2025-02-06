@@ -70,6 +70,7 @@ impl SpawnPartitionProcessorTask {
     }
 
     #[instrument(
+        level = "error",
         skip_all,
         fields(
             partition_id=%self.partition_id,
@@ -230,19 +231,22 @@ async fn create_or_recreate_store(
     // Attempt to get the latest available snapshot from the snapshot repository:
     let snapshot = match snapshot_repository {
         Some(repository) => {
-            debug!("Looking for partition snapshot from which to bootstrap partition store");
+            debug!(
+                %partition_id,
+                "Looking for partition snapshot from which to bootstrap partition store"
+            );
             // todo(pavel): pass target LSN to repository
             repository.get_latest(partition_id).await?
         }
         None => {
-            debug!("No snapshot repository configured");
+            debug!(%partition_id, "No snapshot repository configured");
             None
         }
     };
 
     Ok(match (snapshot, fast_forward_lsn) {
         (None, None) => {
-            info!("No snapshot found to bootstrap partition, creating new store");
+            debug!(%partition_id, "No snapshot found to bootstrap partition, creating new store");
             partition_store_manager
                 .open_partition_store(
                     partition_id,
@@ -255,7 +259,7 @@ async fn create_or_recreate_store(
         (Some(snapshot), None) => {
             // Based on the assumptions for calling this method, we should only reach this point if
             // there is no existing store - we can import without first dropping the column family.
-            info!(partition_id = %partition_id, "Found partition snapshot, restoring it");
+            info!(%partition_id, "Found partition snapshot, restoring it");
             import_snapshot(
                 partition_id,
                 key_range,
@@ -270,8 +274,9 @@ async fn create_or_recreate_store(
         {
             // We trust that the fast_forward_lsn is greater than the locally applied LSN.
             info!(
-                latest_snapshot_lsn = ?snapshot.min_applied_lsn,
-                ?fast_forward_lsn,
+                %partition_id,
+                latest_snapshot_lsn = %snapshot.min_applied_lsn,
+                %fast_forward_lsn,
                 "Found snapshot with LSN >= target LSN, dropping local partition store state",
             );
             partition_store_manager.drop_partition(partition_id).await;
@@ -289,13 +294,15 @@ async fn create_or_recreate_store(
             // point. We'll likely halt again as soon as the processor starts up.
             if let Some(snapshot) = maybe_snapshot {
                 warn!(
-                    ?snapshot.min_applied_lsn,
-                    ?fast_forward_lsn,
+                    %partition_id,
+                    %snapshot.min_applied_lsn,
+                    %fast_forward_lsn,
                     "Latest available snapshot is older than the the fast-forward target LSN!",
                 );
             } else {
                 warn!(
-                    ?fast_forward_lsn,
+                    %partition_id,
+                    %fast_forward_lsn,
                     "A fast-forward target LSN is set, but no snapshot available for partition!",
                 );
             }
@@ -338,23 +345,26 @@ async fn import_snapshot(
     {
         Ok(partition_store) => {
             let res = tokio::fs::remove_dir_all(&snapshot_path).await;
-            if let Err(e) = res {
+            if let Err(err) = res {
                 // This is not critical; since we move the SST files into RocksDB on import,
                 // at worst only the snapshot metadata file will remain in the staging dir
                 warn!(
+                    %partition_id,
                     snapshot_path = %snapshot_path.display(),
-                    "Failed to remove local snapshot directory, continuing with startup: {}",
-                    e,
+                    %err,
+                    "Failed to remove local snapshot directory, continuing with startup",
                 );
             }
             Ok(partition_store)
         }
-        Err(e) => {
+        Err(err) => {
             warn!(
+                %partition_id,
                 snapshot_path = %snapshot_path.display(),
+                %err,
                 "Failed to import snapshot, local snapshot data retained"
             );
-            Err(anyhow::anyhow!(e))
+            Err(err.into())
         }
     }
 }

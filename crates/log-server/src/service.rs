@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument};
 
 use restate_core::metadata_store::{retry_on_retryable_error, ReadWriteError, RetryError};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
@@ -255,7 +255,7 @@ impl LogServerService {
         };
 
         metadata_writer.update(Arc::new(nodes_config)).await?;
-        info!("Log-store self-provisioning is complete, the node's log-store is now in read-write state");
+        debug!("Log-store self-provisioning is complete, the node's log-store is now in read-write state");
         Ok(target_storage_state)
     }
 }
