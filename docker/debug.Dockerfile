@@ -30,17 +30,28 @@ ARG TARGETARCH
 ENV RUSTC_WRAPPER=/usr/bin/sccache
 ENV SCCACHE_DIR=/var/cache/sccache
 
-# Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
-# Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
-ARG CARGO_PROFILE_RELEASE_DEBUG=false
+# Avoids feature unification by building the three binaries individually
+ARG BUILD_INDIVIDUALLY=false
 ARG RESTATE_FEATURES=''
-RUN just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --bins
+RUN if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook -p restate-cli && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook -p restate-server && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook -p restatectl; \
+    else \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook -p restate-cli -p restate-server -p restatectl; \
+    fi
 COPY . .
 # Mount the sccache directory as a cache to leverage sccache during build
 # Caching layer if nothing has changed
 # Use sccache during the main build
 RUN --mount=type=cache,target=/var/cache/sccache \
-    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --bins && \
+    if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build -p restate-cli && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build -p restate-server && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build -p restatectl; \
+    else \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build -p restate-cli -p restate-server -p restatectl; \
+    fi && \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restate-server target/restate-server && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restatectl target/restatectl && \
