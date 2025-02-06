@@ -18,7 +18,7 @@ use restate_types::replication::DecoratedNodeSet;
 
 use crate::loglet::OperationError;
 
-#[derive(Default, derive_more::Display, derive_more::Debug)]
+#[derive(Default, derive_more::Display, derive_more::Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum NodeSealStatus {
     #[display("E")]
     Error,
