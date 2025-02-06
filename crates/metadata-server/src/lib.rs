@@ -22,6 +22,7 @@ use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 use grpc::pb_conversions::ConversionError;
+use itertools::Itertools;
 use prost::Message;
 use raft_proto::eraftpb::Snapshot;
 use restate_core::metadata_store::providers::{
@@ -579,8 +580,9 @@ impl SnapshotSummary {
     }
 }
 
-#[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
+#[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst, derive_more::Display)]
 #[prost(target = "crate::grpc::MetadataServerConfiguration")]
+#[display("{version}; [{}]", members.keys().format(", "))]
 struct MetadataServerConfiguration {
     #[prost(required)]
     version: Version,

@@ -627,7 +627,7 @@ impl Member {
 
     #[instrument(level = "info", skip_all, fields(member_id = %self.my_member_id))]
     pub async fn run(mut self) -> Result<Standby, Error> {
-        debug!("Run as a member of the metadata store cluster");
+        info!(configuration = %self.configuration, "Run as member of the metadata cluster");
         self.update_status();
 
         let mut nodes_config_watch =
@@ -716,7 +716,7 @@ impl Member {
                             .map_err(RequestError::from)
                     })
                 {
-                    info!("Failed handling request: {err:?}");
+                    info!(%err, "Failed handling request");
                     callback.fail(err)
                 } else {
                     self.kv_storage.register_callback(callback);
@@ -813,8 +813,8 @@ impl Member {
             let _ = response_tx.send(Err(response));
         } else {
             info!(
-                "Triggered reconfiguration of metadata store cluster to add node '{}'",
-                joining_member_id
+                "Adding node '{}' to metadata cluster",
+                joining_member_id.node_id
             );
             self.register_join_callback(joining_member_id, response_tx);
         }
@@ -921,6 +921,9 @@ impl Member {
             .take()
             .map(MetadataServerConfiguration::from)
             .expect("configuration metadata expected");
+
+        info!(%configuration, "Restored configuration from snapshot");
+
         kv_storage.restore(snapshot)?;
         Ok(())
     }
@@ -1040,9 +1043,13 @@ impl Member {
         assert_eq!(
             self.configuration.version.next(),
             new_configuration.version,
-            "new configuration version must be one higher than the current one"
+            "new configuration version must be '{}' but was '{}'",
+            self.configuration.version.next(),
+            new_configuration.version
         );
         self.configuration = new_configuration;
+
+        info!(configuration = %self.configuration, "Applied new configuration");
 
         self.validate_metadata_server_configuration();
 
@@ -1379,7 +1386,7 @@ impl Standby {
 
     #[instrument(level = "info", skip_all, fields(member_id = tracing::field::Empty))]
     async fn run(self) -> Result<Member, Error> {
-        debug!("Run as standby metadata store node.");
+        debug!("Run as standby metadata server.");
 
         let Standby {
             connection_manager,

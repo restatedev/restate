@@ -6914,6 +6914,7 @@ dependencies = [
  "futures",
  "googletest",
  "http 1.2.0",
+ "itertools 0.14.0",
  "metrics",
  "parking_lot",
  "prost",
