@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+extern crate core;
+
 pub mod grpc;
 pub mod local;
 mod metric_definitions;
 pub mod raft;
-mod util;
 
 use crate::grpc::client::GrpcMetadataServerClient;
 use crate::local::LocalMetadataServer;

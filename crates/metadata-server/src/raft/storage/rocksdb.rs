@@ -8,43 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::raft::storage::keys::{
+    LogEntryKey, CONF_STATE_KEY, HARD_STATE_KEY, MARKER_KEY, NODES_CONFIGURATION_KEY,
+    RAFT_SERVER_STATE_KEY, SNAPSHOT_KEY,
+};
+use crate::raft::storage::rocksdb_builder::build_rocksdb;
+use crate::raft::storage::{DATA_CF, METADATA_CF};
 use crate::raft::{RaftServerState, StorageMarker};
-use crate::util;
 use bytes::{BufMut, BytesMut};
 use flexbuffers::{DeserializationError, SerializationError};
 use protobuf::{Message, ProtobufError};
-use raft::eraftpb::{ConfState, Entry, Snapshot};
-use raft::prelude::HardState;
 use raft::{GetEntriesContext, RaftState, Storage, StorageError};
-use restate_rocksdb::{
-    CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
-    RocksError,
-};
-use restate_types::config::{data_dir, MetadataServerOptions, RocksDbOptions};
+use raft_proto::eraftpb::{ConfState, Entry, HardState, Snapshot};
+use restate_rocksdb::{IoMode, Priority, RocksDb, RocksError};
+use restate_types::config::{MetadataServerOptions, RocksDbOptions};
 use restate_types::errors::GenericError;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::nodes_config::NodesConfiguration;
 use rocksdb::{BoundColumnFamily, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions, DB};
 use std::cell::RefCell;
-use std::mem::size_of;
 use std::sync::Arc;
 use std::{error, mem};
 use tracing::debug;
 
-const DB_NAME: &str = "raft-metadata-store";
-const RAFT_CF: &str = "raft";
-
 const FIRST_RAFT_INDEX: u64 = 1;
-
-const RAFT_ENTRY_DISCRIMINATOR: u8 = 0x01;
-const HARD_STATE_DISCRIMINATOR: u8 = 0x02;
-const CONF_STATE_DISCRIMINATOR: u8 = 0x03;
-const STORAGE_MARKER: u8 = 0x04;
-const RAFT_CONFIGURATION: u8 = 0x05;
-const NODES_CONFIGURATION: u8 = 0x06;
-const SNAPSHOT: u8 = 0x07;
-
-const RAFT_ENTRY_KEY_LENGTH: usize = 9;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -86,7 +73,6 @@ impl From<Error> for raft::Error {
 }
 
 pub struct RocksDbStorage {
-    db: Arc<DB>,
     rocksdb: Arc<RocksDb>,
 
     first_index: u64,
@@ -103,32 +89,10 @@ impl RocksDbStorage {
         options: &MetadataServerOptions,
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     ) -> Result<Self, BuildError> {
-        let db_name = DbName::new(DB_NAME);
-        let db_manager = RocksDbManager::get();
-        let cfs = vec![CfName::new(RAFT_CF)];
-        let db_spec = DbSpecBuilder::new(
-            db_name.clone(),
-            data_dir("raft-metadata-store"),
-            util::db_options(options),
-        )
-        .add_cf_pattern(
-            CfPrefixPattern::ANY,
-            util::cf_options(options.rocksdb_memory_budget()),
-        )
-        .ensure_column_families(cfs)
-        .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
-        .build()
-        .expect("valid spec");
-
-        let db = db_manager.open_db(rocksdb_options, db_spec).await?;
-        let rocksdb = db_manager
-            .get_db(db_name)
-            .expect("raft metadata store db is open");
-
-        let (first_index, last_index) = Self::find_indices(&db);
+        let rocksdb = build_rocksdb(options, rocksdb_options).await?;
+        let (first_index, last_index) = Self::find_indices(rocksdb.inner().as_raw_db());
 
         Ok(Self {
-            db,
             rocksdb,
             first_index,
             last_index,
@@ -139,6 +103,28 @@ impl RocksDbStorage {
 }
 
 impl RocksDbStorage {
+    fn data_cf(&self) -> Arc<BoundColumnFamily> {
+        self.rocksdb
+            .inner()
+            .cf_handle(DATA_CF)
+            .expect("DATA_CF exists")
+    }
+
+    fn metadata_cf(&self) -> Arc<BoundColumnFamily> {
+        self.rocksdb
+            .inner()
+            .cf_handle(METADATA_CF)
+            .expect("METADATA_CF exists")
+    }
+
+    pub fn get_last_index(&self) -> u64 {
+        self.last_index
+    }
+
+    pub fn get_first_index(&self) -> u64 {
+        self.first_index
+    }
+
     pub fn is_empty(&self) -> Result<bool, Error> {
         let is_empty = self.get_raft_server_state()? == RaftServerState::Standby
             && self.get_snapshot()?.is_empty()
@@ -154,7 +140,7 @@ impl RocksDbStorage {
         *self.requested_snapshot.borrow()
     }
 
-    fn write_options(&self) -> WriteOptions {
+    fn write_options() -> WriteOptions {
         let mut write_opts = WriteOptions::default();
         write_opts.disable_wal(false);
         // always sync to not lose data
@@ -167,29 +153,26 @@ impl RocksDbStorage {
     }
 
     pub fn get_hard_state(&self) -> Result<HardState, Error> {
-        let key = Self::hard_state_key();
-        self.get_value(key)
+        self.get_value_metadata_cf(HARD_STATE_KEY)
             .map(|hard_state| hard_state.unwrap_or_default())
     }
 
     pub async fn store_hard_state(&mut self, hard_state: HardState) -> Result<(), Error> {
-        let key = Self::hard_state_key();
-        self.put_value(key, hard_state).await
+        self.put_value_metadata_cf(HARD_STATE_KEY, hard_state).await
     }
 
     pub fn get_conf_state(&self) -> Result<ConfState, Error> {
-        let key = Self::conf_state_key();
-        self.get_value(key)
+        self.get_value_metadata_cf(CONF_STATE_KEY)
             .map(|hard_state| hard_state.unwrap_or_default())
     }
 
     pub async fn store_marker(&mut self, storage_marker: &StorageMarker) -> Result<(), Error> {
-        let key = Self::storage_marker_key();
-        self.put_bytes(key, storage_marker.to_bytes()).await
+        self.put_bytes_metadata_cf(MARKER_KEY, storage_marker.to_bytes())
+            .await
     }
 
     pub fn get_marker(&self) -> Result<Option<StorageMarker>, Error> {
-        if let Some(bytes) = self.get_bytes(Self::storage_marker_key())? {
+        if let Some(bytes) = self.get_bytes_metadata_cf(MARKER_KEY)? {
             Ok(Some(
                 StorageMarker::from_slice(&bytes).map_err(|err| Error::Decode(err.into()))?,
             ))
@@ -199,12 +182,15 @@ impl RocksDbStorage {
     }
 
     pub fn get_entry(&self, idx: u64) -> Result<Option<Entry>, Error> {
-        let key = Self::raft_entry_key(idx);
-        self.get_value(key)
+        let key = LogEntryKey::new(idx).to_bytes();
+        self.get_value_data_cf(key)
     }
 
-    fn get_value<T: Message + Default>(&self, key: impl AsRef<[u8]>) -> Result<Option<T>, Error> {
-        let bytes = self.get_bytes(key)?;
+    fn get_value_metadata_cf<T: Message + Default>(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<Option<T>, Error> {
+        let bytes = self.get_bytes_metadata_cf(key)?;
 
         if let Some(bytes) = bytes {
             let mut value = T::default();
@@ -215,7 +201,22 @@ impl RocksDbStorage {
         }
     }
 
-    async fn put_value<T: Message>(
+    fn get_value_data_cf<T: Message + Default>(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<Option<T>, Error> {
+        let bytes = self.get_bytes_data_cf(key)?;
+
+        if let Some(bytes) = bytes {
+            let mut value = T::default();
+            value.merge_from_bytes(bytes.as_ref())?;
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn put_value_metadata_cf<T: Message>(
         &mut self,
         key: impl AsRef<[u8]>,
         value: T,
@@ -224,25 +225,41 @@ impl RocksDbStorage {
         value.write_to_writer(&mut (&mut self.buffer).writer())?;
         let mut write_batch = WriteBatch::default();
         {
-            let cf = self.get_cf_handle();
+            let cf = self.metadata_cf();
             write_batch.put_cf(&cf, key.as_ref(), &self.buffer);
         }
         self.commit_write_batch(write_batch).await
     }
 
-    fn get_bytes(&self, key: impl AsRef<[u8]>) -> Result<Option<DBPinnableSlice>, Error> {
-        let cf = self.get_cf_handle();
-        self.db.get_pinned_cf(&cf, key).map_err(Into::into)
+    fn get_bytes_data_cf(&self, key: impl AsRef<[u8]>) -> Result<Option<DBPinnableSlice>, Error> {
+        let cf = self.data_cf();
+        self.rocksdb
+            .inner()
+            .as_raw_db()
+            .get_pinned_cf(&cf, key)
+            .map_err(Into::into)
     }
 
-    async fn put_bytes(
+    fn get_bytes_metadata_cf(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<Option<DBPinnableSlice>, Error> {
+        let cf = self.metadata_cf();
+        self.rocksdb
+            .inner()
+            .as_raw_db()
+            .get_pinned_cf(&cf, key)
+            .map_err(Into::into)
+    }
+
+    async fn put_bytes_metadata_cf(
         &mut self,
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> Result<(), Error> {
         let mut write_batch = WriteBatch::default();
         {
-            let cf = self.get_cf_handle();
+            let cf = self.metadata_cf();
             write_batch.put_cf(&cf, key.as_ref(), value.as_ref());
         }
         self.commit_write_batch(write_batch).await
@@ -272,23 +289,21 @@ impl RocksDbStorage {
         let mut buffer = mem::take(&mut self.buffer);
 
         {
-            let cf = self.get_cf_handle();
+            let data_cf = self.data_cf();
 
             let previous_last_index = self.get_last_index();
 
             // delete all entries that are not being overwritten but have a higher index
             for index in last_entry_index + 1..=previous_last_index {
-                let key = Self::raft_entry_key(index);
-                write_batch.delete_cf(&cf, key);
+                let key = LogEntryKey::new(index).to_bytes();
+                write_batch.delete_cf(&data_cf, key);
             }
 
             for entry in entries {
-                let key = Self::raft_entry_key(entry.index);
-
                 buffer.clear();
+                let key = LogEntryKey::new(entry.index).to_bytes();
                 entry.write_to_writer(&mut (&mut buffer).writer())?;
-
-                write_batch.put_cf(&cf, key, &buffer);
+                write_batch.put_cf(&data_cf, key, &buffer);
             }
         }
 
@@ -298,14 +313,6 @@ impl RocksDbStorage {
         self.last_index = last_entry_index;
 
         result
-    }
-
-    pub fn get_last_index(&self) -> u64 {
-        self.last_index
-    }
-
-    pub fn get_first_index(&self) -> u64 {
-        self.first_index
     }
 
     pub async fn apply_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
@@ -322,7 +329,7 @@ impl RocksDbStorage {
                 "commit_write_batch",
                 Priority::High,
                 IoMode::Default,
-                self.write_options(),
+                Self::write_options(),
                 write_batch,
             )
             .await
@@ -333,15 +340,15 @@ impl RocksDbStorage {
         &mut self,
         raft_server_state: &RaftServerState,
     ) -> Result<(), Error> {
-        self.put_bytes(
-            Self::raft_configuration_key(),
+        self.put_bytes_metadata_cf(
+            RAFT_SERVER_STATE_KEY,
             &Self::serialize_value(raft_server_state).map_err(|err| Error::Encode(err.into()))?,
         )
         .await
     }
 
     pub fn get_raft_server_state(&self) -> Result<RaftServerState, Error> {
-        if let Some(bytes) = self.get_bytes(Self::raft_configuration_key())? {
+        if let Some(bytes) = self.get_bytes_metadata_cf(RAFT_SERVER_STATE_KEY)? {
             Ok(Self::deserialize_value(bytes).map_err(|err| Error::Decode(err.into()))?)
         } else {
             Ok(RaftServerState::default())
@@ -352,15 +359,15 @@ impl RocksDbStorage {
         &mut self,
         nodes_configuration: &NodesConfiguration,
     ) -> Result<(), Error> {
-        self.put_bytes(
-            Self::nodes_configuration_key(),
+        self.put_bytes_metadata_cf(
+            NODES_CONFIGURATION_KEY,
             &Self::serialize_value(nodes_configuration).map_err(|err| Error::Encode(err.into()))?,
         )
         .await
     }
 
     pub fn get_nodes_configuration(&self) -> Result<Option<NodesConfiguration>, Error> {
-        if let Some(bytes) = self.get_bytes(Self::nodes_configuration_key())? {
+        if let Some(bytes) = self.get_bytes_metadata_cf(NODES_CONFIGURATION_KEY)? {
             Ok(Some(
                 Self::deserialize_value(bytes).map_err(|err| Error::Decode(err.into()))?,
             ))
@@ -370,57 +377,8 @@ impl RocksDbStorage {
     }
 
     pub fn get_snapshot(&self) -> Result<Snapshot, Error> {
-        self.get_value(Self::snapshot_key())
+        self.get_value_metadata_cf(SNAPSHOT_KEY)
             .map(|snapshot| snapshot.unwrap_or_default())
-    }
-
-    // ------------------------------
-    // Keys
-    // ------------------------------
-
-    fn log_index_from_key(key_bytes: &[u8]) -> u64 {
-        assert_eq!(
-            key_bytes.len(),
-            RAFT_ENTRY_KEY_LENGTH,
-            "raft entry keys must consist of '{}' bytes",
-            RAFT_ENTRY_KEY_LENGTH
-        );
-        u64::from_be_bytes(
-            key_bytes[1..(1 + size_of::<u64>())]
-                .try_into()
-                .expect("buffer should be long enough"),
-        )
-    }
-
-    fn raft_entry_key(idx: u64) -> [u8; RAFT_ENTRY_KEY_LENGTH] {
-        let mut key = [0; RAFT_ENTRY_KEY_LENGTH];
-        key[0] = RAFT_ENTRY_DISCRIMINATOR;
-        key[1..9].copy_from_slice(&idx.to_be_bytes());
-        key
-    }
-
-    fn hard_state_key() -> [u8; 1] {
-        [HARD_STATE_DISCRIMINATOR]
-    }
-
-    fn conf_state_key() -> [u8; 1] {
-        [CONF_STATE_DISCRIMINATOR]
-    }
-
-    fn storage_marker_key() -> [u8; 1] {
-        [STORAGE_MARKER]
-    }
-
-    fn raft_configuration_key() -> [u8; 1] {
-        [RAFT_CONFIGURATION]
-    }
-
-    fn nodes_configuration_key() -> [u8; 1] {
-        [NODES_CONFIGURATION]
-    }
-
-    fn snapshot_key() -> [u8; 1] {
-        [SNAPSHOT]
     }
 
     // ------------------------------
@@ -428,31 +386,32 @@ impl RocksDbStorage {
     // ------------------------------
 
     fn find_indices(db: &DB) -> (u64, u64) {
-        let cf = db.cf_handle(RAFT_CF).expect("RAFT_CF exists");
-        let start = Self::raft_entry_key(0);
-        let end = Self::raft_entry_key(u64::MAX);
+        let data_cf = db.cf_handle(DATA_CF).expect("DATA_CF exists");
+        let metadata_cf = db.cf_handle(METADATA_CF).expect("METADATA_CF exists");
+        let start = LogEntryKey::new(0).to_bytes();
+        let end = LogEntryKey::new(u64::MAX).to_bytes();
 
         let mut options = ReadOptions::default();
         options.set_async_io(true);
         options.set_iterate_range(start..end);
-        let mut iterator = db.raw_iterator_cf_opt(&cf, options);
+        let mut iterator = db.raw_iterator_cf_opt(&data_cf, options);
 
         iterator.seek_to_first();
 
         if iterator.valid() {
             let key_bytes = iterator.key().expect("key should be present");
-            let first_index = Self::log_index_from_key(key_bytes);
+            let first_index = LogEntryKey::from_slice(key_bytes).index();
 
             iterator.seek_to_last();
 
             assert!(iterator.valid(), "iterator should be valid");
             let key_bytes = iterator.key().expect("key should be present");
-            let last_index = Self::log_index_from_key(key_bytes);
+            let last_index = LogEntryKey::from_slice(key_bytes).index();
 
             (first_index, last_index)
         } else {
             let snapshot_bytes = db
-                .get_pinned_cf(&cf, Self::snapshot_key())
+                .get_pinned_cf(&metadata_cf, SNAPSHOT_KEY)
                 .expect("snapshot key should be readable");
             if let Some(snapshot_bytes) = snapshot_bytes {
                 let snapshot = Snapshot::parse_from_bytes(snapshot_bytes.as_ref())
@@ -466,10 +425,6 @@ impl RocksDbStorage {
                 (FIRST_RAFT_INDEX, 0)
             }
         }
-    }
-
-    fn get_cf_handle(&self) -> Arc<BoundColumnFamily> {
-        self.db.cf_handle(RAFT_CF).expect("RAFT_CF exists")
     }
 
     fn check_index(&self, idx: u64) -> Result<(), Error> {
@@ -531,15 +486,19 @@ impl Storage for RocksDbStorage {
         _context: GetEntriesContext,
     ) -> raft::Result<Vec<Entry>> {
         self.check_range(low, high)?;
-        let start_key = Self::raft_entry_key(low);
-        let end_key = Self::raft_entry_key(high);
+        let start_key = LogEntryKey::new(low).to_bytes();
+        let end_key = LogEntryKey::new(high).to_bytes();
 
-        let cf = self.get_cf_handle();
+        let cf = self.data_cf();
         let mut opts = ReadOptions::default();
         opts.set_iterate_range(start_key..end_key);
         opts.set_async_io(true);
 
-        let mut iterator = self.db.raw_iterator_cf_opt(&cf, opts);
+        let mut iterator = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(&cf, opts);
         iterator.seek(start_key);
 
         let mut result =
@@ -656,16 +615,15 @@ impl<'a> Transaction<'a> {
 
         let mut write_batch = mem::take(&mut self.write_batch);
         {
-            let cf = self.storage.get_cf_handle();
+            let data_cf = self.storage.data_cf();
 
             for entry in entries {
                 assert_eq!(last_index + 1, entry.index, "Expect raft log w/o holes");
-                let key = RocksDbStorage::raft_entry_key(entry.index);
-
                 buffer.clear();
+                let key = LogEntryKey::new(entry.index).to_bytes();
                 entry.write_to_writer(&mut (&mut buffer).writer())?;
 
-                write_batch.put_cf(&cf, key, &buffer);
+                write_batch.put_cf(&data_cf, key, &buffer);
                 last_index = entry.index;
             }
         }
@@ -705,8 +663,8 @@ impl<'a> Transaction<'a> {
         &mut self,
         raft_server_state: &RaftServerState,
     ) -> Result<(), Error> {
-        self.put_bytes(
-            RocksDbStorage::raft_configuration_key(),
+        self.put_bytes_metadata_cf(
+            RAFT_SERVER_STATE_KEY,
             &RocksDbStorage::serialize_value(raft_server_state)
                 .map_err(|err| Error::Encode(err.into()))?,
         );
@@ -718,8 +676,8 @@ impl<'a> Transaction<'a> {
         &mut self,
         raft_configuration: &NodesConfiguration,
     ) -> Result<(), Error> {
-        self.put_bytes(
-            RocksDbStorage::nodes_configuration_key(),
+        self.put_bytes_metadata_cf(
+            NODES_CONFIGURATION_KEY,
             &RocksDbStorage::serialize_value(raft_configuration)
                 .map_err(|err| Error::Encode(err.into()))?,
         );
@@ -728,17 +686,15 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn store_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
-        self.put_value_ref(RocksDbStorage::snapshot_key(), snapshot)
+        self.put_value_ref_metadata_cf(SNAPSHOT_KEY, snapshot)
     }
 
     pub fn store_conf_state(&mut self, conf_state: &ConfState) -> Result<(), Error> {
-        let key = RocksDbStorage::conf_state_key();
-        self.put_value_ref(key, conf_state)
+        self.put_value_ref_metadata_cf(CONF_STATE_KEY, conf_state)
     }
 
     pub fn store_hard_state(&mut self, hard_state: &HardState) -> Result<(), Error> {
-        let key = RocksDbStorage::hard_state_key();
-        self.put_value_ref(key, hard_state)
+        self.put_value_ref_metadata_cf(HARD_STATE_KEY, hard_state)
     }
 
     /// The `trim_point` is inclusive.
@@ -751,10 +707,11 @@ impl<'a> Transaction<'a> {
 
         let mut write_batch = mem::take(&mut self.write_batch);
         {
-            let cf = self.storage.get_cf_handle();
+            let data_cf = self.storage.data_cf();
             for index in self.first_index..=effective_trim_point {
                 // single_delete would be awesome here to avoid the tombstones
-                write_batch.delete_cf(&cf, RocksDbStorage::raft_entry_key(index));
+                let key = LogEntryKey::new(index).to_bytes();
+                write_batch.delete_cf(&data_cf, key);
             }
         }
         self.write_batch = write_batch;
@@ -784,21 +741,25 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
-    fn put_value_ref<T: Message>(&mut self, key: impl AsRef<[u8]>, value: &T) -> Result<(), Error> {
+    fn put_value_ref_metadata_cf<T: Message>(
+        &mut self,
+        key: impl AsRef<[u8]>,
+        value: &T,
+    ) -> Result<(), Error> {
         let mut buffer = mem::take(&mut self.storage.buffer);
 
         buffer.clear();
         value.write_to_writer(&mut (&mut buffer).writer())?;
-        self.put_bytes(key, &buffer);
+        self.put_bytes_metadata_cf(key, &buffer);
 
         self.storage.buffer = buffer;
 
         Ok(())
     }
 
-    fn put_bytes(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+    fn put_bytes_metadata_cf(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
         let mut write_batch = mem::take(&mut self.write_batch);
-        write_batch.put_cf(&self.storage.get_cf_handle(), key.as_ref(), value.as_ref());
+        write_batch.put_cf(&self.storage.metadata_cf(), key.as_ref(), value.as_ref());
         self.write_batch = write_batch;
     }
 }
@@ -861,11 +822,12 @@ mod tests {
         assert_eq!(storage.get_last_index(), last_index);
         assert_eq!(storage.get_first_index(), 1);
 
-        for index in 1..=last_index {
-            assert_eq!(
-                storage.get_entry(index)?.unwrap(),
-                entries[index as usize - 1]
-            );
+        let stored_entries =
+            storage.entries(1, last_index + 1, None, GetEntriesContext::empty(false))?;
+        assert_eq!(stored_entries.len(), entries.len());
+
+        for (stored_entry, entry) in stored_entries.iter().zip(entries.iter()) {
+            assert_eq!(stored_entry, entry);
         }
 
         RocksDbManager::get().shutdown().await;
@@ -942,11 +904,19 @@ mod tests {
         assert_eq!(hard_state.get_commit(), snapshot_index);
         assert_eq!(hard_state.get_term(), snapshot_index);
 
-        for index in (snapshot_index + 1)..=last_index {
-            assert_eq!(
-                storage.get_entry(index)?.unwrap(),
-                entries[index as usize - 1]
-            );
+        let stored_entries = storage.entries(
+            snapshot_index + 1,
+            last_index + 1,
+            None,
+            GetEntriesContext::empty(false),
+        )?;
+        assert_eq!(stored_entries.len(), (last_index - snapshot_index) as usize);
+
+        for (stored_entry, entry) in stored_entries
+            .iter()
+            .zip(&entries[snapshot_index as usize..last_index as usize])
+        {
+            assert_eq!(stored_entry, entry);
         }
 
         RocksDbManager::get().shutdown().await;
