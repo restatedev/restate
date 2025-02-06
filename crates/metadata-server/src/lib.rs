@@ -520,19 +520,7 @@ impl JoinClusterHandle {
 /// Identifier to detect the loss of a disk.
 type StorageId = u64;
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    prost_dto::IntoProst,
-    prost_dto::FromProst,
-)]
-#[prost(target = "crate::grpc::MemberId")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemberId {
     node_id: PlainNodeId,
     storage_id: StorageId,

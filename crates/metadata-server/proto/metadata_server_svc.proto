@@ -89,11 +89,6 @@ message MetadataServerConfiguration {
   map<uint32, uint64> members = 2;
 }
 
-message MemberId {
-  uint32 node_id = 1;
-  uint64 storage_id = 2;
-}
-
 message SnapshotSummary {
   uint64 index = 1;
   uint64 size = 2;

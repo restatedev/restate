@@ -20,7 +20,6 @@ use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
-use restate_metadata_server::MemberId;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{PlainNodeId, Version};
@@ -92,12 +91,10 @@ async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
                             "[{}]",
                             config
                                 .members
-                                .into_iter()
-                                .map(|(node_id, storage_id)| MemberId::new(
-                                    PlainNodeId::from(node_id),
-                                    storage_id
-                                ))
-                                .map(|member_id| member_id.to_string())
+                                .into_keys()
+                                .map(PlainNodeId::from)
+                                .sorted()
+                                .map(|node_id| node_id.to_string())
                                 .join(",")
                         )
                     })
