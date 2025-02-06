@@ -28,7 +28,7 @@ use crate::clients::DataFusionHttpClient;
 
 use super::{
     HandlerStateStats, Invocation, InvocationCompletion, InvocationState, JournalEntry,
-    JournalEntryType, LockedKeyInfo, OutgoingInvoke, ServiceHandlerLockedKeysMap,
+    JournalEntryTypeV1, JournalEntryV1, LockedKeyInfo, OutgoingInvoke, ServiceHandlerLockedKeysMap,
     ServiceHandlerUsage, ServiceStatusMap, SimpleInvocation,
 };
 
@@ -672,34 +672,34 @@ pub async fn get_invocation_journal(
         .map(|row| {
             let index = row.index.expect("index");
             let entry_type = match row.entry_type.expect("entry_type").as_str() {
-                "Sleep" => JournalEntryType::Sleep {
+                "Sleep" => JournalEntryTypeV1::Sleep {
                     wakeup_at: row.sleep_wakeup_at.map(Into::into),
                 },
-                "Call" => JournalEntryType::Call(OutgoingInvoke {
+                "Call" => JournalEntryTypeV1::Call(OutgoingInvoke {
                     invocation_id: row.invoked_id,
                     invoked_target: row.invoked_target,
                 }),
-                "OneWayCall" => JournalEntryType::OneWayCall(OutgoingInvoke {
+                "OneWayCall" => JournalEntryTypeV1::OneWayCall(OutgoingInvoke {
                     invocation_id: row.invoked_id,
                     invoked_target: row.invoked_target,
                 }),
                 "Awakeable" => {
-                    JournalEntryType::Awakeable(AwakeableIdentifier::new(my_invocation_id, index))
+                    JournalEntryTypeV1::Awakeable(AwakeableIdentifier::new(my_invocation_id, index))
                 }
-                "GetState" => JournalEntryType::GetState,
-                "SetState" => JournalEntryType::SetState,
-                "ClearState" => JournalEntryType::ClearState,
-                "Run" => JournalEntryType::Run,
-                "GetPromise" => JournalEntryType::GetPromise(row.promise_name),
-                t => JournalEntryType::Other(t.to_owned()),
+                "GetState" => JournalEntryTypeV1::GetState,
+                "SetState" => JournalEntryTypeV1::SetState,
+                "ClearState" => JournalEntryTypeV1::ClearState,
+                "Run" => JournalEntryTypeV1::Run,
+                "GetPromise" => JournalEntryTypeV1::GetPromise(row.promise_name),
+                t => JournalEntryTypeV1::Other(t.to_owned()),
             };
 
-            JournalEntry {
+            JournalEntry::V1(JournalEntryV1 {
                 seq: index,
                 entry_type,
                 completed: row.completed.unwrap_or_default(),
                 name: row.name,
-            }
+            })
         })
         .collect();
 
