@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use enum_map::EnumMap;
-use tracing::instrument;
+use restate_types::config::Configuration;
+use tokio::time::Instant;
+use tracing::{info, instrument, warn};
 
 use restate_core::{Metadata, MetadataKind, MetadataWriter, TargetVersion};
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
@@ -22,7 +24,7 @@ use restate_types::storage::StorageEncode;
 
 use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
-use crate::loglet::LogletProvider;
+use crate::loglet::{LogletProvider, OperationError};
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
 use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
@@ -385,8 +387,54 @@ impl BifrostInner {
 
     pub async fn find_tail(&self, log_id: LogId) -> Result<(LogletWrapper, TailState)> {
         let loglet = self.writeable_loglet(log_id).await?;
-        let tail = loglet.find_tail().await?;
-        Ok((loglet, tail))
+        let start = Instant::now();
+        // uses the same retry policy as reads to not add too many configuration keys
+        let mut logged = false;
+        let mut retry_iter = Configuration::pinned()
+            .bifrost
+            .read_retry_policy
+            .clone()
+            .into_iter();
+        loop {
+            match loglet.find_tail().await {
+                Ok(tail) => {
+                    if logged {
+                        info!(
+                            %log_id,
+                            "Found the log tail after {} attempts, time spent is {:?}",
+                             retry_iter.attempts(),
+                             start.elapsed()
+                        );
+                    }
+                    return Ok((loglet, tail));
+                }
+                Err(err @ OperationError::Shutdown(_)) => {
+                    return Err(err.into());
+                }
+                Err(OperationError::Other(err)) if !err.retryable() => {
+                    return Err(err.into());
+                }
+                // retryable errors
+                Err(OperationError::Other(err)) => {
+                    // retry with exponential backoff
+                    let Some(sleep_dur) = retry_iter.next() else {
+                        // retries exhausted
+                        return Err(err.into());
+                    };
+                    if retry_iter.attempts() > retry_iter.max_attempts() / 2 {
+                        warn!(
+                            %log_id,
+                            attempts = retry_iter.attempts(),
+                            retry_after = ?sleep_dur,
+                                "Cannot find the tail of the log, will retry. err={}",
+                            err
+                        );
+                        logged = true;
+                    }
+                    tokio::time::sleep(sleep_dur).await;
+                }
+            }
+        }
     }
 
     async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
