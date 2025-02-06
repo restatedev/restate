@@ -42,7 +42,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
         false,
     );
 
-    let regex: Regex = "Starting the partition processor".parse()?;
+    let regex: Regex = "Partition [0-9]+ started".parse()?;
     let mut partition_processors_starting_up: Vec<_> =
         nodes.iter().map(|node| node.lines(regex.clone())).collect();
 
