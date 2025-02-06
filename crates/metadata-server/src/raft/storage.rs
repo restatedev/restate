@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::raft::{RaftConfiguration, StorageMarker};
+use crate::raft::{RaftServerState, StorageMarker};
 use crate::util;
 use bytes::{BufMut, BytesMut};
 use flexbuffers::{DeserializationError, SerializationError};
@@ -140,7 +140,7 @@ impl RocksDbStorage {
 
 impl RocksDbStorage {
     pub fn is_empty(&self) -> Result<bool, Error> {
-        let is_empty = self.get_raft_configuration()?.is_none()
+        let is_empty = self.get_raft_server_state()? == RaftServerState::Standby
             && self.get_snapshot()?.is_empty()
             && self.get_hard_state()? == HardState::default()
             && self.get_conf_state()? == ConfState::default()
@@ -329,24 +329,22 @@ impl RocksDbStorage {
             .map_err(Into::into)
     }
 
-    pub async fn store_raft_configuration(
+    pub async fn store_raft_server_state(
         &mut self,
-        raft_configuration: &RaftConfiguration,
+        raft_server_state: &RaftServerState,
     ) -> Result<(), Error> {
         self.put_bytes(
             Self::raft_configuration_key(),
-            &Self::serialize_value(raft_configuration).map_err(|err| Error::Encode(err.into()))?,
+            &Self::serialize_value(raft_server_state).map_err(|err| Error::Encode(err.into()))?,
         )
         .await
     }
 
-    pub fn get_raft_configuration(&self) -> Result<Option<RaftConfiguration>, Error> {
+    pub fn get_raft_server_state(&self) -> Result<RaftServerState, Error> {
         if let Some(bytes) = self.get_bytes(Self::raft_configuration_key())? {
-            Ok(Some(
-                Self::deserialize_value(bytes).map_err(|err| Error::Decode(err.into()))?,
-            ))
+            Ok(Self::deserialize_value(bytes).map_err(|err| Error::Decode(err.into()))?)
         } else {
-            Ok(None)
+            Ok(RaftServerState::default())
         }
     }
 
@@ -703,13 +701,13 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
-    pub fn store_raft_configuration(
+    pub fn store_raft_server_state(
         &mut self,
-        raft_configuration: &RaftConfiguration,
+        raft_server_state: &RaftServerState,
     ) -> Result<(), Error> {
         self.put_bytes(
             RocksDbStorage::raft_configuration_key(),
-            &RocksDbStorage::serialize_value(raft_configuration)
+            &RocksDbStorage::serialize_value(raft_server_state)
                 .map_err(|err| Error::Encode(err.into()))?,
         );
 

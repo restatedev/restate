@@ -24,7 +24,7 @@ use crate::raft::network::{
     ConnectionManager, MetadataServerNetworkHandler, MetadataServerNetworkSvcServer, Networking,
 };
 use crate::raft::storage::RocksDbStorage;
-use crate::raft::{network, storage, RaftConfiguration, StorageMarker};
+use crate::raft::{network, storage, RaftServerState, StorageMarker};
 use crate::{
     grpc, prepare_initial_nodes_configuration, CreatedAtMillis, InvalidConfiguration,
     JoinClusterError, JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinError,
@@ -287,9 +287,11 @@ impl RaftMetadataServer {
         let _ = self.status_tx.send(MetadataServerSummary::Provisioning);
         let mut provision_rx = self.provision_rx.take().expect("must be present");
 
-        let result = if let Some(configuration) = self.storage.get_raft_configuration()? {
-            debug!(member_id = %configuration.my_member_id, "Found existing metadata store configuration");
-            Provisioned::Member(self.become_member(configuration)?)
+        let result = if let RaftServerState::Member { my_member_id } =
+            self.storage.get_raft_server_state()?
+        {
+            debug!(member_id = %my_member_id, "Found existing metadata store configuration");
+            Provisioned::Member(self.become_member(my_member_id)?)
         } else {
             let mut nodes_config_watcher =
                 Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
@@ -315,10 +317,10 @@ impl RaftMetadataServer {
                         },
                         Some(request) = provision_rx.recv() => {
                             match self.initialize_storage(request.nodes_configuration).await {
-                                Ok(raft_configuration) => {
+                                Ok(my_member_id) => {
                                     let _ = request.result_tx.send(Ok(true));
-                                    debug!(member_id = %raft_configuration.my_member_id, "Successfully provisioned the metadata store");
-                                    let mut member = self.become_member(raft_configuration)?;
+                                    debug!(member_id = %my_member_id, "Successfully provisioned the metadata store");
+                                    let mut member = self.become_member(my_member_id)?;
                                     member.campaign_immediately()?;
                                     break Provisioned::Member(member);
                                 },
@@ -353,7 +355,7 @@ impl RaftMetadataServer {
     async fn initialize_storage(
         &mut self,
         mut nodes_configuration: NodesConfiguration,
-    ) -> anyhow::Result<RaftConfiguration> {
+    ) -> anyhow::Result<MemberId> {
         assert!(
             self.storage.is_empty()?,
             "storage must be empty to get initialized"
@@ -366,23 +368,17 @@ impl RaftMetadataServer {
             .created_at()
             .timestamp_millis();
 
-        let raft_configuration =
+        let my_member_id =
             self.derive_initial_configuration(created_at_millis, &mut nodes_configuration)?;
 
         debug!("Initialize storage with nodes configuration");
 
-        let initial_conf_state = ConfState::from((
-            vec![to_raft_id(raft_configuration.my_member_id.node_id)],
-            vec![],
-        ));
+        let initial_conf_state = ConfState::from((vec![to_raft_id(my_member_id.node_id)], vec![]));
 
         // initialize storage with an initial snapshot so that newly started nodes will fetch it
         // first to start with the same initial conf state.
         let mut members = HashMap::default();
-        members.insert(
-            raft_configuration.my_member_id.node_id,
-            raft_configuration.my_member_id.created_at_millis,
-        );
+        members.insert(my_member_id.node_id, my_member_id.created_at_millis);
         let metadata_store_snapshot = MetadataServerSnapshot {
             configuration: Some(grpc::MetadataServerConfiguration::from(
                 MetadataServerConfiguration {
@@ -419,18 +415,18 @@ impl RaftMetadataServer {
         // it's important to first apply the snapshot so that the initial entry has the right index
         txn.apply_snapshot(&snapshot)?;
         txn.append(&vec![entry])?;
-        txn.store_raft_configuration(&raft_configuration)?;
+        txn.store_raft_server_state(&RaftServerState::Member { my_member_id })?;
         txn.store_nodes_configuration(&nodes_configuration)?;
         txn.commit().await?;
 
-        Ok(raft_configuration)
+        Ok(my_member_id)
     }
 
     fn derive_initial_configuration(
         &self,
         created_at_millis: CreatedAtMillis,
         nodes_configuration: &mut NodesConfiguration,
-    ) -> Result<RaftConfiguration, InvalidConfiguration> {
+    ) -> Result<MemberId, InvalidConfiguration> {
         let configuration = Configuration::pinned();
         let node_id = prepare_initial_nodes_configuration(&configuration, nodes_configuration)?;
 
@@ -440,7 +436,7 @@ impl RaftMetadataServer {
             created_at_millis,
         };
 
-        Ok(RaftConfiguration { my_member_id })
+        Ok(my_member_id)
     }
 
     fn become_standby(self) -> Standby {
@@ -464,7 +460,7 @@ impl RaftMetadataServer {
         )
     }
 
-    fn become_member(self, raft_configuration: RaftConfiguration) -> Result<Member, Error> {
+    fn become_member(self, my_member_id: MemberId) -> Result<Member, Error> {
         let Self {
             connection_manager,
             storage,
@@ -476,7 +472,7 @@ impl RaftMetadataServer {
         } = self;
 
         Member::create(
-            raft_configuration,
+            my_member_id,
             connection_manager,
             storage,
             request_rx,
@@ -531,7 +527,7 @@ struct Member {
 
 impl Member {
     fn create(
-        raft_configuration: RaftConfiguration,
+        my_member_id: MemberId,
         connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
         storage: RocksDbStorage,
         request_rx: RequestReceiver,
@@ -539,8 +535,6 @@ impl Member {
         metadata_writer: Option<MetadataWriter>,
         status_tx: StatusSender,
     ) -> Result<Self, Error> {
-        let my_member_id = raft_configuration.my_member_id;
-
         let (raft_tx, raft_rx) = mpsc::channel(128);
         let new_connection_manager =
             ConnectionManager::new(to_raft_id(my_member_id.node_id), raft_tx);
@@ -1436,13 +1430,10 @@ impl Standby {
                 Some(join_result) = &mut join_cluster => {
                     match join_result {
                         Ok(my_member_id) => {
-                            let raft_configuration = RaftConfiguration {
-                                my_member_id,
-                            };
-                            storage.store_raft_configuration(&raft_configuration).await?;
+                            storage.store_raft_server_state(&RaftServerState::Member{ my_member_id }).await?;
 
                             return Member::create(
-                                raft_configuration,
+                                my_member_id,
                                 connection_manager,
                                 storage,
                                 request_rx,

@@ -39,7 +39,12 @@ impl NetworkMessage for raft::prelude::Message {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-struct RaftConfiguration {
-    my_member_id: MemberId,
+/// The current state of the RaftMetadataServer that is persisted to storage.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+enum RaftServerState {
+    Member {
+        my_member_id: MemberId,
+    },
+    #[default]
+    Standby,
 }
