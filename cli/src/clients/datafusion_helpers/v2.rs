@@ -16,17 +16,16 @@ use anyhow::Result;
 use bytes::Bytes;
 use chrono::{DateTime, Local};
 
+use crate::clients::DataFusionHttpClient;
 use restate_types::identifiers::DeploymentId;
 use restate_types::identifiers::{AwakeableIdentifier, InvocationId, ServiceId};
 use serde::Deserialize;
 use serde_with::serde_as;
 
-use crate::clients::DataFusionHttpClient;
-
 use super::{
     HandlerStateStats, Invocation, InvocationCompletion, InvocationState, JournalEntry,
-    JournalEntryType, LockedKeyInfo, OutgoingInvoke, ServiceHandlerLockedKeysMap,
-    ServiceHandlerUsage, ServiceStatusMap, SimpleInvocation,
+    JournalEntryTypeV1, JournalEntryV1, JournalEntryV2, LockedKeyInfo, OutgoingInvoke,
+    ServiceHandlerLockedKeysMap, ServiceHandlerUsage, ServiceStatusMap, SimpleInvocation,
 };
 
 static JOURNAL_QUERY_LIMIT: usize = 100;
@@ -413,6 +412,11 @@ struct JournalQueryResult {
     sleep_wakeup_at: Option<DateTime<Local>>,
     name: Option<String>,
     promise_name: Option<String>,
+
+    // --- V2 columns
+    version: u32,
+    appended_at: Option<DateTime<Local>>,
+    entry_json: Option<String>,
 }
 
 pub async fn get_invocation_journal(
@@ -427,6 +431,14 @@ pub async fn get_invocation_journal(
     } else {
         "CAST(NULL as STRING) AS promise_name"
     };
+    let has_restate_1_2_columns = client
+        .check_columns_exists("sys_journal", &["version", "entry_json", "appended_at"])
+        .await?;
+    let select_restate_1_2_columns = if has_restate_1_2_columns {
+        "sj.version, sj.entry_json, sj.appended_at"
+    } else {
+        "CAST(1 as INT UNSIGNED) AS version, CAST(NULL as STRING) AS entry_json, CAST(NULL as TIMESTAMP) AS appended_at"
+    };
 
     // We are only looking for one...
     // Let's get journal details.
@@ -439,7 +451,8 @@ pub async fn get_invocation_journal(
             sj.invoked_target,
             sj.sleep_wakeup_at,
             sj.name,
-            {select_promise_column}
+            {select_promise_column},
+            {select_restate_1_2_columns}
         FROM sys_journal sj
         WHERE
             sj.id = '{invocation_id}'
@@ -454,38 +467,53 @@ pub async fn get_invocation_journal(
         .await?
         .into_iter()
         .map(|row| {
-            let entry_type = match row.entry_type.as_str() {
-                "Sleep" => JournalEntryType::Sleep {
-                    wakeup_at: row.sleep_wakeup_at.map(Into::into),
-                },
-                "Call" => JournalEntryType::Call(OutgoingInvoke {
-                    invocation_id: row.invoked_id,
-                    invoked_target: row.invoked_target,
-                }),
-                "OneWayCall" => JournalEntryType::OneWayCall(OutgoingInvoke {
-                    invocation_id: row.invoked_id,
-                    invoked_target: row.invoked_target,
-                }),
-                "Awakeable" => JournalEntryType::Awakeable(AwakeableIdentifier::new(
-                    my_invocation_id,
-                    row.index,
-                )),
-                "GetState" => JournalEntryType::GetState,
-                "SetState" => JournalEntryType::SetState,
-                "ClearState" => JournalEntryType::ClearState,
-                "Run" => JournalEntryType::Run,
-                "GetPromise" => JournalEntryType::GetPromise(row.promise_name),
-                t => JournalEntryType::Other(t.to_owned()),
-            };
+            if row.version == 1 {
+                let entry_type = match row.entry_type.as_str() {
+                    "Sleep" => JournalEntryTypeV1::Sleep {
+                        wakeup_at: row.sleep_wakeup_at.map(Into::into),
+                    },
+                    "Call" => JournalEntryTypeV1::Call(OutgoingInvoke {
+                        invocation_id: row.invoked_id,
+                        invoked_target: row.invoked_target,
+                    }),
+                    "OneWayCall" => JournalEntryTypeV1::OneWayCall(OutgoingInvoke {
+                        invocation_id: row.invoked_id,
+                        invoked_target: row.invoked_target,
+                    }),
+                    "Awakeable" => JournalEntryTypeV1::Awakeable(AwakeableIdentifier::new(
+                        my_invocation_id,
+                        row.index,
+                    )),
+                    "GetState" => JournalEntryTypeV1::GetState,
+                    "SetState" => JournalEntryTypeV1::SetState,
+                    "ClearState" => JournalEntryTypeV1::ClearState,
+                    "Run" => JournalEntryTypeV1::Run,
+                    "GetPromise" => JournalEntryTypeV1::GetPromise(row.promise_name),
+                    t => JournalEntryTypeV1::Other(t.to_owned()),
+                };
 
-            JournalEntry {
-                seq: row.index,
-                entry_type,
-                completed: row.completed,
-                name: row.name,
+                Ok(JournalEntry::V1(JournalEntryV1 {
+                    seq: row.index,
+                    entry_type,
+                    completed: row.completed,
+                    name: row.name,
+                }))
+            } else if row.version == 2 {
+                Ok(JournalEntry::V2(JournalEntryV2 {
+                    seq: row.index,
+                    entry_type: row.entry_type,
+                    name: row.name,
+                    entry: row.entry_json.and_then(|j| serde_json::from_str(&j).ok()),
+                    appended_at: row.appended_at.map(Into::into),
+                }))
+            } else {
+                anyhow::bail!(
+                    "The row version is unknown, cannot parse the journal: {}",
+                    row.version
+                )
             }
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     // Sort by seq.
     journal.reverse();

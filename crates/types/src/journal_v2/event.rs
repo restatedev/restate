@@ -11,19 +11,18 @@
 use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
 use crate::journal_v2::{Entry, EntryMetadata, EntryType};
 use bytestring::ByteString;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use strum::EnumString;
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, EnumString, strum::Display, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, EnumString, strum::Display, Serialize, Deserialize)]
 pub enum EventType {
     Lifecycle,
     #[strum(default)]
     Other(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     pub ty: EventType,
     pub metadata: HashMap<String, ByteString>,

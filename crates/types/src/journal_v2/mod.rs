@@ -28,7 +28,7 @@
 
 use bytestring::ByteString;
 use enum_dispatch::enum_dispatch;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub mod command;
@@ -64,7 +64,14 @@ pub enum EntryType {
 impl fmt::Display for EntryType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EntryType::Command(cmd) => fmt::Display::fmt(cmd, f),
+            EntryType::Command(cmd) => {
+                write!(f, "Command: ")?;
+                fmt::Display::fmt(cmd, f)
+            }
+            EntryType::Notification(notif) => {
+                write!(f, "Notification: ")?;
+                fmt::Display::fmt(notif, f)
+            }
             e => fmt::Debug::fmt(e, f),
         }
     }
@@ -79,7 +86,7 @@ pub trait EntryMetadata {
 
 /// Root enum representing a decoded entry.
 #[enum_dispatch(EntryMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Entry {
     Command(Command),
     Notification(Notification),

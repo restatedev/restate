@@ -1,18 +1,18 @@
 use std::{collections::HashMap, fmt::Display, str::FromStr};
 
+use super::DataFusionHttpClient;
 use anyhow::Result;
 use bytes::Bytes;
 use chrono::{DateTime, Duration, Local};
 use clap::ValueEnum;
 use restate_admin_rest_model::version::AdminApiVersion;
+use restate_types::journal_v2::Entry;
 use restate_types::{
     identifiers::{AwakeableIdentifier, DeploymentId, ServiceId},
     invocation::ServiceType,
 };
 use serde::Deserialize;
 use serde_with::{serde_as, DeserializeAs};
-
-use super::DataFusionHttpClient;
 
 mod v1;
 mod v2;
@@ -183,14 +183,32 @@ impl InvocationCompletion {
 }
 
 #[derive(Debug, Clone)]
-pub struct JournalEntry {
+pub enum JournalEntry {
+    V1(JournalEntryV1),
+    V2(JournalEntryV2),
+}
+
+impl JournalEntry {
+    pub fn should_present(&self) -> bool {
+        match self {
+            JournalEntry::V1(v1) => v1.should_present(),
+            JournalEntry::V2(_) => {
+                // For now in V2 we show all the entries
+                true
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JournalEntryV1 {
     pub seq: u32,
-    pub entry_type: JournalEntryType,
+    pub entry_type: JournalEntryTypeV1,
     completed: bool,
     pub name: Option<String>,
 }
 
-impl JournalEntry {
+impl JournalEntryV1 {
     pub fn is_completed(&self) -> bool {
         if self.entry_type.is_completable() {
             self.completed
@@ -205,7 +223,7 @@ impl JournalEntry {
 }
 
 #[derive(Debug, Clone)]
-pub enum JournalEntryType {
+pub enum JournalEntryTypeV1 {
     Sleep {
         wakeup_at: Option<chrono::DateTime<Local>>,
     },
@@ -222,46 +240,55 @@ pub enum JournalEntryType {
     Other(String),
 }
 
-impl JournalEntryType {
+impl JournalEntryTypeV1 {
     fn is_completable(&self) -> bool {
         matches!(
             self,
-            JournalEntryType::Sleep { .. }
-                | JournalEntryType::Call(_)
-                | JournalEntryType::Awakeable(_)
-                | JournalEntryType::GetState
-                | JournalEntryType::GetPromise(_)
+            JournalEntryTypeV1::Sleep { .. }
+                | JournalEntryTypeV1::Call(_)
+                | JournalEntryTypeV1::Awakeable(_)
+                | JournalEntryTypeV1::GetState
+                | JournalEntryTypeV1::GetPromise(_)
         )
     }
 
     fn should_present(&self) -> bool {
         matches!(
             self,
-            JournalEntryType::Sleep { .. }
-                | JournalEntryType::Call(_)
-                | JournalEntryType::OneWayCall(_)
-                | JournalEntryType::Awakeable(_)
-                | JournalEntryType::Run
-                | JournalEntryType::GetPromise(_)
+            JournalEntryTypeV1::Sleep { .. }
+                | JournalEntryTypeV1::Call(_)
+                | JournalEntryTypeV1::OneWayCall(_)
+                | JournalEntryTypeV1::Awakeable(_)
+                | JournalEntryTypeV1::Run
+                | JournalEntryTypeV1::GetPromise(_)
         )
     }
 }
 
-impl Display for JournalEntryType {
+impl Display for JournalEntryTypeV1 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            JournalEntryType::Sleep { .. } => write!(f, "Sleep"),
-            JournalEntryType::Call(_) => write!(f, "Call"),
-            JournalEntryType::OneWayCall(_) => write!(f, "Send"),
-            JournalEntryType::Awakeable(_) => write!(f, "Awakeable"),
-            JournalEntryType::GetState => write!(f, "GetState"),
-            JournalEntryType::SetState => write!(f, "SetState"),
-            JournalEntryType::ClearState => write!(f, "ClearState"),
-            JournalEntryType::Run => write!(f, "Run"),
-            JournalEntryType::GetPromise(_) => write!(f, "Promise"),
-            JournalEntryType::Other(s) => write!(f, "{s}"),
+            JournalEntryTypeV1::Sleep { .. } => write!(f, "Sleep"),
+            JournalEntryTypeV1::Call(_) => write!(f, "Call"),
+            JournalEntryTypeV1::OneWayCall(_) => write!(f, "Send"),
+            JournalEntryTypeV1::Awakeable(_) => write!(f, "Awakeable"),
+            JournalEntryTypeV1::GetState => write!(f, "GetState"),
+            JournalEntryTypeV1::SetState => write!(f, "SetState"),
+            JournalEntryTypeV1::ClearState => write!(f, "ClearState"),
+            JournalEntryTypeV1::Run => write!(f, "Run"),
+            JournalEntryTypeV1::GetPromise(_) => write!(f, "Promise"),
+            JournalEntryTypeV1::Other(s) => write!(f, "{s}"),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct JournalEntryV2 {
+    pub seq: u32,
+    pub entry_type: String,
+    pub name: Option<String>,
+    pub entry: Option<Entry>,
+    pub appended_at: Option<chrono::DateTime<Local>>,
 }
 
 #[derive(Debug, Clone)]
