@@ -183,7 +183,7 @@ impl Node {
             base_config.metadata_server.kind(),
             MetadataServerKind::Raft(_)
         ) {
-            info!("Setting the metadata server to embedded");
+            info!("Setting the metadata server to replicated");
             base_config
                 .metadata_server
                 .set_kind(MetadataServerKind::Raft(RaftOptions::default()));
