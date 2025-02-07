@@ -357,10 +357,10 @@ fn create_log_trim_check_interval(options: &AdminOptions) -> Option<Interval> {
     options.log_trim_interval.map(|interval| {
         // delay the initial trim check, and add a small amount of jitter to avoid synchronization
         // among partition leaders in case of coordinated cluster restarts
-        let max_jitter = interval.mul_f32(0.1);
-        let jitter = rand::rng().random_range(Duration::ZERO..max_jitter);
+        let jitter = rand::rng().random_range(Duration::ZERO..interval.mul_f32(0.1));
+        let start_at = time::Instant::now().add(interval.into()).add(jitter);
 
-        let mut interval = time::interval_at(time::Instant::now().add(jitter), interval.into());
+        let mut interval = time::interval_at(start_at, interval.into());
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         interval
     })
