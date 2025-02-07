@@ -8,6 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::{Add, Deref};
+use std::sync::Arc;
+use std::time::Duration;
+
 use futures::future::OptionFuture;
 use itertools::Itertools;
 use rand::Rng;
@@ -22,10 +27,6 @@ use restate_types::identifiers::PartitionId;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-use std::collections::{BTreeMap, BTreeSet};
-use std::ops::{Add, Deref};
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
 use tokio::time::{Interval, MissedTickBehavior};
