@@ -26,7 +26,7 @@ use tokio::sync::oneshot;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, info_span, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
@@ -62,7 +62,7 @@ use restate_types::net::partition_processor_manager::{
 };
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
-use restate_types::GenerationalNodeId;
+use restate_types::{GenerationalNodeId, Version};
 
 use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
@@ -98,7 +98,7 @@ pub struct PartitionProcessorManager {
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
     archived_lsns: HashMap<PartitionId, Lsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
-    pending_control_processors: Option<ControlProcessors>,
+    pending_control_processors: Option<PendingControlProcessors>,
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
@@ -251,7 +251,7 @@ impl PartitionProcessorManager {
                     self.trigger_periodic_partition_snapshots();
                 }
                 Some(control_processors) = self.incoming_update_processors.next() => {
-                    self.pending_control_processors = Some(control_processors.into_body());
+                    self.pending_control_processors = Some(PendingControlProcessors::new(control_processors.peer(), control_processors.into_body()));
                     self.on_control_processors();
                 }
                 _ = logs_version_watcher.changed(), if self.pending_control_processors.is_some() => {
@@ -414,7 +414,7 @@ impl PartitionProcessorManager {
                         }
                     }
                     Err(err) => {
-                        info!(%partition_id, "Partition processor failed to start: {err}");
+                        info!(%partition_id, %err, "Partition processor failed to start");
                         self.processor_states.remove(&partition_id);
                     }
                 }
@@ -448,10 +448,10 @@ impl PartitionProcessorManager {
                                     }
                                 }
                                 Err(err) => {
-                                    warn!("Partition processor exited unexpectedly: {err}")
+                                    warn!(%err, "Partition processor exited unexpectedly")
                                 }
                                 Ok(_) => {
-                                    info!("Partition processor stopped.")
+                                    info!("Partition processor stopped")
                                 }
                             }
                         }
@@ -489,15 +489,15 @@ impl PartitionProcessorManager {
                             if let Err(err) = processor_state
                                 .on_leader_epoch_obtained(leader_epoch, leader_epoch_token)
                             {
-                                info!(%partition_id, "Partition processor failed to process new leader epoch: {err}. Stopping it now.");
+                                info!(%partition_id, %err, "Partition processor failed to process new leader epoch. Stopping it now");
                                 processor_state.stop();
                             }
                         }
                         Err(err) => {
                             if processor_state.is_valid_leader_epoch_token(leader_epoch_token) {
-                                info!(%partition_id, "Failed obtaining new leader epoch: {err}. Continue running as follower.");
+                                info!(%partition_id, %err, "Failed obtaining new leader epoch. Continue running as follower");
                                 if let Err(err) = processor_state.run_as_follower() {
-                                    info!(%partition_id, "Partition processor failed to run as follower: {err}. Stopping it now.");
+                                    info!(%partition_id, %err, "Partition processor failed to run as follower. Stopping it now");
                                     processor_state.stop();
                                 }
                             } else {
@@ -628,20 +628,22 @@ impl PartitionProcessorManager {
             .pending_control_processors
             .as_ref()
             .is_some_and(|control_processors| {
-                control_processors.min_logs_table_version <= current_logs_version
-                    && control_processors.min_partition_table_version
+                control_processors.min_logs_version() <= current_logs_version
+                    && control_processors.min_partition_table_version()
                         <= current_partition_table_version
             })
         {
-            let control_processors = self
+            let pending_control_processors = self
                 .pending_control_processors
                 .take()
                 .expect("must be some");
             let partition_table = Metadata::with_current(|m| m.partition_table_snapshot());
 
-            for control_processor in control_processors.commands {
-                self.on_control_processor(control_processor, &partition_table);
-            }
+            info_span!("on_control_processors", from_cluster_controller = %pending_control_processors.sender).in_scope(|| {
+                for control_processor in pending_control_processors.control_processors.commands {
+                    self.on_control_processor(control_processor, &partition_table);
+                }
+            });
         }
     }
 
@@ -666,6 +668,7 @@ impl PartitionProcessorManager {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
                     if control_processor.command == ProcessorCommand::Leader {
                         if let Some(leader_epoch_token) = processor_state.run_as_leader() {
+                            debug!(%partition_id, "Asked to run as leader by cluster controller. Obtaining required leader epoch");
                             Self::obtain_new_leader_epoch(
                                 partition_id,
                                 leader_epoch_token,
@@ -684,6 +687,7 @@ impl PartitionProcessorManager {
                     .get_partition(&partition_id)
                     .map(|partition| &partition.key_range)
                 {
+                    debug!(%partition_id, "Starting new partition processor to run as {}", control_processor.command);
                     let starting_task = self
                         .start_partition_processor_task(partition_id, partition_key_range.clone());
 
@@ -963,6 +967,29 @@ enum EventKind {
         leader_epoch_token: LeaderEpochToken,
         result: anyhow::Result<LeaderEpoch>,
     },
+}
+
+struct PendingControlProcessors {
+    // Cluster controller which sent the `ControlProcessors` instructions
+    sender: GenerationalNodeId,
+    control_processors: ControlProcessors,
+}
+
+impl PendingControlProcessors {
+    fn new(sender: GenerationalNodeId, control_processors: ControlProcessors) -> Self {
+        Self {
+            sender,
+            control_processors,
+        }
+    }
+
+    fn min_partition_table_version(&self) -> Version {
+        self.control_processors.min_partition_table_version
+    }
+
+    fn min_logs_version(&self) -> Version {
+        self.control_processors.min_logs_table_version
+    }
 }
 
 #[cfg(test)]
