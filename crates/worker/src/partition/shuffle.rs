@@ -21,7 +21,7 @@ use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::message::MessageIndex;
-use restate_wal_protocol::{append_envelope_to_bifrost, Destination, Envelope, Header, Source};
+use restate_wal_protocol::{Destination, Envelope, Header, Source};
 
 use crate::partition::shuffle::state_machine::StateMachine;
 use crate::partition::types::OutboxMessageExt;
@@ -223,12 +223,11 @@ where
         let state_machine = StateMachine::new(
             metadata,
             outbox_reader,
-            move |msg| {
-                let bifrost = bifrost.clone();
-                async move {
-                    append_envelope_to_bifrost(&bifrost, Arc::new(msg)).await?;
-                    Ok(())
-                }
+            bifrost,
+            move |mut appender, msg| async move {
+                let _ = appender.append(Arc::new(msg)).await?;
+
+                Ok(())
             },
             &mut hint_rx,
         );
@@ -257,15 +256,21 @@ where
 
 mod state_machine {
     use pin_project::pin_project;
+    use restate_bifrost::{Appender, Bifrost, ErrorRecoveryStrategy};
+    use restate_core::Metadata;
+    use restate_storage_api::outbox_table::OutboxMessage;
+    use restate_types::identifiers::{PartitionKey, WithPartitionKey};
+    use restate_types::logs::LogId;
+    use restate_types::message::MessageIndex;
+    use restate_types::partition_table::FindPartition;
+    use restate_types::Version;
+    use restate_wal_protocol::Envelope;
     use std::cmp::Ordering;
+    use std::collections::HashMap;
     use std::future::Future;
     use std::pin::Pin;
     use tokio_util::sync::ReusableBoxFuture;
     use tracing::trace;
-
-    use restate_storage_api::outbox_table::OutboxMessage;
-    use restate_types::message::MessageIndex;
-    use restate_wal_protocol::Envelope;
 
     use crate::partition::shuffle;
     use crate::partition::shuffle::{
@@ -292,6 +297,8 @@ mod state_machine {
         metadata: ShuffleMetadata,
         current_sequence_number: MessageIndex,
         outbox_reader: Option<OutboxReader>,
+        bifrost: Bifrost,
+        appenders: HashMap<LogId, Appender>,
         read_future: ReadFuture<OutboxReader>,
         send_operation: SendOp,
         hint_rx: &'a mut async_channel::Receiver<NewOutboxMessage>,
@@ -313,12 +320,13 @@ mod state_machine {
     impl<'a, OutboxReader, SendOp, SendFuture> StateMachine<'a, OutboxReader, SendOp, SendFuture>
     where
         SendFuture: Future<Output = Result<(), anyhow::Error>>,
-        SendOp: Fn(Envelope) -> SendFuture,
+        SendOp: Fn(Appender, Envelope) -> SendFuture,
         OutboxReader: shuffle::OutboxReader + Send + Sync + 'static,
     {
         pub(super) fn new(
             metadata: ShuffleMetadata,
             outbox_reader: OutboxReader,
+            bifrost: Bifrost,
             send_operation: SendOp,
             hint_rx: &'a mut async_channel::Receiver<NewOutboxMessage>,
         ) -> Self {
@@ -332,6 +340,8 @@ mod state_machine {
                 metadata,
                 current_sequence_number,
                 outbox_reader: None,
+                bifrost,
+                appenders: Default::default(),
                 read_future: ReusableBoxFuture::new(reading_future),
                 send_operation,
                 hint_rx,
@@ -363,7 +373,13 @@ mod state_machine {
                                         seq_number,
                                         this.metadata,
                                     );
-                                    let send_future = (this.send_operation)(envelope);
+                                    let appender = Self::get_appender(
+                                        this.bifrost,
+                                        this.appenders,
+                                        envelope.partition_key(),
+                                    )
+                                    .await?;
+                                    let send_future = (this.send_operation)(appender, envelope);
                                     this.state.set(State::Sending(send_future));
                                     break;
                                 }
@@ -398,7 +414,13 @@ mod state_machine {
 
                             let envelope =
                                 wrap_outbox_message_in_envelope(message, seq_number, this.metadata);
-                            let send_future = (this.send_operation)(envelope);
+                            let appender = Self::get_appender(
+                                this.bifrost,
+                                this.appenders,
+                                envelope.partition_key(),
+                            )
+                            .await?;
+                            let send_future = (this.send_operation)(appender, envelope);
 
                             this.state.set(State::Sending(send_future));
                         } else {
@@ -423,6 +445,34 @@ mod state_machine {
                     }
                 }
             }
+        }
+
+        async fn get_appender(
+            bifrost: &Bifrost,
+            appenders: &mut HashMap<LogId, Appender>,
+            partition_key: PartitionKey,
+        ) -> Result<Appender, anyhow::Error> {
+            let partition_id = {
+                // make sure we drop pinned partition table before awaiting
+                let partition_table = Metadata::current()
+                    .wait_for_partition_table(Version::MIN)
+                    .await?;
+                partition_table.find_partition_id(partition_key)?
+            };
+            let log_id = LogId::from(*partition_id);
+
+            let appender_entry = appenders.entry(log_id);
+            let appender = match appender_entry {
+                std::collections::hash_map::Entry::Vacant(ve) => {
+                    let value =
+                        bifrost.create_appender(log_id, ErrorRecoveryStrategy::default())?;
+                    Ok::<_, anyhow::Error>(ve.insert(value))
+                }
+                std::collections::hash_map::Entry::Occupied(oe) => {
+                    Ok::<_, anyhow::Error>(oe.into_mut())
+                }
+            }?;
+            Ok(appender.clone())
         }
     }
 }
