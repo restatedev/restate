@@ -94,6 +94,7 @@ jobs:
     name: Create docker image
     uses: ./.github/workflows/docker.yml
     with:
+      features: 'metadata-api'
       uploadImageAsTarball: true
       platforms: linux/amd64
 
