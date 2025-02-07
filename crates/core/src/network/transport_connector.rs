@@ -75,11 +75,11 @@ pub mod test_util {
     use super::*;
 
     use std::sync::Arc;
-    use std::time::Instant;
 
     use futures::{Stream, StreamExt};
     use parking_lot::Mutex;
     use tokio::sync::mpsc;
+    use tokio::time::Instant;
     use tokio_stream::wrappers::ReceiverStream;
     use tracing::info;
 

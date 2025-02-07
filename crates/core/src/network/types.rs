@@ -11,7 +11,7 @@
 use std::marker::PhantomData;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use opentelemetry::Context;
 use tracing::Span;
@@ -25,7 +25,6 @@ use restate_types::{GenerationalNodeId, NodeId, Version};
 use crate::Metadata;
 
 use super::connection::OwnedConnection;
-use super::metric_definitions::CONNECTION_SEND_DURATION;
 use super::{NetworkError, NetworkSendError, WeakConnection};
 
 static NEXT_MSG_ID: AtomicU64 = const { AtomicU64::new(1) };
@@ -417,7 +416,6 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
     /// for retrying externally.
     // #[instrument(level = "trace", skip_all, fields(peer_node_id = %self.peer, target_service = ?message.target(), msg = ?message.kind()))]
     pub async fn send(self) -> Result<(), NetworkSendError<Self>> {
-        let send_start = Instant::now();
         let connection = bail_on_error!(self, self.try_upgrade());
         let permit = bail_on_none!(
             self,
@@ -428,7 +426,6 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
         Metadata::with_current(|metadata| {
             permit.send(self, metadata);
         });
-        CONNECTION_SEND_DURATION.record(send_start.elapsed());
         Ok(())
     }
 
@@ -436,7 +433,6 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
     /// on the assigned connection or returns [`NetworkError::ConnectionClosed`] immediately if the
     /// assigned connection is no longer valid.
     pub async fn send_timeout(self, timeout: Duration) -> Result<(), NetworkSendError<Self>> {
-        let send_start = Instant::now();
         let connection = bail_on_error!(self, self.try_upgrade());
         let permit = match tokio::task::unconstrained(connection.reserve_timeout(timeout)).await {
             Ok(permit) => permit,
@@ -446,7 +442,6 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
         Metadata::with_current(|metadata| {
             permit.send(self, metadata);
         });
-        CONNECTION_SEND_DURATION.record(send_start.elapsed());
         Ok(())
     }
 
@@ -455,7 +450,6 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
     ///
     /// This fails immediately with [`NetworkError::Full`] if connection stream is out of capacity.
     pub fn try_send(self) -> Result<(), NetworkSendError<Self>> {
-        let send_start = Instant::now();
         let connection = bail_on_error!(self, self.try_upgrade());
         let permit = bail_on_error!(self, connection.try_reserve());
 
@@ -463,7 +457,6 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
             permit.send(self, metadata);
         });
 
-        CONNECTION_SEND_DURATION.record(send_start.elapsed());
         Ok(())
     }
 
