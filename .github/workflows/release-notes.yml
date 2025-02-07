@@ -38,8 +38,8 @@ jobs:
           ### Pull the Docker images
 
           \`\`\`sh
-          docker pull docker.restate.dev/restate:$app_version
-          docker pull docker.restate.dev/restate-cli:$app_version
+          docker pull docker.restate.dev/restatedev/restate:$app_version
+          docker pull docker.restate.dev/restatedev/restate-cli:$app_version
           \`\`\`
 
           ### Install prebuilt binaries via Homebrew
