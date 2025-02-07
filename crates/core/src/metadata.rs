@@ -216,8 +216,9 @@ impl Metadata {
         min_version: Version,
     ) -> Result<Version, ShutdownError> {
         let mut recv = self.inner.write_watches[metadata_kind].receive.clone();
-        let v = recv
-            .wait_for(|v| *v >= min_version)
+        // If we are already at the metadata version, avoid tokio's yielding to
+        // improve tail latencies when this is used in latency-sensitive operations.
+        let v = tokio::task::unconstrained(recv.wait_for(|v| *v >= min_version))
             .await
             .map_err(|_| ShutdownError)?;
         Ok(*v)
