@@ -739,6 +739,8 @@ pub struct TracingOptions {
     ///
     /// Specify additional headers you want the system to send to the tracing endpoint (e.g.
     /// authentication headers).
+    #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+    #[serde(default)]
     pub tracing_headers: SerdeableHeaderHashMap,
 }
 
