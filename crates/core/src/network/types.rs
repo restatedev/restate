@@ -421,7 +421,7 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
         let connection = bail_on_error!(self, self.try_upgrade());
         let permit = bail_on_none!(
             self,
-            connection.reserve().await,
+            tokio::task::unconstrained(connection.reserve()).await,
             NetworkError::ConnectionClosed(connection.peer())
         );
 
@@ -438,7 +438,7 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
     pub async fn send_timeout(self, timeout: Duration) -> Result<(), NetworkSendError<Self>> {
         let send_start = Instant::now();
         let connection = bail_on_error!(self, self.try_upgrade());
-        let permit = match connection.reserve_timeout(timeout).await {
+        let permit = match tokio::task::unconstrained(connection.reserve_timeout(timeout)).await {
             Ok(permit) => permit,
             Err(e) => return Err(NetworkSendError::new(self, e)),
         };
