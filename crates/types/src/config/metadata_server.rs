@@ -58,8 +58,9 @@ pub struct MetadataServerOptions {
     /// Type of metadata server to start
     ///
     /// The type of metadata server to start when running the metadata store role.
+    // defined as Option<_> for backward compatibility with version < v1.2
     #[serde(flatten)]
-    pub kind: MetadataServerKind,
+    kind: Option<MetadataServerKind>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
@@ -78,6 +79,14 @@ pub enum MetadataServerKind {
 }
 
 impl MetadataServerOptions {
+    pub fn kind(&self) -> MetadataServerKind {
+        self.kind.clone().unwrap_or_default()
+    }
+
+    pub fn set_kind(&mut self, kind: MetadataServerKind) {
+        self.kind = Some(kind);
+    }
+
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
 
@@ -126,7 +135,7 @@ impl Default for MetadataServerOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.01,
             rocksdb,
-            kind: MetadataServerKind::default(),
+            kind: Some(MetadataServerKind::default()),
         }
     }
 }

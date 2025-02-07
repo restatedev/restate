@@ -180,11 +180,13 @@ impl Node {
         base_config.common.auto_provision = false;
         base_config.common.log_disable_ansi_codes = true;
         if !matches!(
-            base_config.metadata_server.kind,
+            base_config.metadata_server.kind(),
             MetadataServerKind::Raft(_)
         ) {
             info!("Setting the metadata server to embedded");
-            base_config.metadata_server.kind = MetadataServerKind::Raft(RaftOptions::default());
+            base_config
+                .metadata_server
+                .set_kind(MetadataServerKind::Raft(RaftOptions::default()));
         }
 
         for node_id in 1..=size {

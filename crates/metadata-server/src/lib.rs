@@ -188,7 +188,7 @@ pub async fn create_metadata_server(
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<BoxedMetadataServer> {
     metric_definitions::describe_metrics();
-    match metadata_server_options.kind {
+    match metadata_server_options.kind() {
         MetadataServerKind::Local => LocalMetadataServer::create(
             metadata_server_options,
             rocksdb_options,
