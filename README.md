@@ -55,7 +55,7 @@ npx @restatedev/restate-server
 
 Run via docker:
 ```bash
-docker run --rm -it --network=host docker.io/restatedev/restate:latest
+docker run --rm -it --network=host docker.restate.dev/restatedev/restate:latest
 ```
 
 ### Install the CLI
@@ -122,4 +122,3 @@ For SDK compatibility, refer to the supported version matrix in the respective R
 ### Building Restate locally
 
 In order to build Restate locally [follow the build instructions](https://github.com/restatedev/restate/blob/main/docs/dev/local-development.md#building-restate).
-
