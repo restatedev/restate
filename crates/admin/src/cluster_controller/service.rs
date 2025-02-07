@@ -778,6 +778,7 @@ mod tests {
     use super::Service;
 
     use std::collections::BTreeSet;
+    use std::num::NonZero;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -796,7 +797,7 @@ mod tests {
     use restate_core::test_env::NoOpMessageHandler;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{NodeState, PartitionProcessorStatus};
-    use restate_types::config::{AdminOptions, BifrostOptions, Configuration};
+    use restate_types::config::{AdminOptions, BifrostOptions, Configuration, NetworkingOptions};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
@@ -898,7 +899,11 @@ mod tests {
         let mut admin_options = AdminOptions::default();
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
+        let mut networking = NetworkingOptions::default();
+        // we are using failing transport so we only want to use the mock connection we created.
+        networking.num_concurrent_connections = NonZero::new(1).unwrap();
         let config = Configuration {
+            networking,
             admin: admin_options,
             ..Default::default()
         };
@@ -966,10 +971,15 @@ mod tests {
     async fn auto_trim_log() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
+        let mut networking = NetworkingOptions::default();
+        // we are using failing transport so we only want to use the mock connection we created.
+        networking.num_concurrent_connections = NonZero::new(1).unwrap();
+
         let mut admin_options = AdminOptions::default();
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
         let config = Configuration {
+            networking,
             admin: admin_options,
             ..Default::default()
         };
@@ -1042,7 +1052,12 @@ mod tests {
         admin_options.log_trim_interval = Some(interval_duration.into());
         let mut bifrost_options = BifrostOptions::default();
         bifrost_options.default_provider = ProviderKind::InMemory;
+
+        let mut networking = NetworkingOptions::default();
+        // we are using failing transport so we only want to use the mock connection we created.
+        networking.num_concurrent_connections = NonZero::new(1).unwrap();
         let config = Configuration {
+            networking,
             admin: admin_options,
             bifrost: bifrost_options,
             ..Default::default()
@@ -1096,7 +1111,12 @@ mod tests {
         const LOG_ID: LogId = LogId::new(0);
         let interval_duration = Duration::from_secs(10);
 
+        let mut networking = NetworkingOptions::default();
+        // we are using failing transport so we only want to use the mock connection we created.
+        networking.num_concurrent_connections = NonZero::new(1).unwrap();
+
         let mut config: Configuration = Default::default();
+        config.networking = networking;
         config.admin.log_trim_interval = Some(interval_duration.into());
         config.bifrost.default_provider = ProviderKind::InMemory;
         config.worker.snapshots.destination = Some("a-repository-somewhere".to_string());
@@ -1253,7 +1273,12 @@ mod tests {
         admin_options.log_trim_interval = Some(interval_duration.into());
         let mut bifrost_options = BifrostOptions::default();
         bifrost_options.default_provider = ProviderKind::InMemory;
+        let mut networking = NetworkingOptions::default();
+        // we are using failing transport so we only want to use the mock connection we created.
+        networking.num_concurrent_connections = NonZero::new(1).unwrap();
+
         let config = Configuration {
+            networking,
             admin: admin_options,
             bifrost: bifrost_options,
             ..Default::default()
