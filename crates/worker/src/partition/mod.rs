@@ -329,7 +329,7 @@ where
         debug!(
             last_applied_lsn = %last_applied_lsn,
             current_log_tail = %current_tail,
-            "PartitionProcessor creating log reader",
+            "Partition creating log reader",
         );
         if current_tail.offset() == last_applied_lsn.next() {
             if self.status.replay_status != ReplayStatus::Active {
