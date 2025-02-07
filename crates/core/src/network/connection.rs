@@ -11,11 +11,11 @@
 use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
-use std::time::Instant;
 
 use enum_map::{enum_map, EnumMap};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
+use tokio::time::Instant;
 use tracing::{debug, trace};
 
 use restate_types::net::codec::Targeted;
@@ -27,7 +27,6 @@ use restate_types::protobuf::node::Header;
 use restate_types::protobuf::node::Message;
 use restate_types::{GenerationalNodeId, Version};
 
-use super::metric_definitions::MESSAGE_SENT;
 use super::NetworkError;
 use super::Outgoing;
 use crate::Metadata;
@@ -84,7 +83,6 @@ impl<M> SendPermit<'_, M> {
     /// associated with the message.
     pub(crate) fn send_raw(self, raw_message: Message) {
         self.permit.send(raw_message);
-        MESSAGE_SENT.increment(1);
     }
 }
 
