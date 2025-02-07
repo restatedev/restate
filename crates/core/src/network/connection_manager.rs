@@ -99,11 +99,20 @@ impl ConnectionManagerInner {
     fn get_random_connection(
         &self,
         peer_node_id: &GenerationalNodeId,
+        target_concurrency: usize,
     ) -> Option<Arc<OwnedConnection>> {
         use rand::prelude::IndexedRandom;
         self.connection_by_gen_id
             .get(peer_node_id)
-            .and_then(|connections| connections.choose(&mut rand::rng())?.upgrade())
+            .and_then(|connections| {
+                // Suggest we create new connection if the number
+                // of connections is below the target
+                if connections.len() >= target_concurrency {
+                    connections.choose(&mut rand::rng())?.upgrade()
+                } else {
+                    None
+                }
+            })
     }
 }
 
@@ -141,13 +150,14 @@ impl<T> Clone for ConnectionManager<T> {
 /// used for testing. Accepts connections but can't establish new connections
 impl ConnectionManager<super::FailingConnector> {
     pub fn new_incoming_only(metadata: Metadata) -> Self {
+        use restate_types::config::Configuration;
         let inner = Arc::new(Mutex::new(ConnectionManagerInner::default()));
 
         Self {
             metadata,
             inner,
             transport_connector: Arc::new(super::FailingConnector::default()),
-            networking_options: NetworkingOptions::default(),
+            networking_options: Configuration::pinned().networking.clone(),
         }
     }
 }
@@ -294,10 +304,18 @@ impl<T: TransportConnect> ConnectionManager<T> {
         &self,
         node_id: GenerationalNodeId,
     ) -> Result<Arc<OwnedConnection>, NetworkError> {
+        // fail fast if we are connecting to our previous self
+        if self.metadata.my_node_id().is_same_but_different(&node_id) {
+            return Err(NetworkError::NodeIsGone(node_id));
+        }
+
         // find a connection by node_id
         let maybe_connection: Option<Arc<OwnedConnection>> = {
             let guard = self.inner.lock();
-            guard.get_random_connection(&node_id)
+            guard.get_random_connection(
+                &node_id,
+                self.networking_options.num_concurrent_connections(),
+            )
             // lock is dropped.
         };
 
@@ -669,8 +687,8 @@ where
                     global::get_text_map_propagator(|propagator| propagator.extract(span_ctx))
                 });
 
-                if let Err(e) = router
-                    .call(
+                if let Err(e) = tokio::task::unconstrained(
+                    router.call(
                         Incoming::from_parts(
                             msg,
                             connection.downgrade(),
@@ -680,8 +698,9 @@ where
                         )
                         .with_parent_context(parent_context),
                         connection.protocol_version,
-                    )
-                    .await
+                    ),
+                )
+                .await
                 {
                     warn!("Error processing message: {:?}", e);
                 }
