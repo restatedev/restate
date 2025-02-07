@@ -655,10 +655,11 @@ impl PartitionProcessorManager {
         match control_processor.command {
             ProcessorCommand::Stop => {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
+                    debug!(%partition_id, "Asked to stop partition processor by cluster controller");
                     processor_state.stop();
                 }
                 if self.pending_snapshots.contains_key(&partition_id) {
-                    info!(%partition_id, "Partition processor stop requested with snapshot task result outstanding.");
+                    info!(%partition_id, "Partition processor stop requested with snapshot task result outstanding");
                 }
             }
             ProcessorCommand::Follower | ProcessorCommand::Leader => {
@@ -673,8 +674,9 @@ impl PartitionProcessorManager {
                             );
                         }
                     } else if control_processor.command == ProcessorCommand::Follower {
+                        debug!(%partition_id, "Asked to run as follower by cluster controller");
                         if let Err(err) = processor_state.run_as_follower() {
-                            info!("Partition processor '{partition_id}' failed to run as follower: {err}. Stopping it now.");
+                            info!(%partition_id, %err, "Partition processor failed to run as follower. Stopping it now");
                             processor_state.stop();
                         }
                     }
@@ -709,7 +711,8 @@ impl PartitionProcessorManager {
                     gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
                 } else {
                     debug!(
-                        "Unknown partition id '{partition_id}'. Ignoring {} command.",
+                        %partition_id,
+                        "Unknown partition id. Ignoring {} command.",
                         control_processor.command
                     );
                 }
