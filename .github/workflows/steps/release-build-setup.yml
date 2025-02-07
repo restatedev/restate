@@ -30,4 +30,4 @@
 # cargo-dist isn't currently able to take these from .cargo/config.toml
 # https://github.com/axodotdev/cargo-dist/issues/1571
 - name: Set up RUSTFLAGS
-  run: echo RUSTFLAGS="-C force-unwind-tables -C debug-assertions --cfg uuid_unstable --cfg tokio_unstable" >> "$GITHUB_ENV"
+  run: echo RUSTFLAGS="-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable" >> "$GITHUB_ENV"
