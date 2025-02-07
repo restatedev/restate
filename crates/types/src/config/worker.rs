@@ -68,6 +68,8 @@ pub struct WorkerOptions {
     ///
     /// Snapshots provide a mechanism for safely trimming the log and efficient bootstrapping of new
     /// worker nodes.
+    #[serde(skip_serializing_if = "is_default_snapshots_options")]
+    #[serde(default)]
     pub snapshots: SnapshotsOptions,
 }
 
@@ -366,7 +368,7 @@ impl Default for StorageOptions {
 ///
 /// Partition store snapshotting settings.
 #[serde_as]
-#[derive(Default, Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "SnapshotsOptions", default))]
 #[serde(rename_all = "kebab-case")]
@@ -400,6 +402,10 @@ pub struct SnapshotsOptions {
     ///
     /// Default: `None` - automatic snapshots are disabled by default
     pub snapshot_interval_num_records: Option<NonZeroU64>,
+}
+
+fn is_default_snapshots_options(opts: &SnapshotsOptions) -> bool {
+    opts == &SnapshotsOptions::default()
 }
 
 impl SnapshotsOptions {

@@ -119,11 +119,13 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
     let num_nodes = 3;
     let chaos_duration = Duration::from_secs(20);
     let mut base_config = Configuration::default();
-    base_config.metadata_server.kind = MetadataServerKind::Raft(RaftOptions {
-        raft_election_tick: NonZeroUsize::new(5).expect("5 to be non zero"),
-        raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
-        ..RaftOptions::default()
-    });
+    base_config
+        .metadata_server
+        .set_kind(MetadataServerKind::Raft(RaftOptions {
+            raft_election_tick: NonZeroUsize::new(5).expect("5 to be non zero"),
+            raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
+            ..RaftOptions::default()
+        }));
 
     let nodes = Node::new_test_nodes(
         base_config,

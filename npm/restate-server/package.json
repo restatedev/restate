@@ -24,6 +24,9 @@
   "dependencies": {
     "@scarf/scarf": "^1.4.0"
   },
+  "scarfSettings": {
+    "skipTraversal": true
+  },
   "devDependencies": {
     "@types/node": "^18.11.18",
     "@typescript-eslint/eslint-plugin": "^5.48.0",

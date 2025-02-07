@@ -628,6 +628,7 @@ enum MetadataClientKindShadow {
     #[serde(alias = "embedded")]
     Native {
         address: Option<AdvertisedAddress>,
+        #[serde(default)]
         addresses: Vec<AdvertisedAddress>,
     },
     Etcd {
@@ -657,8 +658,14 @@ impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
 
                 Self::Native {
                     addresses: match address {
-                        Some(address) if addresses == vec![default_address] => vec![address],
-                        Some(_) => return Err("Conflicting configuration, embedded metadata-store-client cannot have both `address` and `addresses`"),
+                        Some(address)
+                            if addresses.is_empty() || addresses == vec![default_address] =>
+                        {
+                            vec![address]
+                        }
+                        Some(_) => {
+                            return Err("Conflicting configuration, embedded metadata-client cannot have both `address` and `addresses`");
+                        }
                         None => addresses,
                     },
                 }
@@ -732,6 +739,8 @@ pub struct TracingOptions {
     ///
     /// Specify additional headers you want the system to send to the tracing endpoint (e.g.
     /// authentication headers).
+    #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+    #[serde(default)]
     pub tracing_headers: SerdeableHeaderHashMap,
 }
 

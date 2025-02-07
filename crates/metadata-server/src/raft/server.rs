@@ -542,7 +542,8 @@ impl Member {
         connection_manager.store(Some(Arc::new(new_connection_manager)));
 
         let_assert!(
-            MetadataServerKind::Raft(raft_options) = &Configuration::pinned().metadata_server.kind,
+            MetadataServerKind::Raft(raft_options) =
+                &Configuration::pinned().metadata_server.kind(),
             "Expecting that the replicated/raft metadata server has been configured"
         );
 

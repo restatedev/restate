@@ -198,6 +198,15 @@ pub async fn run(State(env): State<CliEnv>) {
         match client.health().await {
             Ok(envelope) if envelope.status_code().is_success() => {
                 c_success!("Admin Service '{}' is healthy!", client.base_url);
+                if let Some(advertised_ingress_address) = client.advertised_ingress_address {
+                    let mut table = Table::new();
+                    table.load_preset(comfy_table::presets::NOTHING);
+                    table.add_row(vec![
+                        "Advertised ingress address",
+                        &advertised_ingress_address,
+                    ]);
+                    c_println!("{}", table);
+                }
             }
             Ok(envelope) => {
                 c_error!("Admin Service '{}' is unhealthy:", client.base_url);
