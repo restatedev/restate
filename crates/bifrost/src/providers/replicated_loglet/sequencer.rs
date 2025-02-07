@@ -17,7 +17,7 @@ use std::sync::{
 
 use crossbeam_utils::CachePadded;
 use tokio::sync::Semaphore;
-use tokio_util::task::TaskTracker;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, instrument, trace};
 
 use restate_core::{
@@ -111,6 +111,8 @@ pub struct Sequencer<T> {
     record_permits: Arc<Semaphore>,
     in_flight_appends: TaskTracker,
     record_cache: RecordCache,
+    /// this is the parent token for all appenders.
+    cancellation_token: CancellationToken,
 }
 
 impl<T> Sequencer<T> {
@@ -175,6 +177,7 @@ impl<T: TransportConnect> Sequencer<T> {
             record_cache,
             max_inflight_records_in_config: AtomicUsize::new(max_in_flight_records_in_config),
             in_flight_appends: TaskTracker::default(),
+            cancellation_token: CancellationToken::default(),
         }
     }
 
@@ -191,6 +194,7 @@ impl<T: TransportConnect> Sequencer<T> {
         self.record_permits.close();
         // required to allow in_flight.wait() to finish.
         self.in_flight_appends.close();
+        self.cancellation_token.cancel();
 
         // we are assuming here that seal has been already executed on majority of nodes. This is
         // important since in_flight.close() doesn't prevent new tasks from being spawned.
@@ -288,7 +292,9 @@ impl<T: TransportConnect> Sequencer<T> {
             commit_resolver,
         );
 
-        let fut = self.in_flight_appends.track_future(appender.run());
+        let fut = self
+            .in_flight_appends
+            .track_future(appender.run(self.cancellation_token.child_token()));
         // Why not managed tasks, because managed tasks are not designed to manage a potentially
         // very large number of tasks, they also require a lock acquistion on start and that might
         // be a contention point.

@@ -12,10 +12,10 @@ use std::{cmp::Ordering, fmt::Display, sync::Arc, time::Duration};
 
 use tokio::time::Instant;
 use tokio::{sync::OwnedSemaphorePermit, task::JoinSet};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, trace, warn};
 
 use restate_core::{
-    cancellation_token,
     network::{rpc_router::RpcRouter, Incoming, NetworkError, Networking, TransportConnect},
     ShutdownError, TaskCenterFutureExt,
 };
@@ -123,14 +123,12 @@ impl<T: TransportConnect> SequencerAppender<T> {
             otel.name="replicated_loglet::sequencer::appender: run"
         )
     )]
-    pub async fn run(mut self) {
+    pub async fn run(mut self, cancellation_token: CancellationToken) {
         let start = Instant::now();
         // initial wave has 0 replicated and 0 gray listed node
         let mut state = State::Wave {
             graylist: NodeSet::default(),
         };
-
-        let cancellation = cancellation_token();
 
         let retry_policy = self
             .configuration
@@ -149,7 +147,14 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 State::Done | State::Cancelled | State::Sealed => break state,
                 State::Wave { graylist } => {
                     self.current_wave += 1;
-                    let Some(next_state) = cancellation
+                    // # Why is this cancellation safe?
+                    // Because we don't await any futures inside the join_next() loop, so we are
+                    // confident that we either have cancelled before resolving the commit token
+                    // or before. Even if a store was fully replicated and we cancelled before
+                    // updating the tail, that's an acceptable and safe result because we didn't
+                    // acknowledge the append to the writer and from their perspective it has
+                    // failed.
+                    let Some(next_state) = cancellation_token
                         .run_until_cancelled(self.send_wave(graylist))
                         .await
                     else {
@@ -173,7 +178,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                         );
                     }
 
-                    if cancellation
+                    if cancellation_token
                         .run_until_cancelled(tokio::time::sleep(delay))
                         .await
                         .is_none()
@@ -279,6 +284,8 @@ impl<T: TransportConnect> SequencerAppender<T> {
             });
         }
 
+        // NOTE: It's very important to keep this look cancellation safe. If the appender future
+        // was cancelled, we don't want to move the global commit offset.
         while let Some(store_result) = store_tasks.join_next().await {
             // unlikely to happen, but it's there for completeness
             if self.sequencer_shared_state.known_global_tail.is_sealed() {
