@@ -114,6 +114,7 @@ pub struct AdminClient {
     pub(crate) request_timeout: Duration,
     pub(crate) admin_api_version: AdminApiVersion,
     pub(crate) restate_server_version: Option<String>,
+    pub(crate) advertised_ingress_address: Option<String>,
 }
 
 impl AdminClient {
@@ -139,6 +140,7 @@ impl AdminClient {
             request_timeout: CliContext::get().request_timeout(),
             admin_api_version: AdminApiVersion::Unknown,
             restate_server_version: None,
+            advertised_ingress_address: None,
         };
 
         if let Ok(envelope) = client.version().await {
@@ -195,6 +197,8 @@ impl AdminClient {
         ) {
             client.restate_server_version = Some(version_information.version);
             client.admin_api_version = admin_api_version;
+            client.advertised_ingress_address =
+                version_information.ingress_endpoint.map(|u| u.to_string());
             Ok(client)
         } else {
             bail!("The CLI is not compatible with the Restate server '{}'. Please update the CLI to match the Restate server version '{}'.", client.base_url, version_information.version);
