@@ -9,14 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::{Arc, Weak};
-use std::time::Instant;
 
 use ahash::HashMap;
 use enum_map::EnumMap;
 use futures::{FutureExt, Stream, StreamExt};
+use metrics::{counter, histogram};
 use opentelemetry::global;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, instrument, trace, warn, Instrument, Span};
 
@@ -32,13 +33,15 @@ use super::connection::{OwnedConnection, WeakConnection};
 use super::error::{NetworkError, ProtocolError};
 use super::handshake::wait_for_welcome;
 use super::metric_definitions::{
-    self, CONNECTION_DROPPED, INCOMING_CONNECTION, MESSAGE_PROCESSING_DURATION, MESSAGE_RECEIVED,
-    ONGOING_DRAIN, OUTGOING_CONNECTION,
+    self, CONNECTION_DROPPED, INCOMING_CONNECTION, OUTGOING_CONNECTION,
 };
 use super::transport_connector::TransportConnect;
 use super::{Handler, MessageRouter};
 use crate::metadata::Urgency;
 use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
+use crate::network::metric_definitions::{
+    NETWORK_MESSAGE_PROCESSING_DURATION, NETWORK_MESSAGE_RECEIVED, NETWORK_MESSAGE_RECEIVED_BYTES,
+};
 use crate::network::{Incoming, PeerMetadataVersion};
 use crate::{Metadata, TaskCenter, TaskContext, TaskId, TaskKind};
 
@@ -424,7 +427,7 @@ impl<T: TransportConnect> ConnectionManager<T> {
 
     #[instrument(skip_all)]
     fn connect_loopback(&self) -> Result<Arc<OwnedConnection>, NetworkError> {
-        let (tx, rx) = mpsc::channel(self.networking_options.outbound_queue_length.into());
+        let (tx, rx) = mpsc::channel(self.networking_options.outbound_queue_length.get());
         let connection = OwnedConnection::new(
             self.metadata.my_node_id(),
             restate_types::net::CURRENT_PROTOCOL_VERSION,
@@ -524,8 +527,7 @@ impl<T: TransportConnect> ConnectionManager<T> {
         let connection_weak = Arc::downgrade(&connection);
         let span = tracing::error_span!(parent: None, "network-reactor",
             task_id = tracing::field::Empty,
-            peer_node_id = %peer_node_id,
-            protocol_version = ?connection.protocol_version() as i32,
+            peer = %peer_node_id,
         );
         let router = guard.router.clone();
 
@@ -543,7 +545,7 @@ impl<T: TransportConnect> ConnectionManager<T> {
         )?;
         if peer_node_id != self.metadata.my_node_id() {
             debug!(
-                peer_node_id = %peer_node_id,
+                peer = %peer_node_id,
                 task_id = %task_id,
                 "Incoming connection accepted from node {}", peer_node_id
             );
@@ -614,7 +616,6 @@ where
             }
         };
 
-        MESSAGE_RECEIVED.increment(1);
         let processing_started = Instant::now();
 
         // body are not allowed to be empty.
@@ -673,14 +674,10 @@ where
                 }
             });
 
+        let encoded_len = body.encoded_len();
         match body.try_as_binary_body(connection.protocol_version) {
             Ok(msg) => {
-                trace!(
-                    peer = %connection.peer,
-                    ?header,
-                    target = ?msg.target(),
-                    "Message received"
-                );
+                let target = msg.target();
 
                 let parent_context = header.span_context.as_ref().map(|span_ctx| {
                     global::get_text_map_propagator(|propagator| propagator.extract(span_ctx))
@@ -701,14 +698,25 @@ where
                 )
                 .await
                 {
-                    warn!("Error processing message: {:?}", e);
+                    warn!(
+                        target = target.as_str_name(),
+                        "Error processing message: {e}"
+                    );
                 }
-                MESSAGE_PROCESSING_DURATION.record(processing_started.elapsed());
+                histogram!(NETWORK_MESSAGE_PROCESSING_DURATION, "target" => target.as_str_name())
+                    .record(processing_started.elapsed());
+                counter!(NETWORK_MESSAGE_RECEIVED, "target" => target.as_str_name()).increment(1);
+                counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target.as_str_name())
+                    .increment(encoded_len as u64);
+                trace!(
+                    target = target.as_str_name(),
+                    "Processed message in {:?}",
+                    processing_started.elapsed()
+                );
             }
             Err(status) => {
                 // terminate the stream
-                info!("Error processing message, reporting error to peer: {status}");
-                MESSAGE_PROCESSING_DURATION.record(processing_started.elapsed());
+                warn!("Error processing message, reporting error to peer: {status}",);
                 connection.send_control_frame(ConnectionControl::codec_error(status.to_string()));
                 break;
             }
@@ -716,7 +724,6 @@ where
     }
 
     // remove from active set
-    ONGOING_DRAIN.increment(1.0);
     on_connection_draining(&connection, &connection_manager, is_peer_shutting_down);
     let protocol_version = connection.protocol_version;
     let peer_node_id = connection.peer;
@@ -770,7 +777,6 @@ where
     // We should also terminate response stream. This happens automatically when
     // the sender is dropped
     on_connection_terminated(&connection_manager);
-    ONGOING_DRAIN.decrement(1.0);
     CONNECTION_DROPPED.increment(1);
     debug!(
         "Connection terminated, drained {} messages in {:?}, total connection age is {:?}",

@@ -216,7 +216,20 @@ where
         protocol_version: ProtocolVersion,
     ) -> Result<(), Self::Error> {
         let message = message.try_map(|mut m| {
-            <H::MessageType as WireDecode>::decode(&mut m.payload, protocol_version)
+            #[cfg(debug_assertions)]
+            let decode_start = tokio::time::Instant::now();
+
+            let res = <H::MessageType as WireDecode>::decode(&mut m.payload, protocol_version);
+            #[cfg(debug_assertions)]
+            {
+                use super::metric_definitions::NETWORK_MESSAGE_DECODE_DURATION;
+                metrics::histogram!(
+                    NETWORK_MESSAGE_DECODE_DURATION,
+                    "target" => H::MessageType::TARGET.as_str_name()
+                )
+                .record(decode_start.elapsed());
+            }
+            res
         })?;
         self.inner.on_message(message).await;
         Ok(())
