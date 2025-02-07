@@ -11,6 +11,7 @@
 use std::sync::Weak;
 use std::time::Duration;
 
+use restate_types::retries::with_jitter;
 use tokio::time::Instant;
 use tracing::instrument;
 use tracing::{debug, trace};
@@ -89,7 +90,7 @@ impl PeriodicTailChecker {
                     );
                 }
             }
-            tokio::time::sleep(duration).await;
+            tokio::time::sleep(with_jitter(duration, 0.5)).await;
         }
     }
 }

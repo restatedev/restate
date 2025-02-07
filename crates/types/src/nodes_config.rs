@@ -8,16 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
-use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use crate::locality::NodeLocation;
 use crate::net::AdvertisedAddress;
 use crate::{flexbuffers_storage_encode_decode, GenerationalNodeId, NodeId, PlainNodeId};
 use crate::{Version, Versioned};
+use ahash::HashMap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum NodesConfigError {
@@ -57,14 +55,15 @@ pub enum Role {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NodesConfiguration {
     version: Version,
     cluster_name: String,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     nodes: HashMap<PlainNodeId, MaybeNode>,
-    name_lookup: HashMap<String, PlainNodeId, Xxh3DefaultBuilder>,
+    #[debug(skip)]
+    name_lookup: HashMap<String, PlainNodeId>,
 }
 
 impl Default for NodesConfiguration {
@@ -132,6 +131,14 @@ impl NodesConfiguration {
             nodes: HashMap::default(),
             name_lookup: HashMap::default(),
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.name_lookup.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.name_lookup.is_empty()
     }
 
     pub fn cluster_name(&self) -> &str {

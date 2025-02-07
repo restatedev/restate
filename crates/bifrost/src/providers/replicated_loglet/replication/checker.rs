@@ -515,9 +515,18 @@ impl<Attr: Debug> Debug for NodeSetChecker<Attr> {
 
 impl<Attr: Display> Display for NodeSetChecker<Attr> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use itertools::Position;
         write!(f, "[")?;
-        for (node, attr) in self.node_to_attr.iter() {
-            write!(f, "{node} => {attr}, ")?;
+        for (pos, (node_id, attr)) in self
+            .node_to_attr
+            .iter()
+            .sorted_by_key(|v| v.0)
+            .with_position()
+        {
+            match pos {
+                Position::Only | Position::Last => write!(f, "{node_id}({attr})")?,
+                Position::First | Position::Middle => write!(f, "{node_id}({attr}), ")?,
+            }
         }
         write!(f, "]")
     }
