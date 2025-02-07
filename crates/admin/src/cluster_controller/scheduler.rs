@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use itertools::Itertools;
 use rand::seq::IteratorRandom;
-use tracing::{debug, enabled, info, instrument, Level};
+use tracing::{debug, enabled, info, instrument, trace, Level};
 
 use restate_core::metadata_store::{Precondition, ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
@@ -101,6 +101,7 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
+        trace!(?observed_cluster_state, "On observed cluster state");
         let alive_workers = observed_cluster_state
             .alive_nodes
             .keys()
