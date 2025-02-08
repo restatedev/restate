@@ -10,6 +10,8 @@
 
 use std::{cmp::Ordering, fmt::Display, sync::Arc, time::Duration};
 
+use restate_types::replicated_loglet::Spread;
+use restate_types::retries::with_jitter;
 use tokio::time::Instant;
 use tokio::{sync::OwnedSemaphorePermit, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -17,7 +19,7 @@ use tracing::{debug, instrument, trace, warn};
 
 use restate_core::{
     network::{rpc_router::RpcRouter, Incoming, NetworkError, Networking, TransportConnect},
-    ShutdownError, TaskCenterFutureExt,
+    TaskCenterFutureExt,
 };
 use restate_types::{
     config::Configuration,
@@ -31,6 +33,7 @@ use restate_types::{
 
 use super::{RecordsExt, SequencerSharedState};
 use crate::providers::replicated_loglet::metric_definitions::BIFROST_SEQ_APPEND_DURATION;
+use crate::providers::replicated_loglet::replication::spread_selector::SpreadSelectorError;
 use crate::{
     loglet::{AppendError, LogletCommitResolver},
     providers::replicated_loglet::{
@@ -46,10 +49,7 @@ const DEFAULT_BACKOFF_TIME: Duration = Duration::from_millis(1000);
 const TONE_ESCALATION_THRESHOLD: usize = 5;
 
 enum State {
-    Wave {
-        // nodes that should be avoided by the spread selector
-        graylist: NodeSet,
-    },
+    Wave,
     Backoff,
     Done,
     Sealed,
@@ -72,6 +72,8 @@ pub(crate) struct SequencerAppender<T> {
     permit: Option<OwnedSemaphorePermit>,
     commit_resolver: Option<LogletCommitResolver>,
     configuration: Live<Configuration>,
+    // nodes that should be avoided by the spread selector
+    graylist: NodeSet,
 }
 
 impl<T: TransportConnect> SequencerAppender<T> {
@@ -109,6 +111,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
             permit: Some(permit),
             commit_resolver: Some(commit_resolver),
             configuration: Configuration::updateable(),
+            graylist: NodeSet::default(),
         }
     }
 
@@ -126,9 +129,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
     pub async fn run(mut self, cancellation_token: CancellationToken) {
         let start = Instant::now();
         // initial wave has 0 replicated and 0 gray listed node
-        let mut state = State::Wave {
-            graylist: NodeSet::default(),
-        };
+        let mut state = State::Wave;
 
         let retry_policy = self
             .configuration
@@ -145,7 +146,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
             state = match state {
                 // termination conditions
                 State::Done | State::Cancelled | State::Sealed => break state,
-                State::Wave { graylist } => {
+                State::Wave => {
                     self.current_wave += 1;
                     // # Why is this cancellation safe?
                     // Because we don't await any futures inside the join_next() loop, so we are
@@ -158,7 +159,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     // their perspective it has failed, and because the global tail was not moved, all
                     // appends after this one cannot move the global tail as well.
                     let Some(next_state) = cancellation_token
-                        .run_until_cancelled(self.send_wave(graylist))
+                        .run_until_cancelled(self.send_wave())
                         .await
                     else {
                         break State::Cancelled;
@@ -168,7 +169,9 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 State::Backoff => {
                     // since backoff can be None, or run out of iterations,
                     // but appender should never give up we fall back to fixed backoff
-                    let delay = retry.next().unwrap_or(DEFAULT_BACKOFF_TIME);
+                    let delay = retry
+                        .next()
+                        .unwrap_or(with_jitter(DEFAULT_BACKOFF_TIME, 0.5));
                     if self.current_wave >= TONE_ESCALATION_THRESHOLD {
                         warn!(
                             wave = %self.current_wave,
@@ -189,9 +192,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                         break State::Cancelled;
                     };
 
-                    State::Wave {
-                        graylist: NodeSet::default(),
-                    }
+                    State::Wave
                 }
             }
         };
@@ -216,7 +217,9 @@ impl<T: TransportConnect> SequencerAppender<T> {
             State::Cancelled => {
                 trace!("Append cancelled");
                 if let Some(commit_resolver) = self.commit_resolver.take() {
-                    commit_resolver.error(AppendError::Shutdown(ShutdownError));
+                    commit_resolver.error(AppendError::ReconfigurationNeeded(
+                        "sequencer is draining".into(),
+                    ));
                 }
             }
             State::Sealed => {
@@ -231,26 +234,55 @@ impl<T: TransportConnect> SequencerAppender<T> {
         }
     }
 
-    #[instrument(skip_all, fields(wave = %self.current_wave))]
-    async fn send_wave(&mut self, mut graylist: NodeSet) -> State {
-        // select the spread
-        let spread = match self.sequencer_shared_state.selector.select(
-            &mut rand::rng(),
-            &self.networking.metadata().nodes_config_ref(),
-            &graylist,
-        ) {
-            Ok(spread) => spread,
-            Err(_) => {
-                graylist.clear();
+    fn reset_graylist(&mut self) {
+        self.graylist.clear();
+        // add back the sealed nodes to the gray list, those will never be writeable again.
+        self.graylist.extend(
+            self.checker
+                .filter(|attr| attr.sealed)
+                .map(|(node_id, _)| *node_id),
+        );
+    }
+
+    fn generate_spread(&mut self) -> Result<Spread, SpreadSelectorError> {
+        let rng = &mut rand::rng();
+        let nodes_config = &self.networking.metadata().nodes_config_ref();
+        match self
+            .sequencer_shared_state
+            .selector
+            .select(rng, nodes_config, &self.graylist)
+        {
+            Ok(spread) => Ok(spread),
+            Err(err) => {
                 trace!(
-                    %graylist,
+                    nodeset_status = %self.nodeset_status,
+                    graylist = %self.graylist,
+                    %err,
                     "Cannot select a spread, perhaps too many nodes are graylisted, will clear the list and try again"
+                );
+                self.reset_graylist();
+                self.sequencer_shared_state
+                    .selector
+                    .select(rng, nodes_config, &self.graylist)
+            }
+        }
+    }
+
+    #[instrument(skip_all, fields(wave = %self.current_wave))]
+    async fn send_wave(&mut self) -> State {
+        // select the spread
+        let spread = match self.generate_spread() {
+            Ok(spread) => spread,
+            Err(err) => {
+                trace!(
+                    nodeset_status = %self.nodeset_status,
+                    "Cannot select a spread: {err}"
                 );
                 return State::Backoff;
             }
         };
 
-        trace!(%graylist, %spread, "Sending append wave");
+        trace!(graylist = %self.graylist, %spread, wave = %self.current_wave, nodeset_status = %self.nodeset_status, "Sending append wave");
         let last_offset = self.records.last_offset(self.first_offset).unwrap();
 
         // todo: should be exponential backoff
@@ -273,18 +305,22 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     continue;
                 }
             }
-            store_tasks.spawn({
-                let store_task = LogServerStoreTask {
-                    node_id,
-                    sequencer_shared_state: self.sequencer_shared_state.clone(),
-                    networking: self.networking.clone(),
-                    first_offset: self.first_offset,
-                    records: self.records.clone(),
-                    rpc_router: self.store_router.clone(),
-                    store_timeout,
-                };
-                async move { (node_id, store_task.run().await) }.in_current_tc()
-            });
+            store_tasks
+                .build_task()
+                .name(&format!("store-to-{}", node_id))
+                .spawn({
+                    let store_task = LogServerStoreTask {
+                        node_id,
+                        sequencer_shared_state: self.sequencer_shared_state.clone(),
+                        networking: self.networking.clone(),
+                        first_offset: self.first_offset,
+                        records: self.records.clone(),
+                        rpc_router: self.store_router.clone(),
+                        store_timeout,
+                    };
+                    async move { (node_id, store_task.run().await) }.in_current_tc()
+                })
+                .unwrap();
         }
 
         // NOTE: It's very important to keep this loop cancellation safe. If the appender future
@@ -313,7 +349,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                         trace!(peer = %node_id, "Timeout waiting for node {} to commit a batch", node_id);
                     }
                     self.nodeset_status.merge(node_id, PerNodeStatus::timeout());
-                    graylist.insert(node_id);
+                    self.graylist.insert(node_id);
                     continue;
                 }
                 StoreTaskStatus::Error(err) => {
@@ -324,7 +360,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                         trace!(peer = %node_id, %err, "Failed to send batch to node");
                     }
                     self.nodeset_status.merge(node_id, PerNodeStatus::failed());
-                    graylist.insert(node_id);
+                    self.graylist.insert(node_id);
                     continue;
                 }
                 StoreTaskStatus::Sealed => {
@@ -353,20 +389,20 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 Status::Sealed | Status::Sealing => {
                     self.checker
                         .set_attribute(node_id, NodeAttributes::sealed());
-                    graylist.insert(node_id);
+                    self.graylist.insert(node_id);
                 }
                 Status::Dropped => {
                     // Overloaded, or request expired
                     debug!(peer = %node_id, status=?stored.status, "Store failed on peer. Peer is load shedding");
-                    graylist.insert(node_id);
+                    self.graylist.insert(node_id);
                 }
                 Status::Disabled => {
                     debug!(peer = %node_id, status=?stored.status, "Store failed on peer. Peer's log-store is disabled");
-                    graylist.insert(node_id);
+                    self.graylist.insert(node_id);
                 }
                 Status::SequencerMismatch | Status::Malformed | Status::OutOfBounds => {
                     warn!(peer = %node_id, status=?stored.status, "Store failed on peer due to unexpected error, please check logs of the peer to investigate");
-                    graylist.insert(node_id);
+                    self.graylist.insert(node_id);
                 }
             }
 
@@ -387,10 +423,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
         if self.checker.check_fmajority(|attr| attr.sealed).passed() {
             State::Sealed
         } else {
-            // We couldn't achieve write quorum with this wave. We will try again, as fast as
-            // possible until the graylist eats up enough nodes such that we won't be able to
-            // generate node nodesets. Only then we backoff.
-            State::Wave { graylist }
+            State::Backoff
         }
     }
 }

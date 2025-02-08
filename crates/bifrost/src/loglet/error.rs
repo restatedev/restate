@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -16,8 +17,10 @@ use restate_types::errors::{IntoMaybeRetryable, MaybeRetryableError};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum AppendError {
-    #[error("Loglet is sealed")]
+    #[error("Loglet has been sealed")]
     Sealed,
+    #[error("Loglet needs reconfiguration; {0}")]
+    ReconfigurationNeeded(Cow<'static, str>),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
     #[error(transparent)]
