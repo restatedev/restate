@@ -215,7 +215,7 @@ impl NodesConfiguration {
     pub fn get_log_server_storage_state(&self, node_id: &PlainNodeId) -> StorageState {
         let maybe = self.nodes.get(node_id);
         let Some(maybe) = maybe else {
-            return StorageState::Disabled;
+            return StorageState::Provisioning;
         };
         match maybe {
             MaybeNode::Tombstone => StorageState::Disabled,
@@ -325,10 +325,21 @@ pub enum StorageState {
     ///
     /// The node can never transition back to `Provisioning` once it has transitioned out of it.
     ///
-    /// should read from: no
-    /// can write to: no
+    /// [authoritative]
+    /// or all intents and purposes, this is equivalent to a `ReadOnly` state, except that it's
+    /// excluded from nodeset generation. The difference
+    /// between this and `ReadOnly` is that if a node is in Provisioning state, we are confident
+    /// that it has not been added to nodesets and we can safely remove it from the cluster without
+    /// checking the log-chain or trim points of loglets. Note that if this node happens to be in a
+    /// nodeset (although control plan shouldn't add it) spread selectors will not write any data
+    /// to it until they observe a state transition to ReadWrite. This behaviour matches `ReadOnly`
+    /// state.
+    ///
+    /// can read from: yes (likely to not have data, but it might if it transitioned into RW)
+    /// can write to: yes - but excluded from new nodesets. If you see it in a nodeset, try writing to it.
     #[default]
     Provisioning,
+    /// [authoritative empty]
     /// Node's storage is not expected to be accessed in reads nor write. The node is not
     /// considered as part of the replicated log cluster. Node can be safely decommissioned.
     ///
@@ -337,6 +348,7 @@ pub enum StorageState {
     /// should read from: no
     /// can write to: no
     Disabled,
+    /// [authoritative]
     /// Node is not picked in new write sets, but it may still accept writes on existing nodeset
     /// and it's included in critical metadata updates (seal, release, etc.)
     /// should read from: yes
@@ -344,14 +356,17 @@ pub enum StorageState {
     /// **should write to: no**
     /// **excluded from new nodesets**
     ReadOnly,
+    /// [authoritative]
     /// Can be picked up in new write sets and accepts writes in existing write sets.
     ///
     /// should read from: yes
     /// can write to: yes
     ReadWrite,
+    /// **[non-authoritative]**
     /// Node detected that some/all of its local storage has been deleted and it cannot be used
     /// as authoritative source for quorum-dependent queries. Some data might have permanently been
-    /// lost.
+    /// lost. It behaves like ReadOnly in spread selectors, but participates unauthoritatively in
+    /// f-majority checks. This node can transition back to ReadWrite if it has been repaired.
     ///
     /// should read from: yes (non-quorum reads)
     /// can write to: no
@@ -367,19 +382,20 @@ impl StorageState {
         }
     }
 
-    pub fn should_read_from(&self) -> bool {
+    // Nodes that may have data or might become readable in the future
+    pub fn can_read_from(&self) -> bool {
         use StorageState::*;
         match self {
-            ReadOnly | ReadWrite | DataLoss => true,
-            Provisioning | Disabled => false,
+            Provisioning | ReadOnly | ReadWrite | DataLoss => true,
+            Disabled => false,
         }
     }
 
     pub fn is_authoritative(&self) -> bool {
         use StorageState::*;
         match self {
-            Provisioning | Disabled | DataLoss => false,
-            ReadOnly | ReadWrite => true,
+            DataLoss => false,
+            Disabled | Provisioning | ReadOnly | ReadWrite => true,
         }
     }
 
