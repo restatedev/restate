@@ -30,6 +30,7 @@ use restate_types::{
     errors::MaybeRetryableError,
     logs::{metadata::SegmentIndex, LogId, Record},
     net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
+    nodes_config::NodesConfigError,
     replicated_loglet::ReplicatedLogletParams,
     GenerationalNodeId,
 };
@@ -163,8 +164,30 @@ where
                         | NetworkError::ConnectionClosed(_)
                         | NetworkError::Timeout(_) => {
                             // we retry to re-connect one time
-                            connection = self.renew_connection(connection).await?;
-
+                            connection = match self.renew_connection(connection).await {
+                                Ok(connection) => connection,
+                                // A bit of deep inspection of the error here, ugly, but correct.
+                                // todo (asoli): make this code pretty.
+                                //
+                                // these two cases are the same but they come from different
+                                // sources.
+                                Err(NetworkError::OldPeerGeneration(err)) => {
+                                    // means that the sequencer is gone, we need reconfiguration.
+                                    return Ok(LogletCommit::reconfiguration_needed(format!(
+                                        "sequencer is gone; {err}"
+                                    )));
+                                }
+                                Err(NetworkError::UnknownNode(
+                                    NodesConfigError::GenerationMismatch { found, .. },
+                                )) if found.is_newer_than(self.params.sequencer) => {
+                                    // means that the sequencer is gone, we need reconfiguration.
+                                    return Ok(LogletCommit::reconfiguration_needed(format!(
+                                        "sequencer is gone; {err}"
+                                    )));
+                                }
+                                // probably retryable
+                                Err(err) => return Err(err.into()),
+                            };
                             msg = err.original;
                             continue;
                         }
@@ -375,11 +398,16 @@ impl RemoteSequencerConnection {
                     commit_resolver.sealed();
                     break AppendError::Sealed;
                 }
+                SequencerStatus::Gone | SequencerStatus::Shutdown => {
+                    // this sequencer is not coming back
+                    commit_resolver.error(AppendError::ReconfigurationNeeded(
+                        format!("sequencer at {} is terminating", connection.peer()).into(),
+                    ));
+                }
                 SequencerStatus::UnknownLogId
                 | SequencerStatus::UnknownSegmentIndex
                 | SequencerStatus::LogletIdMismatch
                 | SequencerStatus::NotSequencer
-                | SequencerStatus::Shutdown
                 | SequencerStatus::Error { .. } => {
                     let err = RemoteSequencerError::try_from(appended.header.status).unwrap();
                     // While the UnknownLoglet status is non-terminal for the connection
@@ -428,8 +456,6 @@ pub enum RemoteSequencerError {
     LogletIdMismatch,
     #[error("Remote node is not a sequencer")]
     NotSequencer,
-    #[error("Sequencer shutdown")]
-    Shutdown,
     #[error("Unknown remote error: {message}")]
     Error { retryable: bool, message: String },
 }
@@ -441,7 +467,6 @@ impl MaybeRetryableError for RemoteSequencerError {
             Self::UnknownSegmentIndex => false,
             Self::LogletIdMismatch => false,
             Self::NotSequencer => false,
-            Self::Shutdown => false,
             Self::Error { retryable, .. } => *retryable,
         }
     }
@@ -455,12 +480,14 @@ impl TryFrom<SequencerStatus> for RemoteSequencerError {
             SequencerStatus::UnknownSegmentIndex => RemoteSequencerError::UnknownSegmentIndex,
             SequencerStatus::LogletIdMismatch => RemoteSequencerError::LogletIdMismatch,
             SequencerStatus::NotSequencer => RemoteSequencerError::NotSequencer,
-            SequencerStatus::Shutdown => RemoteSequencerError::Shutdown,
             SequencerStatus::Error { retryable, message } => {
                 RemoteSequencerError::Error { retryable, message }
             }
-            SequencerStatus::Ok | SequencerStatus::Sealed => {
-                return Err("not a failure status");
+            SequencerStatus::Ok
+            | SequencerStatus::Sealed
+            | SequencerStatus::Shutdown
+            | SequencerStatus::Gone => {
+                unreachable!("not a failure status")
             }
         };
 
