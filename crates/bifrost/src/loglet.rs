@@ -29,7 +29,6 @@ use std::task::{ready, Poll};
 use async_trait::async_trait;
 use futures::{FutureExt, Stream};
 
-use restate_core::ShutdownError;
 use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, TailState};
 
 use crate::LogEntry;
