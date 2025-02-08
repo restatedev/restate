@@ -11,11 +11,9 @@
 use std::future::Future;
 
 use futures::{Stream, StreamExt};
-use tonic::transport::Channel;
 use tracing::trace;
 
 use restate_types::config::NetworkingOptions;
-use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::node::Message;
 use restate_types::GenerationalNodeId;
@@ -23,8 +21,6 @@ use restate_types::GenerationalNodeId;
 use super::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use super::{NetworkError, ProtocolError};
 use crate::network::net_util::create_tonic_channel;
-
-type DashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
 
 pub trait TransportConnect: Send + Sync + 'static {
     fn connect(
@@ -42,15 +38,11 @@ pub trait TransportConnect: Send + Sync + 'static {
 
 pub struct GrpcConnector {
     networking_options: NetworkingOptions,
-    channel_cache: DashMap<AdvertisedAddress, Channel>,
 }
 
 impl GrpcConnector {
     pub fn new(networking_options: NetworkingOptions) -> Self {
-        Self {
-            networking_options,
-            channel_cache: DashMap::default(),
-        }
+        Self { networking_options }
     }
 }
 
@@ -67,15 +59,7 @@ impl TransportConnect for GrpcConnector {
         let address = nodes_config.find_node_by_id(node_id)?.address.clone();
 
         trace!("Attempting to connect to node {} at {}", node_id, address);
-        // Do we have a channel in cache for this address?
-        let channel = match self.channel_cache.get(&address) {
-            Some(channel) => channel.clone(),
-            None => self
-                .channel_cache
-                .entry(address.clone())
-                .or_insert_with(|| create_tonic_channel(address, &self.networking_options))
-                .clone(),
-        };
+        let channel = create_tonic_channel(address, &self.networking_options);
 
         // Establish the connection
         let mut client = CoreNodeSvcClient::new(channel)

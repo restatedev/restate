@@ -106,6 +106,12 @@ impl GenerationalNodeId {
         self.encode(buf);
         buf.split()
     }
+
+    /// Same plain node-id but not the same generation
+    #[inline(always)]
+    pub fn is_same_but_different(&self, other: &GenerationalNodeId) -> bool {
+        self.0 == other.0 && self.1 != other.1
+    }
 }
 
 impl From<GenerationalNodeId> for u64 {
