@@ -44,6 +44,8 @@ pub enum SequencerStatus {
     /// Sealed is returned when the sequencer cannot accept more
     /// [`Append`] requests because it's sealed
     Sealed,
+    /// Local sequencer is not available anymore, reconfiguration is needed
+    Gone,
     /// LogletID does not match Segment
     LogletIdMismatch,
     /// Invalid LogId
