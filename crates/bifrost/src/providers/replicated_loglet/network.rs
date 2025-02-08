@@ -85,7 +85,7 @@ impl RequestPump {
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         // todo(asoli) read from opts
-        let queue_length = 10;
+        let queue_length = 128;
         let append_stream = router_builder.subscribe_to_stream(queue_length);
         let get_sequencer_state_stream = router_builder.subscribe_to_stream(queue_length);
         Self {
@@ -104,14 +104,15 @@ impl RequestPump {
         let mut cancel = std::pin::pin!(cancellation_watcher());
         loop {
             tokio::select! {
+                biased;
                 _ = &mut cancel => {
                     break;
                 }
-                Some(append) = self.append_stream.next() => {
-                    self.handle_append(&provider, append).await;
-                }
                 Some(get_sequencer_state) = self.get_sequencer_state_stream.next() => {
                     self.handle_get_sequencer_state(&provider, get_sequencer_state).await;
+                }
+                Some(append) = self.append_stream.next() => {
+                    self.handle_append(&provider, append).await;
                 }
             }
         }
@@ -158,41 +159,51 @@ impl RequestPump {
             return;
         }
 
-        let tail = if msg.force_seal_check {
-            match loglet
-                .find_tail_inner(FindTailOptions::ForceSealCheck)
-                .await
-            {
-                Ok(tail) => tail,
-                Err(err) => {
-                    let failure = SequencerState {
-                        header: CommonResponseHeader {
-                            known_global_tail: None,
-                            sealed: None,
-                            status: SequencerStatus::Error {
-                                retryable: true,
-                                message: err.to_string(),
+        if msg.force_seal_check {
+            let _ = TaskCenter::spawn(TaskKind::Disposable, "remote-check-seal", async move {
+                match loglet
+                    .find_tail_inner(FindTailOptions::ForceSealCheck)
+                    .await
+                {
+                    Ok(tail) => {
+                        let sequencer_state = SequencerState {
+                            header: CommonResponseHeader {
+                                known_global_tail: Some(tail.offset()),
+                                sealed: Some(tail.is_sealed()),
+                                status: SequencerStatus::Ok,
                             },
-                        },
-                    };
-                    let _ = reciprocal.prepare(failure).try_send();
-                    return;
+                        };
+                        let _ = reciprocal.prepare(sequencer_state).try_send();
+                    }
+                    Err(err) => {
+                        let failure = SequencerState {
+                            header: CommonResponseHeader {
+                                known_global_tail: None,
+                                sealed: None,
+                                status: SequencerStatus::Error {
+                                    retryable: true,
+                                    message: err.to_string(),
+                                },
+                            },
+                        };
+                        let _ = reciprocal.prepare(failure).try_send();
+                    }
                 }
-            }
+                Ok(())
+            });
         } else {
             // if we are not forced to check the seal, we can just return the last known tail from the
             // sequencer's view
-            loglet.last_known_global_tail()
-        };
-
-        let sequencer_state = SequencerState {
-            header: CommonResponseHeader {
-                known_global_tail: Some(tail.offset()),
-                sealed: Some(tail.is_sealed()),
-                status: SequencerStatus::Ok,
-            },
-        };
-        let _ = reciprocal.prepare(sequencer_state).try_send();
+            let tail = loglet.last_known_global_tail();
+            let sequencer_state = SequencerState {
+                header: CommonResponseHeader {
+                    known_global_tail: Some(tail.offset()),
+                    sealed: Some(tail.is_sealed()),
+                    status: SequencerStatus::Ok,
+                },
+            };
+            let _ = reciprocal.prepare(sequencer_state).try_send();
+        }
     }
 
     /// Infallible handle_append method
@@ -265,7 +276,7 @@ impl RequestPump {
                 return Err(SequencerStatus::LogletIdMismatch);
             }
 
-            match self.create_loglet(provider, header).await {
+            match self.create_loglet(provider, header) {
                 Ok(loglet) => return Ok(loglet),
                 Err(SequencerStatus::UnknownLogId | SequencerStatus::UnknownSegmentIndex) => {
                     // possible outdated metadata
@@ -315,7 +326,7 @@ impl RequestPump {
         }
     }
 
-    async fn create_loglet<T: TransportConnect>(
+    fn create_loglet<T: TransportConnect>(
         &self,
         provider: &ReplicatedLogletProvider<T>,
         header: &CommonRequestHeader,
