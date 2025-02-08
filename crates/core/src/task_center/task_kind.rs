@@ -80,8 +80,9 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort"))]
     MetadataBackgroundSync,
     RpcServer,
+    #[strum(props(runtime = "default"))]
     SocketHandler,
-    #[strum(props(OnError = "log"))]
+    #[strum(props(OnError = "log", runtime = "default"))]
     H2Stream,
     /// A task that handles a single RPC request. The task is executed on the default runtime to
     /// decouple it from the lifetime of the originating runtime. Use this task kind if you want to
@@ -104,7 +105,7 @@ pub enum TaskKind {
     /// Low-priority tasks responsible for partition snapshot-related I/O.
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     PartitionSnapshotProducer,
-    #[strum(props(OnError = "log"))]
+    #[strum(props(OnError = "log", runtime = "default"))]
     ConnectionReactor,
     Shuffle,
     Cleaner,
