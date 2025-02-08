@@ -128,8 +128,8 @@ where
         loglet_id: LogletId::new(LogId::from(1u32), SegmentIndex::OLDEST),
         sequencer,
         replication,
-        // node 1 is the metadata, 2..=count+1 are logservers
-        nodeset: (2..=log_server_count + 1).collect(),
+        // all nodes are log-servers
+        nodeset: (1..=log_server_count).collect(),
     };
     let loglet_params = loglet_params.serialize()?;
 
