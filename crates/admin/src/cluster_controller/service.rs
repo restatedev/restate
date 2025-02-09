@@ -797,7 +797,9 @@ mod tests {
     use restate_core::test_env::NoOpMessageHandler;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{NodeState, PartitionProcessorStatus};
-    use restate_types::config::{AdminOptions, BifrostOptions, Configuration, NetworkingOptions};
+    use restate_types::config::{
+        AdminOptionsBuilder, BifrostOptions, Configuration, NetworkingOptions,
+    };
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
@@ -896,9 +898,11 @@ mod tests {
     async fn auto_log_trim() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let mut admin_options = AdminOptions::default();
         let interval_duration = Duration::from_secs(10);
-        admin_options.log_trim_interval = Some(interval_duration.into());
+        let admin_options = AdminOptionsBuilder::default()
+            .log_trim_interval(interval_duration.into())
+            .build()
+            .unwrap();
         let networking = NetworkingOptions {
             // we are using failing transport so we only want to use the mock connection we created.
             num_concurrent_connections: NonZero::new(1).unwrap(),
@@ -979,9 +983,12 @@ mod tests {
             ..Default::default()
         };
 
-        let mut admin_options = AdminOptions::default();
         let interval_duration = Duration::from_secs(10);
-        admin_options.log_trim_interval = Some(interval_duration.into());
+        let admin_options = AdminOptionsBuilder::default()
+            .log_trim_interval(interval_duration.into())
+            .build()
+            .unwrap();
+        let interval_duration = Duration::from_secs(10);
         let config = Configuration {
             networking,
             admin: admin_options,
@@ -1051,9 +1058,11 @@ mod tests {
     async fn do_not_trim_unless_all_nodes_report_persisted_lsn() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let mut admin_options = AdminOptions::default();
         let interval_duration = Duration::from_secs(10);
-        admin_options.log_trim_interval = Some(interval_duration.into());
+        let admin_options = AdminOptionsBuilder::default()
+            .log_trim_interval(interval_duration.into())
+            .build()
+            .unwrap();
         let mut bifrost_options = BifrostOptions::default();
         bifrost_options.default_provider = ProviderKind::InMemory;
 
@@ -1115,7 +1124,6 @@ mod tests {
     async fn do_not_trim_by_persisted_lsn_if_snapshot_repository_configured() -> anyhow::Result<()>
     {
         const LOG_ID: LogId = LogId::new(0);
-        let interval_duration = Duration::from_secs(10);
 
         let networking = NetworkingOptions {
             // we are using failing transport so we only want to use the mock connection we created.
@@ -1123,11 +1131,16 @@ mod tests {
             ..Default::default()
         };
 
+        let interval_duration = Duration::from_secs(10);
+        let admin_options = AdminOptionsBuilder::default()
+            .log_trim_interval(interval_duration.into())
+            .build()
+            .unwrap();
         let mut config: Configuration = Configuration {
             networking,
+            admin: admin_options,
             ..Default::default()
         };
-        config.admin.log_trim_interval = Some(interval_duration.into());
         config.bifrost.default_provider = ProviderKind::InMemory;
         config.worker.snapshots.destination = Some("a-repository-somewhere".to_string());
 
@@ -1201,9 +1214,12 @@ mod tests {
     async fn auto_trim_by_archived_lsn_when_dead_nodes_present() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let mut admin_options = AdminOptions::default();
         let interval_duration = Duration::from_secs(10);
-        admin_options.log_trim_interval = Some(interval_duration.into());
+        let admin_options = AdminOptionsBuilder::default()
+            .log_trim_interval(interval_duration.into())
+            .build()
+            .unwrap();
+
         let mut bifrost_options = BifrostOptions::default();
         bifrost_options.default_provider = ProviderKind::InMemory;
         let config = Configuration {
@@ -1278,9 +1294,12 @@ mod tests {
     async fn do_not_trim_by_archived_lsn_if_slow_nodes_present() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let mut admin_options = AdminOptions::default();
         let interval_duration = Duration::from_secs(10);
-        admin_options.log_trim_interval = Some(interval_duration.into());
+        let admin_options = AdminOptionsBuilder::default()
+            .log_trim_interval(interval_duration.into())
+            .build()
+            .unwrap();
+
         let mut bifrost_options = BifrostOptions::default();
         bifrost_options.default_provider = ProviderKind::InMemory;
         let networking = NetworkingOptions {

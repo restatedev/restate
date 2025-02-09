@@ -8,7 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeMap;
+
 use futures::future::OptionFuture;
+use tokio::sync::watch;
+use tokio::time;
+use tokio::time::MissedTickBehavior;
+use tracing::{debug, info, warn};
+
 use restate_core::cancellation_watcher;
 use restate_partition_store::PartitionStoreManager;
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
@@ -17,11 +24,6 @@ use restate_types::config::{Configuration, StorageOptions};
 use restate_types::identifiers::PartitionId;
 use restate_types::live::LiveLoad;
 use restate_types::logs::{Lsn, SequenceNumber};
-use std::collections::BTreeMap;
-use tokio::sync::watch;
-use tokio::time;
-use tokio::time::MissedTickBehavior;
-use tracing::{debug, trace, warn};
 
 /// Monitors the persisted log lsns and notifies the partition processor manager about it. The
 /// current approach requires flushing the memtables to make sure that data has been persisted.
@@ -58,15 +60,16 @@ impl PersistedLogLsnWatchdog {
     }
 
     fn create_persist_lsn(options: &StorageOptions) -> (Option<time::Interval>, Lsn) {
-        let persist_lsn_interval = options.persist_lsn_interval.map(|duration| {
-            let mut interval = time::interval(duration.into());
+        let persist_lsn_interval = options.persist_lsn_interval().map(|duration| {
+            let mut interval = time::interval(duration);
             interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
             interval
         });
 
-        let persist_lsn_threshold = Lsn::from(options.persist_lsn_threshold);
-
-        (persist_lsn_interval, persist_lsn_threshold)
+        (
+            persist_lsn_interval,
+            Lsn::from(options.persist_lsn_threshold),
+        )
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -80,10 +83,8 @@ impl PersistedLogLsnWatchdog {
                 _ = &mut shutdown => {
                     break;
                 },
-                _ = OptionFuture::from(self.persist_lsn_interval.as_mut().map(|interval| interval.tick())) => {
-                    let result = self.update_persisted_lsns().await;
-
-                    if let Err(err) = result {
+                Some(_) = OptionFuture::from(self.persist_lsn_interval.as_mut().map(|interval| interval.tick())) => {
+                     if let Err(err) = self.update_persisted_lsns().await {
                         warn!("Failed updating the persisted applied lsns. This might prevent the log from being trimmed: {err}");
                     }
                 }
@@ -129,7 +130,7 @@ impl PersistedLogLsnWatchdog {
                 if applied_lsn >= previously_applied_lsn + self.persist_lsn_threshold {
                     // since we cannot be sure that we have read the applied lsn from disk, we need
                     // to flush the memtables to be sure that it is persisted
-                    trace!(
+                    info!(
                         partition_id = %partition_id,
                         applied_lsn = %applied_lsn,
                         "Flush partition store to persist applied lsn"
@@ -223,9 +224,8 @@ mod tests {
         watch_rx.changed().await?;
         assert_eq!(watch_rx.borrow().get(&PartitionId::MIN), Some(&lsn));
         let persist_lsn_interval: Duration = storage_options
-            .persist_lsn_interval
-            .expect("should be enabled")
-            .into();
+            .persist_lsn_interval()
+            .expect("should be enabled");
         assert!(now.elapsed() >= persist_lsn_interval);
 
         // we are short by one to hit the persist lsn threshold
