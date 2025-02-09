@@ -189,7 +189,7 @@ impl<T: TransportConnect> Sequencer<T> {
     /// observed global_tail with is_sealed=true)
     ///
     /// This method is cancellation safe.
-    pub async fn drain(&self) -> Result<(), ShutdownError> {
+    pub async fn drain(&self) {
         // stop issuing new permits
         self.record_permits.close();
         // required to allow in_flight.wait() to finish.
@@ -199,7 +199,7 @@ impl<T: TransportConnect> Sequencer<T> {
         // we are assuming here that seal has been already executed on majority of nodes. This is
         // important since in_flight.close() doesn't prevent new tasks from being spawned.
         if self.sequencer_shared_state.known_global_tail.is_sealed() {
-            return Ok(());
+            return;
         }
 
         // wait for in-flight tasks to complete before returning
@@ -214,8 +214,6 @@ impl<T: TransportConnect> Sequencer<T> {
             loglet_id = %self.sequencer_shared_state.my_params.loglet_id,
             "Sequencer drained",
         );
-
-        Ok(())
     }
 
     fn ensure_enough_permits(&self, required: usize) {
