@@ -41,7 +41,8 @@ impl LogEntryKey {
 
     /// panics if the prefix is not a log entry
     pub fn from_slice(mut data: &[u8]) -> Self {
-        debug_assert_eq!(data.get_u8(), LOG_ENTRY_KEY_PREFIX);
+        let log_entry_key_prefix = data.get_u8();
+        debug_assert_eq!(log_entry_key_prefix, LOG_ENTRY_KEY_PREFIX);
         let index = data.get_u64();
         Self { index }
     }
