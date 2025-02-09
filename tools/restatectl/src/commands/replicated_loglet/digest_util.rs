@@ -95,12 +95,12 @@ impl DigestsHelper {
         self.known_nodes.contains_key(node_id)
     }
 
-    pub fn max_trim_point(&self) -> LogletOffset {
-        self.max_trim_point
-    }
-
     pub fn max_local_tail(&self) -> LogletOffset {
         self.max_local_tail
+    }
+
+    pub fn get_response_header(&self, node_id: &PlainNodeId) -> Option<LogServerResponseHeader> {
+        self.known_nodes.get(node_id).cloned()
     }
 
     pub fn iter(
