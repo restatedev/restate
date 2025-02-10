@@ -145,7 +145,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         "node-3",
         no_snapshot_repository_config,
         BinarySource::CargoTest,
-        enum_set!(Role::HttpIngress | Role::Worker),
+        enum_set!(Role::Worker),
     );
     *worker_3.metadata_store_client_mut() = MetadataClientKind::Native {
         addresses: vec![cluster.nodes[0].node_address().clone()],
@@ -170,7 +170,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         "node-3",
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::HttpIngress | Role::Worker),
+        enum_set!(Role::Worker),
     );
     *worker_3.metadata_store_client_mut() = MetadataClientKind::Native {
         addresses: vec![cluster.nodes[0].node_address().clone()],
