@@ -42,14 +42,15 @@ message Hello {
   restate.common.ProtocolVersion min_protocol_version = 1;
   restate.common.ProtocolVersion max_protocol_version = 2;
   // generational node id of sender (who am I)
-  restate.common.NodeId my_node_id = 3;
+  // this is optional for future-proofing with anonymous clients using this protocol
+  optional restate.common.GenerationalNodeId my_node_id = 3;
   string cluster_name = 4;
 }
 
 message Welcome {
   restate.common.ProtocolVersion protocol_version = 2;
   // generational node id of sender
-  restate.common.NodeId my_node_id = 3;
+  restate.common.GenerationalNodeId my_node_id = 3;
 }
 
 // Bidirectional Communication

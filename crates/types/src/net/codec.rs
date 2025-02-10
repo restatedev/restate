@@ -78,7 +78,7 @@ pub trait WireEncode {
 }
 
 pub trait WireDecode {
-    fn decode<B: Buf>(buf: &mut B, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+    fn decode(buf: impl Buf, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
     where
         Self: Sized;
 }
@@ -100,7 +100,7 @@ impl<T> WireDecode for Box<T>
 where
     T: WireDecode,
 {
-    fn decode<B: Buf>(buf: &mut B, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+    fn decode(buf: impl Buf, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
     where
         Self: Sized,
     {
@@ -112,7 +112,7 @@ impl<T> WireDecode for Arc<T>
 where
     T: WireDecode,
 {
-    fn decode<B: Buf>(buf: &mut B, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+    fn decode(buf: impl Buf, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
     where
         Self: Sized,
     {
@@ -140,7 +140,7 @@ pub fn encode_default<T: Serialize, B: BufMut>(
     protocol_version: ProtocolVersion,
 ) -> Result<(), CodecError> {
     match protocol_version {
-        ProtocolVersion::Flexbuffers => {
+        ProtocolVersion::V1 => {
             encode_as_flexbuffers(value, buf).map_err(|err| CodecError::Encode(err.into()))
         }
         ProtocolVersion::Unknown => {
@@ -149,13 +149,13 @@ pub fn encode_default<T: Serialize, B: BufMut>(
     }
 }
 
-pub fn decode_default<T: DeserializeOwned, B: Buf>(
-    buf: &mut B,
+pub fn decode_default<T: DeserializeOwned>(
+    mut buf: impl Buf,
     protocol_version: ProtocolVersion,
 ) -> Result<T, CodecError> {
     match protocol_version {
-        ProtocolVersion::Flexbuffers => {
-            decode_from_flexbuffers(buf).map_err(|err| CodecError::Decode(err.into()))
+        ProtocolVersion::V1 => {
+            decode_from_flexbuffers(&mut buf).map_err(|err| CodecError::Decode(err.into()))
         }
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")

@@ -23,6 +23,21 @@ pub mod common {
         }
     }
 
+    impl From<crate::GenerationalNodeId> for GenerationalNodeId {
+        fn from(value: crate::GenerationalNodeId) -> Self {
+            Self {
+                id: value.id(),
+                generation: value.generation(),
+            }
+        }
+    }
+
+    impl std::fmt::Display for GenerationalNodeId {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Display::fmt(&crate::GenerationalNodeId::from(*self), f)
+        }
+    }
+
     impl std::fmt::Display for NodeId {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             if let Some(generation) = self.generation {

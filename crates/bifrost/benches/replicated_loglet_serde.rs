@@ -128,10 +128,7 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
         payloads,
     };
 
-    let body = serialize_message(
-        append_message,
-        restate_types::net::ProtocolVersion::Flexbuffers,
-    )?;
+    let body = serialize_message(append_message, restate_types::net::ProtocolVersion::V1)?;
 
     let message = Message {
         header: Some(restate_types::protobuf::node::Header {
@@ -149,12 +146,12 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
 }
 
 fn deserialize_append_message(serialized_message: Bytes) -> anyhow::Result<Append> {
-    let protocol_version = restate_types::net::ProtocolVersion::Flexbuffers;
+    let protocol_version = restate_types::net::ProtocolVersion::V1;
     let msg = Message::decode(serialized_message)?;
     let body = msg.body.unwrap();
     // we ignore non-deserializable messages (serde errors, or control signals in drain)
-    let mut msg_body = body.try_as_binary_body(restate_types::net::ProtocolVersion::Flexbuffers)?;
-    Ok(Append::decode(&mut msg_body.payload, protocol_version)?)
+    let msg_body = body.try_as_binary_body(restate_types::net::ProtocolVersion::V1)?;
+    Ok(Append::decode(msg_body.payload, protocol_version)?)
 }
 
 fn replicated_loglet_append_serde(c: &mut Criterion) {
