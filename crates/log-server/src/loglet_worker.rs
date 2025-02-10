@@ -385,22 +385,11 @@ impl<S: LogStore> LogletWorker<S> {
         }
 
         if body.flags.contains(StoreFlags::IgnoreSeal) {
-            // We must be sealed (sanity check)
-            // Accept repair store only on sealed loglet.
-            if !self.loglet_state.is_sealed() {
-                warn!(
-                    loglet_id = %self.loglet_id,
-                    %peer,
-                    first_offset = %body.first_offset,
-                    "Ignoring repair store on unsealed loglet, repair should only happen on sealed loglets"
-                );
-                return (Status::Malformed, None);
-            }
             trace!(
                 loglet_id = %self.loglet_id,
                 %peer,
                 first_offset = %body.first_offset,
-                "Admitting a repair store for sealed loglet to restore replication"
+                "Admitting a repair store loglet to restore replication"
             );
         }
 
