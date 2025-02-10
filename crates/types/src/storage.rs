@@ -190,6 +190,13 @@ pub enum PolyBytes {
     Typed(Arc<dyn StorageEncode>),
 }
 
+impl PolyBytes {
+    /// Returns true if we are holding raw encoded bytes
+    pub fn is_encoded(&self) -> bool {
+        matches!(self, PolyBytes::Bytes(_))
+    }
+}
+
 impl StorageEncode for PolyBytes {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
         match self {
