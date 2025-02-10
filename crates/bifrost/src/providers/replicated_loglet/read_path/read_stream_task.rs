@@ -382,7 +382,7 @@ impl ReadStreamTask {
                     if offset >= self.last_known_tail || offset > self.read_pointer {
                         // we have reached the tail, we have a record but we shouldn't ship it.
                         // Let's cache it to assist future reads instead.
-                        self.add_to_cache(offset, maybe_record);
+                        self.add_to_cache(offset, &maybe_record);
                     } else if offset == self.read_pointer {
                         match maybe_record {
                             MaybeRecord::TrimGap(gap) => {
@@ -430,7 +430,7 @@ impl ReadStreamTask {
         }
     }
 
-    fn add_to_cache(&self, offset: LogletOffset, maybe_record: MaybeRecord) {
+    fn add_to_cache(&self, offset: LogletOffset, maybe_record: &MaybeRecord) {
         if let MaybeRecord::Data(record) = maybe_record {
             self.record_cache
                 .add(self.my_params.loglet_id, offset, record);
@@ -493,6 +493,10 @@ impl ReadStreamTask {
                 offset = %self.read_pointer,
                 "Shipping record from record cache",
             );
+            // Removes from cache, we are unlikely to need to read this record again, and if we need
+            // to, we'll get it from log-servers.
+            self.record_cache
+                .invalidate_record(self.my_params.loglet_id, self.read_pointer);
             self.stats.cache_hits.increment(1);
             self.stats.records_read.increment(1);
             permit.send(Ok(LogEntry::new_data(self.read_pointer, record)));
