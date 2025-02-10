@@ -319,9 +319,8 @@ impl<T: TransportConnect> RepairTail<T> {
             info!(
                 loglet_id = %self.my_params.loglet_id,
                 known_global_tail = %self.known_global_tail.latest_offset(),
-                target_tail = %self.digests.target_tail(),
                 elapsed = ?start.elapsed(),
-                "Repair task completed, {} records have been repaired",
+                "Repair task completed, {} record(s) have been repaired",
                 self.digests.num_fixups(),
             );
             return RepairTailResult::Completed;
