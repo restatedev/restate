@@ -15,6 +15,7 @@ use std::sync::{
     Arc,
 };
 
+use bytes::BytesMut;
 use crossbeam_utils::CachePadded;
 use tokio::sync::Semaphore;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -297,10 +298,21 @@ impl<T: TransportConnect> Sequencer<T> {
 
         let (loglet_commit, commit_resolver) = LogletCommit::deferred();
 
-        // todo: serialize records here into bytes to use the caller's runtime/thread to do the cpu
-        // work instead of overloading the network's thread. Why not in bifrost's appender? because
-        // we don't need serialization in all loglet providers. In-memory loglet won't require this
-        // setup and it would be a waste of cpu-cycles to serialize.
+        // Why not in bifrost's appender? because we don't need serialization in all loglet providers.
+        // In-memory loglet won't require this setup and it would be a waste of cpu-cycles to serialize.
+        // estimate total to allocate one big allocation for all payloads. This is not particularly
+        // useful with flexbuffers, but will be useful when Store/Record are representative as
+        // protobuf or flatbuffers.
+        let estimated_bufsize: usize = payloads
+            .iter()
+            .map(|record| record.estimated_encode_size())
+            .sum();
+        let mut buf = BytesMut::with_capacity(estimated_bufsize);
+        let payloads = payloads
+            .iter()
+            .map(|record| record.to_encoded(&mut buf))
+            .collect();
+
         let appender = SequencerAppender::new(
             Arc::clone(&self.sequencer_shared_state),
             self.rpc_router.clone(),
