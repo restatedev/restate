@@ -545,7 +545,7 @@ impl ReadStreamTask {
                     loglet_id = %self.my_params.loglet_id,
                     from_offset = %self.read_pointer,
                     %to_offset,
-                    ?e,
+                    %e,
                     "Could not request record batch from node {}", server
                 );
                 Ok(ServerReadResult::Skip)
