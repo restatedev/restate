@@ -15,12 +15,14 @@ use cling::prelude::*;
 use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::ui::output::Console;
 use restate_types::logs::metadata::Chain;
 use restate_types::logs::LogId;
 use restate_types::Versioned;
 
 use crate::commands::log::{deserialize_replicated_log_params, render_loglet_params};
 use crate::connection::ConnectionInfo;
+use crate::util::write_default_provider;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "ls")]
@@ -32,12 +34,13 @@ pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> any
 
     let mut logs_table = Table::new_styled();
 
-    c_println!("Log Configuration ({})", logs.version());
+    c_println!("Log chain {}", logs.version());
 
-    c_println!(
-        "Default Provider Config: {:?}",
-        logs.configuration().default_provider
-    );
+    write_default_provider(
+        &mut Console::stdout(),
+        0,
+        &logs.configuration().default_provider,
+    )?;
 
     // sort by log-id for display
     let logs: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();

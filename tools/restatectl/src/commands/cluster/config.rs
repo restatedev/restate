@@ -11,13 +11,15 @@
 mod get;
 mod set;
 
-use std::fmt::{self, Display, Write};
+use std::fmt::Write;
 
 use cling::prelude::*;
 
 use restate_types::{
     logs::metadata::ProviderConfiguration, protobuf::cluster::ClusterConfiguration,
 };
+
+use crate::util::{write_default_provider, write_leaf};
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Config {
@@ -32,7 +34,7 @@ pub fn cluster_config_string(config: &ClusterConfiguration) -> anyhow::Result<St
     writeln!(w, "⚙️ Cluster Configuration")?;
     write_leaf(
         &mut w,
-        1,
+        0,
         false,
         "Number of partitions",
         config.num_partitions,
@@ -43,63 +45,15 @@ pub fn cluster_config_string(config: &ClusterConfiguration) -> anyhow::Result<St
         .map(|p| p.replication_property.as_str())
         .unwrap_or("*");
 
-    write_leaf(&mut w, 1, false, "Partition replication", strategy)?;
+    write_leaf(&mut w, 0, false, "Partition replication", strategy)?;
 
     let provider: ProviderConfiguration = config
         .bifrost_provider
         .clone()
         .unwrap_or_default()
         .try_into()?;
-    write_default_provider(&mut w, 1, &provider)?;
+
+    write_default_provider(&mut w, 0, &provider)?;
 
     Ok(w)
-}
-
-fn write_default_provider<W: fmt::Write>(
-    w: &mut W,
-    depth: usize,
-    provider: &ProviderConfiguration,
-) -> Result<(), fmt::Error> {
-    let title = "Bifrost Provider";
-    match provider {
-        #[cfg(any(test, feature = "memory-loglet"))]
-        ProviderConfiguration::InMemory => {
-            write_leaf(w, depth, true, title, "in-memory")?;
-        }
-        ProviderConfiguration::Local => {
-            write_leaf(w, depth, true, title, "local")?;
-        }
-        #[cfg(feature = "replicated-loglet")]
-        ProviderConfiguration::Replicated(config) => {
-            write_leaf(w, depth, true, title, "replicated")?;
-            let depth = depth + 1;
-            write_leaf(
-                w,
-                depth,
-                true,
-                "Replication property",
-                config.replication_property.to_string(),
-            )?;
-            write_leaf(
-                w,
-                depth,
-                true,
-                "Nodeset size",
-                config.target_nodeset_size.to_string(),
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn write_leaf<W: fmt::Write>(
-    w: &mut W,
-    depth: usize,
-    last: bool,
-    title: impl Display,
-    value: impl Display,
-) -> Result<(), fmt::Error> {
-    let depth = depth + 1;
-    let chr = if last { '└' } else { '├' };
-    writeln!(w, "{chr:>depth$} {title}: {value}")
 }
