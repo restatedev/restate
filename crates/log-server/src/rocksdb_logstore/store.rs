@@ -180,15 +180,18 @@ impl LogStore for RocksDbLogStore {
             local_tail = trim_point.next();
         }
 
-        // todo(asoli): Persist last_known_global_tail for more efficient tail repairs
-        // perhaps we can set the known_tail to the trim_point.next() here but let's do that only
-        // when the need rises.
+        // We can only trim records that are known to be globally committed, let's use that trim
+        // point to initialize our known_global_tail
+        let known_global_tail = trim_point.next();
+
+        // todo(asoli): Persist last_known_global_tail for more efficient tail repairs if the
+        // loglet is not trimmed.
         Ok(LogletState::new(
             sequencer,
             local_tail,
             is_sealed,
             trim_point,
-            LogletOffset::OLDEST,
+            known_global_tail,
         ))
     }
 
