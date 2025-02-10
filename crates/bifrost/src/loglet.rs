@@ -16,19 +16,19 @@ pub mod util;
 
 // exports
 pub use error::*;
-use futures::stream::BoxStream;
 pub use provider::{LogletProvider, LogletProviderFactory};
-use restate_types::logs::metadata::ProviderKind;
-use tokio::sync::oneshot;
 
+use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Poll};
 
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use futures::{FutureExt, Stream};
+use tokio::sync::oneshot;
 
-use restate_core::ShutdownError;
+use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, TailState};
 
 use crate::LogEntry;
@@ -190,6 +190,12 @@ impl LogletCommit {
         Self { rx }
     }
 
+    pub fn reconfiguration_needed(reason: impl Into<Cow<'static, str>>) -> Self {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(Err(AppendError::ReconfigurationNeeded(reason.into())));
+        Self { rx }
+    }
+
     pub fn resolved(offset: LogletOffset) -> Self {
         let (tx, rx) = oneshot::channel();
         let _ = tx.send(Ok(offset));
@@ -211,7 +217,9 @@ impl std::future::Future for LogletCommit {
     ) -> Poll<Self::Output> {
         match ready!(self.rx.poll_unpin(cx)) {
             Ok(res) => Poll::Ready(res),
-            Err(_) => Poll::Ready(Err(AppendError::Shutdown(ShutdownError))),
+            Err(_) => Poll::Ready(Err(AppendError::ReconfigurationNeeded(
+                "loglet gave up on this batch".into(),
+            ))),
         }
     }
 }

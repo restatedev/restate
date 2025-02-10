@@ -510,6 +510,10 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
                             println!("append failed({i}) => SEALED");
                             break;
                         }
+                        Err(AppendError::ReconfigurationNeeded(reason)) => {
+                            println!("append failed({i}) => ReconfigurationNeeded({reason})");
+                            break;
+                        }
                         Err(AppendError::Shutdown(_)) => {
                             break;
                         }

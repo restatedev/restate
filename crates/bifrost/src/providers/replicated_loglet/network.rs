@@ -395,6 +395,14 @@ impl WaitForCommitTask {
                 },
                 last_offset: LogletOffset::INVALID,
             },
+            Err(AppendError::ReconfigurationNeeded(_)) => Appended {
+                header: CommonResponseHeader {
+                    known_global_tail: Some(self.global_tail.latest_offset()),
+                    sealed: Some(self.global_tail.is_sealed()), // this must be true
+                    status: SequencerStatus::Gone,
+                },
+                last_offset: LogletOffset::INVALID,
+            },
             Err(AppendError::Shutdown(_)) => Appended {
                 header: CommonResponseHeader {
                     known_global_tail: Some(self.global_tail.latest_offset()),
