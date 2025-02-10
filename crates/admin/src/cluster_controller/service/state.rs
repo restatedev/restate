@@ -11,11 +11,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Add, Deref};
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures::future::OptionFuture;
 use itertools::Itertools;
-use rand::Rng;
+use tokio::sync::watch;
+use tokio::time;
+use tokio::time::{Interval, MissedTickBehavior};
+use tracing::{debug, info, instrument, trace, warn};
+
 use restate_bifrost::Bifrost;
 use restate_core::network::TransportConnect;
 use restate_core::{my_node_id, Metadata};
@@ -26,11 +29,8 @@ use restate_types::config::{AdminOptions, Configuration};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;
+use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-use tokio::sync::watch;
-use tokio::time;
-use tokio::time::{Interval, MissedTickBehavior};
-use tracing::{debug, info, instrument, trace, warn};
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
 use crate::cluster_controller::logs_controller::{
@@ -230,7 +230,7 @@ where
                 _ = self.find_logs_tail_interval.tick() => {
                     self.logs_controller.find_logs_tail();
                 }
-                _ = OptionFuture::from(self.log_trim_check_interval.as_mut().map(|interval| interval.tick())) => {
+                Some(_) = OptionFuture::from(self.log_trim_check_interval.as_mut().map(|interval| interval.tick())) => {
                     return Ok(LeaderEvent::TrimLogs);
                 }
                 result = self.logs_controller.run_async_operations() => {
@@ -354,13 +354,13 @@ fn create_log_trim_check_interval(options: &AdminOptions) -> Option<Interval> {
         .log_trim_threshold
         .inspect(|_| info!("The log trim threshold setting is deprecated and will be ignored"));
 
-    options.log_trim_interval.map(|interval| {
-        // delay the initial trim check, and add a small amount of jitter to avoid synchronization
+    options.log_trim_interval().map(|interval| {
+        // delay the initial trim check, and introduces small amount of jitter (+/-10%) to avoid synchronization
         // among partition leaders in case of coordinated cluster restarts
-        let jitter = rand::rng().random_range(Duration::ZERO..interval.mul_f32(0.1));
-        let start_at = time::Instant::now().add(interval.into()).add(jitter);
+        let effective_interval = with_jitter(interval, 0.1);
+        let start_at = time::Instant::now().add(effective_interval);
 
-        let mut interval = time::interval_at(start_at, interval.into());
+        let mut interval = time::interval_at(start_at, effective_interval);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         interval
     })
