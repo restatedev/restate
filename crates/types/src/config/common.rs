@@ -855,7 +855,7 @@ impl From<CommonOptionsShadow> for CommonOptions {
             .inspect(|_value| {
                 // todo: Add macro for casing the variable names correctly
                 print_warning_deprecated_config_option(
-                    "boostrap-num-partitions",
+                    "bootstrap-num-partitions",
                     Some("default-num-partitions"),
                 );
             })
