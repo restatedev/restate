@@ -23,19 +23,20 @@ use restate_core::network::{ConnectionManager, ProtocolError, TransportConnect};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
 use restate_core::protobuf::node_ctl_svc::{
     ClusterHealthResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest, GetMetadataResponse,
-    IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse,
+    IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse, RemoveNodeRequest,
 };
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{task_center, Metadata, MetadataKind, TargetVersion, TaskCenter};
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
-use restate_types::nodes_config::Role;
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::node::Message;
 use restate_types::replication::ReplicationProperty;
 use restate_types::storage::StorageCodec;
-use restate_types::Version;
+use restate_types::{PlainNodeId, Version};
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::debug;
@@ -281,6 +282,46 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         };
 
         Ok(Response::new(cluster_state_response))
+    }
+
+    async fn remove_node(
+        &self,
+        request: Request<RemoveNodeRequest>,
+    ) -> Result<Response<()>, Status> {
+        let request = request.into_inner();
+        let metadata = Metadata::current();
+        let node_id = PlainNodeId::from(request.node_id);
+
+        if metadata.nodes_config_ref().version() != Version::from(request.nodes_config_version) {
+            return Err(Status::failed_precondition(
+                "The nodes configuration version does not match the current version",
+            ));
+        };
+
+        self.metadata_store_client
+            .read_modify_write::<NodesConfiguration, _, _>(
+                NODES_CONFIG_KEY.clone(),
+                |nodes_config| {
+                    let mut nodes_config = nodes_config
+                        .ok_or(Status::not_found("Missing cluster nodes configuration"))?;
+
+                    if nodes_config.version() != Version::from(request.nodes_config_version) {
+                        return Err(Status::failed_precondition(
+                            "The nodes configuration version does not match the request version; try again",
+                        ));
+                    }
+
+                    nodes_config.remove_node(&node_id).map_err(|err| {
+                        Status::invalid_argument(format!("Failed to remove node: {err}"))
+                    })?;
+                    nodes_config.increment_version();
+
+                    Ok(nodes_config)
+                },
+            )
+            .await.map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(()))
     }
 }
 

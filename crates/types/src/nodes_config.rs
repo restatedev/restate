@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::hash_map::Entry;
+
+use ahash::HashMap;
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
 
@@ -15,7 +18,6 @@ use crate::locality::NodeLocation;
 use crate::net::AdvertisedAddress;
 use crate::{flexbuffers_storage_encode_decode, GenerationalNodeId, NodeId, PlainNodeId};
 use crate::{Version, Versioned};
-use ahash::HashMap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum NodesConfigError {
@@ -81,6 +83,15 @@ impl Default for NodesConfiguration {
 enum MaybeNode {
     Tombstone,
     Node(NodeConfig),
+}
+
+impl MaybeNode {
+    fn into_node(self) -> Option<NodeConfig> {
+        match self {
+            MaybeNode::Node(node) => Some(node),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -166,6 +177,23 @@ impl NodesConfiguration {
         }
 
         self.name_lookup.insert(name, plain_id);
+    }
+
+    /// Remove a node configuration.
+    pub fn remove_node(&mut self, node_id: &PlainNodeId) -> Result<NodeConfig, NodesConfigError> {
+        match self.nodes.entry(*node_id) {
+            Entry::Occupied(mut entry) => match entry.get() {
+                MaybeNode::Tombstone => Err(NodesConfigError::Deleted(NodeId::from(*node_id))),
+                MaybeNode::Node(node) => {
+                    self.name_lookup.remove(&node.name);
+                    Ok(entry
+                        .insert(MaybeNode::Tombstone)
+                        .into_node()
+                        .expect("is a node"))
+                }
+            },
+            Entry::Vacant(_) => Err(NodesConfigError::UnknownNodeId(NodeId::from(*node_id))),
+        }
     }
 
     /// Current version of the config
@@ -516,5 +544,56 @@ mod tests {
         // find by new name
         let found = config.find_node_by_name("nodeX").expect("known id");
         assert_eq!(&node, found);
+    }
+
+    #[test]
+    fn test_remove_node() {
+        let mut config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+
+        let address: AdvertisedAddress = "http://localhost:5122".parse().unwrap();
+        let n1 = GenerationalNodeId::new(1, 1);
+        let node1 = NodeConfig::new(
+            "node1".to_owned(),
+            n1,
+            "region1.zone1".parse().unwrap(),
+            address.clone(),
+            EnumSet::only(Role::Worker),
+            LogServerConfig::default(),
+            MetadataServerConfig::default(),
+        );
+        config.upsert_node(node1.clone());
+
+        let address: AdvertisedAddress = "http://localhost:5122".parse().unwrap();
+        let roles = EnumSet::only(Role::LogServer);
+        let n2 = GenerationalNodeId::new(2, 1);
+        let node2 = NodeConfig::new(
+            "node2".to_owned(),
+            n2,
+            "region1.zone2".parse().unwrap(),
+            address.clone(),
+            roles,
+            LogServerConfig::default(),
+            MetadataServerConfig::default(),
+        );
+        config.upsert_node(node2.clone());
+
+        let res = config.remove_node(&n1.as_plain());
+        assert_eq!(&node1, &res.expect("removed"));
+
+        assert_eq!(None, config.find_node_by_name("node1"));
+        let result = config.find_node_by_id(NodeId::new_plain(1));
+        println!("{:?}", result);
+        assert!(matches!(result, Err(NodesConfigError::Deleted(_))));
+
+        assert_eq!(
+            &node2,
+            config.find_node_by_name("node2").expect("still there")
+        );
+        assert_eq!(
+            &node2,
+            config
+                .find_node_by_id(NodeId::new_plain(2))
+                .expect("still there")
+        );
     }
 }

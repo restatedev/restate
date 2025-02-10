@@ -266,7 +266,7 @@ impl<'a> NodeInit<'a> {
                                 warn!(
                                     "Node location has changed from '{current_location}' to '{new_location}'. \
                                     This change can be dangerous if the cluster is configured with geo-aware replication, but we'll still apply it. \
-                                    You can reverted back on the next server restart.",
+                                    You can revert it in the configuration and it will be updated on the next server restart.",
                                 );
                                 node_config.location = common_opts.location().clone();
                             }

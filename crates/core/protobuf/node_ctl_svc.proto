@@ -27,6 +27,9 @@ service NodeCtlSvc {
 
   // Returns the cluster health from the point of view of this node.
   rpc ClusterHealth(google.protobuf.Empty) returns (ClusterHealthResponse);
+
+  // Remove a node from the cluster.
+  rpc RemoveNode(RemoveNodeRequest) returns (google.protobuf.Empty);
 }
 
 message ProvisionClusterRequest {
@@ -91,4 +94,9 @@ message ClusterHealthResponse {
 
 message EmbeddedMetadataClusterHealth {
   repeated restate.common.NodeId members = 1;
+}
+
+message RemoveNodeRequest {
+  uint32 nodes_config_version = 1;
+  uint32 node_id = 2;
 }

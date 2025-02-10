@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 pub mod list_nodes;
+pub mod remove_node;
 
 use cling::prelude::*;
 
@@ -16,4 +17,6 @@ use cling::prelude::*;
 pub enum Nodes {
     /// Print a summary of active nodes in cluster
     List(list_nodes::ListNodesOpts),
+    /// Remove a node entry from the cluster
+    Remove(remove_node::RemoveNodeOpts),
 }
