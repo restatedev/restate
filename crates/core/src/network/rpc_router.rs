@@ -497,8 +497,8 @@ mod test {
     }
 
     impl WireDecode for TestResponse {
-        fn decode<B: bytes::Buf>(
-            _: &mut B,
+        fn decode(
+            _: impl bytes::Buf,
             _: restate_types::net::ProtocolVersion,
         ) -> Result<Self, CodecError>
         where
