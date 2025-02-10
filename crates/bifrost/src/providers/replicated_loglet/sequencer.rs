@@ -18,7 +18,7 @@ use std::sync::{
 use crossbeam_utils::CachePadded;
 use tokio::sync::Semaphore;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use tracing::{debug, instrument, trace};
+use tracing::{debug, info, instrument, trace};
 
 use restate_core::{
     network::{rpc_router::RpcRouter, Networking, TransportConnect},
@@ -39,6 +39,11 @@ use super::{
     replication::spread_selector::{SelectorStrategy, SpreadSelector},
 };
 use crate::loglet::{util::TailOffsetWatch, LogletCommit, OperationError};
+
+/// A soft-limit of the actual number of records we want to allow in a loglet, this
+/// leaves plenty of space for slop in the overflow check. The actual loglet records are allowed to
+/// be more than this number if they were written. It's not an invariant of the replicated loglet.
+const MAX_OFFSET_SOFT: u32 = (i32::MAX) as u32;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SequencerError {
@@ -257,6 +262,22 @@ impl<T: TransportConnect> Sequencer<T> {
         let Ok(permit) = self.record_permits.clone().acquire_many_owned(len).await else {
             return Ok(LogletCommit::sealed());
         };
+
+        // note: len is technically u32 but we enforce
+        if self
+            .next_write_offset
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .checked_add(len)
+            .is_none_or(|o| o >= MAX_OFFSET_SOFT)
+        {
+            // fail the append to ask for reconfiguration. We'll consider this loglet done.
+            info!("Loglet offset exhausted, draining this sequencer");
+            drop(permit);
+            self.drain().await;
+            return Ok(LogletCommit::reconfiguration_needed(
+                "loglet reached its soft-limit",
+            ));
+        }
 
         // Note: We don't need to sync order across threads here since the ordering requirement
         // requires that the user calls enqueue_batch sequentially to guarantee that original batch ordering
