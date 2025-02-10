@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use itertools::Itertools;
 use rand::seq::IteratorRandom;
-use tracing::{debug, info, instrument};
+use tracing::{debug, enabled, info, instrument, trace, Level};
 
 use restate_core::metadata_store::{Precondition, ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
@@ -101,6 +101,7 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
+        trace!(?observed_cluster_state, "On observed cluster state");
         let alive_workers = observed_cluster_state
             .alive_nodes
             .keys()
@@ -157,10 +158,19 @@ impl<T: TransportConnect> Scheduler<T> {
         });
 
         if let Some(partition_table) = builder.build_if_modified() {
-            debug!(
-                "Will attempt to write partition table {} to metadata store",
-                partition_table.version()
-            );
+            if enabled!(Level::TRACE) {
+                debug!(
+                    ?partition_table,
+                    "Will attempt to write partition table {} to metadata store",
+                    partition_table.version()
+                );
+            } else {
+                debug!(
+                    "Will attempt to write partition table {} to metadata store",
+                    partition_table.version()
+                );
+            }
+
             self.try_update_partition_table(version, partition_table)
                 .await?;
 
@@ -173,7 +183,7 @@ impl<T: TransportConnect> Scheduler<T> {
     #[instrument(skip_all)]
     async fn try_update_partition_table(
         &mut self,
-        version: Version,
+        previous_version: Version,
         partition_table: PartitionTable,
     ) -> Result<(), Error> {
         match self
@@ -182,12 +192,15 @@ impl<T: TransportConnect> Scheduler<T> {
             .put(
                 PARTITION_TABLE_KEY.clone(),
                 &partition_table,
-                Precondition::MatchesVersion(version),
+                Precondition::MatchesVersion(previous_version),
             )
             .log_slow_after(
                 Duration::from_secs(1),
                 tracing::Level::DEBUG,
-                format!("Updating partition table to version {version}"),
+                format!(
+                    "Updating partition table to version {}",
+                    partition_table.version()
+                ),
             )
             .with_overdue(Duration::from_secs(3), tracing::Level::INFO)
             .await

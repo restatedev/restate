@@ -8,17 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{BufMut, Bytes, BytesMut};
-use bytestring::ByteString;
-use std::borrow::Cow;
-
 use crate::metadata_store::providers::objstore::version_repository::VersionRepositoryError::PreconditionFailed;
 use crate::metadata_store::providers::objstore::version_repository::{
     TaggedValue, VersionRepository, VersionRepositoryError,
 };
 use crate::metadata_store::{Precondition, ReadError, VersionedValue, WriteError};
+use bytes::{BufMut, Bytes, BytesMut};
+use bytestring::ByteString;
+use rand::random;
 use restate_types::config::MetadataClientKind;
 use restate_types::Version;
+use std::borrow::Cow;
 
 pub(crate) struct OptimisticLockingMetadataStoreBuilder {
     pub(crate) version_repository: Box<dyn VersionRepository>,
@@ -42,13 +42,13 @@ pub struct OptimisticLockingMetadataStore {
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(tag = "version", content = "value")]
 enum OnDiskValue<'a> {
-    V1(Cow<'a, VersionedValue>),
+    V1(Cow<'a, VersionedValue>, u64),
 }
 
 fn tagged_value_to_versioned_value(tagged_value: &TaggedValue) -> anyhow::Result<VersionedValue> {
     let on_disk: OnDiskValue<'static> = ciborium::from_reader(tagged_value.bytes.as_ref())?;
     match on_disk {
-        OnDiskValue::V1(cow) => Ok(cow.into_owned()),
+        OnDiskValue::V1(cow, _) => Ok(cow.into_owned()),
     }
 }
 
@@ -89,11 +89,11 @@ impl OptimisticLockingMetadataStore {
     fn serialize_versioned_value(
         &mut self,
         versioned_value: &VersionedValue,
+        cookie: u64,
     ) -> Result<Bytes, WriteError> {
         self.arena.clear();
         let writer = (&mut self.arena).writer();
-
-        let on_disk = OnDiskValue::V1(Cow::Borrowed(versioned_value));
+        let on_disk = OnDiskValue::V1(Cow::Borrowed(versioned_value), cookie);
         ciborium::into_writer(&on_disk, writer)
             .map(|_| self.arena.split().freeze())
             .map_err(|e| WriteError::Codec(e.into()))
@@ -105,7 +105,9 @@ impl OptimisticLockingMetadataStore {
         value: VersionedValue,
         precondition: Precondition,
     ) -> Result<(), WriteError> {
-        let buf = self.serialize_versioned_value(&value)?;
+        // create a random cookie
+        let cookie = random::<u64>();
+        let buf = self.serialize_versioned_value(&value, cookie)?;
         match precondition {
             Precondition::None => {
                 self.version_repository

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, trace, trace_span, Instrument};
+use tracing::{debug, enabled, error, info, trace_span, Instrument, Level};
 
 use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_core::metadata_store::{Precondition, WriteError};
@@ -766,8 +766,12 @@ impl LogsControllerInner {
         )?;
 
         if let Some(logs) = builder.build_if_modified() {
-            trace!(?logs, "Proposing new log chain version {}", logs.version());
-            debug!("Proposing new log chain version {}", logs.version());
+            if enabled!(Level::TRACE) {
+                debug!(?logs, "Proposing new log chain version {}", logs.version());
+            } else {
+                debug!("Proposing new log chain version {}", logs.version());
+            }
+
             self.logs_write_in_progress = Some(logs.version());
             let logs = Arc::new(logs);
             effects.push(Effect::WriteLogs {
