@@ -188,7 +188,15 @@ impl LogletWrapper {
 
     pub async fn get_trim_point(&self) -> Result<Option<Lsn>, OperationError> {
         let offset = self.loglet.get_trim_point().await?;
-        Ok(offset.map(|o| self.base_lsn.offset_by(o)))
+        Ok(offset
+            .map(|o| self.base_lsn.offset_by(o))
+            .map(|actual_trim_point| {
+                // If this loglet is sealed, the reported trim-point must fall within its boundaries
+                match self.tail_lsn {
+                    Some(tail) => actual_trim_point.min(tail.prev()),
+                    None => actual_trim_point,
+                }
+            }))
     }
 
     // trim_point is inclusive.
