@@ -22,9 +22,11 @@ mod tests {
     use futures_util::StreamExt;
     use googletest::prelude::*;
     use restate_bifrost::{loglet::AppendError, ErrorRecoveryStrategy};
-    use restate_core::{cancellation_token, Metadata, TaskCenterFutureExt};
     use test_log::test;
+    use tokio::task::{JoinHandle, JoinSet};
+    use tokio_util::sync::CancellationToken;
 
+    use restate_core::{Metadata, TaskCenterFutureExt};
     use restate_types::{
         config::Configuration,
         logs::{
@@ -37,8 +39,6 @@ mod tests {
         time::NanosSinceEpoch,
         GenerationalNodeId, Version,
     };
-    use tokio::task::{JoinHandle, JoinSet};
-    use tokio_util::sync::CancellationToken;
 
     use super::common::replicated_loglet::run_in_test_env;
 
@@ -209,7 +209,7 @@ mod tests {
     async fn bifrost_append_and_seal_concurrent() -> googletest::Result<()> {
         const TEST_DURATION: Duration = Duration::from_secs(10);
         const SEAL_PERIOD: Duration = Duration::from_secs(1);
-        const CONCURRENT_APPENDERS: usize = 20;
+        const CONCURRENT_APPENDERS: usize = 400;
 
         run_in_test_env(
             Configuration::default(),
@@ -250,15 +250,13 @@ mod tests {
 
                 let mut sealer_handle: JoinHandle<googletest::Result<()>> = tokio::task::spawn({
                     let bifrost = test_env.bifrost.clone();
-
                     async move {
-                        let cancellation_token = cancellation_token();
 
                         let mut chain = metadata.updateable_logs_metadata().map(|logs| logs.chain(&log_id).expect("a chain to exist"));
 
                         let mut last_loglet_id = None;
 
-                        while !cancellation_token.is_cancelled() {
+                        loop {
                             tokio::time::sleep(SEAL_PERIOD).await;
 
                             let mut params = ReplicatedLogletParams::deserialize_from(
@@ -282,7 +280,6 @@ mod tests {
                                 )
                                 .await?;
                         }
-                        Ok(())
                     }.in_current_tc()
                 });
 

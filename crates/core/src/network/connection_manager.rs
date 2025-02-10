@@ -638,8 +638,8 @@ where
         if let message::Body::ConnectionControl(ctrl_msg) = &body {
             // do something
             info!(
-                "Terminating connection based on signal from peer: {:?} {}",
-                ctrl_msg.signal(),
+                "Terminating connection based on signal from {}: {}",
+                connection.peer(),
                 ctrl_msg.message
             );
             if ctrl_msg.signal() == message::Signal::Shutdown {
