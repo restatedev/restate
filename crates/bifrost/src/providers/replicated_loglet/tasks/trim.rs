@@ -176,7 +176,7 @@ impl<'a> TrimTask<'a> {
         // Not enough nodes have successful responses
         warn!(
             loglet_id = %self.my_params.loglet_id,
-             trim_point = %trim_point,
+            trim_point = %trim_point,
             known_global_tail = %self.known_global_tail,
             effective_nodeset = %effective_nodeset,
             "Could not trim the loglet, since we could not confirm the new trim point with write-quorum nodes. Nodes that have confirmed are {}",

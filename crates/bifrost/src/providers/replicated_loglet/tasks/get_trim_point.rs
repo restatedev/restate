@@ -20,7 +20,7 @@ use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::OperationError;
-use crate::providers::replicated_loglet::replication::NodeSetChecker;
+use crate::providers::replicated_loglet::replication::{FMajorityResult, NodeSetChecker};
 use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 use crate::providers::replicated_loglet::tasks::util::{Disposition, RunOnSingleNode};
 
@@ -31,8 +31,8 @@ struct GetTrimPointError;
 /// Find the trim point for a loglet
 ///
 /// The trim point doesn't require a quorum-check, the maximum observed trim-point on
-/// log-servers can be used, but we wait for write-quorum (or) f-majority whichever happens first
-/// before we respond to increase the chances of getting a reliable trim point.
+/// log-servers can be used, but we wait for f-majority before we respond to increase
+/// the chances of getting a reliable trim point.
 ///
 /// We don't provide a guarantee that `get_trim_point` return an always increasing offset,
 /// and it should not be used in gap-detection in read streams. In read-streams, the
@@ -77,6 +77,14 @@ impl<'a> GetTrimPointTask<'a> {
             .my_params
             .nodeset
             .to_effective(&networking.metadata().nodes_config_ref());
+
+        if effective_nodeset.is_empty() {
+            // all nodes are disabled, we can't determine the trim point but we know that this
+            // loglet is impossible to read. Control plane transitioning our nodeset into disabled
+            // must have trimmed all records. In all cases, it's safe to return the maximum
+            // possible trim point.
+            return Ok(Some(LogletOffset::MAX));
+        }
 
         trace!(
             loglet_id = %self.my_params.loglet_id,
@@ -137,11 +145,10 @@ impl<'a> GetTrimPointTask<'a> {
                 continue;
             };
 
-            // either f-majority or write-quorum is enough
+            // wait for f-majority, best effort is acceptable since it includes all authoritative
+            // nodes in the nodeset.
             nodeset_checker.set_attribute(node_id, Some(res));
-            if nodeset_checker.check_write_quorum(predicate)
-                || nodeset_checker.check_fmajority(predicate).passed()
-            {
+            if nodeset_checker.check_fmajority(predicate) >= FMajorityResult::BestEffort {
                 break;
             }
         }
