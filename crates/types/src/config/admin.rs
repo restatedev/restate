@@ -49,10 +49,10 @@ pub struct AdminOptions {
     /// # Log trim interval
     ///
     /// Controls the interval at which cluster controller tries to trim the logs. Log trimming
-    /// can be disabled by setting it to "".
-    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub log_trim_interval: Option<humantime::Duration>,
+    /// can be disabled by setting it to "0s".
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    log_trim_interval: humantime::Duration,
 
     /// # Log trim threshold (deprecated)
     ///
@@ -111,6 +111,14 @@ impl AdminOptions {
         #[cfg(any(test, feature = "test-util"))]
         return !self.disable_cluster_controller;
     }
+
+    pub fn log_trim_interval(&self) -> Option<std::time::Duration> {
+        if self.log_trim_interval.is_zero() {
+            None
+        } else {
+            Some(*self.log_trim_interval)
+        }
+    }
 }
 
 impl Default for AdminOptions {
@@ -122,7 +130,7 @@ impl Default for AdminOptions {
             query_engine: Default::default(),
             heartbeat_interval: Duration::from_millis(1500).into(),
             // try to trim the log every hour
-            log_trim_interval: Some(Duration::from_secs(60 * 60).into()),
+            log_trim_interval: Duration::from_secs(60 * 60).into(),
             log_trim_threshold: None,
             default_partition_replication: PartitionReplication::default(),
             #[cfg(any(test, feature = "test-util"))]
