@@ -32,8 +32,8 @@ use self::codec::{Targeted, WireEncode};
 pub use crate::protobuf::common::ProtocolVersion;
 pub use crate::protobuf::common::TargetName;
 
-pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
-pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
+pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
+pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
 
 #[derive(
     Debug,
@@ -179,8 +179,8 @@ macro_rules! define_message {
         }
 
         impl $crate::net::codec::WireDecode for $message {
-            fn decode<B: bytes::Buf>(
-                buf: &mut B,
+            fn decode(
+                buf: impl bytes::Buf,
                 protocol_version: $crate::net::ProtocolVersion,
             ) -> Result<Self, $crate::net::CodecError>
             where

@@ -315,7 +315,6 @@ pub mod test_util {
     use async_trait::async_trait;
     use futures::stream::BoxStream;
     use futures::StreamExt;
-    use restate_types::net::CodecError;
     use tokio::sync::mpsc;
     use tokio::sync::mpsc::error::TrySendError;
     use tokio_stream::wrappers::ReceiverStream;
@@ -325,6 +324,7 @@ pub mod test_util {
     use restate_types::net::codec::MessageBodyExt;
     use restate_types::net::codec::Targeted;
     use restate_types::net::codec::{serialize_message, WireEncode};
+    use restate_types::net::CodecError;
     use restate_types::net::ProtocolVersion;
     use restate_types::nodes_config::NodesConfiguration;
     use restate_types::protobuf::node::message;
@@ -335,7 +335,6 @@ pub mod test_util {
     use restate_types::protobuf::node::Hello;
     use restate_types::protobuf::node::Message;
     use restate_types::protobuf::node::Welcome;
-    use restate_types::NodeId;
     use restate_types::{GenerationalNodeId, Version};
 
     use crate::cancellation_watcher;
@@ -414,10 +413,8 @@ pub mod test_util {
                 _ => anyhow::bail!("unexpected message, we expect Welcome instead"),
             };
 
-            let peer: NodeId = welcome.my_node_id.expect("peer node id must be set").into();
-            let peer = peer
-                .as_generational()
-                .expect("peer must be generational node id");
+            let peer: GenerationalNodeId =
+                welcome.my_node_id.expect("peer node id must be set").into();
 
             Ok(Self {
                 my_node_id: from_node_id,
