@@ -110,12 +110,12 @@ impl Appender {
             };
             match loglet.append_batch(batch.clone()).await {
                 Ok(lsn) => return Ok(lsn),
-                Err(AppendError::Sealed) => {
+                Err(err @ AppendError::Sealed | err @ AppendError::ReconfigurationNeeded(_)) => {
                     debug!(
                         log_id = %self.log_id,
                         attempt = attempt,
                         segment_index = %loglet.segment_index(),
-                        "Batch append failed but will be retried (loglet has been sealed). Waiting for reconfiguration to complete"
+                        "Batch append failed but will be retried ({err}). Waiting for reconfiguration to complete"
                     );
                     let new_loglet = Self::on_sealed_loglet(
                         self.log_id,
