@@ -485,6 +485,10 @@ where
 
                             if is_leader {
                                 self.status.effective_mode = RunMode::Leader;
+                            } else {
+                                // make sure that we set our effective_mode to follower also when
+                                // not being explicitly asked by the PPM
+                                self.status.effective_mode = RunMode::Follower;
                             }
 
                             transaction = partition_store.transaction();
