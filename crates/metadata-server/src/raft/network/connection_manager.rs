@@ -16,6 +16,7 @@ use crate::raft::network::{grpc_svc, NetworkMessage};
 use futures::StreamExt;
 use metrics::counter;
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
+use restate_types::PlainNodeId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -41,19 +42,19 @@ impl<M> ConnectionManager<M>
 where
     M: NetworkMessage + Send + 'static,
 {
-    pub fn new(identity: u64, router: mpsc::Sender<M>) -> Self {
+    pub fn new(identity: PlainNodeId, router: mpsc::Sender<M>) -> Self {
         ConnectionManager {
             inner: Arc::new(ConnectionManagerInner::new(identity, router)),
         }
     }
 
-    pub fn identity(&self) -> u64 {
+    pub fn identity(&self) -> PlainNodeId {
         self.inner.identity
     }
 
     pub fn accept_connection(
         &self,
-        raft_peer: u64,
+        raft_peer: PlainNodeId,
         incoming_rx: tonic::Streaming<grpc_svc::NetworkMessage>,
     ) -> Result<BoxStream<grpc_svc::NetworkMessage>, ConnectionError> {
         let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
@@ -67,7 +68,7 @@ where
 
     pub fn run_connection(
         &self,
-        remote_peer: u64,
+        remote_peer: PlainNodeId,
         outgoing_tx: mpsc::Sender<grpc_svc::NetworkMessage>,
         incoming_rx: tonic::Streaming<grpc_svc::NetworkMessage>,
     ) -> Result<(), ConnectionError> {
@@ -95,13 +96,13 @@ where
         Ok(())
     }
 
-    pub fn get_connection(&self, target: u64) -> Option<Connection> {
+    pub fn get_connection(&self, target: PlainNodeId) -> Option<Connection> {
         self.inner.connections.lock().unwrap().get(&target).cloned()
     }
 }
 
 struct ConnectionReactor<M> {
-    remote_peer: u64,
+    remote_peer: PlainNodeId,
     connection_manager: Arc<ConnectionManagerInner<M>>,
 }
 
@@ -174,13 +175,13 @@ impl<M> Drop for ConnectionReactor<M> {
 
 #[derive(Debug)]
 struct ConnectionManagerInner<M> {
-    identity: u64,
-    connections: Mutex<HashMap<u64, Connection>>,
+    identity: PlainNodeId,
+    connections: Mutex<HashMap<PlainNodeId, Connection>>,
     router: mpsc::Sender<M>,
 }
 
 impl<M> ConnectionManagerInner<M> {
-    pub fn new(identity: u64, router: mpsc::Sender<M>) -> Self {
+    pub fn new(identity: PlainNodeId, router: mpsc::Sender<M>) -> Self {
         ConnectionManagerInner {
             identity,
             router,
@@ -191,12 +192,12 @@ impl<M> ConnectionManagerInner<M> {
 
 #[derive(Debug, Clone)]
 pub struct Connection {
-    remote_peer: u64,
+    remote_peer: PlainNodeId,
     tx: mpsc::Sender<grpc_svc::NetworkMessage>,
 }
 
 impl Connection {
-    pub fn new(remote_peer: u64, tx: mpsc::Sender<grpc_svc::NetworkMessage>) -> Self {
+    pub fn new(remote_peer: PlainNodeId, tx: mpsc::Sender<grpc_svc::NetworkMessage>) -> Self {
         Connection { remote_peer, tx }
     }
 

@@ -9,14 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use crate::raft::network::connection_manager::ConnectionManager;
-use crate::raft::network::grpc_svc;
-use crate::raft::network::handler::PEER_METADATA_KEY;
+use crate::raft::network::{grpc_svc, PEER_METADATA_KEY};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::FutureExt;
 use restate_core::network::net_util;
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::net::AdvertisedAddress;
+use restate_types::PlainNodeId;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -33,7 +33,7 @@ pub enum TrySendError<T> {
     #[error("connecting to peer")]
     Connecting(T),
     #[error("unknown peer: {0}")]
-    UnknownPeer(u64, T),
+    UnknownPeer(PlainNodeId, T),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }
@@ -52,9 +52,9 @@ impl<T> TrySendError<T> {
 #[derive(derive_more::Debug)]
 pub struct Networking<M> {
     connection_manager: ConnectionManager<M>,
-    addresses: HashMap<u64, AdvertisedAddress>,
+    addresses: HashMap<PlainNodeId, AdvertisedAddress>,
     #[debug(skip)]
-    connection_attempts: HashMap<u64, TaskHandle<anyhow::Result<()>>>,
+    connection_attempts: HashMap<PlainNodeId, TaskHandle<anyhow::Result<()>>>,
     serde_buffer: BytesMut,
 }
 
@@ -72,7 +72,7 @@ where
     }
 
     /// Makes the given address for the given peer known. Returns true if the address is new.
-    pub fn register_address(&mut self, peer: u64, address: AdvertisedAddress) -> bool {
+    pub fn register_address(&mut self, peer: PlainNodeId, address: AdvertisedAddress) -> bool {
         match self.addresses.entry(peer) {
             Entry::Occupied(mut entry) => {
                 if *entry.get() != address {
@@ -141,7 +141,7 @@ where
 
     fn try_connecting_to(
         connection_manager: ConnectionManager<M>,
-        target: u64,
+        target: PlainNodeId,
         address: AdvertisedAddress,
         networking_options: &NetworkingOptions,
     ) -> Result<TaskHandle<anyhow::Result<()>>, ShutdownError> {
@@ -182,7 +182,7 @@ where
 /// A message that can be sent over the network
 pub trait NetworkMessage {
     /// The target of the message
-    fn to(&self) -> u64;
+    fn to(&self) -> PlainNodeId;
 
     /// Serialize the message into the buffer
     fn serialize<B: BufMut>(&self, buffer: &mut B);

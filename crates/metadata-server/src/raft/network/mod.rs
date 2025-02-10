@@ -18,3 +18,5 @@ pub use grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvcSe
 pub use grpc_svc::FILE_DESCRIPTOR_SET;
 pub use handler::MetadataServerNetworkHandler;
 pub use networking::{NetworkMessage, Networking};
+
+const PEER_METADATA_KEY: &str = "x-restate-metadata-server-peer";

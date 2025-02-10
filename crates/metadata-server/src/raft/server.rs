@@ -24,7 +24,7 @@ use crate::raft::network::{
     ConnectionManager, MetadataServerNetworkHandler, MetadataServerNetworkSvcServer, Networking,
 };
 use crate::raft::storage::RocksDbStorage;
-use crate::raft::{network, storage, RaftServerState, StorageMarker};
+use crate::raft::{network, storage, to_plain_node_id, to_raft_id, RaftServerState, StorageMarker};
 use crate::{
     grpc, prepare_initial_nodes_configuration, CreatedAtMillis, InvalidConfiguration,
     JoinClusterError, JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinError,
@@ -535,12 +535,11 @@ impl Member {
         status_tx: StatusSender,
     ) -> Result<Self, Error> {
         let (raft_tx, raft_rx) = mpsc::channel(128);
-        let new_connection_manager =
-            ConnectionManager::new(to_raft_id(my_member_id.node_id), raft_tx);
+        let new_connection_manager = ConnectionManager::new(my_member_id.node_id, raft_tx);
         let mut networking = Networking::new(new_connection_manager.clone());
 
         networking.register_address(
-            to_raft_id(my_member_id.node_id),
+            my_member_id.node_id,
             Configuration::pinned().common.advertised_address.clone(),
         );
 
@@ -1228,11 +1227,10 @@ impl Member {
         );
 
         for node_id in self.raw_node.raft.prs().conf().voters().ids().iter() {
-            if let Ok(node_config) = nodes_config.find_node_by_id(PlainNodeId::from(
-                u32::try_from(node_id).expect("node id is derived from PlainNodeId"),
-            )) {
+            let plain_node_id = to_plain_node_id(node_id);
+            if let Ok(node_config) = nodes_config.find_node_by_id(plain_node_id) {
                 self.networking
-                    .register_address(node_id, node_config.address.clone());
+                    .register_address(plain_node_id, node_config.address.clone());
             }
         }
     }
@@ -1588,12 +1586,4 @@ impl From<raft::Error> for RequestError {
             err => RequestError::Internal(err.into()),
         }
     }
-}
-
-fn to_plain_node_id(id: u64) -> PlainNodeId {
-    PlainNodeId::from(u32::try_from(id).expect("node id is derived from PlainNodeId"))
-}
-
-fn to_raft_id(plain_node_id: PlainNodeId) -> u64 {
-    u64::from(u32::from(plain_node_id))
 }

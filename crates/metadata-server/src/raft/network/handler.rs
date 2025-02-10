@@ -11,7 +11,7 @@
 use crate::raft::network::connection_manager::ConnectionError;
 use crate::raft::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
 use crate::raft::network::grpc_svc::JoinClusterRequest;
-use crate::raft::network::{grpc_svc, ConnectionManager, NetworkMessage};
+use crate::raft::network::{grpc_svc, ConnectionManager, NetworkMessage, PEER_METADATA_KEY};
 use crate::{JoinClusterError, JoinClusterHandle, MemberId};
 use arc_swap::access::Access;
 use arc_swap::ArcSwapOption;
@@ -20,8 +20,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
-
-pub const PEER_METADATA_KEY: &str = "x-restate-metadata-server-peer";
 
 #[derive(Debug)]
 pub struct MetadataServerNetworkHandler<M> {
@@ -61,7 +59,7 @@ where
                         "'{}' is missing",
                         PEER_METADATA_KEY
                     )))?;
-            let peer = u64::from_str(
+            let peer = PlainNodeId::from_str(
                 peer_metadata
                     .to_str()
                     .map_err(|err| Status::invalid_argument(err.to_string()))?,
