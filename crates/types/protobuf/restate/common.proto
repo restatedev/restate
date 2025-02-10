@@ -13,12 +13,17 @@ package restate.common;
 
 enum ProtocolVersion {
   ProtocolVersion_UNKNOWN = 0;
-  FLEXBUFFERS = 1;
+  V1 = 1;
 }
 
 message NodeId {
   uint32 id = 1;
   optional uint32 generation = 2;
+}
+
+message GenerationalNodeId {
+  uint32 id = 1;
+  uint32 generation = 2;
 }
 
 // Partition Processor leadership epoch number

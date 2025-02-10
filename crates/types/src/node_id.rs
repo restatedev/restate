@@ -55,6 +55,12 @@ pub enum NodeId {
 #[debug("{}:{}", _0, _1)]
 pub struct GenerationalNodeId(PlainNodeId, u32);
 
+impl From<crate::protobuf::common::GenerationalNodeId> for GenerationalNodeId {
+    fn from(value: crate::protobuf::common::GenerationalNodeId) -> Self {
+        Self(PlainNodeId(value.id), value.generation)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("invalid plain node id: {0}")]
 pub struct MalformedPlainNodeId(String);
