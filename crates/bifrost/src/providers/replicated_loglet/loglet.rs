@@ -370,8 +370,6 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     /// trim_point is inclusive (will be trimmed)
     async fn trim(&self, trim_point: LogletOffset) -> Result<(), OperationError> {
         trace!("trim() called");
-        let trim_point = trim_point.min(self.known_global_tail.latest_offset().prev_unchecked());
-
         TrimTask::new(
             &self.my_params,
             self.logservers_rpc.clone(),
