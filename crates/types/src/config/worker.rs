@@ -275,10 +275,10 @@ pub struct StorageOptions {
     /// # Persist lsn interval
     ///
     /// Controls the interval at which worker tries to persist the last applied lsn. Lsn persisting
-    /// can be disabled by setting it to "".
-    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub persist_lsn_interval: Option<humantime::Duration>,
+    /// can be disabled by setting it to "0s".
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    persist_lsn_interval: humantime::Duration,
 
     /// # Persist lsn threshold
     ///
@@ -341,6 +341,14 @@ impl StorageOptions {
     pub fn snapshots_staging_dir(&self) -> PathBuf {
         super::data_dir("pp-snapshots")
     }
+
+    pub fn persist_lsn_interval(&self) -> Option<std::time::Duration> {
+        if self.persist_lsn_interval.is_zero() {
+            None
+        } else {
+            Some(*self.persist_lsn_interval)
+        }
+    }
 }
 
 impl Default for StorageOptions {
@@ -357,7 +365,7 @@ impl Default for StorageOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
             // persist the lsn every hour
-            persist_lsn_interval: Some(Duration::from_secs(60 * 60).into()),
+            persist_lsn_interval: Duration::from_secs(60 * 60).into(),
             persist_lsn_threshold: 1000,
             always_commit_in_background: false,
         }
