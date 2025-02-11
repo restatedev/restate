@@ -15,7 +15,7 @@ use itertools::{Either, Itertools};
 use rand::{rng, seq::SliceRandom};
 use tokio::sync::{Mutex, MutexGuard};
 use tonic::{codec::CompressionEncoding, transport::Channel, Response, Status};
-use tracing::debug;
+use tracing::info;
 
 use restate_core::protobuf::node_ctl_svc::{
     node_ctl_svc_client::NodeCtlSvcClient, GetMetadataRequest, IdentResponse,
@@ -33,17 +33,22 @@ use crate::util::grpc_channel;
 
 #[derive(Clone, Parser, Collect, Debug)]
 pub struct ConnectionInfo {
-    /// Specify the nodes addresses separated by ','. This option can be specified multiple
-    /// times.
+    /// Specify server address to connect to.
+    ///
+    /// It needs access to the node-to-node address (aka. node advertised address)
+    /// Can also accept a comma-separated list or by repeating `--address=<host>`.
     #[clap(
         long,
+        short('s'),
+        visible_alias("server"),
+        alias("addresses"),
         value_hint = clap::ValueHint::Url,
         default_value = "http://localhost:5122/",
-        env = "RESTATE_ADDRESSES",
+        env = "RESTATECTL_ADDRESS",
         global = true,
         value_delimiter = ',',
     )]
-    pub addresses: Vec<AdvertisedAddress>,
+    pub address: Vec<AdvertisedAddress>,
 
     /// Use this option to avoid receiving stale metadata information from the nodes by reading it
     /// from the metadata store.
@@ -64,7 +69,7 @@ impl ConnectionInfo {
     /// Gets NodesConfiguration object. This function tries all provided addresses and makes sure
     /// nodes configuration is cached.
     pub async fn get_nodes_configuration(&self) -> Result<NodesConfiguration, ConnectionInfoError> {
-        if self.addresses.is_empty() {
+        if self.address.is_empty() {
             return Err(ConnectionInfoError::NoAvailableNodes(NoRoleError(None)));
         }
 
@@ -73,8 +78,8 @@ impl ConnectionInfo {
         // get nodes configuration will always use the addresses seed
         // provided via the cmdline
         self.get_latest_metadata(
-            self.addresses.iter(),
-            self.addresses.len(),
+            self.address.iter(),
+            self.address.len(),
             MetadataKind::NodesConfiguration,
             guard,
             |ident| Version::from(ident.nodes_config_version),
@@ -157,7 +162,7 @@ impl ConnectionInfo {
 
         for address in addresses {
             let channel = cache.entry(address.clone()).or_insert_with(|| {
-                debug!("connecting to {address}");
+                info!("Connecting to {address}");
                 grpc_channel(address.clone())
             });
 

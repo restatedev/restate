@@ -24,45 +24,53 @@ use crate::commands::replicated_loglet::ReplicatedLoglet;
 use crate::commands::snapshot::Snapshot;
 use crate::connection::ConnectionInfo;
 
+/// Restate Cluster Administration Tool
+///
+/// A command-line tool for managing Restate clusters. Designed to be be used by administrators,
+/// restatectl can be used to inspect cluster health and perform low-level maintenance operations
+/// on live nodes. It requires access to restate's node-to-node communication addresses (default on
+/// port 5122)
+///
+/// https://docs.restate.dev
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
 #[cling(run = "init")]
 pub struct CliApp {
     #[clap(flatten)]
-    pub common_opts: CommonOpts,
-    #[clap(flatten)]
     pub connection: ConnectionInfo,
+    #[clap(flatten)]
+    pub common_opts: CommonOpts,
     #[clap(subcommand)]
     pub cmd: Command,
 }
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Command {
-    /// Cluster operations
-    #[clap(subcommand)]
-    Cluster(Cluster),
+    /// Provision a new cluster
+    Provision(ProvisionOpts),
     /// Print cluster status overview (shortcut to `cluster status`)
     Status(ClusterStatusOpts),
-    /// Log operations
-    #[clap(subcommand)]
-    Logs(Logs),
     /// Cluster node status
     #[clap(subcommand)]
     Nodes(Nodes),
     /// Manage partition table
     #[clap(subcommand)]
     Partitions(Partitions),
-    /// Metadata store operations
+    /// Log operations
     #[clap(subcommand)]
-    Metadata(Metadata),
+    Logs(Logs),
     /// Partition processor snapshots
     #[clap(subcommand)]
     Snapshots(Snapshot),
-    /// Commands that operate on replicated loglets
+    /// Cluster operations
+    #[clap(subcommand)]
+    Cluster(Cluster),
+    /// Metadata store operations
+    #[clap(subcommand)]
+    Metadata(Metadata),
+    /// [low-level] Commands that operate on replicated loglets
     #[clap(subcommand)]
     ReplicatedLoglet(ReplicatedLoglet),
-    /// Provision a new cluster
-    Provision(ProvisionOpts),
 }
 
 fn init(common_opts: &CommonOpts) {

@@ -38,7 +38,7 @@ bytes = { workspace = true }
 bytesize = { workspace = true }
 bytestring = { workspace = true }
 chrono = { workspace = true }
-clap = { workspace = true, features = ["derive", "env", "wrap_help", "color"] }
+clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
 clap-stdin = "0.5.1"
 cling = { workspace = true }
 crossterm = { version = "0.27.0" }
