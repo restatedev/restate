@@ -354,7 +354,7 @@ fn create_log_trim_check_interval(options: &AdminOptions) -> Option<Interval> {
         .log_trim_threshold
         .inspect(|_| info!("The log trim threshold setting is deprecated and will be ignored"));
 
-    options.log_trim_interval().map(|interval| {
+    options.log_trim_check_interval().map(|interval| {
         // delay the initial trim check, and introduces small amount of jitter (+/-10%) to avoid synchronization
         // among partition leaders in case of coordinated cluster restarts
         let effective_interval = with_jitter(interval, 0.1);
