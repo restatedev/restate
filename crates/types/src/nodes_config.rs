@@ -156,6 +156,21 @@ impl NodesConfiguration {
         self.version = version;
     }
 
+    /// Removes the node with the given `id` by inserting a tombstone for it.
+    ///
+    /// # Important
+    /// You should only remove nodes from the nodes configuration once they are fully drained. This
+    /// means they shouldn't be part of any node set, be a member of the latest metadata cluster
+    /// configuration, or run any partition processors. It is your responsibility to ensure this
+    /// condition before removing a node!
+    pub fn remove_node_unchecked(&mut self, id: impl Into<NodeId>) {
+        let node_id = id.into();
+        // only keep tombstones for known nodes
+        self.nodes
+            .entry(node_id.id())
+            .and_modify(|value| *value = MaybeNode::Tombstone);
+    }
+
     /// Insert or replace a node with a config.
     pub fn upsert_node(&mut self, node: NodeConfig) {
         debug_assert!(!node.name.is_empty());

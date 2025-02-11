@@ -300,10 +300,7 @@ async fn start_metadata_server(
     TaskCenter::spawn(
         TaskKind::MetadataServer,
         "local-metadata-store",
-        async move {
-            server.run().await;
-            Ok(())
-        },
+        server.run(),
     )?;
 
     assert2::let_assert!(

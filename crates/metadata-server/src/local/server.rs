@@ -29,8 +29,10 @@ use restate_types::live::BoxedLiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration};
 use restate_types::protobuf::common::MetadataServerStatus;
-use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-use restate_types::Version;
+use restate_types::storage::{
+    StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+};
+use restate_types::{PlainNodeId, Version};
 use rocksdb::{BoundColumnFamily, DBCompressionType, WriteBatch, WriteOptions, DB};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -113,15 +115,11 @@ impl LocalMetadataServer {
         write_opts
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         debug!("Running LocalMetadataStore");
         self.health_status.update(MetadataServerStatus::Member);
 
-        // Only needed if we resume from a Restate version that has not properly set the
-        // MetadataServerState to Member in the NodesConfiguration.
-        if let Err(err) = self.patch_metadata_server_state().await {
-            info!("Failed to patch MetadataServerState: {err}");
-        }
+        self.migrate_nodes_configuration().await?;
 
         loop {
             tokio::select! {
@@ -137,13 +135,15 @@ impl LocalMetadataServer {
         self.health_status.update(MetadataServerStatus::Unknown);
 
         debug!("Stopped LocalMetadataStore");
+
+        Ok(())
     }
 
-    async fn patch_metadata_server_state(&mut self) -> anyhow::Result<()> {
+    async fn migrate_nodes_configuration(&mut self) -> Result<(), MigrationError> {
         let value = self.get(&NODES_CONFIG_KEY)?;
 
         if value.is_none() {
-            // nothing to patch
+            // nothing to migrate
             return Ok(());
         };
 
@@ -152,22 +152,67 @@ impl LocalMetadataServer {
 
         let mut nodes_configuration = StorageCodec::decode::<NodesConfiguration, _>(&mut bytes)?;
 
+        let mut modified = false;
+
         if let Some(node_config) =
             nodes_configuration.find_node_by_name(Configuration::pinned().common.node_name())
         {
-            if matches!(
+            // Only needed if we resume from a Restate version that has not properly set the
+            // MetadataServerState to Member in the NodesConfiguration.
+            if !matches!(
                 node_config.metadata_server_config.metadata_server_state,
                 MetadataServerState::Member
             ) {
-                // nothing to patch
-                return Ok(());
+                info!(
+                    "Setting MetadataServerState to Member in NodesConfiguration for node {}",
+                    node_config.name
+                );
+                let mut new_node_config = node_config.clone();
+                new_node_config.metadata_server_config.metadata_server_state =
+                    MetadataServerState::Member;
+
+                nodes_configuration.upsert_node(new_node_config);
+                modified = true;
+            }
+        }
+
+        // If we have a node-id 0 in our NodesConfiguration, then we need to migrate it to another
+        // value since node-id 0 is a reserved value now.
+        let zero = PlainNodeId::new(0);
+        if let Ok(node_config) = nodes_configuration.find_node_by_id(zero) {
+            if nodes_configuration.len() > 1 {
+                return Err(MigrationError::MultiNodeCluster);
             }
 
-            let mut new_node_config = node_config.clone();
-            new_node_config.metadata_server_config.metadata_server_state =
-                MetadataServerState::Member;
+            assert_eq!(node_config.name, Configuration::pinned().node_name(), "The only known node of this cluster is {} but my node name is {}. This indicates that my node name was changed after an initial provisioning of the node", node_config.name, Configuration::pinned().node_name());
 
+            let plain_node_id_to_migrate_to =
+                if let Some(force_node_id) = Configuration::pinned().common.force_node_id {
+                    assert_ne!(
+                        force_node_id, zero,
+                        "It should no longer be allowed to force the node id to 0"
+                    );
+                    force_node_id
+                } else {
+                    PlainNodeId::MIN_PLAIN_NODE_ID
+                };
+
+            let mut new_node_config = node_config.clone();
+            new_node_config.current_generation = plain_node_id_to_migrate_to
+                .with_generation(node_config.current_generation.generation());
+            info!(
+                "Migrating node id of node '{}' from '{}' to '{}'",
+                node_config.name,
+                node_config.current_generation,
+                new_node_config.current_generation
+            );
+
+            nodes_configuration.remove_node_unchecked(node_config.current_generation);
             nodes_configuration.upsert_node(new_node_config);
+            modified = true;
+        }
+
+        if modified {
             nodes_configuration.increment_version();
 
             let new_nodes_configuration = serialize_value(&nodes_configuration)?;
@@ -179,7 +224,7 @@ impl LocalMetadataServer {
             )
             .await?;
 
-            info!("Successfully patched MetadataServerState in the NodesConfiguration.");
+            info!("Successfully completed NodesConfiguration migration");
         }
 
         Ok(())
@@ -367,9 +412,20 @@ impl LocalMetadataServer {
 #[async_trait::async_trait]
 impl MetadataServer for LocalMetadataServer {
     async fn run(self) -> anyhow::Result<()> {
-        self.run().await;
-        Ok(())
+        self.run().await.map_err(Into::into)
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MigrationError {
+    #[error("failed reading/writing: {0}")]
+    ReadWrite(#[from] RequestError),
+    #[error("encode error: {0}")]
+    Encode(#[from] StorageEncodeError),
+    #[error("decode error: {0}")]
+    Decode(#[from] StorageDecodeError),
+    #[error("cannot auto migrate a multi node cluster which uses the local metadata server")]
+    MultiNodeCluster,
 }
 
 pub fn db_options(_options: &MetadataServerOptions) -> rocksdb::Options {
