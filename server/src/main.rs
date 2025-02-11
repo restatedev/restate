@@ -18,6 +18,7 @@ use std::time::Duration;
 use clap::Parser;
 use codederror::CodedError;
 use restate_core::TaskCenter;
+use restate_types::nodes_config::Role;
 use tokio::io;
 use tracing::error;
 use tracing::{info, trace, warn};
@@ -167,6 +168,38 @@ fn main() {
             format!("Restate {}", build_info::RESTATE_SERVER_VERSION)
         );
         let _ = writeln!(&mut stdout, "{:^40}", "https://restate.dev/");
+        if config.has_role(Role::Admin) {
+            let _ = writeln!(
+                &mut stdout,
+                "{:^40}",
+                format!(
+                    "Admin: {}",
+                    config
+                        .admin
+                        .advertised_admin_endpoint
+                        .as_ref()
+                        .expect("is set")
+                )
+            );
+        }
+
+        // todo: this should be changed to HttpIngress
+        // once it's fully supported
+        if config.has_role(Role::Worker) {
+            let _ = writeln!(
+                &mut stdout,
+                "{:^40}",
+                format!(
+                    "HTTP Ingress: {}",
+                    config
+                        .ingress
+                        .advertised_ingress_endpoint
+                        .as_ref()
+                        .expect("is set")
+                )
+            );
+        }
+
         let _ = writeln!(&mut stdout);
     }
 

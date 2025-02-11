@@ -11,6 +11,7 @@
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
+use http::Uri;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
@@ -53,6 +54,13 @@ pub struct IngressOptions {
     /// * Shared handlers can now receive events https://github.com/restatedev/restate/issues/2100
     #[cfg_attr(feature = "schemars", schemars(skip))]
     experimental_feature_kafka_ingress_next: bool,
+
+    /// # Ingress endpoint
+    ///
+    /// Ingress endpoint that the Web UI should use to interact with.
+    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String", url))]
+    pub advertised_ingress_endpoint: Option<Uri>,
 }
 
 impl IngressOptions {
@@ -84,6 +92,27 @@ impl IngressOptions {
     pub fn experimental_feature_kafka_ingress_next(&self) -> bool {
         self.experimental_feature_kafka_ingress_next
     }
+
+    /// set derived values if they are not configured to reduce verbose configurations
+    pub fn set_derived_values(&mut self) {
+        // Only derive bind_address if it is not explicitly set
+        let bind_address = if self.bind_address.ip().is_unspecified() {
+            format!("127.0.0.1:{}", self.bind_address.port())
+        } else {
+            self.bind_address.to_string()
+        };
+
+        if self.advertised_ingress_endpoint.is_none() {
+            self.advertised_ingress_endpoint = Some(
+                Uri::builder()
+                    .scheme("http")
+                    .authority(bind_address)
+                    .path_and_query("/")
+                    .build()
+                    .expect("valid bind address"),
+            );
+        }
+    }
 }
 
 impl Default for IngressOptions {
@@ -95,6 +124,7 @@ impl Default for IngressOptions {
             kafka_clusters: Default::default(),
             experimental_feature_enable_separate_ingress_role: false,
             experimental_feature_kafka_ingress_next: false,
+            advertised_ingress_endpoint: None,
         }
     }
 }
