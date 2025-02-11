@@ -10,7 +10,11 @@
 
 mod server;
 
-pub use server::LocalMetadataServer;
+pub use {server::migrate_nodes_configuration, server::LocalMetadataServer};
 
+pub mod storage;
 #[cfg(test)]
 mod tests;
+
+const DB_NAME: &str = "local-metadata-store";
+const KV_PAIRS: &str = "kv_pairs";

@@ -646,19 +646,6 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
-    pub fn store_nodes_configuration(
-        &mut self,
-        raft_configuration: &NodesConfiguration,
-    ) -> Result<(), Error> {
-        self.put_bytes_metadata_cf(
-            NODES_CONFIGURATION_KEY,
-            &RocksDbStorage::serialize_value(raft_configuration)
-                .map_err(|err| Error::Encode(err.into()))?,
-        );
-
-        Ok(())
-    }
-
     pub fn store_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
         self.put_value_ref_metadata_cf(SNAPSHOT_KEY, snapshot)
     }
