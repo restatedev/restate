@@ -24,6 +24,14 @@ use crate::commands::replicated_loglet::ReplicatedLoglet;
 use crate::commands::snapshot::Snapshot;
 use crate::connection::ConnectionInfo;
 
+/// Restate Cluster Administration Tool
+///
+/// A command-line tool for managing Restate clusters. Designed to be be used by administrators,
+/// restatectl can be used to inspect cluster health and perform low-level maintenance operations
+/// on live nodes. It requires access to restate's node-to-node communication addresses (default on
+/// port 5122)
+///
+/// https://docs.restate.dev
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
 #[cling(run = "init")]
