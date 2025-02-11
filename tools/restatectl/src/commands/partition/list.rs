@@ -46,7 +46,7 @@ use crate::connection::ConnectionInfo;
 )]
 pub struct ListPartitionsOpts {
     /// Sort order
-    #[arg(long, short, default_value = "partition")]
+    #[arg(long, default_value = "partition")]
     sort: SortMode,
 }
 
