@@ -21,6 +21,7 @@ use restate_core::MetadataWriter;
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::net::BindAddress;
 use restate_types::schema::subscriptions::SubscriptionValidator;
+use tracing::info;
 
 use crate::schema_registry::SchemaRegistry;
 use crate::{rest_api, state};
@@ -126,6 +127,11 @@ where
             );
 
         let service = hyper_util::service::TowerToHyperService::new(router.into_service());
+
+        info!(
+            "Admin API starting on: {}",
+            opts.advertised_admin_endpoint.as_ref().expect("is set")
+        );
 
         net_util::run_hyper_server(
             &BindAddress::Socket(opts.bind_address),

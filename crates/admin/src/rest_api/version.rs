@@ -30,7 +30,7 @@ pub async fn version() -> Json<VersionInformation> {
         min_admin_api_version: MIN_ADMIN_API_VERSION.as_repr(),
         max_admin_api_version: MAX_ADMIN_API_VERSION.as_repr(),
         ingress_endpoint: Configuration::pinned()
-            .admin
+            .ingress
             .advertised_ingress_endpoint
             .clone(),
     })

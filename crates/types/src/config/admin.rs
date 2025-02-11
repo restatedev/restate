@@ -34,6 +34,13 @@ pub struct AdminOptions {
     /// Address to bind for the Admin APIs.
     pub bind_address: SocketAddr,
 
+    /// # Advertised Admin endpoint
+    ///
+    /// Optional advertised Admin API endpoint.
+    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String", url))]
+    pub advertised_admin_endpoint: Option<Uri>,
+
     /// # Concurrency limit
     ///
     /// Concurrency limit for the Admin APIs. Default is unlimited.
@@ -90,13 +97,6 @@ pub struct AdminOptions {
 
     #[cfg(any(test, feature = "test-util"))]
     pub disable_cluster_controller: bool,
-
-    /// # Ingress endpoint
-    ///
-    /// Ingress endpoint that the Web UI should use to interact with.
-    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String", url))]
-    pub advertised_ingress_endpoint: Option<Uri>,
 }
 
 impl AdminOptions {
@@ -127,12 +127,34 @@ impl AdminOptions {
             Some(*self.log_trim_check_interval)
         }
     }
+
+    /// set derived values if they are not configured to reduce verbose configurations
+    pub fn set_derived_values(&mut self) {
+        // Only derive bind_address if it is not explicitly set
+        let bind_address = if self.bind_address.ip().is_unspecified() {
+            format!("127.0.0.1:{}", self.bind_address.port())
+        } else {
+            self.bind_address.to_string()
+        };
+
+        if self.advertised_admin_endpoint.is_none() {
+            self.advertised_admin_endpoint = Some(
+                Uri::builder()
+                    .scheme("http")
+                    .authority(bind_address)
+                    .path_and_query("/")
+                    .build()
+                    .expect("valid bind address"),
+            );
+        }
+    }
 }
 
 impl Default for AdminOptions {
     fn default() -> Self {
         Self {
             bind_address: "0.0.0.0:9070".parse().unwrap(),
+            advertised_admin_endpoint: None,
             // max is limited by Tower's LoadShedLayer.
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
@@ -144,7 +166,6 @@ impl Default for AdminOptions {
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             log_tail_update_interval: Duration::from_secs(5 * 60).into(),
-            advertised_ingress_endpoint: Some("http://localhost:8080/".parse().unwrap()),
         }
     }
 }
@@ -163,6 +184,7 @@ impl From<AdminOptionsShadow> for AdminOptions {
 
         Self {
             bind_address: value.bind_address,
+            advertised_admin_endpoint: None,
             concurrent_api_requests_limit: value.concurrent_api_requests_limit,
             query_engine: value.query_engine,
             heartbeat_interval: value.heartbeat_interval,
@@ -172,7 +194,6 @@ impl From<AdminOptionsShadow> for AdminOptions {
             default_partition_replication: value.default_partition_replication,
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: value.disable_cluster_controller,
-            advertised_ingress_endpoint: value.advertised_ingress_endpoint,
         }
     }
 }
@@ -211,7 +232,4 @@ struct AdminOptionsShadow {
 
     #[cfg(any(test, feature = "test-util"))]
     disable_cluster_controller: bool,
-
-    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-    advertised_ingress_endpoint: Option<Uri>,
 }
