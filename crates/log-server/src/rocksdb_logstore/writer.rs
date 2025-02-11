@@ -208,7 +208,7 @@ impl LogStoreWriter {
         for payload in store_message.payloads.iter() {
             let key_bytes =
                 DataRecordKey::new(store_message.header.loglet_id, offset).encode_and_split(buffer);
-            record_cache.add(store_message.header.loglet_id, offset, payload.clone());
+            record_cache.add(store_message.header.loglet_id, offset, payload);
             let value_bytes = DataRecordEncoder::from(payload).encode_to_disk_format(buffer);
             write_batch.put_cf(data_cf, key_bytes, value_bytes);
             // advance the offset for the next record

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use moka::{
+    ops::compute::Op,
     policy::EvictionPolicy,
     sync::{Cache, CacheBuilder},
 };
@@ -24,7 +25,7 @@ type RecordKey = (LogletId, LogletOffset);
 /// RemoteSequencers
 #[derive(Clone)]
 pub struct RecordCache {
-    inner: Option<Cache<RecordKey, Record>>,
+    inner: Option<Cache<RecordKey, Record, ahash::RandomState>>,
 }
 
 impl RecordCache {
@@ -42,7 +43,7 @@ impl RecordCache {
                     })
                     .max_capacity(memory_budget_bytes.try_into().unwrap_or(u64::MAX))
                     .eviction_policy(EvictionPolicy::lru())
-                    .build(),
+                    .build_with_hasher(ahash::RandomState::default()),
             )
         } else {
             None
@@ -51,13 +52,40 @@ impl RecordCache {
         Self { inner }
     }
 
-    /// Writes a record to cache externally
-    pub fn add(&self, loglet_id: LogletId, offset: LogletOffset, record: Record) {
+    fn insert(&self, loglet_id: LogletId, offset: LogletOffset, record: &Record) {
         let Some(ref inner) = self.inner else {
             return;
         };
 
-        inner.insert((loglet_id, offset), record);
+        inner
+            .entry((loglet_id, offset))
+            .and_compute_with(|existing| {
+                let Some(existing) = existing else {
+                    return Op::Put(record.clone());
+                };
+                match (
+                    existing.value().body().is_encoded(),
+                    record.body().is_encoded(),
+                ) {
+                    // both are encoded, we don't want to replace the existing value.
+                    (true, true) | (false, false) | (false, true) => Op::Nop,
+                    // replace the existing value if the new one is deserialized.
+                    (true, false) => Op::Put(record.clone()),
+                }
+            });
+    }
+
+    /// Writes a record to cache externally
+    pub fn add(&self, loglet_id: LogletId, offset: LogletOffset, record: &Record) {
+        self.insert(loglet_id, offset, record);
+    }
+
+    /// Removes the record from cache if it exists
+    pub fn invalidate_record(&self, loglet_id: LogletId, offset: LogletOffset) {
+        let Some(ref inner) = self.inner else {
+            return;
+        };
+        inner.invalidate(&(loglet_id, offset));
     }
 
     /// Extend cache with records
@@ -67,12 +95,12 @@ impl RecordCache {
         mut first_offset: LogletOffset,
         records: I,
     ) {
-        let Some(ref inner) = self.inner else {
+        if self.inner.is_none() {
             return;
         };
 
         for record in records.as_ref() {
-            inner.insert((loglet_id, first_offset), record.clone());
+            self.insert(loglet_id, first_offset, record);
             first_offset = first_offset.next();
         }
     }
