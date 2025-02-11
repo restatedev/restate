@@ -23,7 +23,7 @@ use restate_types::nodes_config::Role;
 use restate_types::replication::ReplicationProperty;
 use tonic::codec::CompressionEncoding;
 
-use crate::commands::cluster::config::cluster_config_string;
+use super::cluster_config_string;
 use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
