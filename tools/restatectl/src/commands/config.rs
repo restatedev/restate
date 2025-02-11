@@ -22,7 +22,7 @@ use restate_types::{
 use crate::util::{write_default_provider, write_leaf};
 
 #[derive(Run, Subcommand, Clone)]
-pub enum Config {
+pub enum ConfigOpts {
     /// Print a brief overview of the cluster status (nodes, logs, partitions)
     Get(get::ConfigGetOpts),
     Set(set::ConfigSetOpts),

@@ -10,8 +10,6 @@
 
 use std::collections::BTreeMap;
 
-use clap::Parser;
-use cling::{Collect, Run};
 use itertools::Itertools;
 use tonic::codec::CompressionEncoding;
 use tonic::IntoRequest;
@@ -27,12 +25,7 @@ use restate_types::{PlainNodeId, Version};
 use crate::connection::ConnectionInfo;
 use crate::util::grpc_channel;
 
-#[derive(Run, Parser, Collect, Clone, Debug)]
-#[clap()]
-#[cling(run = "status")]
-pub struct StatusOpts {}
-
-async fn status(connection: &ConnectionInfo) -> anyhow::Result<()> {
+pub async fn list_metadata_servers(connection: &ConnectionInfo) -> anyhow::Result<()> {
     let nodes_configuration = connection.get_nodes_configuration().await?;
     let mut metadata_nodes_table = Table::new_styled();
     let header = vec![
