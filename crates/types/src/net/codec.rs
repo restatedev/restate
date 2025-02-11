@@ -10,7 +10,8 @@
 
 use std::sync::Arc;
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::Buf;
+use bytes::Bytes;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -19,7 +20,6 @@ use crate::protobuf::common::ProtocolVersion;
 use crate::protobuf::common::TargetName;
 use crate::protobuf::node::message;
 use crate::protobuf::node::message::BinaryMessage;
-use crate::storage::{decode_from_flexbuffers, encode_as_flexbuffers};
 
 pub trait Targeted {
     const TARGET: TargetName;
@@ -70,11 +70,7 @@ where
 }
 
 pub trait WireEncode {
-    fn encode<B: BufMut>(
-        self,
-        buf: &mut B,
-        protocol_version: ProtocolVersion,
-    ) -> Result<(), CodecError>;
+    fn encode(self, protocol_version: ProtocolVersion) -> Result<message::Body, CodecError>;
 }
 
 pub trait WireDecode {
@@ -87,12 +83,8 @@ impl<T> WireEncode for Box<T>
 where
     T: WireEncode,
 {
-    fn encode<B: BufMut>(
-        self,
-        buf: &mut B,
-        protocol_version: ProtocolVersion,
-    ) -> Result<(), CodecError> {
-        (*self).encode(buf, protocol_version)
+    fn encode(self, protocol_version: ProtocolVersion) -> Result<message::Body, CodecError> {
+        (*self).encode(protocol_version)
     }
 }
 
@@ -120,42 +112,32 @@ where
     }
 }
 
-pub fn serialize_message<M: WireEncode + Targeted>(
-    msg: M,
-    protocol_version: ProtocolVersion,
-) -> Result<message::Body, CodecError> {
-    let mut payload = BytesMut::new();
-    msg.encode(&mut payload, protocol_version)?;
-    let target = M::TARGET.into();
-    Ok(message::Body::Encoded(BinaryMessage {
-        target,
-        payload: payload.freeze(),
-    }))
-}
-
-/// Helper function for default encoding of values.
-pub fn encode_default<T: Serialize, B: BufMut>(
+/// Utility method to raw-encode a [`Serialize`] type as flexbuffers using serde without adding
+/// version tag. This must be decoded with `decode_from_untagged_flexbuffers`. This is used as the default
+/// encoding for network messages since networking has its own protocol versioning.
+pub fn encode_default<T: Serialize>(
     value: T,
-    buf: &mut B,
     protocol_version: ProtocolVersion,
-) -> Result<(), CodecError> {
+) -> Result<Bytes, CodecError> {
     match protocol_version {
-        ProtocolVersion::V1 => {
-            encode_as_flexbuffers(value, buf).map_err(|err| CodecError::Encode(err.into()))
-        }
+        ProtocolVersion::V1 => Ok(Bytes::from(
+            flexbuffers::to_vec(value).map_err(|err| CodecError::Encode(err.into()))?,
+        )),
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
         }
     }
 }
 
+/// Utility method to decode a [`DeserializeOwned`] type from flexbuffers using serde. the buffer
+/// must have the complete message and not internally chunked.
 pub fn decode_default<T: DeserializeOwned>(
-    mut buf: impl Buf,
+    buf: impl Buf,
     protocol_version: ProtocolVersion,
 ) -> Result<T, CodecError> {
     match protocol_version {
         ProtocolVersion::V1 => {
-            decode_from_flexbuffers(&mut buf).map_err(|err| CodecError::Decode(err.into()))
+            flexbuffers::from_slice(buf.chunk()).map_err(|err| CodecError::Decode(err.into()))
         }
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
