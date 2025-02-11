@@ -18,6 +18,11 @@ use restate_cli_util::{CliContext, CommonOpts};
 use crate::cli_env::{CliEnv, EnvironmentSource};
 use crate::commands::*;
 
+/// Restate Command Line Interface
+///
+/// A command-line tool to inspect restate services status, invocations, deployment, and much more.
+///
+/// https://docs.restate.dev
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
 #[cling(run = "init")]

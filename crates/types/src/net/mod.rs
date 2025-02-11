@@ -78,10 +78,19 @@ fn parse_http(s: &str) -> Result<AdvertisedAddress, Error> {
         .parse::<Uri>()
         .with_context(|| format!("Invalid URI format: '{s}'"))?;
 
+    let mut parts = uri.into_parts();
+    // default to http if scheme is missing
+    if parts.scheme.is_none() {
+        parts.scheme = Some(http::uri::Scheme::HTTP);
+    }
+    if parts.path_and_query.is_none() {
+        parts.path_and_query = Some(http::uri::PathAndQuery::from_str("/")?);
+    }
+    let uri = Uri::from_parts(parts)?;
     match uri.scheme_str() {
         Some("http") | Some("https") => Ok(AdvertisedAddress::Http(uri)),
         Some(other) => Err(anyhow::anyhow!("Unsupported URI scheme '{}'", other)),
-        None => Err(anyhow::anyhow!("Missing URI scheme in: '{}'", s)),
+        None => unreachable!(),
     }
 }
 
@@ -276,11 +285,22 @@ mod tests {
     #[test]
     fn test_parse_missing_scheme() {
         let result = AdvertisedAddress::from_str("localhost:8080");
+        assert!(result.is_ok());
+        if let AdvertisedAddress::Http(uri) = result.unwrap() {
+            assert_eq!(uri.to_string(), "http://localhost:8080/");
+        } else {
+            panic!("Expected Http variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_missing_scheme_with_path() {
+        let result = AdvertisedAddress::from_str("localhost/data");
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Missing URI scheme in: 'localhost:8080'"
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid URI format: 'localhost/data'"));
     }
 
     #[test]
@@ -414,14 +434,5 @@ mod tests {
             result.is_err(),
             "Expected an error for invalid bind address"
         );
-    }
-
-    #[test]
-    fn test_invalid_advertised_address() {
-        // Test case for an invalid AdvertisedAddress string
-        let result = AdvertisedAddress::from_str("invalid-address");
-
-        // Parsing should fail, resulting in an error
-        assert!(result.is_err(), "Expected an error for invalid address");
     }
 }
