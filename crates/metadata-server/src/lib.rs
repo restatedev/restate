@@ -343,13 +343,6 @@ struct WriteRequest {
 }
 
 impl WriteRequest {
-    pub fn new(kind: RequestKind) -> Self {
-        WriteRequest {
-            request_id: Ulid::new(),
-            kind,
-        }
-    }
-
     fn encode_to_vec(self) -> Result<Vec<u8>, StorageEncodeError> {
         let request = grpc::WriteRequest::from(self);
         Ok(request.encode_to_vec())

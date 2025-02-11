@@ -609,32 +609,6 @@ impl<'a> Transaction<'a> {
         }
     }
 
-    pub fn append(&mut self, entries: &Vec<Entry>) -> Result<(), Error> {
-        let mut buffer = mem::take(&mut self.storage.buffer);
-        let mut last_index = self.last_index;
-
-        let mut write_batch = mem::take(&mut self.write_batch);
-        {
-            let data_cf = self.storage.data_cf();
-
-            for entry in entries {
-                assert_eq!(last_index + 1, entry.index, "Expect raft log w/o holes");
-                buffer.clear();
-                let key = LogEntryKey::new(entry.index).to_bytes();
-                entry.write_to_writer(&mut (&mut buffer).writer())?;
-
-                write_batch.put_cf(&data_cf, key, &buffer);
-                last_index = entry.index;
-            }
-        }
-        self.write_batch = write_batch;
-
-        self.storage.buffer = buffer;
-        self.last_index = last_index;
-
-        Ok(())
-    }
-
     pub fn apply_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
         if snapshot.get_metadata().get_index() < self.first_index {
             // snapshot is outdated; ignore it

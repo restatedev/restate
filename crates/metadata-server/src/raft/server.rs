@@ -26,11 +26,11 @@ use crate::raft::network::{
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{network, storage, to_plain_node_id, to_raft_id, RaftServerState, StorageMarker};
 use crate::{
-    grpc, prepare_initial_nodes_configuration, CreatedAtMillis, InvalidConfiguration,
-    JoinClusterError, JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinError,
-    KnownLeader, MemberId, MetadataServer, MetadataServerConfiguration, MetadataServerSummary,
-    MetadataStoreRequest, ProvisionError, ProvisionReceiver, RaftSummary, Request, RequestError,
-    RequestKind, RequestReceiver, SnapshotSummary, StatusSender, WriteRequest,
+    grpc, prepare_initial_nodes_configuration, JoinClusterError, JoinClusterHandle,
+    JoinClusterReceiver, JoinClusterRequest, JoinError, KnownLeader, MemberId, MetadataServer,
+    MetadataServerConfiguration, MetadataServerSummary, MetadataStoreRequest, ProvisionError,
+    ProvisionReceiver, RaftSummary, Request, RequestError, RequestReceiver, SnapshotSummary,
+    StatusSender, WriteRequest,
 };
 use arc_swap::ArcSwapOption;
 use assert2::let_assert;
@@ -367,8 +367,19 @@ impl RaftMetadataServer {
             .created_at()
             .timestamp_millis();
 
-        let my_member_id =
-            self.derive_initial_configuration(created_at_millis, &mut nodes_configuration)?;
+        let my_plain_node_id = prepare_initial_nodes_configuration(
+            &Configuration::pinned(),
+            &mut nodes_configuration,
+        )?;
+        let my_member_id = MemberId::new(my_plain_node_id, created_at_millis);
+
+        let mut initial_state = KvMemoryStorage::new(None);
+        let versioned_value = serialize_value(&nodes_configuration)?;
+        initial_state.put(
+            NODES_CONFIG_KEY.clone(),
+            versioned_value,
+            Precondition::DoesNotExist,
+        )?;
 
         debug!("Initialize storage with nodes configuration");
 
@@ -378,7 +389,7 @@ impl RaftMetadataServer {
         // first to start with the same initial conf state.
         let mut members = HashMap::default();
         members.insert(my_member_id.node_id, my_member_id.created_at_millis);
-        let metadata_store_snapshot = MetadataServerSnapshot {
+        let mut metadata_store_snapshot = MetadataServerSnapshot {
             configuration: Some(grpc::MetadataServerConfiguration::from(
                 MetadataServerConfiguration {
                     version: Version::MIN,
@@ -388,52 +399,20 @@ impl RaftMetadataServer {
             ..MetadataServerSnapshot::default()
         };
 
+        initial_state.snapshot(&mut metadata_store_snapshot);
+
         let mut snapshot = Snapshot::new();
         snapshot.mut_metadata().term = RAFT_INITIAL_LOG_TERM;
         snapshot.mut_metadata().index = RAFT_INITIAL_LOG_INDEX;
         snapshot.mut_metadata().set_conf_state(initial_conf_state);
         snapshot.data = metadata_store_snapshot.encode_to_vec().into();
 
-        let value = serialize_value(&nodes_configuration)?;
-
-        let request_data = WriteRequest::new(RequestKind::Put {
-            precondition: Precondition::None,
-            key: NODES_CONFIG_KEY.clone(),
-            value,
-        })
-        .encode_to_vec()?;
-
-        let entry = Entry {
-            data: request_data.into(),
-            term: RAFT_INITIAL_LOG_TERM,
-            index: RAFT_INITIAL_LOG_INDEX + 1,
-            ..Entry::default()
-        };
-
         let mut txn = self.storage.txn();
         // it's important to first apply the snapshot so that the initial entry has the right index
         txn.apply_snapshot(&snapshot)?;
-        txn.append(&vec![entry])?;
         txn.store_raft_server_state(&RaftServerState::Member { my_member_id })?;
         txn.store_nodes_configuration(&nodes_configuration)?;
         txn.commit().await?;
-
-        Ok(my_member_id)
-    }
-
-    fn derive_initial_configuration(
-        &self,
-        created_at_millis: CreatedAtMillis,
-        nodes_configuration: &mut NodesConfiguration,
-    ) -> Result<MemberId, InvalidConfiguration> {
-        let configuration = Configuration::pinned();
-        let node_id = prepare_initial_nodes_configuration(&configuration, nodes_configuration)?;
-
-        // set our own raft node id to be Restate's plain node id
-        let my_member_id = MemberId {
-            node_id,
-            created_at_millis,
-        };
 
         Ok(my_member_id)
     }
