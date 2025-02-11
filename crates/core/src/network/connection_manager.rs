@@ -233,10 +233,9 @@ impl<T: TransportConnect> ConnectionManager<T> {
         ))?;
 
         // we don't allow node-id 0 in this version.
-        // todo (remove after we finish precursory work of auto-migrating existing users)
-        // if peer_node_id.id == 0 {
-        //     return Err(ProtocolError::HandshakeFailed("Peer cannot have node Id of 0").into());
-        // }
+        if peer_node_id.id == 0 {
+            return Err(ProtocolError::HandshakeFailed("Peer cannot have node Id of 0").into());
+        }
 
         if peer_node_id.generation == 0 {
             return Err(
