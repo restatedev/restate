@@ -8,24 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition_table::PartitionReplication;
-
-use super::QueryEngineOptions;
-use http::Uri;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use http::Uri;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use tokio::sync::Semaphore;
+
+use super::{print_warning_deprecated_config_option, QueryEngineOptions};
+use crate::partition_table::PartitionReplication;
 
 /// # Admin server options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "AdminOptions", default))]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", from = "AdminOptionsShadow")]
 #[builder(default)]
 pub struct AdminOptions {
     /// # Endpoint address
@@ -46,13 +47,20 @@ pub struct AdminOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub heartbeat_interval: humantime::Duration,
 
-    /// # Log trim interval
+    /// # Log trim check interval
     ///
     /// Controls the interval at which cluster controller tries to trim the logs. Log trimming
     /// can be disabled by setting it to "0s".
+    ///
+    /// Note that this is only the interval at which logs are checked, and does not guarantee that
+    /// trim will be performed. To safely trim the log, the log records must be known to be
+    /// persisted by the corresponding partition processor(s). For single server deployments, use
+    /// the `persist-lsn-*` settings in `worker.storage`. In distributed deployments, this is
+    /// accomplished by configuring an external snapshot destination - see `worker.snapshots` for
+    /// more.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    log_trim_interval: humantime::Duration,
+    log_trim_check_interval: humantime::Duration,
 
     /// # Log trim threshold (deprecated)
     ///
@@ -112,11 +120,11 @@ impl AdminOptions {
         return !self.disable_cluster_controller;
     }
 
-    pub fn log_trim_interval(&self) -> Option<std::time::Duration> {
-        if self.log_trim_interval.is_zero() {
+    pub fn log_trim_check_interval(&self) -> Option<Duration> {
+        if self.log_trim_check_interval.is_zero() {
             None
         } else {
-            Some(*self.log_trim_interval)
+            Some(*self.log_trim_check_interval)
         }
     }
 }
@@ -129,8 +137,8 @@ impl Default for AdminOptions {
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
             heartbeat_interval: Duration::from_millis(1500).into(),
-            // try to trim the log every hour
-            log_trim_interval: Duration::from_secs(60 * 60).into(),
+            // check whether we can trim logs every hour
+            log_trim_check_interval: Duration::from_secs(60 * 60).into(),
             log_trim_threshold: None,
             default_partition_replication: PartitionReplication::default(),
             #[cfg(any(test, feature = "test-util"))]
@@ -139,4 +147,71 @@ impl Default for AdminOptions {
             advertised_ingress_endpoint: Some("http://localhost:8080/".parse().unwrap()),
         }
     }
+}
+
+impl From<AdminOptionsShadow> for AdminOptions {
+    fn from(value: AdminOptionsShadow) -> Self {
+        let log_trim_check_interval = value
+            .log_trim_interval
+            .inspect(|_| {
+                print_warning_deprecated_config_option(
+                    "log-trim-interval",
+                    Some("admin.log-trim-check-interval"),
+                )
+            })
+            .unwrap_or(value.log_trim_check_interval);
+
+        Self {
+            bind_address: value.bind_address,
+            concurrent_api_requests_limit: value.concurrent_api_requests_limit,
+            query_engine: value.query_engine,
+            heartbeat_interval: value.heartbeat_interval,
+            log_trim_check_interval,
+            log_trim_threshold: value.log_trim_threshold,
+            log_tail_update_interval: value.log_tail_update_interval,
+            default_partition_replication: value.default_partition_replication,
+            #[cfg(any(test, feature = "test-util"))]
+            disable_cluster_controller: value.disable_cluster_controller,
+            advertised_ingress_endpoint: value.advertised_ingress_endpoint,
+        }
+    }
+}
+
+/// Used to deserialize the [`AdminOptions`] in backwards compatible way.
+///
+/// | Current Name              | Backwards Compatible Aliases  | Since   |
+/// |---------------------------|-------------------------------|---------|
+/// | `log_trim_check_interval` |`log_trim_interval`            | 1.2     |
+///
+/// Once we no longer support the backwards compatible aliases, we can remove this struct.
+#[serde_as]
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct AdminOptionsShadow {
+    bind_address: SocketAddr,
+    concurrent_api_requests_limit: Option<NonZeroUsize>,
+    query_engine: QueryEngineOptions,
+
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    heartbeat_interval: humantime::Duration,
+
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    log_trim_check_interval: humantime::Duration,
+
+    // todo: drop in version 1.3
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    log_trim_interval: Option<humantime::Duration>,
+
+    log_trim_threshold: Option<u64>,
+
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    log_tail_update_interval: humantime::Duration,
+
+    default_partition_replication: PartitionReplication,
+
+    #[cfg(any(test, feature = "test-util"))]
+    disable_cluster_controller: bool,
+
+    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    advertised_ingress_endpoint: Option<Uri>,
 }
