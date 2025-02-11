@@ -225,23 +225,30 @@ impl<T: TransportConnect> ConnectionManager<T> {
         .await?;
         let nodes_config = self.metadata.nodes_config_ref();
         let my_node_id = self.metadata.my_node_id();
-        // NodeId **must** be generational at this layer
+        // NodeId **must** be generational at this layer, we may support accepting connections from
+        // anonymous nodes in the future. When this happens, this restate-server release will not
+        // be compatible with it.
         let peer_node_id = hello.my_node_id.ok_or(ProtocolError::HandshakeFailed(
-            "NodeId is not set in the Hello message",
+            "GenerationalNodeId is not set in the Hello message",
         ))?;
 
-        if peer_node_id.generation() == 0 {
+        // we don't allow node-id 0 in this version.
+        // todo (remove after we finish precursory work of auto-migrating existing users)
+        // if peer_node_id.id == 0 {
+        //     return Err(ProtocolError::HandshakeFailed("Peer cannot have node Id of 0").into());
+        // }
+
+        if peer_node_id.generation == 0 {
             return Err(
                 ProtocolError::HandshakeFailed("NodeId has invalid generation number").into(),
             );
         }
 
-        let peer_node_id = NodeId::from(peer_node_id)
-            .as_generational()
-            .expect("peer node is generational");
+        // convert to our internal type
+        let peer_node_id = GenerationalNodeId::from(peer_node_id);
 
         // Sanity check. Nodes must not connect to themselves from other generations.
-        if my_node_id.as_plain() == peer_node_id.as_plain() && peer_node_id != my_node_id {
+        if my_node_id.is_same_but_different(&peer_node_id) {
             // My node ID but different generations!
             return Err(ProtocolError::HandshakeFailed(
                 "cannot accept a connection to the same NodeID from a different generation",
@@ -397,7 +404,8 @@ impl<T: TransportConnect> ConnectionManager<T> {
         }
 
         // sanity checks
-        let peer_node_id: NodeId = welcome
+        // In this version, we don't allow anonymous connections.
+        let peer_node_id: GenerationalNodeId = welcome
             .my_node_id
             .ok_or(ProtocolError::HandshakeFailed(
                 "Peer must set my_node_id in Welcome message",
@@ -409,18 +417,12 @@ impl<T: TransportConnect> ConnectionManager<T> {
         if peer_node_id != node_id {
             // Node claims that it's someone else!
             return Err(ProtocolError::HandshakeFailed(
-                "Node returned an unexpected NodeId in Welcome message.",
+                "Node returned an unexpected GenerationalNodeId in Welcome message.",
             )
             .into());
         }
 
-        let connection = OwnedConnection::new(
-            peer_node_id
-                .as_generational()
-                .expect("must be generational id"),
-            protocol_version,
-            tx,
-        );
+        let connection = OwnedConnection::new(peer_node_id, protocol_version, tx);
 
         OUTGOING_CONNECTION.increment(1);
         self.start_connection_reactor(connection, incoming)
