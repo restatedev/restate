@@ -19,13 +19,15 @@ use notify_debouncer_full::{
 };
 use tracing::{debug, error, warn};
 
-use crate::config::Configuration;
+use crate::config::{Configuration, InvalidConfigurationError};
 
 #[derive(thiserror::Error, codederror::CodedError, Debug)]
 #[code(restate_errors::RT0002)]
 pub enum ConfigLoadError {
     #[error("configuration loading error: {0}")]
     Figment(#[from] figment::Error),
+    #[error("invalid configuration: {0}")]
+    InvalidConfiguration(#[from] InvalidConfigurationError),
 }
 
 #[derive(Debug, Default, derive_builder::Builder)]
@@ -68,7 +70,11 @@ impl ConfigLoader {
         config.admin.set_derived_values();
         config.ingress.set_derived_values();
 
-        Ok(config.apply_cascading_values())
+        let config = config.apply_cascading_values();
+
+        config.validate()?;
+
+        Ok(config)
     }
 
     fn merge_with_env(figment: Figment) -> Figment {

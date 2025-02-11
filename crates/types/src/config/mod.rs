@@ -54,6 +54,7 @@ use super::live::{LiveLoad, Pinned};
 use crate::errors::GenericError;
 use crate::live::Live;
 use crate::nodes_config::Role;
+use crate::PlainNodeId;
 
 /// Overrides production profile
 pub static PRODUCTION_PROFILE_DEFAULTS: LazyLock<Configuration> = LazyLock::new(|| {
@@ -244,6 +245,26 @@ impl Configuration {
     pub fn dump(&self) -> Result<String, GenericError> {
         Ok(toml::to_string_pretty(self)?)
     }
+
+    /// Checks whether the given configuration is valid. Returns an [`InvalidConfigurationError`]
+    /// it if is not valid.
+    pub fn validate(&self) -> Result<(), InvalidConfigurationError> {
+        if self
+            .common
+            .force_node_id
+            .is_some_and(|force_node_id| force_node_id == PlainNodeId::new(0))
+        {
+            return Err(InvalidConfigurationError::ForceNodeIdZero);
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum InvalidConfigurationError {
+    #[error("force-node-id can not be 0 since it is a reserved value. Please choose a non-zero value or unset this option. Existing clusters will be auto-migrated")]
+    ForceNodeIdZero,
 }
 
 /// Used to deserialize the [`Configuration`] in backwards compatible way which allows to specify
