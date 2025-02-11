@@ -13,8 +13,7 @@ use cling::prelude::*;
 use restate_cli_util::CliContext;
 use restate_cli_util::CommonOpts;
 
-use crate::commands::cluster::overview::ClusterStatusOpts;
-use crate::commands::cluster::Cluster;
+use crate::commands::config::ConfigOpts;
 use crate::commands::log::Logs;
 use crate::commands::metadata::Metadata;
 use crate::commands::node::Nodes;
@@ -22,6 +21,7 @@ use crate::commands::partition::Partitions;
 use crate::commands::provision::ProvisionOpts;
 use crate::commands::replicated_loglet::ReplicatedLoglet;
 use crate::commands::snapshot::Snapshot;
+use crate::commands::status::ClusterStatusOpts;
 use crate::connection::ConnectionInfo;
 
 /// Restate Cluster Administration Tool
@@ -62,9 +62,9 @@ pub enum Command {
     /// Partition processor snapshots
     #[clap(subcommand)]
     Snapshots(Snapshot),
-    /// Cluster operations
+    /// Cluster configuration operations
     #[clap(subcommand)]
-    Cluster(Cluster),
+    Config(ConfigOpts),
     /// Metadata store operations
     #[clap(subcommand)]
     Metadata(Metadata),

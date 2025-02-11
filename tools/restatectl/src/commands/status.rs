@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod metadata_servers_status;
+
 use clap::Parser;
 use cling::{Collect, Run};
 
@@ -17,6 +19,8 @@ use crate::commands::log::list_logs::{list_logs, ListLogsOpts};
 use crate::commands::node::list_nodes::{list_nodes, ListNodesOpts};
 use crate::commands::partition::list::{list_partitions, ListPartitionsOpts};
 use crate::connection::ConnectionInfo;
+
+use self::metadata_servers_status::list_metadata_servers;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "cluster_status")]
@@ -43,6 +47,9 @@ async fn cluster_status(
     c_println!();
 
     list_partitions(connection, &ListPartitionsOpts::default()).await?;
+    c_println!();
+
+    list_metadata_servers(connection).await?;
 
     Ok(())
 }

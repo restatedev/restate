@@ -18,7 +18,8 @@ use restate_admin::cluster_controller::protobuf::{
 use restate_cli_util::c_println;
 use restate_types::nodes_config::Role;
 
-use crate::{commands::cluster::config::cluster_config_string, connection::ConnectionInfo};
+use super::cluster_config_string;
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "config_get")]
