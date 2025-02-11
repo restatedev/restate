@@ -109,7 +109,7 @@ pub enum TaskKind {
     ConnectionReactor,
     Shuffle,
     Cleaner,
-    MetadataStore,
+    MetadataServer,
     Background,
     // -- Bifrost Tasks
     /// A background task that the system needs for its operation. The task requires a system

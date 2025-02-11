@@ -42,7 +42,7 @@ pub async fn create_object_store_based_meta_store(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let server = glue::Server::new(store_builder, rx);
     TaskCenter::spawn(
-        TaskKind::MetadataStore,
+        TaskKind::MetadataServer,
         "metadata-store-client",
         server.run(),
     )

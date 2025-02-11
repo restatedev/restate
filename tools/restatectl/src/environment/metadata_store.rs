@@ -55,8 +55,8 @@ pub async fn start_metadata_server(
     })?;
 
     TaskCenter::spawn(
-        TaskKind::MetadataStore,
-        "local-metadata-store",
+        TaskKind::MetadataServer,
+        "local-metadata-server",
         async move {
             service.run().await?;
             Ok(())

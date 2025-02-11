@@ -205,7 +205,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     }
 
     // restart the metadata store
-    TaskCenter::cancel_tasks(Some(TaskKind::MetadataStore), None).await;
+    TaskCenter::cancel_tasks(Some(TaskKind::MetadataServer), None).await;
     // reset RocksDbManager to allow restarting the metadata store
     RocksDbManager::get().reset().await?;
 
@@ -298,7 +298,7 @@ async fn start_metadata_server(
     })?;
 
     TaskCenter::spawn(
-        TaskKind::MetadataStore,
+        TaskKind::MetadataServer,
         "local-metadata-store",
         async move {
             server.run().await;

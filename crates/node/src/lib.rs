@@ -124,7 +124,7 @@ pub struct Node {
     partition_routing_refresher: PartitionRoutingRefresher,
     metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
-    metadata_store_role: Option<BoxedMetadataServer>,
+    metadata_server_role: Option<BoxedMetadataServer>,
     base_role: BaseRole,
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole>,
@@ -324,7 +324,7 @@ impl Node {
             metadata_manager,
             partition_routing_refresher,
             bifrost: bifrost_svc,
-            metadata_store_role,
+            metadata_server_role: metadata_store_role,
             metadata_store_client,
             base_role,
             admin_role,
@@ -367,11 +367,11 @@ impl Node {
         let node_rpc_status = TaskCenter::with_current(|tc| tc.health().node_rpc_status());
         node_rpc_status.wait_for_value(NodeRpcStatus::Ready).await;
 
-        if let Some(metadata_store) = self.metadata_store_role {
+        if let Some(metadata_server) = self.metadata_server_role {
             TaskCenter::spawn(
-                TaskKind::MetadataStore,
-                "metadata-store",
-                metadata_store.run(),
+                TaskKind::MetadataServer,
+                "metadata-server",
+                metadata_server.run(),
             )?;
         }
 
