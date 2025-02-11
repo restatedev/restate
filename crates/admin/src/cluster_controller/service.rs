@@ -900,7 +900,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_interval(interval_duration.into())
+            .log_trim_check_interval(interval_duration.into())
             .build()
             .unwrap();
         let networking = NetworkingOptions {
@@ -985,7 +985,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_interval(interval_duration.into())
+            .log_trim_check_interval(interval_duration.into())
             .build()
             .unwrap();
         let interval_duration = Duration::from_secs(10);
@@ -1060,7 +1060,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_interval(interval_duration.into())
+            .log_trim_check_interval(interval_duration.into())
             .build()
             .unwrap();
         let mut bifrost_options = BifrostOptions::default();
@@ -1133,7 +1133,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_interval(interval_duration.into())
+            .log_trim_check_interval(interval_duration.into())
             .build()
             .unwrap();
         let mut config: Configuration = Configuration {
@@ -1216,7 +1216,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_interval(interval_duration.into())
+            .log_trim_check_interval(interval_duration.into())
             .build()
             .unwrap();
 
@@ -1296,7 +1296,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_interval(interval_duration.into())
+            .log_trim_check_interval(interval_duration.into())
             .build()
             .unwrap();
 
