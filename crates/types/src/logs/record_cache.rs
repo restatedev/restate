@@ -37,7 +37,8 @@ impl RecordCache {
                 CacheBuilder::default()
                     .name("ReplicatedLogRecordCache")
                     .weigher(|_, record: &Record| {
-                        (size_of::<RecordKey>() + record.estimated_encode_size())
+                        record
+                            .estimated_encode_size()
                             .try_into()
                             .unwrap_or(u32::MAX)
                     })

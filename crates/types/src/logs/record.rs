@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 
 use crate::storage::{
@@ -53,6 +54,23 @@ impl Record {
             }
         };
         size_of::<Keys>() + size_of::<NanosSinceEpoch>() + body_size
+    }
+
+    pub fn to_encoded(&self, buf: &mut BytesMut) -> Self {
+        let keys = self.keys.clone();
+        let created_at = self.created_at;
+        let body = match &self.body {
+            PolyBytes::Bytes(bytes) => PolyBytes::Bytes(bytes.clone()),
+            PolyBytes::Typed(typed) => {
+                StorageCodec::encode(&**typed, buf).expect("serde is infallible");
+                PolyBytes::Bytes(buf.split().freeze())
+            }
+        };
+        Self {
+            created_at,
+            keys,
+            body,
+        }
     }
 
     pub fn body(&self) -> &PolyBytes {
