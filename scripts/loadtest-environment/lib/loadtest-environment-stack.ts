@@ -14,11 +14,10 @@ import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import { Construct } from "constructs";
+import { EBS_VOLUME_MID, EBS_VOLUME_ULTRA, INSTANCE_TYPE_HIGH, INSTANCE_TYPE_MID } from "../bin/loadtest-env";
 
 export interface LoadTestEnvironmentStackProps extends cdk.StackProps {
-  instanceType: ec2.InstanceType;
   vpcId: string | undefined;
-  ebsVolume: ec2.EbsDeviceProps | undefined;
 }
 
 export class LoadTestEnvironmentStack extends cdk.Stack {
@@ -53,32 +52,31 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
     );
     const cloudConfig = ec2.UserData.custom([`cloud_final_modules:`, `- [scripts-user, once]`].join("\n"));
 
-    const userData = new ec2.MultipartUserData();
-    userData.addUserDataPart(cloudConfig, "text/cloud-config");
-    userData.addUserDataPart(initScript, "text/x-shellscript");
-
     const vpc = ec2.Vpc.fromLookup(this, "Vpc", { isDefault: true });
     const testInstance = new ec2.Instance(this, "TestInstance", {
       vpc,
       // Make sure to use an available subnet for the VPC.
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-      instanceType: props.instanceType,
+      instanceType: INSTANCE_TYPE_MID,
       machineImage: ec2.MachineImage.fromSsmParameter(
         `/aws/service/canonical/ubuntu/server/24.04/stable/current/${
-          props.instanceType.architecture == ec2.InstanceArchitecture.X86_64 ? "amd64" : props.instanceType.architecture
+          INSTANCE_TYPE_MID.architecture == ec2.InstanceArchitecture.X86_64 ? "amd64" : INSTANCE_TYPE_MID.architecture
         }/hvm/ebs-gp3/ami-id`,
       ),
       role: instanceRole,
       blockDevices: [
         {
+          deviceName: "/dev/sda1", // Root device
+          volume: ec2.BlockDeviceVolume.ebs(50),
+        },
+        {
           deviceName: "/dev/sde", // "e" for EBS
           volume: {
-            ebsDevice: props.ebsVolume,
+            ebsDevice: EBS_VOLUME_MID,
             virtualName: "restate-data",
           },
         },
       ],
-      userData,
     });
 
     // In case you might want to enable remote access from within the VPC
@@ -92,6 +90,52 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
       description: "Restate Admin ACLs",
     });
     testInstance.addSecurityGroup(adminSecurityGroup);
+    const nodeSecurityGroup = new ec2.SecurityGroup(this, "NodeSecurityGroup", {
+      vpc,
+      description: "Restate node ACLs",
+    });
+    testInstance.addSecurityGroup(nodeSecurityGroup);
+    nodeSecurityGroup.connections.allowInternally(ec2.Port.tcp(5122));
+    nodeSecurityGroup.connections.allowInternally(ec2.Port.tcp(9100));
+    ingressSecurityGroup.connections.allowInternally(ec2.Port.tcp(8080));
+
+    for (let i = 1; i <= 6; i++) {
+      const testInstanceBig = new ec2.Instance(this, `TestInstanceBig${i}`, {
+        vpc,
+        // Make sure to use an available subnet for the VPC.
+        vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+        instanceType: INSTANCE_TYPE_HIGH,
+        machineImage: ec2.MachineImage.fromSsmParameter(
+          `/aws/service/canonical/ubuntu/server/24.04/stable/current/${
+            INSTANCE_TYPE_HIGH.architecture == ec2.InstanceArchitecture.X86_64
+              ? "amd64"
+              : INSTANCE_TYPE_HIGH.architecture
+          }/hvm/ebs-gp3/ami-id`,
+        ),
+        role: instanceRole,
+        blockDevices: [
+          {
+            deviceName: "/dev/sda1", // Root device
+            volume: ec2.BlockDeviceVolume.ebs(50),
+          },
+        ].concat(
+          i > 3 // don't want to hit our iops limit
+            ? []
+            : [
+                {
+                  deviceName: "/dev/sde", // "e" for EBS
+                  volume: {
+                    ebsDevice: EBS_VOLUME_ULTRA,
+                    virtualName: "restate-data",
+                  },
+                },
+              ],
+        ),
+      });
+      testInstanceBig.addSecurityGroup(ingressSecurityGroup);
+      testInstanceBig.addSecurityGroup(adminSecurityGroup);
+      testInstanceBig.addSecurityGroup(nodeSecurityGroup);
+    }
 
     new cdk.CfnOutput(this, "InstanceId", { value: testInstance.instanceId });
   }

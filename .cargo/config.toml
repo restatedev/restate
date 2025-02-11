@@ -10,6 +10,7 @@ rustflags = [
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
+    "-C", "target-cpu=native"
 ]
 
 [target.aarch64-unknown-linux-gnu]

@@ -16,12 +16,12 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { LoadTestEnvironmentStack } from "../lib/loadtest-environment-stack";
 
 // Graviton2 arm64, 8vCPU x 32GB RAM
-const INSTANCE_TYPE_MID = ec2.InstanceType.of(ec2.InstanceClass.M6G, ec2.InstanceSize.XLARGE2);
+export const INSTANCE_TYPE_MID = ec2.InstanceType.of(ec2.InstanceClass.M6G, ec2.InstanceSize.XLARGE2);
 
 // Xeon x86_64, 32vCPU x64GB RAM, 1.9TB local NVMe SSD
-const INSTANCE_TYPE_HIGH = ec2.InstanceType.of(ec2.InstanceClass.C6ID, ec2.InstanceSize.XLARGE8);
+export const INSTANCE_TYPE_HIGH = ec2.InstanceType.of(ec2.InstanceClass.C6ID, ec2.InstanceSize.XLARGE8);
 
-const EBS_VOLUME_MID = {
+export const EBS_VOLUME_MID = {
   volumeType: ec2.EbsDeviceVolumeType.GP3,
   volumeSize: 16, // GiB
   deleteOnTermination: true,
@@ -29,7 +29,7 @@ const EBS_VOLUME_MID = {
   throughput: 250, // MiB/s
 };
 
-const EBS_VOLUME_HIGH = {
+export const EBS_VOLUME_HIGH = {
   volumeType: ec2.EbsDeviceVolumeType.GP3,
   volumeSize: 64, // GiB
   deleteOnTermination: true,
@@ -37,7 +37,7 @@ const EBS_VOLUME_HIGH = {
   throughput: 1_000, // MiB/s
 };
 
-const EBS_VOLUME_ULTRA = {
+export const EBS_VOLUME_ULTRA = {
   volumeType: ec2.EbsDeviceVolumeType.IO2,
   volumeSize: 64, // GiB
   deleteOnTermination: true,
@@ -51,7 +51,5 @@ new LoadTestEnvironmentStack(app, `restate-benchmark-sandbox-${process.env.USER}
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,
   },
-  instanceType: INSTANCE_TYPE_MID,
   vpcId: undefined, // use default VPC unless specified
-  ebsVolume: EBS_VOLUME_MID, // optional EBS volume
 });
