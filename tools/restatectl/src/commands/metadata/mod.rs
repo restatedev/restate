@@ -11,16 +11,15 @@
 mod get;
 mod patch;
 mod put;
-mod status;
 
 use std::path::PathBuf;
 
 use cling::prelude::*;
-use restate_types::nodes_config::Role;
 
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_metadata_server::create_client;
 use restate_types::config::MetadataClientOptions;
+use restate_types::nodes_config::Role;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 use crate::connection::ConnectionInfo;
@@ -31,10 +30,8 @@ pub enum Metadata {
     Get(get::GetValueOpts),
     /// Patch a value stored in the metadata store
     Patch(patch::PatchValueOpts),
-    /// Replace a single key's value from the metastore
+    /// Replace a single key's value from the metadata store
     Put(put::PutValueOpts),
-    /// Get the status of the embedded Restate metadata store
-    Status(status::StatusOpts),
 }
 
 #[derive(Args, Clone, Debug)]

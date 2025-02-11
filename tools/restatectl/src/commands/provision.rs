@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::commands::cluster::config::cluster_config_string;
+use crate::commands::config::cluster_config_string;
 use crate::connection::ConnectionInfo;
 use crate::util::grpc_channel;
 use clap::Parser;

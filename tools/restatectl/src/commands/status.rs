@@ -14,6 +14,7 @@ use cling::{Collect, Run};
 use restate_cli_util::c_println;
 
 use crate::commands::log::list_logs::{list_logs, ListLogsOpts};
+use crate::commands::metadata_server::status::list_metadata_servers;
 use crate::commands::node::list_nodes::{list_nodes, ListNodesOpts};
 use crate::commands::partition::list::{list_partitions, ListPartitionsOpts};
 use crate::connection::ConnectionInfo;
@@ -43,6 +44,9 @@ async fn cluster_status(
     c_println!();
 
     list_partitions(connection, &ListPartitionsOpts::default()).await?;
+    c_println!();
+
+    list_metadata_servers(connection).await?;
 
     Ok(())
 }
