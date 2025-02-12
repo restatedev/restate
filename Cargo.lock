@@ -10210,7 +10210,6 @@ dependencies = [
  "sync_wrapper",
  "time",
  "time-macros",
- "tokio",
  "tokio-rustls 0.26.1",
  "tokio-stream",
  "tokio-util",

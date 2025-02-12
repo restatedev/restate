@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-test-util = ["tokio/test-util", "restate-core-derive", "restate-types/test-util"]
+test-util = ["restate-core-derive", "restate-types/test-util"]
 options_schema = ["dep:schemars"]
 
 [dependencies]
