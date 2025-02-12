@@ -577,7 +577,7 @@ async fn create_object_store_client(destination: Url) -> anyhow::Result<Arc<dyn 
             .context("Unable to determine AWS region to use with S3")?
             .clone();
 
-        let store = AmazonS3Builder::new()
+        let store = AmazonS3Builder::from_env()
             .with_url(destination)
             .with_region(aws_region.to_string())
             .with_conditional_put(S3ConditionalPut::ETagMatch)
