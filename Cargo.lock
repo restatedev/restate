@@ -4398,23 +4398,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "metrics-tracing-context"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f58744e0a46768f65da39b17da285c12a9e6542f3b22840845e39bdb857ae8d"
-dependencies = [
- "indexmap 2.7.1",
- "itoa",
- "lockfree-object-pool",
- "metrics",
- "metrics-util",
- "once_cell",
- "tracing",
- "tracing-core",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "metrics-util"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6965,7 +6948,6 @@ dependencies = [
  "jemalloc_pprof",
  "metrics",
  "metrics-exporter-prometheus",
- "metrics-tracing-context",
  "metrics-util",
  "prost-dto",
  "restate-admin",
@@ -7408,7 +7390,6 @@ dependencies = [
  "console-subscriber",
  "derive_builder",
  "futures",
- "metrics-tracing-context",
  "nu-ansi-term 0.50.1",
  "opentelemetry",
  "opentelemetry-contrib",
@@ -10187,6 +10168,7 @@ dependencies = [
  "log",
  "md-5",
  "memchr",
+ "metrics-util",
  "mio 1.0.3",
  "nix 0.29.0",
  "nom 7.1.3",

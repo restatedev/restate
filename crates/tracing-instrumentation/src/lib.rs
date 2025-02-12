@@ -229,14 +229,6 @@ pub fn init_tracing_and_logging(
     _service_name: impl Display,
 ) -> Result<TracingGuard, Error> {
     let layers = tracing_subscriber::registry();
-    // Logging layer
-    // Enables auto extraction of selected span labels in emitted metrics.
-    // allowed labels are defined in restate_node_ctrl::metrics::ALLOWED_LABELS.
-    //
-    // This is temporarily disabled due to its performance cost. This will be re-enabled when it
-    // gets benchmarked and optimized.
-    //.with(MetricsLayer::new());
-
     // Console subscriber layer
     #[cfg(feature = "console-subscriber")]
     let layers = {
