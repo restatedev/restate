@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::local::{DB_NAME, KV_PAIRS};
+use crate::local::{DATA_DIR, DB_NAME, KV_PAIRS};
 use crate::{PreconditionViolation, RequestError};
 use bytes::BytesMut;
 use bytestring::ByteString;
@@ -18,7 +18,7 @@ use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{MetadataServerOptions, RocksDbOptions};
+use restate_types::config::{data_dir, MetadataServerOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::Version;
@@ -26,6 +26,7 @@ use rocksdb::{
     BoundColumnFamily, DBCompressionType, Error, IteratorMode, ReadOptions, WriteBatch,
     WriteOptions,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub struct RocksDbStorage {
@@ -39,10 +40,11 @@ impl RocksDbStorage {
         options: &MetadataServerOptions,
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     ) -> Result<Self, RocksError> {
+        let data_dir = RocksDbStorage::data_dir();
         let db_name = DbName::new(DB_NAME);
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(KV_PAIRS)];
-        let db_spec = DbSpecBuilder::new(db_name.clone(), options.data_dir(), db_options(options))
+        let db_spec = DbSpecBuilder::new(db_name.clone(), data_dir, db_options(options))
             .add_cf_pattern(
                 CfPrefixPattern::ANY,
                 cf_options(options.rocksdb_memory_budget()),
@@ -62,6 +64,16 @@ impl RocksDbStorage {
             rocksdb_options,
             buffer: BytesMut::default(),
         })
+    }
+
+    pub(super) fn data_dir() -> PathBuf {
+        data_dir(DATA_DIR)
+    }
+
+    /// Checks whether the data directory of the [`RocksDbStorage`] exists. This indicates that the
+    /// [`RocksDbStorage`] has been used before.
+    pub fn data_dir_exists() -> bool {
+        Self::data_dir().exists()
     }
 
     fn write_options(&mut self) -> WriteOptions {

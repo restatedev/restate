@@ -27,7 +27,7 @@ use restate_types::protobuf::common::NodeRpcStatus;
 use restate_types::{Version, Versioned};
 
 use crate::grpc::client::GrpcMetadataServerClient;
-use crate::local::LocalMetadataServer;
+use crate::local::{data_dir, LocalMetadataServer};
 use crate::tests::Value;
 use crate::{MetadataStoreClient, Precondition, WriteError};
 
@@ -184,7 +184,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     let tmp = std::env::temp_dir();
     let opts = MetadataServerOptions::default();
     assert!(base_path.starts_with(tmp));
-    assert_eq!(base_path.join("local-metadata-store"), opts.data_dir());
+    assert_eq!(base_path.join("local-metadata-store"), data_dir());
 
     let (client, _env) = create_test_environment(&opts).await?;
 

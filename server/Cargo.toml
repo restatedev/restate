@@ -40,6 +40,7 @@ restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
+restate-metadata-server = { workspace = true }
 restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }

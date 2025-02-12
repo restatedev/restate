@@ -11,13 +11,12 @@
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use restate_serde_util::NonZeroByteCount;
 use tracing::warn;
 
-use super::{data_dir, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 
 /// # Metadata store options
 #[serde_as]
@@ -112,10 +111,6 @@ impl MetadataServerOptions {
                 NonZeroUsize::new(1024 * 1024).unwrap()
             })
             .get()
-    }
-
-    pub fn data_dir(&self) -> PathBuf {
-        data_dir("local-metadata-store")
     }
 
     pub fn request_queue_length(&self) -> usize {

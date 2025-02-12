@@ -105,9 +105,10 @@ impl WipeMode {
             Some(WipeMode::LocalLoglet) => {
                 restate_fs_util::remove_dir_all_if_exists(config.bifrost.local.data_dir()).await?
             }
-            Some(WipeMode::MetadataServer) => {
-                restate_fs_util::remove_dir_all_if_exists(config.metadata_server.data_dir()).await?
-            }
+            Some(WipeMode::MetadataServer) => restate_fs_util::remove_dir_all_if_exists(
+                restate_metadata_server::local::data_dir(),
+            )
+            .await?,
             Some(WipeMode::All) => restate_fs_util::remove_dir_all_if_exists(node_dir()).await?,
             _ => {}
         }

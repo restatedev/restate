@@ -429,8 +429,20 @@ impl RaftMetadataServer {
     async fn load_initial_state_from_local_metadata_server(
         &mut self,
     ) -> anyhow::Result<KvMemoryStorage> {
+        let local_metadata_server_options = MetadataServerOptions::default();
+
+        // check whether local metadata server data exists to avoid wrong intentions and possible
+        // misconfigurations
+        if !local::storage::RocksDbStorage::data_dir_exists() {
+            anyhow::bail!(
+                "Trying to migrate from local metadata server but couldn't find any data. \
+            Please make sure that this node has been run with the local metadata server before or \
+            unset the metadata-server.migrate-from-local-metadata-server option."
+            );
+        }
+
         let mut local_storage = local::storage::RocksDbStorage::create(
-            &MetadataServerOptions::default(),
+            &local_metadata_server_options,
             Constant::new(RocksDbOptions::default()).boxed(),
         )
         .await?;
