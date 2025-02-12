@@ -16,6 +16,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context};
 use async_trait::async_trait;
 use aws_config::default_provider::credentials::DefaultCredentialsChain;
+use aws_config::default_provider::region::DefaultRegionChain;
 use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
 use bytes::BytesMut;
@@ -158,7 +159,8 @@ impl SnapshotRepository {
         destination.set_query(None);
 
         let prefix = destination.path().to_string();
-        let object_store = create_object_store_client(destination.clone()).await?;
+        let object_store =
+            create_object_store_client(destination.clone(), snapshots_options).await?;
 
         Ok(Some(SnapshotRepository {
             object_store,
@@ -562,7 +564,10 @@ impl SnapshotRepository {
     }
 }
 
-async fn create_object_store_client(destination: Url) -> anyhow::Result<Arc<dyn ObjectStore>> {
+async fn create_object_store_client(
+    destination: Url,
+    options: &SnapshotsOptions,
+) -> anyhow::Result<Arc<dyn ObjectStore>> {
     // We use the AWS SDK configuration and credentials provider so that the conventional AWS
     // environment variables and config files work as expected. The object_store crate has its
     // own configuration mechanism which doesn't support many of the AWS conventions. This
@@ -570,25 +575,93 @@ async fn create_object_store_client(destination: Url) -> anyhow::Result<Arc<dyn 
     // very surprising inconsistency for customers. This mechanism allows us to infer the region
     // and securely obtain session credentials without any hard-coded configuration.
     let object_store: Arc<dyn ObjectStore> = if destination.scheme() == "s3" {
-        let builder = if let Ok(profile) = std::env::var("AWS_PROFILE") {
-            // Infer the AWS region from the profile, or use AWS_REGION if set.
-            let region = aws_config::load_defaults(BehaviorVersion::v2024_03_28())
-                .await
-                .region()
-                .context("Unable to determine AWS region")?
-                .to_string();
-            debug!(?profile, ?region, "Using AWS SDK credentials provider");
-            AmazonS3Builder::new()
-                .with_credentials(Arc::new(AwsSdkCredentialsProvider {
-                    credentials_provider: DefaultCredentialsChain::builder().build().await,
-                }))
-                .with_region(region)
-        } else {
-            debug!("Using environment AWS configuration");
-            AmazonS3Builder::from_env()
+        let builder = match &options.aws_profile {
+            Some(profile) => {
+                debug!(profile, "Using AWS profile for snapshot repository access");
+                let sdk_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
+                    .profile_name(profile)
+                    .load()
+                    .await;
+
+                let region = DefaultRegionChain::builder()
+                    .profile_name(profile)
+                    .build()
+                    .region()
+                    .await
+                    .context("Unable to determine region from profile")?;
+
+                debug!(?region, ?profile, "Using AWS SDK credentials provider");
+                let creds = DefaultCredentialsChain::builder()
+                    .profile_name(profile)
+                    .region(region.clone())
+                    .build()
+                    .await;
+
+                let builder = AmazonS3Builder::new()
+                    .with_credentials(Arc::new(AwsSdkCredentialsProvider {
+                        credentials_provider: creds,
+                    }))
+                    .with_region(region.to_string());
+
+                if let Some(endpoint_url) = sdk_config.endpoint_url() {
+                    debug!(endpoint_url, "Using custom AWS endpoint from profile");
+                    builder.with_endpoint(endpoint_url)
+                } else {
+                    builder
+                }
+            }
+            None => {
+                let sdk_config = aws_config::load_defaults(BehaviorVersion::v2024_03_28()).await;
+
+                let region = sdk_config
+                    .region()
+                    .context("Unable to determine AWS region")?
+                    .to_string();
+
+                let builder = AmazonS3Builder::new().with_region(region.clone());
+                if options.aws_access_key_id.is_none() {
+                    debug!(?region, "Using AWS SDK credentials provider");
+                    builder.with_credentials(Arc::new(AwsSdkCredentialsProvider {
+                        credentials_provider: DefaultCredentialsChain::builder().build().await,
+                    }))
+                } else {
+                    builder
+                }
+            }
         };
 
-        let store = builder
+        let builder = if let Some(region) = &options.aws_region {
+            builder.with_region(region)
+        } else {
+            builder
+        };
+        let builder = if let Some(endpoint_url) = &options.aws_endpoint_url {
+            builder.with_endpoint(endpoint_url)
+        } else {
+            builder
+        };
+        let builder = if let Some(allow_http) = &options.aws_allow_http {
+            builder.with_allow_http(*allow_http)
+        } else {
+            builder
+        };
+        let builder = if let Some(access_key_id) = &options.aws_access_key_id {
+            builder.with_access_key_id(access_key_id)
+        } else {
+            builder
+        };
+        let builder = if let Some(secret_access_key) = &options.aws_secret_access_key {
+            builder.with_secret_access_key(secret_access_key)
+        } else {
+            builder
+        };
+        let builder = if let Some(token) = &options.aws_session_token {
+            builder.with_token(token)
+        } else {
+            builder
+        };
+
+        let builder = builder
             .with_url(destination)
             .with_conditional_put(S3ConditionalPut::ETagMatch)
             .with_retry(object_store::RetryConfig {
@@ -599,10 +672,9 @@ async fn create_object_store_client(destination: Url) -> anyhow::Result<Arc<dyn 
                     max_backoff: Duration::from_secs(5),
                     base: 2.,
                 },
-            })
-            .build()?;
+            });
 
-        Arc::new(store)
+        Arc::new(builder.build()?)
     } else {
         object_store::parse_url(&destination)?.0.into()
     };
@@ -847,7 +919,11 @@ mod tests {
         let latest_path = ObjectPath::from(destination_url.path().to_string())
             .child(PartitionId::MIN.to_string())
             .child("latest.json");
-        let object_store = super::create_object_store_client(destination_url.clone()).await?;
+        let object_store = super::create_object_store_client(
+            destination_url.clone(),
+            &SnapshotsOptions::default(),
+        )
+        .await?;
 
         let latest = object_store.get(&latest_path).await;
         assert!(matches!(latest, Err(object_store::Error::NotFound { .. })));

@@ -342,7 +342,7 @@ impl StorageOptions {
         super::data_dir("pp-snapshots")
     }
 
-    pub fn persist_lsn_interval(&self) -> Option<std::time::Duration> {
+    pub fn persist_lsn_interval(&self) -> Option<Duration> {
         if self.persist_lsn_interval.is_zero() {
             None
         } else {
@@ -410,6 +410,31 @@ pub struct SnapshotsOptions {
     ///
     /// Default: `None` - automatic snapshots are disabled by default
     pub snapshot_interval_num_records: Option<NonZeroU64>,
+
+    /// The AWS configuration profile to use for S3 object store destinations.
+    pub aws_profile: Option<String>,
+
+    /// AWS region to use with S3 object store destinations.
+    pub aws_region: Option<String>,
+
+    /// AWS access key. We strongly recommend against using long-lived credentials; set up a
+    /// configuration profile with a role-based session credentials provider instead.
+    pub aws_access_key_id: Option<String>,
+
+    /// AWS secret key. We strongly recommend against using long-lived credentials; set up a
+    /// configuration profile with a role-based session credentials provider instead.
+    pub aws_secret_access_key: Option<String>,
+
+    /// AWS session token. We strongly recommend against using long-lived credentials; set up a
+    /// configuration profile with a role-based session credentials provider instead.
+    pub aws_session_token: Option<String>,
+
+    /// AWS endpoint URL for S3 object store destinations. Some S3-compatible stores may require
+    /// you to use this.
+    pub aws_endpoint_url: Option<String>,
+
+    /// Allow plain HTTP to be used with the object store endpoint.
+    pub aws_allow_http: Option<bool>,
 }
 
 fn is_default_snapshots_options(opts: &SnapshotsOptions) -> bool {
