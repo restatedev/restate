@@ -23,8 +23,9 @@ use crate::util::{write_default_provider, write_leaf};
 
 #[derive(Run, Subcommand, Clone)]
 pub enum ConfigOpts {
-    /// Print a brief overview of the cluster status (nodes, logs, partitions)
+    /// Print a brief overview of the cluster configuration (nodes, logs, partitions)
     Get(get::ConfigGetOpts),
+    /// Set new values for the cluster configuration
     Set(set::ConfigSetOpts),
 }
 

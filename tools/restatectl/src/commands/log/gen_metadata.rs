@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU32, NonZeroU8};
+use std::num::NonZeroU32;
 
 use cling::prelude::*;
 
@@ -27,12 +27,12 @@ pub struct GenerateLogMetadataOpts {
     version: NonZeroU32,
     /// Replication property
     #[clap(long, short)]
-    replication_factor: NonZeroU8,
+    replication: ReplicationProperty,
     /// A comma-separated list of the nodes in the nodeset. e.g. N1,N2,N4 or 1,2,3
     #[clap(long, required = true, value_delimiter=',', num_args = 1..)]
     nodeset: Vec<PlainNodeId>,
     /// The generational node id of the sequencer node, e.g. N1:1
-    #[clap(long, short)]
+    #[clap(long)]
     sequencer: GenerationalNodeId,
     /// The number of logs
     #[clap(long, short)]
@@ -50,7 +50,7 @@ async fn generate_log_metadata(opts: &GenerateLogMetadataOpts) -> anyhow::Result
         let loglet_params = ReplicatedLogletParams {
             loglet_id: LogletId::new(log_id, segment_index),
             sequencer: opts.sequencer,
-            replication: ReplicationProperty::new(opts.replication_factor),
+            replication: opts.replication.clone(),
             nodeset: NodeSet::from_iter(opts.nodeset.clone()),
         };
         let params = LogletParams::from(loglet_params.serialize()?);

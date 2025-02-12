@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU32, NonZeroU8};
+use std::num::NonZeroU32;
 
 use anyhow::Context;
 use cling::prelude::*;
@@ -38,20 +38,15 @@ pub struct ReconfigureOpts {
     #[clap(long, short)]
     provider: Option<ProviderKind>,
     /// Option segment index to seal. The tail segment is chosen automatically if not provided.
-    #[clap(long, short)]
+    #[clap(long, short = 'i')]
     segment_index: Option<u32>,
     /// The [minimum] expected metadata version
     #[clap(long, short, default_value = "1")]
     min_version: NonZeroU32,
-    /// Replication factor requirement for a new replicated segment; by default reuse
+    /// Replication property for a new replicated segment; by default reuse
     /// the sealed segment's value iff its provider kind was also "replicated"
     #[clap(long)]
-    replication_factor_nodes: Option<NonZeroU8>,
-    /// (not implemented)
-    /// Replication requirement for a new replicated segment; by default reuse
-    /// the sealed segment's value iff its provider kind was also "replicated"
-    #[clap(hide = true, conflicts_with = "replication_factor_nodes")]
-    replication: Option<String>,
+    replication: Option<ReplicationProperty>,
     /// A comma-separated list of the nodes in the nodeset. e.g. N1,N2,N4 or 1,2,3
     /// By default reuse the sealed segment's value iff its provider kind was also "replicated"
     #[clap(long, value_delimiter=',', num_args = 0..)]
@@ -164,8 +159,8 @@ async fn replicated_loglet_params(
                 NodeSet::from_iter(opts.nodeset.iter().cloned())
             },
             replication: opts
-                .replication_factor_nodes
-                .map(ReplicationProperty::new)
+                .replication
+                .clone()
                 .unwrap_or(last_params.replication.clone()),
             sequencer: opts.sequencer.unwrap_or(last_params.sequencer),
         }
@@ -177,9 +172,7 @@ async fn replicated_loglet_params(
             } else {
                 NodeSet::from_iter(opts.nodeset.iter().cloned())
             },
-            replication: ReplicationProperty::new(
-                opts.replication_factor_nodes.context("Missing replication-factor. Replication factor is required if last segment is not of replicated type")?,
-            ),
+            replication: opts.replication.clone().context("Missing replication-factor. Replication factor is required if last segment is not of replicated type")?,
             sequencer: opts.sequencer.context("Missing sequencer. Sequencer is required if last segment is not of replicated type")?,
         }
     };
