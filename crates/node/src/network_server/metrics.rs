@@ -13,8 +13,6 @@ use std::fmt::Write;
 use axum::extract::State;
 use metrics_exporter_prometheus::formatting;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use metrics_tracing_context::TracingContextLayer;
-use metrics_util::layers::Layer;
 use metrics_util::MetricKindMask;
 use rocksdb::statistics::{Histogram, Ticker};
 
@@ -27,12 +25,6 @@ use crate::network_server::prometheus_helpers::{
     format_rocksdb_stat_ticker_for_prometheus, MetricUnit,
 };
 use crate::network_server::state::NodeCtrlHandlerState;
-
-/// The set of labels that are allowed to be extracted from tracing context to be used in metrics.
-/// Be mindful when adding new labels, the number of time series(es) is directly propotional
-/// to cardinality of the chosen labels. Avoid using labels with potential high cardinality
-/// as much as possible (e.g. `restate.invocation.id`)
-static ALLOWED_LABELS: &[&str] = &["rpc.method", "rpc.service", "command", "service", "db"];
 
 const ROCKSDB_TICKERS: &[Ticker] = &[
     Ticker::BlockCacheBytesRead,
@@ -193,7 +185,6 @@ pub(crate) fn install_global_prometheus_recorder(opts: &CommonOptions) -> Promet
         );
     let recorder = builder.build_recorder();
     let prometheus_handle = recorder.handle();
-    let recorder = TracingContextLayer::only_allow(ALLOWED_LABELS).layer(recorder);
 
     // We do not expect this to fail except due to atomic CAS failure
     // which should never happen in practice.
