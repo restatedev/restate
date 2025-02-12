@@ -570,20 +570,27 @@ async fn create_object_store_client(destination: Url) -> anyhow::Result<Arc<dyn 
     // very surprising inconsistency for customers. This mechanism allows us to infer the region
     // and securely obtain session credentials without any hard-coded configuration.
     let object_store: Arc<dyn ObjectStore> = if destination.scheme() == "s3" {
-        debug!("Using AWS SDK credentials provider");
-        let aws_region = aws_config::load_defaults(BehaviorVersion::v2024_03_28())
-            .await
-            .region()
-            .context("Unable to determine AWS region to use with S3")?
-            .clone();
+        let builder = if let Ok(profile) = std::env::var("AWS_PROFILE") {
+            // Infer the AWS region from the profile, or use AWS_REGION if set.
+            let region = aws_config::load_defaults(BehaviorVersion::v2024_03_28())
+                .await
+                .region()
+                .context("Unable to determine AWS region")?
+                .to_string();
+            debug!(?profile, ?region, "Using AWS SDK credentials provider");
+            AmazonS3Builder::new()
+                .with_credentials(Arc::new(AwsSdkCredentialsProvider {
+                    credentials_provider: DefaultCredentialsChain::builder().build().await,
+                }))
+                .with_region(region)
+        } else {
+            debug!("Using environment AWS configuration");
+            AmazonS3Builder::from_env()
+        };
 
-        let store = AmazonS3Builder::from_env()
+        let store = builder
             .with_url(destination)
-            .with_region(aws_region.to_string())
             .with_conditional_put(S3ConditionalPut::ETagMatch)
-            .with_credentials(Arc::new(AwsSdkCredentialsProvider {
-                credentials_provider: DefaultCredentialsChain::builder().build().await,
-            }))
             .with_retry(object_store::RetryConfig {
                 max_retries: 8,
                 retry_timeout: Duration::from_secs(60),
