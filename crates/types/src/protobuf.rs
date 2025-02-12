@@ -208,10 +208,15 @@ pub mod node {
             msg_id: u64,
             in_response_to: Option<u64>,
         ) -> Self {
-            let context = tracing::Span::current().context();
-            let mut span_context = SpanContext::default();
-            global::get_text_map_propagator(|propagator| {
-                propagator.inject_context(&context, &mut span_context)
+            let span_context = global::get_text_map_propagator(|propagator| {
+                let context = tracing::Span::current().context();
+                let mut span_context = SpanContext::default();
+                propagator.inject_context(&context, &mut span_context);
+                if span_context.fields.is_empty() {
+                    None
+                } else {
+                    Some(span_context)
+                }
             });
 
             Self {
@@ -221,7 +226,7 @@ pub mod node {
                 my_partition_table_version: partition_table_version.map(Into::into),
                 msg_id,
                 in_response_to,
-                span_context: Some(span_context),
+                span_context,
             }
         }
     }
