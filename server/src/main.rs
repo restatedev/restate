@@ -19,7 +19,6 @@ use clap::Parser;
 use codederror::CodedError;
 use restate_core::TaskCenter;
 use restate_types::nodes_config::Role;
-use tokio::io;
 use tracing::error;
 use tracing::{info, trace, warn};
 
@@ -32,7 +31,7 @@ use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
 use restate_types::art::render_restate_logo;
 use restate_types::config::CommonOptionCliOverride;
-use restate_types::config::{node_dir, Configuration, PRODUCTION_PROFILE_DEFAULTS};
+use restate_types::config::{Configuration, PRODUCTION_PROFILE_DEFAULTS};
 use restate_types::config_loader::ConfigLoaderBuilder;
 
 mod signal;
@@ -70,51 +69,12 @@ struct RestateArguments {
     #[clap(long)]
     dump_config: bool,
 
-    /// Wipes the configured data before starting Restate.
-    ///
-    /// **WARNING** all the wiped data will be lost permanently!
-    #[arg(value_enum, long = "wipe", hide = true)]
-    wipe: Option<WipeMode>,
-
     /// Use default production configuration profile.
     #[clap(long)]
     production: bool,
 
     #[clap(flatten)]
     opts_overrides: CommonOptionCliOverride,
-}
-
-#[derive(Debug, Clone, clap::ValueEnum)]
-enum WipeMode {
-    /// Wipe all worker state, including all the service instances and their state, all enqueued invocations, all waiting timers.
-    Worker,
-    /// Wipe the local rocksdb-based loglet.
-    LocalLoglet,
-    /// Wipe the rocksdb-based metadata-server.
-    MetadataServer,
-    /// Wipe all
-    All,
-}
-
-impl WipeMode {
-    async fn wipe(mode: Option<&WipeMode>, config: &Configuration) -> io::Result<()> {
-        match mode {
-            Some(WipeMode::Worker) => {
-                restate_fs_util::remove_dir_all_if_exists(config.worker.storage.data_dir()).await?
-            }
-            Some(WipeMode::LocalLoglet) => {
-                restate_fs_util::remove_dir_all_if_exists(config.bifrost.local.data_dir()).await?
-            }
-            Some(WipeMode::MetadataServer) => restate_fs_util::remove_dir_all_if_exists(
-                restate_metadata_server::local::data_dir(),
-            )
-            .await?,
-            Some(WipeMode::All) => restate_fs_util::remove_dir_all_if_exists(node_dir()).await?,
-            _ => {}
-        }
-
-        Ok(())
-    }
 }
 
 const EXIT_CODE_FAILURE: i32 = 1;
@@ -248,14 +208,6 @@ fn main() {
 
             // start config watcher
             config_loader.start();
-
-            {
-                let config = Configuration::pinned();
-
-                WipeMode::wipe(cli_args.wipe.as_ref(), &config)
-                    .await
-                    .expect("Error when trying to wipe the configured storage path");
-            }
 
             // Initialize telemetry
             let telemetry = telemetry::Telemetry::create(&Configuration::pinned().common);
