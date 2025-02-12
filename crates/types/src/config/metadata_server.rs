@@ -168,11 +168,6 @@ pub struct RaftOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub status_update_interval: humantime::Duration,
-    /// # Migrate local to replicated metadata
-    ///
-    /// If true, then this node will try to provision itself from data of the local metadata server.
-    /// This can only work if the node has been run before with the local metadata server.
-    pub migrate_local_metadata: bool,
 }
 
 impl Default for RaftOptions {
@@ -182,7 +177,6 @@ impl Default for RaftOptions {
             raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
             raft_tick_interval: Duration::from_millis(100).into(),
             status_update_interval: Duration::from_secs(5).into(),
-            migrate_local_metadata: false,
         }
     }
 }

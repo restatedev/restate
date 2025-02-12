@@ -66,7 +66,7 @@ impl RocksDbStorage {
         })
     }
 
-    pub(super) fn data_dir() -> PathBuf {
+    pub fn data_dir() -> PathBuf {
         data_dir(DATA_DIR)
     }
 

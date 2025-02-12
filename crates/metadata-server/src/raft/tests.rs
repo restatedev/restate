@@ -39,11 +39,7 @@ use std::collections::HashMap;
 #[test_log::test(restate_core::test)]
 async fn migration_local_to_replicated() -> googletest::Result<()> {
     let mut configuration = Configuration::default();
-    let raft_options = RaftOptions {
-        // enable migration from local metadata
-        migrate_local_metadata: true,
-        ..Default::default()
-    };
+    let raft_options = RaftOptions::default();
 
     configuration
         .metadata_server

@@ -72,11 +72,12 @@ use slog::o;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
+use thiserror::__private::AsDisplay;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::{Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, info, instrument, trace, warn, Span};
+use tracing::{debug, error, info, instrument, trace, warn, Span};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
 
@@ -109,7 +110,7 @@ pub enum Error {
     RestoreSnapshot(#[from] RestoreSnapshotError),
     #[error("failed creating snapshot: {0}")]
     CreateSnapshot(#[from] CreateSnapshotError),
-    #[error("failed provisioning from local metadata server: {0}")]
+    #[error("failed provisioning from local metadata: {0}")]
     ProvisionFromLocal(GenericError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
@@ -301,20 +302,20 @@ impl RaftMetadataServer {
     async fn provision(&mut self) -> Result<(), Error> {
         let _ = self.status_tx.send(MetadataServerSummary::Provisioning);
 
-        let_assert!(
-            MetadataServerKind::Raft(raft_options) = Configuration::pinned().metadata_server.kind(),
-            "Replicated metadata server must have been configured"
-        );
-
-        if raft_options.migrate_local_metadata {
-            info!("Trying to migrate from local to replicated metadata");
+        if local::storage::RocksDbStorage::data_dir_exists() {
+            info!("Trying to migrate local to replicated metadata");
 
             let my_member_id = self
                 .initialize_storage_from_local_metadata_server()
                 .await
-                .map_err(|err| Error::ProvisionFromLocal(err.into()))?;
+                .map_err(|err| {
+                    error!(%err, "Failed to migrate local to replicated metadata. Please make sure \
+                    that {} exists and has not been corrupted. If the directory does not contain \
+                    local metadata you want to migrate from, then please remove it", local::storage::RocksDbStorage::data_dir().as_display());
+                    Error::ProvisionFromLocal(err.into())
+                })?;
 
-            info!(member_id = %my_member_id, "Successfully migrated all local to replicated metadata");
+            info!(member_id = %my_member_id, "Successfully migrated local to replicated metadata");
         } else {
             self.await_provisioning_signal().await?
         }
@@ -421,16 +422,6 @@ impl RaftMetadataServer {
         &mut self,
     ) -> anyhow::Result<KvMemoryStorage> {
         let local_metadata_server_options = MetadataServerOptions::default();
-
-        // check whether local metadata server data exists to avoid wrong intentions and possible
-        // misconfigurations
-        if !local::storage::RocksDbStorage::data_dir_exists() {
-            anyhow::bail!(
-                "Trying to migrate from local metadata server but couldn't find any data. \
-            Please make sure that this node has been run with the local metadata server before or \
-            unset the metadata-server.migrate-local-metadata option."
-            );
-        }
 
         let mut local_storage = local::storage::RocksDbStorage::create(
             &local_metadata_server_options,
