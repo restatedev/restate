@@ -40,7 +40,6 @@ use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
 };
 use restate_types::config::{CommonOptions, Configuration};
-use restate_types::errors::GenericError;
 use restate_types::live::Live;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
 #[cfg(feature = "replicated-loglet")]
@@ -110,7 +109,7 @@ pub enum BuildError {
 
     #[error("failed to initialize metadata store client: {0}")]
     #[code(unknown)]
-    MetadataStoreClient(GenericError),
+    MetadataStoreClient(anyhow::Error),
 
     #[error("building metadata store failed: {0}")]
     #[code(unknown)]

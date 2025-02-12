@@ -207,7 +207,7 @@ pub async fn migrate_nodes_configuration(
                 );
                 force_node_id
             } else {
-                PlainNodeId::MIN_PLAIN_NODE_ID
+                PlainNodeId::MIN
             };
 
         let mut new_node_config = node_config.clone();

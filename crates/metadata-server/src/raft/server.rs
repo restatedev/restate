@@ -309,15 +309,15 @@ impl RaftMetadataServer {
                 "Replicated metadata server must have been configured"
             );
 
-            if raft_options.migrate_from_local_metadata_server {
-                info!("Trying to migrate from local metadata to replicated metadata server");
+            if raft_options.migrate_local_metadata {
+                info!("Trying to migrate from local to replicated metadata");
 
                 let my_member_id = self
                     .initialize_storage_from_local_metadata_server()
                     .await
                     .map_err(|err| Error::ProvisionFromLocal(err.into()))?;
 
-                info!(member_id = %my_member_id, "Successfully migrated all data from local metadata to replicated metadata server");
+                info!(member_id = %my_member_id, "Successfully migrated all local to replicated metadata");
                 let member = self.become_member(my_member_id)?;
                 Provisioned::Member(member)
             } else {
@@ -437,7 +437,7 @@ impl RaftMetadataServer {
             anyhow::bail!(
                 "Trying to migrate from local metadata server but couldn't find any data. \
             Please make sure that this node has been run with the local metadata server before or \
-            unset the metadata-server.migrate-from-local-metadata-server option."
+            unset the metadata-server.migrate-local-metadata option."
             );
         }
 

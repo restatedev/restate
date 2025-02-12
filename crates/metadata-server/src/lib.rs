@@ -594,7 +594,7 @@ impl Default for MetadataServerConfiguration {
 /// Creates a [`MetadataStoreClient`] for configured metadata store.
 pub async fn create_client(
     metadata_store_client_options: MetadataClientOptions,
-) -> Result<MetadataStoreClient, GenericError> {
+) -> anyhow::Result<MetadataStoreClient> {
     let backoff_policy = Some(metadata_store_client_options.backoff_policy.clone());
 
     let client = match metadata_store_client_options.kind.clone() {

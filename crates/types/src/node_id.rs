@@ -92,8 +92,7 @@ impl FromStr for GenerationalNodeId {
 }
 
 impl GenerationalNodeId {
-    pub const INITIAL_NODE_ID: GenerationalNodeId =
-        PlainNodeId::MIN_PLAIN_NODE_ID.with_generation(1);
+    pub const INITIAL_NODE_ID: GenerationalNodeId = PlainNodeId::MIN.with_generation(1);
 
     pub fn decode<B: Buf>(mut data: B) -> Self {
         // generational node id is stored as two u32s next to each other, each in big-endian.
@@ -282,7 +281,7 @@ impl From<GenerationalNodeId> for PlainNodeId {
 
 impl PlainNodeId {
     // Start with 1 as plain node id to leave 0 as a special value in the future
-    pub const MIN_PLAIN_NODE_ID: PlainNodeId = PlainNodeId::new(1);
+    pub const MIN: PlainNodeId = PlainNodeId::new(1);
 
     pub const fn new(id: u32) -> PlainNodeId {
         PlainNodeId(id)

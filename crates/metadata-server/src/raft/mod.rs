@@ -12,6 +12,8 @@ mod kv_memory_storage;
 mod network;
 mod server;
 mod storage;
+#[cfg(test)]
+mod tests;
 
 use crate::MemberId;
 use anyhow::Context;

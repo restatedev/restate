@@ -14,7 +14,6 @@ use crate::metadata_store::providers::objstore::version_repository::VersionRepos
 use crate::metadata_store::MetadataStore;
 use crate::{TaskCenter, TaskKind};
 use restate_types::config::MetadataClientKind;
-use restate_types::errors::GenericError;
 
 mod glue;
 mod object_store_version_repository;
@@ -23,7 +22,7 @@ mod version_repository;
 
 pub async fn create_object_store_based_meta_store(
     configuration: MetadataClientKind,
-) -> Result<impl MetadataStore, GenericError> {
+) -> anyhow::Result<impl MetadataStore> {
     // obtain an instance of a version repository from the configuration.
     // we use an object_store backed version repository.
     let version_repository = Box::new(ObjectStoreVersionRepository::from_configuration(
