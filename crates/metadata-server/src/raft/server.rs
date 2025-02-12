@@ -175,7 +175,7 @@ impl RaftMetadataServer {
 
         let mut metadata_server_options =
             Configuration::updateable().map(|configuration| &configuration.metadata_server);
-        let mut storage =
+        let storage =
             RocksDbStorage::create(metadata_server_options.live_load(), rocksdb_options).await?;
 
         // make sure that the storage is initialized with a storage id to be able to detect disk losses
@@ -191,18 +191,7 @@ impl RaftMetadataServer {
                     storage_marker.created_at()
                 );
             }
-        } else {
-            let storage_marker =
-                StorageMarker::new(Configuration::pinned().common.node_name().to_owned());
-            storage
-                .store_marker(&storage_marker)
-                .await
-                .map_err(|err| BuildError::InitStorage(err.to_string()))?;
-            debug!(
-                "Stored StorageMarker in raft-storage for node '{}'",
-                storage_marker.id()
-            );
-        };
+        }
 
         let connection_manager = Arc::default();
 
@@ -271,8 +260,29 @@ impl RaftMetadataServer {
             }
         }
 
-        health_status.update(MetadataServerStatus::AwaitingProvisioning);
-        let mut provisioned = self.provision().await?;
+        // Check whether we are already provisioned based on the StorageMarker
+        if self.storage.get_marker()?.is_none() {
+            debug!("Provisioning replicated metadata store");
+            health_status.update(MetadataServerStatus::AwaitingProvisioning);
+            self.provision().await?;
+        } else {
+            debug!("Replicated metadata store is already provisioned");
+        }
+
+        let mut provision_rx = self.provision_rx.take().expect("must be present");
+        TaskCenter::spawn_unmanaged(TaskKind::Background, "provision-responder", async move {
+            while let Some(request) = provision_rx.recv().await {
+                let _ = request.result_tx.send(Ok(false));
+            }
+        })?;
+
+        let mut provisioned = if let RaftServerState::Member { my_member_id } =
+            self.storage.get_raft_server_state()?
+        {
+            Provisioned::Member(self.become_member(my_member_id)?)
+        } else {
+            Provisioned::Standby(self.become_standby())
+        };
 
         loop {
             match provisioned {
@@ -288,56 +298,31 @@ impl RaftMetadataServer {
         }
     }
 
-    async fn provision(mut self) -> Result<Provisioned, Error> {
+    async fn provision(&mut self) -> Result<(), Error> {
         let _ = self.status_tx.send(MetadataServerSummary::Provisioning);
-        let mut provision_rx = self.provision_rx.take().expect("must be present");
 
-        let result = if let RaftServerState::Member { my_member_id } =
-            self.storage.get_raft_server_state()?
-        {
-            debug!(member_id = %my_member_id, "Found existing metadata store configuration");
-            Provisioned::Member(self.become_member(my_member_id)?)
-        } else if Metadata::with_current(|m| m.nodes_config_version()) > Version::INVALID {
-            // The metadata store must have been provisioned if there exists a
-            // NodesConfiguration. So let's move on.
-            debug!("Detected a valid nodes configuration. This indicates that the metadata store cluster has been provisioned");
-            Provisioned::Standby(self.become_standby())
+        let_assert!(
+            MetadataServerKind::Raft(raft_options) = Configuration::pinned().metadata_server.kind(),
+            "Replicated metadata server must have been configured"
+        );
+
+        if raft_options.migrate_local_metadata {
+            info!("Trying to migrate from local to replicated metadata");
+
+            let my_member_id = self
+                .initialize_storage_from_local_metadata_server()
+                .await
+                .map_err(|err| Error::ProvisionFromLocal(err.into()))?;
+
+            info!(member_id = %my_member_id, "Successfully migrated all local to replicated metadata");
         } else {
-            let_assert!(
-                MetadataServerKind::Raft(raft_options) =
-                    Configuration::pinned().metadata_server.kind(),
-                "Replicated metadata server must have been configured"
-            );
+            self.await_provisioning_signal().await?
+        }
 
-            if raft_options.migrate_local_metadata {
-                info!("Trying to migrate from local to replicated metadata");
-
-                let my_member_id = self
-                    .initialize_storage_from_local_metadata_server()
-                    .await
-                    .map_err(|err| Error::ProvisionFromLocal(err.into()))?;
-
-                info!(member_id = %my_member_id, "Successfully migrated all local to replicated metadata");
-                let member = self.become_member(my_member_id)?;
-                Provisioned::Member(member)
-            } else {
-                self.await_provisioning_signal(&mut provision_rx).await?
-            }
-        };
-
-        TaskCenter::spawn_unmanaged(TaskKind::Background, "provision-responder", async move {
-            while let Some(request) = provision_rx.recv().await {
-                let _ = request.result_tx.send(Ok(false));
-            }
-        })?;
-
-        Ok(result)
+        Ok(())
     }
 
-    async fn await_provisioning_signal(
-        mut self,
-        provision_rx: &mut ProvisionReceiver,
-    ) -> Result<Provisioned, Error> {
+    async fn await_provisioning_signal(&mut self) -> Result<(), Error> {
         let mut nodes_config_watcher =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
         if !Configuration::pinned().common.auto_provision {
@@ -353,13 +338,12 @@ impl RaftMetadataServer {
                 Some(request) = self.join_cluster_rx.recv() => {
                     let _ = request.response_tx.send(Err(JoinClusterError::NotMember(None)));
                 },
-                Some(request) = provision_rx.recv() => {
+                Some(request) = self.provision_rx.as_mut().expect("must be present").recv() => {
                     match self.initialize_storage_from_nodes_configuration(request.nodes_configuration).await {
                         Ok(my_member_id) => {
                             let _ = request.result_tx.send(Ok(true));
                             debug!(member_id = %my_member_id, "Successfully provisioned the metadata store");
-                            let member = self.become_member(my_member_id)?;
-                            return Ok(Provisioned::Member(member));
+                            return Ok(());
                         },
                         Err(err) => {
                             warn!("Failed to provision the metadata store: {err}");
@@ -372,7 +356,14 @@ impl RaftMetadataServer {
                         // The metadata store must have been provisioned if there exists a
                         // NodesConfiguration. So let's move on.
                         debug!("Detected a valid nodes configuration. This indicates that the metadata store cluster has been provisioned");
-                        return Ok(Provisioned::Standby(self.become_standby()))
+
+                        // mark the storage as provisioned
+                        let storage_marker = Self::create_storage_marker();
+                        let mut txn = self.storage.txn();
+                        txn.store_marker(&storage_marker);
+                        txn.commit().await?;
+
+                        return Ok(());
                     }
                 }
             }
@@ -475,14 +466,12 @@ impl RaftMetadataServer {
             "storage must be empty to get initialized"
         );
 
-        let created_at_millis = self
-            .storage
-            .get_marker()?
-            .expect("StorageMarker to be present")
-            .created_at()
-            .timestamp_millis();
+        let storage_marker = Self::create_storage_marker();
 
-        let my_member_id = MemberId::new(my_plain_node_id, created_at_millis);
+        let my_member_id = MemberId::new(
+            my_plain_node_id,
+            storage_marker.created_at().timestamp_millis(),
+        );
 
         let initial_conf_state = ConfState::from((vec![to_raft_id(my_member_id.node_id)], vec![]));
 
@@ -512,9 +501,14 @@ impl RaftMetadataServer {
         // it's important to first apply the snapshot so that the initial entry has the right index
         txn.apply_snapshot(&snapshot)?;
         txn.store_raft_server_state(&RaftServerState::Member { my_member_id })?;
+        txn.store_marker(&storage_marker);
         txn.commit().await?;
 
         Ok(my_member_id)
+    }
+
+    fn create_storage_marker() -> StorageMarker {
+        StorageMarker::new(Configuration::pinned().common.node_name().to_owned())
     }
 
     fn become_standby(self) -> Standby {

@@ -131,7 +131,8 @@ impl RocksDbStorage {
             && self.get_hard_state()? == HardState::default()
             && self.get_conf_state()? == ConfState::default()
             && self.get_first_index() == 1
-            && self.get_last_index() == 0;
+            && self.get_last_index() == 0
+            && self.get_marker()?.is_none();
 
         Ok(is_empty)
     }
@@ -164,11 +165,6 @@ impl RocksDbStorage {
     pub fn get_conf_state(&self) -> Result<ConfState, Error> {
         self.get_value_metadata_cf(CONF_STATE_KEY)
             .map(|hard_state| hard_state.unwrap_or_default())
-    }
-
-    pub async fn store_marker(&mut self, storage_marker: &StorageMarker) -> Result<(), Error> {
-        self.put_bytes_metadata_cf(MARKER_KEY, storage_marker.to_bytes())
-            .await
     }
 
     pub fn get_marker(&self) -> Result<Option<StorageMarker>, Error> {
@@ -631,6 +627,10 @@ impl<'a> Transaction<'a> {
         self.snapshot_index = Some(snapshot_index);
 
         Ok(())
+    }
+
+    pub fn store_marker(&mut self, storage_marker: &StorageMarker) {
+        self.put_bytes_metadata_cf(MARKER_KEY, storage_marker.to_bytes())
     }
 
     pub fn store_raft_server_state(
