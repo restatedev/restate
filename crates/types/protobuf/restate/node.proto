@@ -18,19 +18,20 @@ package restate.node;
 // -------------------------------------
 //
 message Header {
-  restate.common.Version my_nodes_config_version = 1;
-  optional restate.common.Version my_logs_version = 2;
-  optional restate.common.Version my_schema_version = 3;
-  optional restate.common.Version my_partition_table_version = 4;
   /// A unique monotonically increasing identifier of this message/request per
   /// producer. The uniqueness domain is the generational node id. This is
   /// always set for all messages (whether it's a request or a response)
-  uint64 msg_id = 5;
+  uint64 msg_id = 1;
   /// The msg_id at which we are responding to. Unset if this not to be
   /// considered a response. Note: If this is set, it's the responsibility of
   /// the message producer to ensure that the response is sent to the original
   /// producer (generational node id).
-  optional uint64 in_response_to = 6;
+  // Using raw value to be as compact as possible.
+  optional uint64 in_response_to = 2;
+  optional uint32 my_nodes_config_version = 3;
+  optional uint32 my_logs_version = 4;
+  optional uint32 my_schema_version = 5;
+  optional uint32 my_partition_table_version = 6;
   optional SpanContext span_context = 7;
 }
 
@@ -41,10 +42,10 @@ message SpanContext { map<string, string> fields = 1; }
 message Hello {
   restate.common.ProtocolVersion min_protocol_version = 1;
   restate.common.ProtocolVersion max_protocol_version = 2;
+  string cluster_name = 3;
   // generational node id of sender (who am I)
   // this is optional for future-proofing with anonymous clients using this protocol
-  optional restate.common.GenerationalNodeId my_node_id = 3;
-  string cluster_name = 4;
+  optional restate.common.GenerationalNodeId my_node_id = 4;
 }
 
 message Welcome {
@@ -80,6 +81,7 @@ message Message {
     Hello hello = 3;
     // Sent as first response
     Welcome welcome = 4;
-    BinaryMessage encoded = 5;
+    // keep this as last, always
+    BinaryMessage encoded = 1000;
   }
 }

@@ -132,7 +132,7 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
 
     let message = Message {
         header: Some(restate_types::protobuf::node::Header {
-            my_nodes_config_version: Some(restate_types::protobuf::common::Version { value: 5 }),
+            my_nodes_config_version: Some(5),
             my_logs_version: None,
             my_schema_version: None,
             my_partition_table_version: None,
