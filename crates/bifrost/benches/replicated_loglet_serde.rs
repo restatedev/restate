@@ -26,8 +26,9 @@ use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRp
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext,
 };
-use restate_types::logs::{LogId, LogletId, Record};
-use restate_types::net::codec::{serialize_message, MessageBodyExt, WireDecode};
+use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
+use restate_types::net::codec::{MessageBodyExt, WireDecode, WireEncode};
+use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
 use restate_types::net::replicated_loglet::{Append, CommonRequestHeader};
 use restate_types::protobuf::node::Message;
 use restate_types::time::MillisSinceEpoch;
@@ -65,7 +66,7 @@ pub fn generate_envelope() -> Arc<Envelope> {
 
     let request_id = PartitionProcessorRpcRequestId::new();
     let inv_source = restate_types::invocation::Source::Ingress(request_id);
-    let handler: ByteString = format!("aFunction_{}", rand_string(1)).into();
+    let handler: ByteString = format!("aFunction_{}", rand_string(10)).into();
 
     let header = restate_wal_protocol::Header {
         source: restate_wal_protocol::Source::Processor {
@@ -118,6 +119,37 @@ pub fn generate_envelope() -> Arc<Envelope> {
     Envelope::new(header, command).into()
 }
 
+fn serialize_store_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> {
+    let store_message = Store {
+        header: LogServerRequestHeader {
+            loglet_id: LogletId::new(12u16.into(), 4.into()),
+            known_global_tail: LogletOffset::new(55),
+        },
+        payloads,
+        timeout_at: Some(MillisSinceEpoch::now()),
+        flags: StoreFlags::empty(),
+        first_offset: LogletOffset::new(56),
+        sequencer: GenerationalNodeId::new(1, 1),
+        known_archived: LogletOffset::INVALID,
+    };
+
+    let body = store_message.encode(restate_types::net::ProtocolVersion::V1)?;
+
+    let message = Message {
+        header: Some(restate_types::protobuf::node::Header {
+            my_nodes_config_version: Some(restate_types::protobuf::common::Version { value: 5 }),
+            my_logs_version: None,
+            my_schema_version: None,
+            my_partition_table_version: None,
+            msg_id: random(),
+            in_response_to: None,
+            span_context: None,
+        }),
+        body: Some(body),
+    };
+    Ok(message)
+}
+
 fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> {
     let append_message = Append {
         header: CommonRequestHeader {
@@ -128,7 +160,7 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
         payloads,
     };
 
-    let body = serialize_message(append_message, restate_types::net::ProtocolVersion::V1)?;
+    let body = append_message.encode(restate_types::net::ProtocolVersion::V1)?;
 
     let message = Message {
         header: Some(restate_types::protobuf::node::Header {
@@ -169,18 +201,25 @@ fn replicated_loglet_append_serde(c: &mut Criterion) {
     let serialized = buf.freeze();
 
     group
-        .sample_size(40)
-        .measurement_time(Duration::from_secs(20))
-        .bench_function("serialize", |bencher| {
+        .sample_size(50)
+        .measurement_time(Duration::from_secs(5))
+        .bench_function("serialize-append", |bencher| {
             bencher.iter(|| {
                 let mut buf = BytesMut::new();
                 let message = black_box(serialize_append_message(payloads.clone()).unwrap());
                 black_box(message.encode(&mut buf)).unwrap();
             });
         })
-        .bench_function("deserialize", |bencher| {
+        .bench_function("deserialize-append", |bencher| {
             bencher.iter(|| {
                 black_box(deserialize_append_message(serialized.clone())).unwrap();
+            });
+        })
+        .bench_function("serialize-store", |bencher| {
+            bencher.iter(|| {
+                let mut buf = BytesMut::new();
+                let message = black_box(serialize_store_message(payloads.clone()).unwrap());
+                black_box(message.encode(&mut buf)).unwrap();
             });
         });
     group.finish();
@@ -189,6 +228,6 @@ fn replicated_loglet_append_serde(c: &mut Criterion) {
 criterion_group!(
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(997, Output::Flamegraph(Some(flamegraph_options()))));
-    targets = replicated_loglet_append_serde
+    targets = replicated_loglet_append_serde,
 );
 criterion_main!(benches);
