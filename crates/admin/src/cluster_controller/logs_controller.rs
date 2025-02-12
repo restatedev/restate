@@ -520,7 +520,7 @@ impl LogletConfiguration {
                         loglet_id = %params.loglet_id,
                         current_replication = %params.replication,
                         new_replication = %config.replication_property,
-                        "Replicated loglet default replication has can changed, will attempt reconfiguration"
+                        "Replicated loglet default replication has changed, will attempt reconfiguration"
                     );
                     return true;
                 }
@@ -546,8 +546,17 @@ impl LogletConfiguration {
 
                 false
             }
+            (x, y @ ProviderConfiguration::Replicated(_)) => {
+                debug!(
+                    %log_id,
+                    "Changing bifrost provider from {} to {}, will attempt reconfiguration",
+                    x.as_provider(), y.kind(),
+                );
+                true
+            }
             (x, y) => {
                 debug!(
+                    %log_id,
                     "Changing bifrost provider from {} to {} is not supported at the moment. Ignoring reconfiguration request",
                     x.as_provider(), y.kind(),
                 );

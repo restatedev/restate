@@ -52,7 +52,7 @@ use restate_types::logs::{LogId, LogletId, Lsn};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
 use restate_types::protobuf::common::AdminStatus;
-use restate_types::{GenerationalNodeId, Version, Versioned};
+use restate_types::{GenerationalNodeId, Version};
 
 use self::state::ClusterControllerState;
 use super::cluster_state_refresher::ClusterStateRefresher;
@@ -430,15 +430,14 @@ impl<T: TransportConnect> Service<T> {
             .read_modify_write(BIFROST_CONFIG_KEY.clone(), |current: Option<Logs>| {
                 let logs = current.expect("logs should be initialized by BifrostService");
 
-                // we can only change the default provider
-                if logs.version() != Version::INVALID
-                    && logs.configuration().default_provider.kind() != default_provider.kind()
+                // allow to switch the default provider from a non-replicated loglet to the
+                // replicated loglet
+                if logs.configuration().default_provider.kind() != default_provider.kind()
+                    && default_provider.kind() != ProviderKind::Replicated
                 {
-                    {
-                        return Err(
-                            ClusterConfigurationUpdateError::ChangingDefaultProviderNotSupported,
-                        );
-                    }
+                    return Err(ClusterConfigurationUpdateError::ChooseReplicatedLoglet(
+                        default_provider.kind(),
+                    ));
                 }
 
                 let mut builder = logs.into_builder();
@@ -617,8 +616,8 @@ async fn sync_cluster_controller_metadata() -> anyhow::Result<()> {
 enum ClusterConfigurationUpdateError {
     #[error("Unchanged")]
     Unchanged,
-    #[error("Changing default provider kind is not supported")]
-    ChangingDefaultProviderNotSupported,
+    #[error("Changing default provider kind to {0} is not supported. Choose 'replicated' instead")]
+    ChooseReplicatedLoglet(ProviderKind),
     #[error(transparent)]
     BuildError(#[from] partition_table::BuilderError),
     #[error("missing partition table; cluster seems to be not provisioned")]
