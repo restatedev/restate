@@ -19,3 +19,7 @@ platforms = [
 
 [traversal-excludes]
 workspace-members = ["service-protocol-wireshark-dissector"]
+third-party = [
+    # excluded to avoid pulling in feature="test-util" by default for non-test builds
+    { name = "tokio" },
+]
