@@ -19,7 +19,7 @@ use tokio::time::Instant;
 use tracing::{debug, trace};
 
 use restate_types::net::codec::Targeted;
-use restate_types::net::codec::{serialize_message, WireEncode};
+use restate_types::net::codec::WireEncode;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::ProtocolVersion;
 use restate_types::protobuf::node::message;
@@ -70,7 +70,9 @@ where
             message.msg_id(),
             message.in_response_to(),
         );
-        let body = serialize_message(message.into_body(), self.protocol_version)
+        let body = message
+            .into_body()
+            .encode(self.protocol_version)
             .expect("message encoding infallible");
         self.send_raw(Message::new(header, body));
     }
@@ -323,7 +325,7 @@ pub mod test_util {
 
     use restate_types::net::codec::MessageBodyExt;
     use restate_types::net::codec::Targeted;
-    use restate_types::net::codec::{serialize_message, WireEncode};
+    use restate_types::net::codec::WireEncode;
     use restate_types::net::CodecError;
     use restate_types::net::ProtocolVersion;
     use restate_types::nodes_config::NodesConfiguration;
@@ -431,7 +433,9 @@ pub mod test_util {
         where
             M: WireEncode + Targeted,
         {
-            let body = serialize_message(message, self.protocol_version).expect("serde unfallible");
+            let body = message
+                .encode(self.protocol_version)
+                .expect("serde infallible");
             let message = Message::new(header, body);
 
             self.sender.send(message).await?;

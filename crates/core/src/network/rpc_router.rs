@@ -451,9 +451,10 @@ mod test {
     use crate::network::{PeerMetadataVersion, WeakConnection};
 
     use super::*;
+    use bytes::Bytes;
     use futures::future::join_all;
-    use restate_types::net::codec::encode_default;
     use restate_types::net::{CodecError, TargetName};
+    use restate_types::protobuf::node::message;
     use restate_types::GenerationalNodeId;
     use serde::{Deserialize, Serialize};
     use tokio::sync::Barrier;
@@ -487,12 +488,15 @@ mod test {
     }
 
     impl WireEncode for TestResponse {
-        fn encode<B: bytes::BufMut>(
+        fn encode(
             self,
-            buf: &mut B,
-            protocol_version: restate_types::net::ProtocolVersion,
-        ) -> Result<(), CodecError> {
-            encode_default(self, buf, protocol_version)
+            _protocol_version: restate_types::net::ProtocolVersion,
+        ) -> Result<message::Body, CodecError> {
+            let target = Self::TARGET;
+            Ok(message::Body::Encoded(message::BinaryMessage {
+                target: target.into(),
+                payload: Bytes::from(self.text),
+            }))
         }
     }
 

@@ -177,13 +177,15 @@ macro_rules! define_message {
         }
 
         impl $crate::net::codec::WireEncode for $message {
-            fn encode<B: bytes::BufMut>(
+            fn encode(
                 self,
-                buf: &mut B,
                 protocol_version: $crate::net::ProtocolVersion,
-            ) -> Result<(), $crate::net::CodecError> {
-                // serialize message into buf
-                $crate::net::codec::encode_default(self, buf, protocol_version)
+            ) -> Result<$crate::protobuf::node::message::Body, $crate::net::CodecError> {
+                let payload = $crate::net::codec::encode_default(self, protocol_version)?;
+                let target = <$message as $crate::net::Targeted>::TARGET.into();
+                Ok($crate::protobuf::node::message::Body::Encoded(
+                    crate::protobuf::node::message::BinaryMessage { target, payload },
+                ))
             }
         }
 
