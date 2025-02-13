@@ -507,7 +507,6 @@ pub enum ProviderKind {
     #[cfg(any(test, feature = "memory-loglet"))]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     InMemory,
-    /// [__PREVIEW FEATURE__]
     /// Replicated loglets are restate's native log replication system. This requires
     /// `log-server` role to run on enough nodes in the cluster.
     Replicated,
