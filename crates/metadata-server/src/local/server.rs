@@ -12,9 +12,9 @@ use crate::grpc::handler::MetadataServerHandler;
 use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 use crate::local::storage::RocksDbStorage;
 use crate::{grpc, MetadataServer, MetadataStoreRequest, RequestError, RequestReceiver};
-use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{serialize_value, Precondition};
 use restate_core::network::NetworkServerBuilder;
+use restate_core::{cancellation_watcher, MetadataWriter};
 use restate_rocksdb::RocksError;
 use restate_types::config::{Configuration, MetadataServerOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
@@ -133,7 +133,7 @@ impl LocalMetadataServer {
 
 #[async_trait::async_trait]
 impl MetadataServer for LocalMetadataServer {
-    async fn run(self) -> anyhow::Result<()> {
+    async fn run(self, _metadata_writer: Option<MetadataWriter>) -> anyhow::Result<()> {
         self.run().await.map_err(Into::into)
     }
 }

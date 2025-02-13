@@ -149,14 +149,6 @@ impl Node {
         let is_provisioned =
             cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
-        let metadata_store_client =
-            restate_metadata_server::create_client(config.common.metadata_client.clone())
-                .await
-                .map_err(BuildError::MetadataStoreClient)?;
-        let metadata_manager =
-            MetadataManager::new(metadata_builder, metadata_store_client.clone());
-        let metadata_writer = metadata_manager.writer();
-
         let metadata_store_role = if config.has_role(Role::MetadataServer) {
             Some(
                 restate_metadata_server::create_metadata_server(
@@ -166,7 +158,6 @@ impl Node {
                         .map(|config| &config.metadata_server.rocksdb)
                         .boxed(),
                     TaskCenter::with_current(|tc| tc.health().metadata_server_status()),
-                    Some(metadata_writer),
                     &mut server_builder,
                 )
                 .await?,
@@ -174,6 +165,13 @@ impl Node {
         } else {
             None
         };
+
+        let metadata_store_client =
+            restate_metadata_server::create_client(config.common.metadata_client.clone())
+                .await
+                .map_err(BuildError::MetadataStoreClient)?;
+        let metadata_manager =
+            MetadataManager::new(metadata_builder, metadata_store_client.clone());
 
         let mut router_builder = MessageRouterBuilder::default();
         let networking = Networking::new(metadata.clone(), config.networking.clone());
@@ -370,7 +368,7 @@ impl Node {
             TaskCenter::spawn(
                 TaskKind::MetadataServer,
                 "metadata-server",
-                metadata_server.run(),
+                metadata_server.run(Some(metadata_writer.clone())),
             )?;
         }
 

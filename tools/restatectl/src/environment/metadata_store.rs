@@ -32,7 +32,6 @@ pub async fn start_metadata_server(
         opts,
         updateables_rocksdb_options,
         HealthStatus::default(),
-        None,
         &mut server_builder,
     )
     .await?;
@@ -58,7 +57,7 @@ pub async fn start_metadata_server(
         TaskKind::MetadataServer,
         "local-metadata-server",
         async move {
-            service.run().await?;
+            service.run(None).await?;
             Ok(())
         },
     )?;

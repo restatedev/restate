@@ -124,19 +124,25 @@ enum JoinError {
 
 #[async_trait::async_trait]
 pub trait MetadataServerBoxed {
-    async fn run_boxed(self: Box<Self>) -> anyhow::Result<()>;
+    async fn run_boxed(
+        self: Box<Self>,
+        metadata_writer: Option<MetadataWriter>,
+    ) -> anyhow::Result<()>;
 }
 
 #[async_trait::async_trait]
 impl<T: MetadataServer> MetadataServerBoxed for T {
-    async fn run_boxed(self: Box<Self>) -> anyhow::Result<()> {
-        (*self).run().await
+    async fn run_boxed(
+        self: Box<Self>,
+        metadata_writer: Option<MetadataWriter>,
+    ) -> anyhow::Result<()> {
+        (*self).run(metadata_writer).await
     }
 }
 
 #[async_trait::async_trait]
 pub trait MetadataServer: MetadataServerBoxed + Send {
-    async fn run(self) -> anyhow::Result<()>;
+    async fn run(self, metadata_writer: Option<MetadataWriter>) -> anyhow::Result<()>;
 
     fn boxed(self) -> BoxedMetadataServer
     where
@@ -148,8 +154,8 @@ pub trait MetadataServer: MetadataServerBoxed + Send {
 
 #[async_trait::async_trait]
 impl<T: MetadataServer + ?Sized> MetadataServer for Box<T> {
-    async fn run(self) -> anyhow::Result<()> {
-        self.run_boxed().await
+    async fn run(self, metadata_writer: Option<MetadataWriter>) -> anyhow::Result<()> {
+        self.run_boxed(metadata_writer).await
     }
 }
 
@@ -186,7 +192,6 @@ pub async fn create_metadata_server(
     metadata_server_options: &MetadataServerOptions,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     health_status: HealthStatus<MetadataServerStatus>,
-    metadata_writer: Option<MetadataWriter>,
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<BoxedMetadataServer> {
     metric_definitions::describe_metrics();
@@ -200,15 +205,12 @@ pub async fn create_metadata_server(
         .await
         .map_err(anyhow::Error::from)
         .map(|server| server.boxed()),
-        MetadataServerKind::Raft { .. } => RaftMetadataServer::create(
-            rocksdb_options,
-            metadata_writer,
-            health_status,
-            server_builder,
-        )
-        .await
-        .map_err(anyhow::Error::from)
-        .map(|server| server.boxed()),
+        MetadataServerKind::Raft { .. } => {
+            RaftMetadataServer::create(rocksdb_options, health_status, server_builder)
+                .await
+                .map_err(anyhow::Error::from)
+                .map(|server| server.boxed())
+        }
     }
 }
 impl MetadataStoreRequest {
