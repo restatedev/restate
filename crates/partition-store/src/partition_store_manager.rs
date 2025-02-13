@@ -89,6 +89,7 @@ impl PartitionStoreManager {
     /// Check whether we have a partition store for the given partition id, irrespective of whether
     /// the store is open or not.
     pub async fn has_partition_store(&self, partition_id: PartitionId) -> bool {
+        let _guard = self.lookup.lock().await;
         let cf_name = cf_for_partition(partition_id);
         self.rocksdb.inner().cf_handle(&cf_name).is_some()
     }
@@ -212,9 +213,11 @@ impl PartitionStoreManager {
         snapshot_id: SnapshotId,
         snapshot_base_path: &Path,
     ) -> Result<LocalPartitionSnapshot, SnapshotError> {
-        let mut partition_store = self
-            .get_partition_store(partition_id)
-            .await
+        let guard = self.lookup.lock().await;
+        let mut partition_store = guard
+            .live
+            .get(&partition_id)
+            .cloned()
             .ok_or(SnapshotError::PartitionNotFound(partition_id))?;
 
         // RocksDB will create the snapshot directory but the parent must exist first:
