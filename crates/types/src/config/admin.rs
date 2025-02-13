@@ -84,7 +84,6 @@ pub struct AdminOptions {
 
     /// # Default partition replication factor
     ///
-    /// [__PREVIEW FEATURE__]
     /// The default replication factor for partition processors, this impacts how many replicas
     /// each partition will have across the worker nodes of the cluster.
     ///
