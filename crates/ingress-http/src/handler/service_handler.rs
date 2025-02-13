@@ -18,7 +18,7 @@ use metrics::{counter, histogram};
 use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use tracing::{info, trace, trace_span, Instrument};
+use tracing::{debug, trace, trace_span, Instrument};
 
 use super::path_parsing::{InvokeType, ServiceRequestType, TargetType};
 use super::tracing::prepare_tracing_span;
@@ -144,7 +144,7 @@ where
             let ingress_span_context =
                 prepare_tracing_span(&invocation_id, &invocation_target, &req);
 
-            info!("Processing ingress request");
+            debug!("Processing ingress request");
 
             let (parts, body) = req.into_parts();
 
