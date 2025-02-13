@@ -47,7 +47,7 @@ use std::future::poll_fn;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
@@ -129,7 +129,7 @@ where
 
         let journal_size = journal_metadata.length;
 
-        info!(
+        debug!(
             restate.invocation.id = %self.invocation_task.invocation_id,
             deployment.address = %deployment.metadata.address_display(),
             deployment.service_protocol_version = %self.service_protocol_version.as_repr(),
