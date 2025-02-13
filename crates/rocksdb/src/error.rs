@@ -34,6 +34,9 @@ pub enum RocksError {
     #[error("invalid key range for partition")]
     #[code(unknown)]
     SnapshotKeyRangeMismatch,
+    #[error("export column family returned an empty set of SST files")]
+    #[code(unknown)]
+    SnapshotEmpty,
     #[error(transparent)]
     #[code(unknown)]
     Other(#[from] rocksdb::Error),
