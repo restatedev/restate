@@ -11,6 +11,7 @@
 use anyhow::Context;
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
+use tracing::error;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::TrimLogRequest;
@@ -18,14 +19,15 @@ use restate_cli_util::c_println;
 use restate_types::nodes_config::Role;
 
 use crate::connection::ConnectionInfo;
+use crate::util::RangeParam;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
 #[cling(run = "trim_log")]
 pub struct TrimLogOpts {
-    /// The log to trim
-    #[arg(short, long)]
-    log_id: u32,
+    /// The log id or range to trim, e.g. "0", "1-4".
+    #[arg(required = true)]
+    log_id: Vec<RangeParam>,
 
     /// The Log Sequence Number (LSN) to trim the log to, inclusive
     #[arg(short, long)]
@@ -33,8 +35,22 @@ pub struct TrimLogOpts {
 }
 
 async fn trim_log(connection: &ConnectionInfo, opts: &TrimLogOpts) -> anyhow::Result<()> {
+    for log_id in opts.log_id.iter().flatten() {
+        if let Err(err) = trim_log_inner(connection, opts, log_id).await {
+            error!("Failed to trim log {log_id}: {err}");
+        }
+    }
+
+    Ok(())
+}
+
+async fn trim_log_inner(
+    connection: &ConnectionInfo,
+    opts: &TrimLogOpts,
+    log_id: u32,
+) -> anyhow::Result<()> {
     let trim_request = TrimLogRequest {
-        log_id: opts.log_id,
+        log_id,
         trim_point: opts.trim_point,
     };
 
@@ -49,7 +65,7 @@ async fn trim_log(connection: &ConnectionInfo, opts: &TrimLogOpts) -> anyhow::Re
         .with_context(|| "failed to submit trim request")?
         .into_inner();
 
-    c_println!("Submitted");
+    c_println!("Submitted for log {log_id}");
 
     Ok(())
 }

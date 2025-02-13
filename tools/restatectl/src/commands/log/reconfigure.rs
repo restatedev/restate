@@ -13,11 +13,12 @@ use std::num::NonZeroU32;
 use anyhow::{bail, Context};
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
+use tracing::error;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{ChainExtension, SealAndExtendChainRequest};
 use restate_cli_util::{c_eprintln, c_println};
-use restate_types::logs::metadata::{ProviderKind, Segment, SegmentIndex};
+use restate_types::logs::metadata::{Logs, ProviderKind, Segment, SegmentIndex};
 use restate_types::logs::{LogId, LogletId};
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::Version;
@@ -26,13 +27,14 @@ use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use crate::connection::ConnectionInfo;
+use crate::util::RangeParam;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "reconfigure")]
 pub struct ReconfigureOpts {
-    /// LogId/Partition to seal and extend
-    #[clap(long, short)]
-    log_id: u32,
+    /// The log id or range to seal and extend, e.g. "0", "1-4".
+    #[clap(long, short, required = true)]
+    log_id: Vec<RangeParam>,
     /// If a loglet provider is specified, the new loglet will be configured using the provided parameters.
     /// Otherwise, it will be automatically reconfigured based on the cluster configuration.
     #[clap(long, short)]
@@ -60,7 +62,22 @@ pub struct ReconfigureOpts {
 async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> anyhow::Result<()> {
     let logs = connection.get_logs().await?;
 
-    let log_id = LogId::from(opts.log_id);
+    for log_id in opts.log_id.iter().flatten().map(LogId::from) {
+        if let Err(err) = inner_reconfigure(connection, opts, &logs, log_id).await {
+            error!("Failed to reconfigure log {log_id}: {err}");
+        }
+        c_println!("");
+    }
+
+    Ok(())
+}
+
+async fn inner_reconfigure(
+    connection: &ConnectionInfo,
+    opts: &ReconfigureOpts,
+    logs: &Logs,
+    log_id: LogId,
+) -> anyhow::Result<()> {
     let chain = logs
         .chain(&log_id)
         .with_context(|| format!("Unknown log id '{log_id}'"))?;
@@ -110,7 +127,7 @@ async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> any
     };
 
     let request = SealAndExtendChainRequest {
-        log_id: opts.log_id,
+        log_id: log_id.into(),
         min_version: Some(Version {
             value: opts.min_version.get(),
         }),
@@ -131,8 +148,7 @@ async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> any
         c_println!("✅ Log scheduled for reconfiguration");
         return Ok(());
     };
-
-    c_println!("✅ Log reconfiguration");
+    c_println!("✅ Log reconfiguration ({log_id})");
     c_println!(" └ Segment Index: {}", response.new_segment_index);
 
     c_println!();

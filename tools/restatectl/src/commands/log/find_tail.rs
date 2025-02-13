@@ -21,15 +21,15 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_types::nodes_config::Role;
 use tonic::IntoRequest;
 
-use super::LogIdRange;
 use crate::connection::ConnectionInfo;
+use crate::util::RangeParam;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "find_tail")]
 pub struct FindTailOpts {
-    /// The log id(s) to find its tail.
+    /// The log id or range to find its tail, e.g. "0", "1-4".
     #[arg(required = true)]
-    log_id: Vec<LogIdRange>,
+    log_id: Vec<RangeParam>,
 }
 
 async fn find_tail(connection: &ConnectionInfo, opts: &FindTailOpts) -> anyhow::Result<()> {
