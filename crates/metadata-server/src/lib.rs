@@ -15,9 +15,8 @@ pub mod local;
 mod metric_definitions;
 pub mod raft;
 
-use crate::grpc::client::GrpcMetadataServerClient;
 use crate::local::LocalMetadataServer;
-use crate::raft::RaftMetadataServer;
+use crate::raft::{create_replicated_metadata_client, RaftMetadataServer};
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -35,11 +34,11 @@ pub use restate_core::metadata_store::{
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
 use restate_types::config::{
-    Configuration, MetadataClientOptions, MetadataServerKind, MetadataServerOptions, RocksDbOptions,
+    Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
 };
-use restate_types::errors::GenericError;
+use restate_types::errors::{GenericError, MaybeRetryableError};
 use restate_types::health::HealthStatus;
-use restate_types::live::BoxedLiveLoad;
+use restate_types::live::Live;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
@@ -49,6 +48,7 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{config, GenerationalNodeId, PlainNodeId, Version};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::Status;
 use tracing::debug;
@@ -81,6 +81,19 @@ pub enum RequestError {
     Encode(#[from] StorageEncodeError),
     #[error("decode error: {0}")]
     Decode(#[from] StorageDecodeError),
+}
+
+impl MaybeRetryableError for RequestError {
+    fn retryable(&self) -> bool {
+        match self {
+            RequestError::Internal(_) => false,
+            RequestError::Unavailable(_, _) => true,
+            RequestError::FailedPrecondition(_) => false,
+            RequestError::InvalidArgument(_) => false,
+            RequestError::Encode(_) => false,
+            RequestError::Decode(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -188,28 +201,56 @@ pub struct ProvisionRequest {
     result_tx: oneshot::Sender<Result<bool, ProvisionError>>,
 }
 
-pub async fn create_metadata_server(
-    metadata_server_options: &MetadataServerOptions,
-    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+pub async fn create_metadata_server_and_client(
+    config: Live<Configuration>,
     health_status: HealthStatus<MetadataServerStatus>,
     server_builder: &mut NetworkServerBuilder,
-) -> anyhow::Result<BoxedMetadataServer> {
+) -> anyhow::Result<(BoxedMetadataServer, MetadataStoreClient)> {
     metric_definitions::describe_metrics();
-    match metadata_server_options.kind() {
-        MetadataServerKind::Local => LocalMetadataServer::create(
-            metadata_server_options,
-            rocksdb_options,
-            health_status,
-            server_builder,
-        )
-        .await
-        .map_err(anyhow::Error::from)
-        .map(|server| server.boxed()),
+    let rocksdb_options = config
+        .clone()
+        .map(|config| &config.metadata_server.rocksdb)
+        .boxed();
+    let config = config.pinned();
+    match config.metadata_server.kind() {
+        MetadataServerKind::Local => {
+            LocalMetadataServer::create(&config.metadata_server, rocksdb_options, health_status)
+                .await
+                .map_err(anyhow::Error::from)
+                .map(|server| {
+                    let client = server.client();
+                    (server.boxed(), client)
+                })
+        }
         MetadataServerKind::Raft { .. } => {
             RaftMetadataServer::create(rocksdb_options, health_status, server_builder)
                 .await
                 .map_err(anyhow::Error::from)
-                .map(|server| server.boxed())
+                .and_then(|server| {
+                    let metadata_client_options = config.common.metadata_client.clone();
+                    let backoff_policy = metadata_client_options.backoff_policy.clone();
+
+                    let MetadataClientKind::Native { addresses } =
+                        config.common.metadata_client.kind.clone()
+                    else {
+                        anyhow::bail!(
+                            "Detected a possible misconfiguration of the cluster. The \
+                        cluster runs a replicated metadata server but not the native metadata \
+                        client. If you don't want to run a metadata server, then remove the \
+                        metadata-server role. If you want to run the replicated metadata server, \
+                        then configure metadata-client.type = \"replicated\""
+                        );
+                    };
+
+                    Ok((
+                        server.boxed(),
+                        create_replicated_metadata_client(
+                            addresses,
+                            Some(backoff_policy),
+                            Arc::new(metadata_client_options),
+                        ),
+                    ))
+                })
         }
     }
 }
@@ -593,20 +634,20 @@ impl Default for MetadataServerConfiguration {
     }
 }
 
-/// Creates a [`MetadataStoreClient`] for configured metadata store.
+/// Creates a [`MetadataStoreClient`] for the configured metadata store.
 pub async fn create_client(
-    metadata_store_client_options: MetadataClientOptions,
+    metadata_client_options: MetadataClientOptions,
 ) -> anyhow::Result<MetadataStoreClient> {
-    let backoff_policy = Some(metadata_store_client_options.backoff_policy.clone());
+    let backoff_policy = Some(metadata_client_options.backoff_policy.clone());
 
-    let client = match metadata_store_client_options.kind.clone() {
-        config::MetadataClientKind::Native { addresses } => {
-            let inner_client =
-                GrpcMetadataServerClient::new(addresses, metadata_store_client_options);
-            MetadataStoreClient::new(inner_client, backoff_policy)
-        }
+    let client = match metadata_client_options.kind.clone() {
+        config::MetadataClientKind::Native { addresses } => create_replicated_metadata_client(
+            addresses,
+            backoff_policy,
+            Arc::new(metadata_client_options),
+        ),
         config::MetadataClientKind::Etcd { addresses } => {
-            let store = EtcdMetadataStore::new(addresses, &metadata_store_client_options).await?;
+            let store = EtcdMetadataStore::new(addresses, &metadata_client_options).await?;
             MetadataStoreClient::new(store, backoff_policy)
         }
         conf @ config::MetadataClientKind::ObjectStore { .. } => {

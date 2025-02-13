@@ -15,7 +15,6 @@ use tracing::debug;
 
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
-use restate_types::live::Live;
 
 use crate::commands::metadata::{
     create_metadata_store_client, GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts,
@@ -65,14 +64,7 @@ async fn get_value_direct(opts: &GetValueOpts) -> anyhow::Result<Option<GenericM
         let rocksdb_manager = RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
         debug!("RocksDB Initialized");
 
-        let metadata_store_client = metadata_store::start_metadata_server(
-            config.common.metadata_client.clone(),
-            &config.metadata_server,
-            Live::from_value(config.metadata_server.clone())
-                .map(|c| &c.rocksdb)
-                .boxed(),
-        )
-        .await?;
+        let metadata_store_client = metadata_store::start_metadata_server(config.clone()).await?;
         debug!("Metadata store client created");
 
         let value: Option<GenericMetadataValue> = metadata_store_client

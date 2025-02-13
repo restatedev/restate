@@ -34,6 +34,10 @@ pub struct NetworkServerBuilder {
 }
 
 impl NetworkServerBuilder {
+    pub fn is_empty(&self) -> bool {
+        self.grpc_routes.is_none() && self.axum_router.is_none()
+    }
+
     pub fn register_grpc_service<S>(
         &mut self,
         svc: S,

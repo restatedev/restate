@@ -21,7 +21,6 @@ use restate_core::network::MessageRouterBuilder;
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, TaskKind};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
-use restate_types::live::Live;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_wal_protocol::Envelope;
 
@@ -74,14 +73,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
         let metadata = metadata_builder.to_metadata();
         TaskCenter::try_set_global_metadata(metadata.clone());
 
-        let metadata_store_client = metadata_store::start_metadata_server(
-            config.common.metadata_client.clone(),
-            &config.metadata_server,
-            Live::from_value(config.metadata_server.clone())
-                .map(|c| &c.rocksdb)
-                .boxed(),
-        )
-        .await?;
+        let metadata_store_client = metadata_store::start_metadata_server(config.clone()).await?;
         debug!("Metadata store client created");
 
         let metadata_manager =

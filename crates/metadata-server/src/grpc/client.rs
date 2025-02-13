@@ -20,15 +20,16 @@ use rand::prelude::IteratorRandom;
 use restate_core::metadata_store::{
     MetadataStore, Precondition, ProvisionError, ReadError, VersionedValue, WriteError,
 };
-use restate_core::network::net_util::create_tonic_channel;
+use restate_core::network::net_util::{create_tonic_channel, CommonClientConnectionOptions};
 use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
-use restate_types::config::{Configuration, MetadataClientOptions};
+use restate_types::config::Configuration;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
 use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
@@ -61,7 +62,7 @@ impl MetadataServerSvcClientWithAddress {
 }
 
 /// Client end to interact with a set of metadata servers.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GrpcMetadataServerClient {
     channel_manager: ChannelManager,
     current_leader: Arc<Mutex<Option<MetadataServerSvcClientWithAddress>>>,
@@ -70,9 +71,9 @@ pub struct GrpcMetadataServerClient {
 impl GrpcMetadataServerClient {
     pub fn new(
         metadata_store_addresses: Vec<AdvertisedAddress>,
-        client_options: MetadataClientOptions,
+        connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
     ) -> Self {
-        let channel_manager = ChannelManager::new(metadata_store_addresses, client_options);
+        let channel_manager = ChannelManager::new(metadata_store_addresses, connection_options);
         let svc_client = Arc::new(Mutex::new(
             channel_manager
                 .choose_random()
@@ -359,30 +360,30 @@ impl StatusError {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct ChannelManager {
     channels: Arc<Mutex<Channels>>,
-    client_options: MetadataClientOptions,
+    connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
 }
 
 impl ChannelManager {
     fn new(
         initial_addresses: Vec<AdvertisedAddress>,
-        client_options: MetadataClientOptions,
+        connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
     ) -> Self {
         let initial_channels: Vec<_> = initial_addresses
             .into_iter()
             .map(|address| {
                 ChannelWithAddress::new(
                     address.clone(),
-                    create_tonic_channel(address, &client_options),
+                    create_tonic_channel(address, connection_options.deref()),
                 )
             })
             .collect();
 
         ChannelManager {
             channels: Arc::new(Mutex::new(Channels::new(initial_channels))),
-            client_options,
+            connection_options,
         }
     }
 
@@ -393,7 +394,7 @@ impl ChannelManager {
     ) -> ChannelWithAddress {
         let channel = ChannelWithAddress::new(
             address.clone(),
-            create_tonic_channel(address, &self.client_options),
+            create_tonic_channel(address, self.connection_options.deref()),
         );
         self.channels
             .lock()
@@ -445,7 +446,10 @@ impl ChannelManager {
                         node_id,
                         ChannelWithAddress::new(
                             node_config.address.clone(),
-                            create_tonic_channel(node_config.address.clone(), &self.client_options),
+                            create_tonic_channel(
+                                node_config.address.clone(),
+                                self.connection_options.deref(),
+                            ),
                         ),
                     ))
                 } else {
