@@ -29,7 +29,7 @@ pub async fn start_metadata_server(
     // right now we only support running a local metadata store
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
-    config.common.metadata_client.kind = config::MetadataClientKind::Native {
+    config.common.metadata_client.kind = config::MetadataClientKind::Replicated {
         addresses: vec![AdvertisedAddress::Uds(uds)],
     };
 

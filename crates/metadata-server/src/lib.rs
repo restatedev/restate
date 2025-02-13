@@ -230,12 +230,12 @@ pub async fn create_metadata_server_and_client(
                     let metadata_client_options = config.common.metadata_client.clone();
                     let backoff_policy = metadata_client_options.backoff_policy.clone();
 
-                    let MetadataClientKind::Native { addresses } =
+                    let MetadataClientKind::Replicated { addresses } =
                         config.common.metadata_client.kind.clone()
                     else {
                         anyhow::bail!(
                             "Detected a possible misconfiguration of the cluster. The \
-                        cluster runs a replicated metadata server but not the native metadata \
+                        cluster runs a replicated metadata server but not the replicated metadata \
                         client. If you don't want to run a metadata server, then remove the \
                         metadata-server role. If you want to run the replicated metadata server, \
                         then configure metadata-client.type = \"replicated\""
@@ -641,7 +641,7 @@ pub async fn create_client(
     let backoff_policy = Some(metadata_client_options.backoff_policy.clone());
 
     let client = match metadata_client_options.kind.clone() {
-        config::MetadataClientKind::Native { addresses } => create_replicated_metadata_client(
+        config::MetadataClientKind::Replicated { addresses } => create_replicated_metadata_client(
             addresses,
             backoff_policy,
             Arc::new(metadata_client_options),

@@ -116,7 +116,7 @@ pub async fn create_metadata_store_client(
                 .iter_role(Role::MetadataServer)
                 .map(|(_, node)| node.address.clone())
                 .collect();
-            restate_types::config::MetadataClientKind::Native { addresses }
+            restate_types::config::MetadataClientKind::Replicated { addresses }
         }
         RemoteServiceType::Etcd => restate_types::config::MetadataClientKind::Etcd {
             addresses: opts.etcd.clone(),

@@ -134,7 +134,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     )?;
 
     let metadata_client_options = MetadataClientOptions {
-        kind: MetadataClientKind::Native {
+        kind: MetadataClientKind::Replicated {
             addresses: vec![advertised_address],
         },
         ..Default::default()
