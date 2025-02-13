@@ -34,7 +34,7 @@ pub struct PutValueOpts {
     doc: FileOrStdin,
 
     /// Expected version for conditional update
-    #[arg(short = 'e', long)]
+    #[arg(long)]
     version: Option<u32>,
 
     /// Preview the change without applying it

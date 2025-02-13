@@ -44,7 +44,7 @@ pub struct PatchValueOpts {
     pub patch: String,
 
     /// Expected version for conditional update
-    #[arg(short = 'e', long)]
+    #[arg(long)]
     pub version: Option<u32>,
 
     /// Preview the change without applying it
