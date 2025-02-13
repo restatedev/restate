@@ -181,7 +181,7 @@ async fn send_with_delay_and_idempotency_key() {
             completion_retention_duration: Some(retention),
             // Doesn't matter the execution time here, just needs to be filled
             execution_time,
-            source: Source::Ingress(request_id_1),
+            source: Source::Ingress,
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -211,7 +211,7 @@ async fn send_with_delay_and_idempotency_key() {
             completion_retention_duration: Some(retention),
             // Needs to be different from the original one!
             execution_time: execution_time.map(|m| m + Duration::from_secs(10)),
-            source: Source::Ingress(request_id_2),
+            source: Source::Ingress,
             ..ServiceInvocation::mock()
         }))
         .await;

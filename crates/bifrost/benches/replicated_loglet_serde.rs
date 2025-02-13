@@ -65,7 +65,7 @@ pub fn generate_envelope() -> Arc<Envelope> {
     let idempotency_key: ByteString = rand_string(15).into();
 
     let request_id = PartitionProcessorRpcRequestId::new();
-    let inv_source = restate_types::invocation::Source::Ingress(request_id);
+    let inv_source = restate_types::invocation::Source::Ingress;
     let handler: ByteString = format!("aFunction_{}", rand_string(10)).into();
 
     let header = restate_wal_protocol::Header {

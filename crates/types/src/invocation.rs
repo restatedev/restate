@@ -528,7 +528,7 @@ impl ServiceInvocationResponseSink {
 /// Source of an invocation
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
-    Ingress(PartitionProcessorRpcRequestId),
+    Ingress,
     Subscription(SubscriptionId),
     Service(InvocationId, InvocationTarget),
     /// Internal calls for the non-deterministic built-in services
@@ -536,8 +536,9 @@ pub enum Source {
 }
 
 impl Source {
-    pub fn ingress(request_id: PartitionProcessorRpcRequestId) -> Self {
-        Self::Ingress(request_id)
+    pub fn ingress(_request_id: PartitionProcessorRpcRequestId) -> Self {
+        // TODO(slinkydeveloper) propagate the rpc request id!
+        Self::Ingress
     }
 }
 

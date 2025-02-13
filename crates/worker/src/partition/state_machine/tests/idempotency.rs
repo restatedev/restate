@@ -270,7 +270,7 @@ async fn complete_already_completed_invocation(
         &InvocationStatus::Completed(CompletedInvocation {
             invocation_target: invocation_target.clone(),
             span_context: ServiceInvocationSpanContext::default(),
-            source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
+            source: Source::Ingress,
             idempotency_key: Some(idempotency_key.clone()),
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(response_bytes.clone()),
@@ -436,7 +436,7 @@ async fn attach_with_send_service_invocation(
             }),
             idempotency_key: Some(idempotency_key.clone()),
             completion_retention_duration: Some(retention),
-            source: Source::Ingress(request_id_1),
+            source: Source::Ingress,
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -458,7 +458,7 @@ async fn attach_with_send_service_invocation(
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 request_id: request_id_2,
             }),
-            source: Source::Ingress(request_id_2),
+            source: Source::Ingress,
             ..ServiceInvocation::mock()
         }))
         .await;

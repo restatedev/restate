@@ -616,7 +616,6 @@ pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
 #[cfg(any(test, feature = "test-util"))]
 mod test_util {
     use super::*;
-    use restate_types::identifiers::PartitionProcessorRpcRequestId;
 
     use restate_types::invocation::VirtualObjectHandlerType;
 
@@ -633,7 +632,7 @@ mod test_util {
                 pinned_deployment: None,
                 response_sinks: HashSet::new(),
                 timestamps: StatusTimestamps::now(),
-                source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                source: Source::Ingress,
                 completion_retention_duration: Duration::ZERO,
                 idempotency_key: None,
             }
@@ -654,7 +653,7 @@ mod test_util {
                     VirtualObjectHandlerType::Exclusive,
                 ),
                 span_context: ServiceInvocationSpanContext::default(),
-                source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                source: Source::Ingress,
                 idempotency_key: None,
                 timestamps,
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
@@ -671,7 +670,7 @@ mod test_util {
                     VirtualObjectHandlerType::Exclusive,
                 ),
                 span_context: ServiceInvocationSpanContext::default(),
-                source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                source: Source::Ingress,
                 idempotency_key: None,
                 timestamps: StatusTimestamps::now(),
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),

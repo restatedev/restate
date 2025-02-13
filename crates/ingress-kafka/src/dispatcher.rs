@@ -13,9 +13,7 @@ use bytes::Bytes;
 use restate_bifrost::Bifrost;
 use restate_core::{my_node_id, Metadata};
 use restate_storage_api::deduplication_table::DedupInformation;
-use restate_types::identifiers::{
-    partitioner, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
-};
+use restate_types::identifiers::{partitioner, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, SpanRelation, VirtualObjectHandlerType,
     WorkflowHandlerType,
@@ -130,7 +128,7 @@ impl KafkaIngressEvent {
             if experimental_feature_kafka_ingress_next {
                 restate_types::invocation::Source::Subscription(subscription.id())
             } else {
-                restate_types::invocation::Source::Ingress(PartitionProcessorRpcRequestId::new())
+                restate_types::invocation::Source::Ingress
             },
         );
         service_invocation.with_related_span(related_span);

@@ -1614,11 +1614,7 @@ pub mod v1 {
                     .source
                     .ok_or(ConversionError::missing_field("source"))?
                 {
-                    source::Source::Ingress(ingress) => restate_types::invocation::Source::Ingress(
-                        PartitionProcessorRpcRequestId::from_slice(&ingress.rpc_id)
-                            // TODO this should become an hard error in Restate 1.3
-                            .unwrap_or_default(),
-                    ),
+                    source::Source::Ingress(_) => restate_types::invocation::Source::Ingress,
                     source::Source::Subscription(subscription) => {
                         restate_types::invocation::Source::Subscription(
                             restate_types::identifiers::SubscriptionId::from_slice(
@@ -1649,10 +1645,8 @@ pub mod v1 {
         impl From<restate_types::invocation::Source> for Source {
             fn from(value: restate_types::invocation::Source) -> Self {
                 let source = match value {
-                    restate_types::invocation::Source::Ingress(rpc_id) => {
-                        source::Source::Ingress(source::Ingress {
-                            rpc_id: rpc_id.to_bytes().to_vec().into(),
-                        })
+                    restate_types::invocation::Source::Ingress => {
+                        source::Source::Ingress(source::Ingress {})
                     }
                     restate_types::invocation::Source::Subscription(sub_id) => {
                         source::Source::Subscription(source::Subscription {

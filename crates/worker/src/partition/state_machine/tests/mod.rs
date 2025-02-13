@@ -849,7 +849,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
             invocation_id,
             invocation_target: invocation_target.clone(),
             argument: Default::default(),
-            source: Source::Ingress(request_id_1),
+            source: Source::Ingress,
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),
@@ -1118,7 +1118,7 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
         si.invocation_id = invocation_id;
         si.response_sink = Some(ServiceInvocationResponseSink::Ingress { request_id });
         si.submit_notification_sink = Some(SubmitNotificationSink::Ingress { request_id });
-        si.source = Source::Ingress(request_id);
+        si.source = Source::Ingress;
         si
     };
     let actions = test_env

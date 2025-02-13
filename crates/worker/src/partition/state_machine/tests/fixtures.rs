@@ -17,9 +17,7 @@ use restate_invoker_api::InvokeInputJournal;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{
-    DeploymentId, InvocationId, PartitionProcessorRpcRequestId, ServiceId,
-};
+use restate_types::identifiers::{DeploymentId, InvocationId, ServiceId};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext, Source,
 };
@@ -120,7 +118,7 @@ pub async fn mock_start_invocation_with_invocation_target(
             invocation_id,
             invocation_target: invocation_target.clone(),
             argument: Default::default(),
-            source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
+            source: Source::Ingress,
             response_sink: None,
             span_context: Default::default(),
             headers: vec![],

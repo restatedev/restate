@@ -94,7 +94,6 @@ message JournalMeta {
 
 message Source {
   message Ingress {
-    bytes rpc_id = 1;
   }
 
   message Service {

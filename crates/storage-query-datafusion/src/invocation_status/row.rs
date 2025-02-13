@@ -141,7 +141,7 @@ fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, output: &mut String,
                 row.invoked_by_target(format_using(output, &invocation_target));
             }
         }
-        Source::Ingress(_) => {
+        Source::Ingress => {
             row.invoked_by("ingress");
         }
         Source::Internal => {
