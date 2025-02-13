@@ -431,6 +431,15 @@ impl RocksDb {
                     .export_column_family(&data_cf_handle, export_dir.as_path())
                     .map_err(RocksError::Other)?;
 
+                if metadata.get_files().is_empty() {
+                    error!(
+                        "Refusing to create an empty snapshot! RocksDB column family export \
+                        returned an empty set of files. The export is retained at: {}",
+                        export_dir.display()
+                    );
+                    return Err(RocksError::SnapshotEmpty);
+                }
+
                 Ok(metadata)
             })
             .build()
