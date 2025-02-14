@@ -51,15 +51,15 @@ fn put_virtual_object_status<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
     status: &VirtualObjectStatus,
-) {
+) -> Result<()> {
     let key = ServiceStatusKey::default()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
     if *status == VirtualObjectStatus::Unlocked {
-        storage.delete_key(&key);
+        storage.delete_key(&key)
     } else {
-        storage.put_kv(key, status);
+        storage.put_kv(key, status)
     }
 }
 
@@ -81,24 +81,29 @@ fn get_virtual_object_status<S: StorageAccess>(
 fn all_virtual_object_status<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send + '_ {
-    let iter = storage.iterator_from(FullScanPartitionKeyRange::<ServiceStatusKey>(range));
-    stream::iter(OwnedIterator::new(iter).map(|(mut key, mut value)| {
-        let state_key = ServiceStatusKey::deserialize_from(&mut key)?;
-        let state_value = VirtualObjectStatus::decode(&mut value)?;
+) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send + '_> {
+    let iter = storage.iterator_from(FullScanPartitionKeyRange::<ServiceStatusKey>(range))?;
+    Ok(stream::iter(OwnedIterator::new(iter).map(
+        |(mut key, mut value)| {
+            let state_key = ServiceStatusKey::deserialize_from(&mut key)?;
+            let state_value = VirtualObjectStatus::decode(&mut value)?;
 
-        let (partition_key, service_name, service_key) = state_key.into_inner_ok_or()?;
+            let (partition_key, service_name, service_key) = state_key.into_inner_ok_or()?;
 
-        Ok((
-            ServiceId::from_parts(partition_key, service_name, service_key),
-            state_value,
-        ))
-    }))
+            Ok((
+                ServiceId::from_parts(partition_key, service_name, service_key),
+                state_value,
+            ))
+        },
+    )))
 }
 
-fn delete_virtual_object_status<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) {
+fn delete_virtual_object_status<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+) -> Result<()> {
     let key = write_status_key(service_id);
-    storage.delete_key(&key);
+    storage.delete_key(&key)
 }
 
 impl ReadOnlyVirtualObjectStatusTable for PartitionStore {
@@ -106,14 +111,14 @@ impl ReadOnlyVirtualObjectStatusTable for PartitionStore {
         &mut self,
         service_id: &ServiceId,
     ) -> Result<VirtualObjectStatus> {
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(service_id)?;
         get_virtual_object_status(self, service_id)
     }
 
     fn all_virtual_object_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send {
+    ) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send> {
         all_virtual_object_status(self, range)
     }
 }
@@ -123,14 +128,14 @@ impl ReadOnlyVirtualObjectStatusTable for PartitionStoreTransaction<'_> {
         &mut self,
         service_id: &ServiceId,
     ) -> Result<VirtualObjectStatus> {
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(service_id)?;
         get_virtual_object_status(self, service_id)
     }
 
     fn all_virtual_object_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send {
+    ) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send> {
         all_virtual_object_status(self, range)
     }
 }
@@ -140,13 +145,13 @@ impl VirtualObjectStatusTable for PartitionStoreTransaction<'_> {
         &mut self,
         service_id: &ServiceId,
         status: &VirtualObjectStatus,
-    ) {
-        self.assert_partition_key(service_id);
+    ) -> Result<()> {
+        self.assert_partition_key(service_id)?;
         put_virtual_object_status(self, service_id, status)
     }
 
-    async fn delete_virtual_object_status(&mut self, service_id: &ServiceId) {
-        self.assert_partition_key(service_id);
+    async fn delete_virtual_object_status(&mut self, service_id: &ServiceId) -> Result<()> {
+        self.assert_partition_key(service_id)?;
         delete_virtual_object_status(self, service_id)
     }
 }

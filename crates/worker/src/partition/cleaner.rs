@@ -110,7 +110,7 @@ where
     ) -> anyhow::Result<()> {
         debug!("Executing completed invocations cleanup");
 
-        let invocations_stream = storage.all_invocation_statuses(partition_key_range);
+        let invocations_stream = storage.all_invocation_statuses(partition_key_range)?;
         tokio::pin!(invocations_stream);
 
         while let Some((invocation_id, invocation_status)) = invocations_stream
@@ -173,6 +173,7 @@ mod tests {
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
         InvokedOrKilledInvocationStatusLite,
     };
+    use restate_storage_api::StorageError;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
     use restate_types::partition_table::{FindPartition, PartitionTable};
     use restate_types::Version;
@@ -194,19 +195,23 @@ mod tests {
 
         fn all_invoked_or_killed_invocations(
             &mut self,
-        ) -> impl Stream<Item = restate_storage_api::Result<InvokedOrKilledInvocationStatusLite>> + Send
-        {
+        ) -> std::result::Result<
+            impl Stream<Item = restate_storage_api::Result<InvokedOrKilledInvocationStatusLite>> + Send,
+            StorageError,
+        > {
             todo!();
             #[allow(unreachable_code)]
-            stream::empty()
+            Ok(stream::empty())
         }
 
         fn all_invocation_statuses(
             &self,
             _: RangeInclusive<PartitionKey>,
-        ) -> impl Stream<Item = restate_storage_api::Result<(InvocationId, InvocationStatus)>> + Send
-        {
-            stream::iter(self.0.clone()).map(Ok)
+        ) -> std::result::Result<
+            impl Stream<Item = restate_storage_api::Result<(InvocationId, InvocationStatus)>> + Send,
+            StorageError,
+        > {
+            Ok(stream::iter(self.0.clone()).map(Ok))
         }
     }
 

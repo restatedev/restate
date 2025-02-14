@@ -111,7 +111,7 @@ async fn populate_sleep_journal<T: JournalTable>(txn: &mut T) {
 }
 
 async fn get_entire_sleep_journal<T: JournalTable>(txn: &mut T) {
-    let mut journal = pin!(txn.get_journal(MOCK_INVOCATION_ID_1, 10));
+    let mut journal = pin!(txn.get_journal(MOCK_INVOCATION_ID_1, 10).unwrap());
     for _ in 0..5 {
         let entry = journal.next().await.unwrap().unwrap().1;
         assert_eq!(entry.ty(), EntryType::Command(CommandType::Sleep));
@@ -152,7 +152,7 @@ async fn check_sleep_notification_index<T: JournalTable>(txn: &mut T) {
 }
 
 async fn get_subset_of_a_journal<T: JournalTable>(txn: &mut T) {
-    let mut journal = pin!(txn.get_journal(MOCK_INVOCATION_ID_1, 2));
+    let mut journal = pin!(txn.get_journal(MOCK_INVOCATION_ID_1, 2).unwrap());
     let mut count = 0;
     while (journal.next().await).is_some() {
         count += 1;
@@ -258,7 +258,7 @@ async fn test_call_journal() {
     .unwrap();
 
     // Verify the journal is correct
-    let mut journal = txn.get_journal(MOCK_INVOCATION_ID_1, 2);
+    let mut journal = txn.get_journal(MOCK_INVOCATION_ID_1, 2).unwrap();
 
     // First entry is call
     let entry = journal.next().await.unwrap().unwrap().1;
@@ -321,7 +321,7 @@ async fn test_event() {
     .unwrap();
 
     // Verify the event is correct
-    let mut journal = txn.get_journal(MOCK_INVOCATION_ID_1, 1);
+    let mut journal = txn.get_journal(MOCK_INVOCATION_ID_1, 1).unwrap();
     let entry = journal.next().await.unwrap().unwrap().1;
     assert_eq!(entry.inner.try_as_event().unwrap(), event);
 

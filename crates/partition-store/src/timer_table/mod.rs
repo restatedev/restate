@@ -142,15 +142,19 @@ fn add_timer<S: StorageAccess>(
     partition_id: PartitionId,
     key: &TimerKey,
     timer: &Timer,
-) {
+) -> Result<()> {
     let key = write_timer_key(partition_id, key);
 
-    storage.put_kv(key, timer);
+    storage.put_kv(key, timer)
 }
 
-fn delete_timer<S: StorageAccess>(storage: &mut S, partition_id: PartitionId, key: &TimerKey) {
+fn delete_timer<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    key: &TimerKey,
+) -> Result<()> {
     let key = write_timer_key(partition_id, key);
-    storage.delete_key(&key);
+    storage.delete_key(&key)
 }
 
 fn next_timers_greater_than<S: StorageAccess>(
@@ -158,7 +162,7 @@ fn next_timers_greater_than<S: StorageAccess>(
     partition_id: PartitionId,
     exclusive_start: Option<&TimerKey>,
     limit: usize,
-) -> Vec<Result<(TimerKey, Timer)>> {
+) -> Result<Vec<Result<(TimerKey, Timer)>>> {
     let _x = RocksDbPerfGuard::new("get-next-timers");
     let scan = exclusive_start_key_range(partition_id, exclusive_start);
     let mut produced = 0;
@@ -173,11 +177,11 @@ fn next_timers_greater_than<S: StorageAccess>(
 }
 
 impl TimerTable for PartitionStore {
-    async fn put_timer(&mut self, key: &TimerKey, timer: &Timer) {
+    async fn put_timer(&mut self, key: &TimerKey, timer: &Timer) -> Result<()> {
         add_timer(self, self.partition_id(), key, timer)
     }
 
-    async fn delete_timer(&mut self, key: &TimerKey) {
+    async fn delete_timer(&mut self, key: &TimerKey) -> Result<()> {
         delete_timer(self, self.partition_id(), key)
     }
 
@@ -185,22 +189,22 @@ impl TimerTable for PartitionStore {
         &mut self,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
-    ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send {
-        stream::iter(next_timers_greater_than(
+    ) -> Result<impl Stream<Item = Result<(TimerKey, Timer)>> + Send> {
+        Ok(stream::iter(next_timers_greater_than(
             self,
             self.partition_id(),
             exclusive_start,
             limit,
-        ))
+        )?))
     }
 }
 
 impl TimerTable for PartitionStoreTransaction<'_> {
-    async fn put_timer(&mut self, key: &TimerKey, timer: &Timer) {
+    async fn put_timer(&mut self, key: &TimerKey, timer: &Timer) -> Result<()> {
         add_timer(self, self.partition_id(), key, timer)
     }
 
-    async fn delete_timer(&mut self, key: &TimerKey) {
+    async fn delete_timer(&mut self, key: &TimerKey) -> Result<()> {
         delete_timer(self, self.partition_id(), key)
     }
 
@@ -208,13 +212,13 @@ impl TimerTable for PartitionStoreTransaction<'_> {
         &mut self,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
-    ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send {
-        stream::iter(next_timers_greater_than(
+    ) -> Result<impl Stream<Item = Result<(TimerKey, Timer)>> + Send> {
+        Ok(stream::iter(next_timers_greater_than(
             self,
             self.partition_id(),
             exclusive_start,
             limit,
-        ))
+        )?))
     }
 }
 

@@ -80,7 +80,8 @@ where
                         state: uncompleted_promise_state,
                     },
                 )
-                .await;
+                .await
+                .map_err(Error::Storage)?;
         } else {
             warn!(
                 "Trying to process entry {} for a target that has no promises",

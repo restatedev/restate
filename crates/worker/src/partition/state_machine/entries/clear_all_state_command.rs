@@ -78,9 +78,11 @@ mod tests {
         // Fill with some state the service K/V store
         let mut txn = test_env.storage.transaction();
         txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")
-            .await;
+            .await
+            .unwrap();
         txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")
-            .await;
+            .await
+            .unwrap();
         txn.commit().await.unwrap();
 
         let invocation_id =
@@ -100,6 +102,7 @@ mod tests {
         let states: Vec<restate_storage_api::Result<(Bytes, Bytes)>> = test_env
             .storage
             .get_all_user_states_for_service(&service_id)
+            .unwrap()
             .collect()
             .await;
         assert_that!(states, empty());

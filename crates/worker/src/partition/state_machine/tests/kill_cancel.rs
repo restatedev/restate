@@ -215,23 +215,23 @@ async fn kill_call_tree(
         1,
         &fixtures::incomplete_invoke_entry(call_invocation_id),
     )
-    .await;
+    .await?;
     tx.put_journal_entry(
         &invocation_id,
         2,
         &fixtures::background_invoke_entry(background_call_invocation_id),
     )
-    .await;
+    .await?;
     tx.put_journal_entry(
         &invocation_id,
         3,
         &fixtures::completed_invoke_entry(finished_call_invocation_id),
     )
-    .await;
+    .await?;
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await?;
     invocation_status.get_journal_metadata_mut().unwrap().length = 4;
     tx.put_invocation_status(&invocation_id, &invocation_status)
-        .await;
+        .await?;
     tx.commit().await?;
 
     // Now let's send the termination command
@@ -358,6 +358,7 @@ async fn kill_call_tree(
         test_env
             .storage
             .get_journal(&invocation_id, 4)
+            .unwrap()
             .try_collect::<Vec<_>>()
             .await?,
         empty()
@@ -416,14 +417,14 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
         .unwrap();
     for (idx, entry) in journal.into_iter().enumerate() {
         tx.put_journal_entry(&invocation_id, (idx + 1) as u32, &entry)
-            .await;
+            .await?;
     }
     // Update journal length
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await?;
     invocation_status.get_journal_metadata_mut().unwrap().length =
         (journal_length + 1) as EntryIndex;
     tx.put_invocation_status(&invocation_id, &invocation_status)
-        .await;
+        .await?;
     // Add timer
     tx.put_timer(
         &TimerKey {
@@ -435,7 +436,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
         },
         &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
     )
-    .await;
+    .await?;
     tx.commit().await?;
 
     let actions = test_env
@@ -458,6 +459,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
         test_env
             .storage
             .next_timers_greater_than(None, usize::MAX)
+            .unwrap()
             .try_collect::<Vec<_>>()
             .await?,
         empty()
@@ -538,7 +540,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         .unwrap();
     for (idx, entry) in journal.into_iter().enumerate() {
         tx.put_journal_entry(&invocation_id, (idx + 1) as u32, &entry)
-            .await;
+            .await?;
     }
     // Update journal length and suspend invocation
     let invocation_status = tx.get_invocation_status(&invocation_id).await?;
@@ -559,7 +561,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
             ]),
         },
     )
-    .await;
+    .await?;
     // Add timer
     tx.put_timer(
         &TimerKey {
@@ -571,7 +573,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         },
         &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
     )
-    .await;
+    .await?;
     tx.commit().await?;
 
     let actions = test_env
@@ -594,6 +596,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         test_env
             .storage
             .next_timers_greater_than(None, usize::MAX)
+            .unwrap()
             .try_collect::<Vec<_>>()
             .await?,
         empty()
@@ -648,17 +651,20 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
         1,
         &fixtures::background_invoke_entry(callee_1),
     )
-    .await;
+    .await
+    .unwrap();
     tx.put_journal_entry(
         &invocation_id,
         2,
         &fixtures::incomplete_invoke_entry(callee_2),
     )
-    .await;
+    .await
+    .unwrap();
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await.unwrap();
     invocation_status.get_journal_metadata_mut().unwrap().length = 3;
     tx.put_invocation_status(&invocation_id, &invocation_status)
-        .await;
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     // Now create cancel invocation entry

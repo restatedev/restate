@@ -51,7 +51,8 @@ where
 
             ctx.storage
                 .put_user_state(&service_id, self.entry.key, self.entry.value)
-                .await;
+                .await
+                .map_err(Error::Storage)?;
         } else {
             warn!(
                 "Trying to process entry {} for a target that has no state",

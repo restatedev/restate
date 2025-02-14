@@ -114,7 +114,7 @@ pub trait ReadOnlyPromiseTable {
     fn all_promises(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<OwnedPromiseRow>> + Send;
+    ) -> Result<impl Stream<Item = Result<OwnedPromiseRow>> + Send>;
 }
 
 pub trait PromiseTable: ReadOnlyPromiseTable {
@@ -123,7 +123,10 @@ pub trait PromiseTable: ReadOnlyPromiseTable {
         service_id: &ServiceId,
         key: &ByteString,
         promise: &Promise,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 
-    fn delete_all_promises(&mut self, service_id: &ServiceId) -> impl Future<Output = ()> + Send;
+    fn delete_all_promises(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = Result<()>> + Send;
 }

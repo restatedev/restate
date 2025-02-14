@@ -28,12 +28,12 @@ pub trait ReadOnlyJournalTable {
         &mut self,
         invocation_id: InvocationId,
         length: EntryIndex,
-    ) -> impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send;
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send>;
 
     fn all_journals(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send;
+    ) -> Result<impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send>;
 
     fn get_notifications_index(
         &mut self,

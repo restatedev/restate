@@ -33,7 +33,8 @@ async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {
             ProducerId::Partition(PartitionId::from(j)),
             &DedupSequenceNumber::Sn(0),
         )
-        .await;
+        .await
+        .unwrap();
     }
     txn.commit().await.unwrap();
 }

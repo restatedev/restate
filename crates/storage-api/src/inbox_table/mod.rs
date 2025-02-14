@@ -87,12 +87,12 @@ pub trait ReadOnlyInboxTable {
     fn inbox(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send;
+    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send>;
 
     fn all_inboxes(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send;
+    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send>;
 }
 
 pub trait InboxTable: ReadOnlyPromiseTable {
@@ -100,13 +100,13 @@ pub trait InboxTable: ReadOnlyPromiseTable {
         &mut self,
         sequence_number: MessageIndex,
         inbox_entry: &InboxEntry,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn delete_inbox_entry(
         &mut self,
         service_id: &ServiceId,
         sequence_number: u64,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn pop_inbox(
         &mut self,

@@ -19,6 +19,7 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use futures::{Stream, StreamExt};
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use restate_storage_api::StorageError;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 
 use crate::table_providers::ScanPartition;
@@ -30,7 +31,7 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     fn scan_partition_store(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send;
+    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>;
 
     fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item);
 }
@@ -77,7 +78,8 @@ where
                 DataFusionError::External(err.into())
             })?;
 
-            let rows = S::scan_partition_store(&partition_store, range);
+            let rows = S::scan_partition_store(&partition_store, range)
+                .map_err(|e| DataFusionError::External(e.into()))?;
             let mut builder = S::Builder::new(projection.clone());
             let mut temp = String::new();
 

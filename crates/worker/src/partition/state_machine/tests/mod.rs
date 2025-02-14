@@ -187,6 +187,7 @@ impl TestEnv {
             invocation_id,
             journal_length,
         )
+        .expect("storage to be working") // TODO: propagate errors
         .try_collect::<Vec<_>>()
         .await
         .unwrap_or_else(|_| panic!("can read journal {invocation_id} of length {journal_length}"))
@@ -229,7 +230,7 @@ async fn shared_invocation_skips_inbox() -> TestResult {
         &invocation_target.as_keyed_service_id().unwrap(),
         &VirtualObjectStatus::Locked(InvocationId::mock_random()),
     )
-    .await;
+    .await?;
     tx.commit().await.unwrap();
 
     // Start the invocation
@@ -521,6 +522,7 @@ async fn mutate_state() -> anyhow::Result<()> {
         test_env
             .storage
             .get_all_user_states_for_service(&keyed_service_id)
+            .unwrap()
             .count()
             .await,
         0
@@ -553,6 +555,7 @@ async fn mutate_state() -> anyhow::Result<()> {
     let all_states: HashMap<_, _> = test_env
         .storage
         .get_all_user_states_for_service(&keyed_service_id)
+        .unwrap()
         .try_collect()
         .await?;
 
@@ -570,9 +573,9 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
     // Fill with some state the service K/V store
     let mut txn = test_env.storage.transaction();
     txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")
-        .await;
+        .await?;
     txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")
-        .await;
+        .await?;
     txn.commit().await.unwrap();
 
     let invocation_id =
@@ -591,6 +594,7 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
     let states: Vec<restate_storage_api::Result<(Bytes, Bytes)>> = test_env
         .storage
         .get_all_user_states_for_service(&service_id)
+        .unwrap()
         .collect()
         .await;
     assert_that!(states, empty());
@@ -608,8 +612,8 @@ async fn get_state_keys() -> TestResult {
 
     // Mock some state
     let mut txn = test_env.storage.transaction();
-    txn.put_user_state(&service_id, b"key1", b"value1").await;
-    txn.put_user_state(&service_id, b"key2", b"value2").await;
+    txn.put_user_state(&service_id, b"key1", b"value1").await?;
+    txn.put_user_state(&service_id, b"key2", b"value2").await?;
     txn.commit().await.unwrap();
 
     let actions = test_env
@@ -652,13 +656,16 @@ async fn get_invocation_id_entry() {
     // Add call and one way call journal entry
     let mut tx = test_env.storage.transaction();
     tx.put_journal_entry(&invocation_id, 1, &background_invoke_entry(callee_1))
-        .await;
+        .await
+        .unwrap();
     tx.put_journal_entry(&invocation_id, 2, &incomplete_invoke_entry(callee_2))
-        .await;
+        .await
+        .unwrap();
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await.unwrap();
     invocation_status.get_journal_metadata_mut().unwrap().length = 3;
     tx.put_invocation_status(&invocation_id, &invocation_status)
-        .await;
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let actions = test_env
@@ -883,7 +890,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         },
     );
     txn.put_invocation_status(&invocation_id, &invocation_status)
-        .await;
+        .await?;
     txn.commit().await.unwrap();
 
     // Now let's send the output entry
@@ -1044,6 +1051,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         test_env
             .storage
             .inbox(&keyed_service_id)
+            .unwrap()
             .try_collect::<Vec<_>>()
             .await,
         ok(contains(matchers::storage::invocation_inbox_entry(
@@ -1091,6 +1099,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         test_env
             .storage
             .inbox(&keyed_service_id)
+            .unwrap()
             .try_collect::<Vec<_>>()
             .await,
         ok(empty())

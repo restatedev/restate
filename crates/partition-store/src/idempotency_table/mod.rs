@@ -67,40 +67,47 @@ fn get_idempotency_metadata<S: StorageAccess>(
 fn all_idempotency_metadata<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + '_ {
+) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + '_> {
     let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<IdempotencyKey>(
         range,
-    ));
-    stream::iter(OwnedIterator::new(iter).map(|(mut k, mut v)| {
-        let key = IdempotencyKey::deserialize_from(&mut k)?;
-        let idempotency_metadata = IdempotencyMetadata::decode(&mut v)?;
+    ))?;
+    Ok(stream::iter(OwnedIterator::new(iter).map(
+        |(mut k, mut v)| {
+            let key = IdempotencyKey::deserialize_from(&mut k)?;
+            let idempotency_metadata = IdempotencyMetadata::decode(&mut v)?;
 
-        Ok((
-            IdempotencyId::new(
-                key.service_name_ok_or()?.clone(),
-                key.service_key
-                    .clone()
-                    .map(|b| ByteString::try_from(b).map_err(|e| StorageError::Generic(e.into())))
-                    .transpose()?,
-                key.service_handler_ok_or()?.clone(),
-                key.idempotency_key_ok_or()?.clone(),
-            ),
-            idempotency_metadata,
-        ))
-    }))
+            Ok((
+                IdempotencyId::new(
+                    key.service_name_ok_or()?.clone(),
+                    key.service_key
+                        .clone()
+                        .map(|b| {
+                            ByteString::try_from(b).map_err(|e| StorageError::Generic(e.into()))
+                        })
+                        .transpose()?,
+                    key.service_handler_ok_or()?.clone(),
+                    key.idempotency_key_ok_or()?.clone(),
+                ),
+                idempotency_metadata,
+            ))
+        },
+    )))
 }
 
 fn put_idempotency_metadata<S: StorageAccess>(
     storage: &mut S,
     idempotency_id: &IdempotencyId,
     metadata: &IdempotencyMetadata,
-) {
-    storage.put_kv(create_key(idempotency_id), metadata);
+) -> Result<()> {
+    storage.put_kv(create_key(idempotency_id), metadata)
 }
 
-fn delete_idempotency_metadata<S: StorageAccess>(storage: &mut S, idempotency_id: &IdempotencyId) {
+fn delete_idempotency_metadata<S: StorageAccess>(
+    storage: &mut S,
+    idempotency_id: &IdempotencyId,
+) -> Result<()> {
     let key = create_key(idempotency_id);
-    storage.delete_key(&key);
+    storage.delete_key(&key)
 }
 
 impl ReadOnlyIdempotencyTable for PartitionStore {
@@ -108,14 +115,14 @@ impl ReadOnlyIdempotencyTable for PartitionStore {
         &mut self,
         idempotency_id: &IdempotencyId,
     ) -> Result<Option<IdempotencyMetadata>> {
-        self.assert_partition_key(idempotency_id);
+        self.assert_partition_key(idempotency_id)?;
         get_idempotency_metadata(self, idempotency_id)
     }
 
     fn all_idempotency_metadata(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send {
+    ) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send> {
         all_idempotency_metadata(self, range)
     }
 }
@@ -125,14 +132,14 @@ impl ReadOnlyIdempotencyTable for PartitionStoreTransaction<'_> {
         &mut self,
         idempotency_id: &IdempotencyId,
     ) -> Result<Option<IdempotencyMetadata>> {
-        self.assert_partition_key(idempotency_id);
+        self.assert_partition_key(idempotency_id)?;
         get_idempotency_metadata(self, idempotency_id)
     }
 
     fn all_idempotency_metadata(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send {
+    ) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send> {
         all_idempotency_metadata(self, range)
     }
 }
@@ -142,13 +149,13 @@ impl IdempotencyTable for PartitionStoreTransaction<'_> {
         &mut self,
         idempotency_id: &IdempotencyId,
         metadata: &IdempotencyMetadata,
-    ) {
-        self.assert_partition_key(idempotency_id);
+    ) -> Result<()> {
+        self.assert_partition_key(idempotency_id)?;
         put_idempotency_metadata(self, idempotency_id, metadata)
     }
 
-    async fn delete_idempotency_metadata(&mut self, idempotency_id: &IdempotencyId) {
-        self.assert_partition_key(idempotency_id);
+    async fn delete_idempotency_metadata(&mut self, idempotency_id: &IdempotencyId) -> Result<()> {
+        self.assert_partition_key(idempotency_id)?;
         delete_idempotency_metadata(self, idempotency_id)
     }
 }

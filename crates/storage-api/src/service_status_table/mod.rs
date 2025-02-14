@@ -30,7 +30,7 @@ pub trait ReadOnlyVirtualObjectStatusTable {
     fn all_virtual_object_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send;
+    ) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send>;
 }
 
 pub trait VirtualObjectStatusTable: ReadOnlyVirtualObjectStatusTable {
@@ -38,10 +38,10 @@ pub trait VirtualObjectStatusTable: ReadOnlyVirtualObjectStatusTable {
         &mut self,
         service_id: &ServiceId,
         status: &VirtualObjectStatus,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn delete_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 }

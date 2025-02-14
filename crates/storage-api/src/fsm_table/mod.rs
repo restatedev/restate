@@ -22,13 +22,15 @@ pub trait ReadOnlyFsmTable {
 }
 
 pub trait FsmTable: ReadOnlyFsmTable {
-    fn put_applied_lsn(&mut self, lsn: Lsn) -> impl Future<Output = ()> + Send;
+    fn put_applied_lsn(&mut self, lsn: Lsn) -> impl Future<Output = Result<()>> + Send;
 
-    fn put_inbox_seq_number(&mut self, seq_number: MessageIndex)
-        -> impl Future<Output = ()> + Send;
+    fn put_inbox_seq_number(
+        &mut self,
+        seq_number: MessageIndex,
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn put_outbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 }

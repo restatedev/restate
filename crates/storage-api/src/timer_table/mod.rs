@@ -250,14 +250,17 @@ impl WithPartitionKey for Timer {
 }
 
 pub trait TimerTable {
-    fn put_timer(&mut self, timer_key: &TimerKey, timer: &Timer)
-        -> impl Future<Output = ()> + Send;
+    fn put_timer(
+        &mut self,
+        timer_key: &TimerKey,
+        timer: &Timer,
+    ) -> impl Future<Output = Result<()>> + Send;
 
-    fn delete_timer(&mut self, timer_key: &TimerKey) -> impl Future<Output = ()> + Send;
+    fn delete_timer(&mut self, timer_key: &TimerKey) -> impl Future<Output = Result<()>> + Send;
 
     fn next_timers_greater_than(
         &mut self,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
-    ) -> impl Stream<Item = Result<(TimerKey, Timer)>> + Send;
+    ) -> Result<impl Stream<Item = Result<(TimerKey, Timer)>> + Send>;
 }

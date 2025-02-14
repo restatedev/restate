@@ -32,13 +32,15 @@ async fn get_inbox() {
         0,
         &InboxEntry::Invocation(service_id.clone(), invocation_id_1),
     )
-    .await;
+    .await
+    .unwrap();
     let invocation_id_2 = InvocationId::mock_generate(&invocation_target);
     tx.put_inbox_entry(
         1,
         &InboxEntry::Invocation(service_id.clone(), invocation_id_2),
     )
-    .await;
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let records = engine

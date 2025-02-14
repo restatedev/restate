@@ -58,19 +58,24 @@ const MOCK_INVOCATION_ID_1: InvocationId =
 
 async fn populate_data<T: JournalTable>(txn: &mut T) {
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 0, &MOCK_SLEEP_JOURNAL_ENTRY)
-        .await;
+        .await
+        .unwrap();
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 1, &MOCK_SLEEP_JOURNAL_ENTRY)
-        .await;
+        .await
+        .unwrap();
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 2, &MOCK_SLEEP_JOURNAL_ENTRY)
-        .await;
+        .await
+        .unwrap();
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 3, &MOCK_SLEEP_JOURNAL_ENTRY)
-        .await;
+        .await
+        .unwrap();
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 4, &MOCK_INVOKE_JOURNAL_ENTRY)
-        .await;
+        .await
+        .unwrap();
 }
 
 async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
-    let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 5));
+    let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 5).unwrap());
     let mut count = 0;
     while (journal.next().await).is_some() {
         count += 1;
@@ -80,7 +85,7 @@ async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
 }
 
 async fn get_subset_of_a_journal<T: JournalTable>(txn: &mut T) {
-    let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 2));
+    let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 2).unwrap());
     let mut count = 0;
     while (journal.next().await).is_some() {
         count += 1;
@@ -117,7 +122,7 @@ async fn point_lookups<T: JournalTable>(txn: &mut T) {
 }
 
 async fn delete_journal<T: JournalTable>(txn: &mut T) {
-    txn.delete_journal(&MOCK_INVOCATION_ID_1, 5).await;
+    txn.delete_journal(&MOCK_INVOCATION_ID_1, 5).await.unwrap();
 }
 
 async fn verify_journal_deleted<T: JournalTable>(txn: &mut T) {

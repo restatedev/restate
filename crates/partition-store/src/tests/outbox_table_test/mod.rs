@@ -20,7 +20,9 @@ fn mock_outbox_message() -> OutboxMessage {
 
 pub(crate) async fn populate_data<T: OutboxTable>(txn: &mut T, initial: Vec<u64>) {
     for seq_no in initial {
-        txn.put_outbox_message(seq_no, &mock_outbox_message()).await;
+        txn.put_outbox_message(seq_no, &mock_outbox_message())
+            .await
+            .unwrap();
     }
 }
 
@@ -48,7 +50,8 @@ pub(crate) async fn consume_messages_and_truncate_range<T: OutboxTable>(
     }
 
     txn.truncate_outbox(*expected.first().unwrap()..=*expected.last().unwrap())
-        .await;
+        .await
+        .unwrap();
 }
 
 pub(crate) async fn verify_outbox_is_empty_after_truncation<T: OutboxTable>(txn: &mut T) {

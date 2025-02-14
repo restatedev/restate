@@ -94,7 +94,7 @@ fn put_journal_entry<S: StorageAccess>(
                 .invocation_uuid(invocation_id.invocation_uuid())
                 .notification_id(notification.id()),
             &JournalEntryIndex(journal_index),
-        );
+        )?;
     } else if let RawEntryInner::Command(_) = &journal_entry.inner {
         for completion_id in related_completion_ids {
             storage.put_kv(
@@ -103,16 +103,14 @@ fn put_journal_entry<S: StorageAccess>(
                     .invocation_uuid(invocation_id.invocation_uuid())
                     .completion_id(*completion_id),
                 &JournalEntryIndex(journal_index),
-            );
+            )?;
         }
     }
 
     storage.put_kv(
         write_journal_entry_key(invocation_id, journal_index),
         &StoredEntry(journal_entry.clone()),
-    );
-
-    Ok(())
+    )
 }
 
 fn get_journal_entry<S: StorageAccess>(
@@ -129,7 +127,7 @@ fn get_journal<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journal_length: EntryIndex,
-) -> Vec<Result<(EntryIndex, RawEntry)>> {
+) -> Result<Vec<Result<(EntryIndex, RawEntry)>>> {
     let _x = RocksDbPerfGuard::new("get-journal");
     let key = JournalKey::default()
         .partition_key(invocation_id.partition_key())
@@ -162,23 +160,25 @@ fn get_journal<S: StorageAccess>(
 fn all_journals<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send + '_ {
-    let iter = storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range));
-    stream::iter(OwnedIterator::new(iter).map(|(mut key, mut value)| {
-        let journal_key = JournalKey::deserialize_from(&mut key)?;
-        let journal_entry =
-            StoredEntry::decode(&mut value).map_err(|err| StorageError::Conversion(err.into()))?;
+) -> Result<impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send + '_> {
+    let iter = storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range))?;
+    Ok(stream::iter(OwnedIterator::new(iter).map(
+        |(mut key, mut value)| {
+            let journal_key = JournalKey::deserialize_from(&mut key)?;
+            let journal_entry = StoredEntry::decode(&mut value)
+                .map_err(|err| StorageError::Conversion(err.into()))?;
 
-        let (partition_key, invocation_uuid, entry_index) = journal_key.into_inner_ok_or()?;
+            let (partition_key, invocation_uuid, entry_index) = journal_key.into_inner_ok_or()?;
 
-        Ok((
-            JournalEntryId::from_parts(
-                InvocationId::from_parts(partition_key, invocation_uuid),
-                entry_index,
-            ),
-            journal_entry.0,
-        ))
-    }))
+            Ok((
+                JournalEntryId::from_parts(
+                    InvocationId::from_parts(partition_key, invocation_uuid),
+                    entry_index,
+                ),
+                journal_entry.0,
+            ))
+        },
+    )))
 }
 
 fn delete_journal<S: StorageAccess>(
@@ -191,7 +191,7 @@ fn delete_journal<S: StorageAccess>(
     let k = &mut key;
     for journal_index in 0..journal_length {
         k.journal_index = Some(journal_index);
-        storage.delete_key(k);
+        storage.delete_key(k)?;
     }
 
     // Delete the indexes
@@ -204,7 +204,7 @@ fn delete_journal<S: StorageAccess>(
             invocation_id.partition_key(),
             notification_id_to_notification_index.clone(),
         ),
-    ))
+    )?)
     .map(|(mut key, _)| {
         let journal_key = JournalNotificationIdToNotificationIndexKey::deserialize_from(&mut key)?;
         let (_, _, notification_id) = journal_key.into_inner_ok_or()?;
@@ -216,7 +216,7 @@ fn delete_journal<S: StorageAccess>(
             &notification_id_to_notification_index
                 .clone()
                 .notification_id(notification_id),
-        );
+        )?;
     }
 
     let completion_id_to_command_index = JournalCompletionIdToCommandIndexKey::default()
@@ -226,7 +226,7 @@ fn delete_journal<S: StorageAccess>(
         OwnedIterator::new(storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
             invocation_id.partition_key(),
             notification_id_to_notification_index.clone(),
-        )))
+        ))?)
         .map(|(mut key, _)| {
             let journal_key = JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key)?;
             let (_, _, completion_id) = journal_key.into_inner_ok_or()?;
@@ -238,7 +238,7 @@ fn delete_journal<S: StorageAccess>(
             &completion_id_to_command_index
                 .clone()
                 .completion_id(notification_id),
-        );
+        )?;
     }
 
     Ok(())
@@ -254,7 +254,7 @@ fn get_notifications_index<S: StorageAccess>(
     let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
         invocation_id.partition_key(),
         key,
-    ));
+    ))?;
     OwnedIterator::new(iter)
         .map(|(mut key, mut value)| {
             let journal_key =
@@ -309,7 +309,7 @@ impl ReadOnlyJournalTable for PartitionStore {
         invocation_id: InvocationId,
         journal_index: u32,
     ) -> Result<Option<RawEntry>> {
-        self.assert_partition_key(&invocation_id);
+        self.assert_partition_key(&invocation_id)?;
         let _x = RocksDbPerfGuard::new("get-journal-entry");
         get_journal_entry(self, &invocation_id, journal_index)
     }
@@ -318,15 +318,19 @@ impl ReadOnlyJournalTable for PartitionStore {
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-    ) -> impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send {
-        self.assert_partition_key(&invocation_id);
-        stream::iter(get_journal(self, &invocation_id, journal_length))
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send> {
+        self.assert_partition_key(&invocation_id)?;
+        Ok(stream::iter(get_journal(
+            self,
+            &invocation_id,
+            journal_length,
+        )?))
     }
 
     fn all_journals(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send {
+    ) -> Result<impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send> {
         all_journals(self, range)
     }
 
@@ -352,7 +356,7 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
         invocation_id: InvocationId,
         journal_index: u32,
     ) -> Result<Option<RawEntry>> {
-        self.assert_partition_key(&invocation_id);
+        self.assert_partition_key(&invocation_id)?;
         let _x = RocksDbPerfGuard::new("get-journal-entry");
         get_journal_entry(self, &invocation_id, journal_index)
     }
@@ -361,15 +365,19 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-    ) -> impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send {
-        self.assert_partition_key(&invocation_id);
-        stream::iter(get_journal(self, &invocation_id, journal_length))
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send> {
+        self.assert_partition_key(&invocation_id)?;
+        Ok(stream::iter(get_journal(
+            self,
+            &invocation_id,
+            journal_length,
+        )?))
     }
 
     fn all_journals(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send {
+    ) -> Result<impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send> {
         all_journals(self, range)
     }
 
@@ -397,7 +405,7 @@ impl JournalTable for PartitionStoreTransaction<'_> {
         entry: &RawEntry,
         related_completion_ids: &[CompletionId],
     ) -> Result<()> {
-        self.assert_partition_key(&invocation_id);
+        self.assert_partition_key(&invocation_id)?;
         put_journal_entry(self, &invocation_id, index, entry, related_completion_ids)
     }
 
@@ -406,7 +414,7 @@ impl JournalTable for PartitionStoreTransaction<'_> {
         invocation_id: InvocationId,
         journal_length: EntryIndex,
     ) -> Result<()> {
-        self.assert_partition_key(&invocation_id);
+        self.assert_partition_key(&invocation_id)?;
         let _x = RocksDbPerfGuard::new("delete-journal");
         delete_journal(self, &invocation_id, journal_length)
     }

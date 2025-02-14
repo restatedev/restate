@@ -59,7 +59,8 @@ where
                 &self.invocation_id,
                 &InvocationStatus::Invoked(in_flight_invocation_metadata),
             )
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         Ok(())
     }

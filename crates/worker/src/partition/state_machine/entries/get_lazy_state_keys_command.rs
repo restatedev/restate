@@ -34,7 +34,7 @@ where
         let state_keys =
             if let Some(service_id) = invocation_metadata.invocation_target.as_keyed_service_id() {
                 ctx.storage
-                    .get_all_user_states_for_service(&service_id)
+                    .get_all_user_states_for_service(&service_id)?
                     .map(|res| {
                         let key_bytes = res?.0;
                         let key_string = String::from_utf8(key_bytes.to_vec())
@@ -82,8 +82,12 @@ mod tests {
 
         // Mock some state
         let mut txn = test_env.storage.transaction();
-        txn.put_user_state(&service_id, b"key1", b"value1").await;
-        txn.put_user_state(&service_id, b"key2", b"value2").await;
+        txn.put_user_state(&service_id, b"key1", b"value1")
+            .await
+            .unwrap();
+        txn.put_user_state(&service_id, b"key2", b"value2")
+            .await
+            .unwrap();
         txn.commit().await.unwrap();
 
         let completion_id = 1;

@@ -341,12 +341,14 @@ async fn purge_completed_workflow(#[case] experimental_features: EnumSet<Experim
             ..CompletedInvocation::mock_neo()
         }),
     )
-    .await;
+    .await
+    .unwrap();
     txn.put_virtual_object_status(
         &invocation_target.as_keyed_service_id().unwrap(),
         &VirtualObjectStatus::Locked(invocation_id),
     )
-    .await;
+    .await
+    .unwrap();
     txn.commit().await.unwrap();
 
     // Send timer fired command

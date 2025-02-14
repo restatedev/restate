@@ -43,21 +43,24 @@ async fn test_idempotency_key() {
             invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_1),
         },
     )
-    .await;
+    .await
+    .unwrap();
     txn.put_idempotency_metadata(
         &IDEMPOTENCY_ID_2,
         &IdempotencyMetadata {
             invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_2),
         },
     )
-    .await;
+    .await
+    .unwrap();
     txn.put_idempotency_metadata(
         &IDEMPOTENCY_ID_3,
         &IdempotencyMetadata {
             invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_3),
         },
     )
-    .await;
+    .await
+    .unwrap();
     txn.commit().await.unwrap();
 
     // Query
@@ -103,7 +106,9 @@ async fn test_idempotency_key() {
 
     // Delete and query afterwards
     let mut txn = rocksdb.transaction();
-    txn.delete_idempotency_metadata(&IDEMPOTENCY_ID_1).await;
+    txn.delete_idempotency_metadata(&IDEMPOTENCY_ID_1)
+        .await
+        .unwrap();
     txn.commit().await.unwrap();
     assert_eq!(
         rocksdb

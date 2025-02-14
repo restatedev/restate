@@ -57,18 +57,18 @@ async fn populate_data<T: InboxTable>(table: &mut T) {
     {
         table
             .put_inbox_entry(*inbox_sequence_number, inbox_entry)
-            .await;
+            .await
+            .expect("storage to work");
     }
 }
 
 async fn find_the_next_message_in_an_inbox<T: InboxTable + ReadOnlyInboxTable>(table: &mut T) {
     let result = table.peek_inbox(INBOX_ENTRIES[0].service_id()).await;
-
     assert_eq!(result.unwrap(), Some(INBOX_ENTRIES[0].clone()));
 }
 
 async fn get_svc_inbox<T: InboxTable + ReadOnlyInboxTable>(table: &mut T) {
-    let stream = table.inbox(INBOX_ENTRIES[0].service_id());
+    let stream = table.inbox(INBOX_ENTRIES[0].service_id()).unwrap();
 
     let vec = vec![
         INBOX_ENTRIES[0].clone(),
@@ -82,7 +82,8 @@ async fn get_svc_inbox<T: InboxTable + ReadOnlyInboxTable>(table: &mut T) {
 async fn delete_entry<T: InboxTable + ReadOnlyInboxTable>(table: &mut T) {
     table
         .delete_inbox_entry(INBOX_ENTRIES[0].service_id(), 7)
-        .await;
+        .await
+        .expect("storage to work");
 }
 
 async fn peek_after_delete<T: InboxTable + ReadOnlyInboxTable>(table: &mut T) {
