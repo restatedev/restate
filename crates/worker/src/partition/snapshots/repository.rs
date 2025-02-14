@@ -620,10 +620,7 @@ async fn create_object_store_client(
             }
 
             None => {
-                let default_region = DefaultRegionChain::builder()
-                    .build()
-                    .region()
-                    .await;
+                let default_region = DefaultRegionChain::builder().build().region().await;
 
                 let region = options
                     .aws_region
