@@ -11,6 +11,7 @@
 mod digest;
 mod digest_util;
 mod info;
+mod storage_state;
 
 use cling::prelude::*;
 
@@ -20,4 +21,8 @@ pub enum ReplicatedLoglet {
     Digest(digest::DigestOpts),
     /// View loglet info
     Info(info::InfoOpts),
+    /// View log-server(s) state
+    ListServers(storage_state::ListServersOpts),
+    /// [dangerous] low-level unprotected log-server's storage-state manipulation
+    SetStorageState(storage_state::SetOpts),
 }
