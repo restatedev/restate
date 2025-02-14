@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use restate_core::worker_api::SnapshotError;
 use restate_partition_store::snapshots::{
@@ -42,9 +42,10 @@ impl SnapshotPartitionTask {
 
         result
             .inspect(|metadata| {
-                debug!(
+                info!(
                     archived_lsn = %metadata.min_applied_lsn,
-                    "Partition snapshot created"
+                    snapshot_id = %metadata.snapshot_id,
+                    "Created partition snapshot"
                 );
             })
             .inspect_err(|err| {

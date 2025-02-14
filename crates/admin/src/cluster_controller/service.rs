@@ -10,7 +10,6 @@
 
 mod state;
 
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -711,47 +710,33 @@ impl SealAndExtendTask {
             .ok_or_else(|| anyhow::anyhow!("Unknown log id"))?
             .tail();
 
-        let (loglet_id, previous_params) = match segment.config.kind {
-            #[cfg(any(test, feature = "memory-loglet"))]
-            ProviderKind::InMemory => {
-                let loglet_id =
-                    LogletId::from_str(&segment.config.params).context("Invalid loglet id")?;
-                (loglet_id, None)
-            }
-            ProviderKind::Local => {
-                let loglet_id =
-                    LogletId::from_str(&segment.config.params).context("Invalid loglet id")?;
-                (loglet_id, None)
-            }
-            #[cfg(feature = "replicated-loglet")]
-            ProviderKind::Replicated => {
-                let replicated_loglet_params =
-                    ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
-                        .context("Invalid replicated loglet params")?;
+        let next_loglet_id = LogletId::new(self.log_id, segment.index().next());
+        let previous_params = if matches!(segment.config.kind, ProviderKind::Replicated) {
+            let replicated_loglet_params =
+                ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
+                    .context("Invalid replicated loglet params")?;
 
-                (
-                    replicated_loglet_params.loglet_id,
-                    Some(replicated_loglet_params),
-                )
-            }
+            Some(replicated_loglet_params)
+        } else {
+            None
         };
 
         let (provider, params) = match &logs.configuration().default_provider {
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderConfiguration::InMemory => (
                 ProviderKind::InMemory,
-                u64::from(loglet_id.next()).to_string().into(),
+                u64::from(next_loglet_id).to_string().into(),
             ),
             ProviderConfiguration::Local => (
                 ProviderKind::Local,
-                u64::from(loglet_id.next()).to_string().into(),
+                u64::from(next_loglet_id).to_string().into(),
             ),
             #[cfg(feature = "replicated-loglet")]
             ProviderConfiguration::Replicated(config) => {
                 let loglet_params = logs_controller::build_new_replicated_loglet_configuration(
                     self.log_id,
                     config,
-                    loglet_id.next(),
+                    next_loglet_id,
                     &Metadata::with_current(|m| m.nodes_config_ref()),
                     &self.observed_cluster_state,
                     previous_params.as_ref(),
