@@ -336,13 +336,14 @@ impl Versioned for NodesConfiguration {
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum StorageState {
+    // [authoritative]
     /// The node is not expected to be a member in any write set and the node will self-provision
     /// its log-store to `ReadWrite` once it's written its own storage marker on disk.
     ///
     /// The node can never transition back to `Provisioning` once it has transitioned out of it.
     ///
-    /// [authoritative]
     /// or all intents and purposes, this is equivalent to a `ReadOnly` state, except that it's
     /// excluded from nodeset generation. The difference
     /// between this and `ReadOnly` is that if a node is in Provisioning state, we are confident
@@ -356,7 +357,7 @@ pub enum StorageState {
     /// can write to: yes - but excluded from new nodesets. If you see it in a nodeset, try writing to it.
     #[default]
     Provisioning,
-    /// [authoritative empty]
+    // [authoritative empty]
     /// Node's storage is not expected to be accessed in reads nor write. The node is not
     /// considered as part of the replicated log cluster. Node can be safely decommissioned.
     ///
@@ -365,25 +366,28 @@ pub enum StorageState {
     /// should read from: no
     /// can write to: no
     Disabled,
-    /// [authoritative]
+    // [authoritative]
     /// Node is not picked in new write sets, but it may still accept writes on existing nodeset
     /// and it's included in critical metadata updates (seal, release, etc.)
+    ///
     /// should read from: yes
     /// can write to: yes
     /// **should write to: no**
     /// **excluded from new nodesets**
     ReadOnly,
-    /// [authoritative]
+    // [authoritative]
     /// Can be picked up in new write sets and accepts writes in existing write sets.
     ///
     /// should read from: yes
     /// can write to: yes
     ReadWrite,
-    /// **[non-authoritative]**
+    // **[non-authoritative]**
     /// Node detected that some/all of its local storage has been deleted and it cannot be used
-    /// as authoritative source for quorum-dependent queries. Some data might have permanently been
-    /// lost. It behaves like ReadOnly in spread selectors, but participates unauthoritatively in
-    /// f-majority checks. This node can transition back to ReadWrite if it has been repaired.
+    /// as authoritative source for quorum-dependent queries.
+    ///
+    /// Some data might have permanently been lost. It behaves like ReadOnly in spread selectors,
+    /// but participates unauthoritatively in f-majority checks. This node can transition back to
+    /// ReadWrite if it has been repaired.
     ///
     /// should read from: yes (non-quorum reads)
     /// can write to: no

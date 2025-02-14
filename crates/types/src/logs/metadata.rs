@@ -113,6 +113,10 @@ impl LookupIndex {
     ) -> Option<&LogletRef<ReplicatedLogletParams>> {
         self.replicated_loglets.get(loglet_id)
     }
+
+    fn iter(&self) -> impl Iterator<Item = (&LogletId, &LogletRef<ReplicatedLogletParams>)> {
+        self.replicated_loglets.iter()
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Default, serde::Serialize, serde::Deserialize)]
@@ -584,6 +588,18 @@ impl Logs {
         loglet_id: &LogletId,
     ) -> Option<&LogletRef<ReplicatedLogletParams>> {
         self.lookup_index.get_replicated_loglet(loglet_id)
+    }
+
+    pub fn iter_writeable(&self) -> impl Iterator<Item = (&LogId, Segment<'_>)> {
+        self.logs
+            .iter()
+            .map(|(log_id, chain)| (log_id, chain.tail()))
+    }
+
+    pub fn iter_replicated_loglets(
+        &self,
+    ) -> impl Iterator<Item = (&LogletId, &LogletRef<ReplicatedLogletParams>)> {
+        self.lookup_index.iter()
     }
 }
 
