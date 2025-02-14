@@ -17,7 +17,7 @@ use anyhow::{anyhow, bail, Context};
 use async_trait::async_trait;
 use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_config::default_provider::region::DefaultRegionChain;
-use aws_config::BehaviorVersion;
+use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::provider::ProvideCredentials;
 use bytes::BytesMut;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
@@ -583,15 +583,22 @@ async fn create_object_store_client(
                     .load()
                     .await;
 
-                let region = DefaultRegionChain::builder()
+                let default_region = DefaultRegionChain::builder()
                     .profile_name(profile)
                     .build()
                     .region()
-                    .await
-                    .context("Unable to determine region from profile")?;
+                    .await;
+
+                let region = options
+                    .aws_region
+                    .as_ref()
+                    .map(String::clone)
+                    .map(Region::new)
+                    .or_else(|| default_region)
+                    .context("Unable to determine AWS region")?;
 
                 debug!(?region, ?profile, "Using AWS SDK credentials provider");
-                let creds = DefaultCredentialsChain::builder()
+                let credentials_provider = DefaultCredentialsChain::builder()
                     .profile_name(profile)
                     .region(region.clone())
                     .build()
@@ -599,30 +606,39 @@ async fn create_object_store_client(
 
                 let builder = AmazonS3Builder::new()
                     .with_credentials(Arc::new(AwsSdkCredentialsProvider {
-                        credentials_provider: creds,
+                        credentials_provider,
                     }))
                     .with_region(region.to_string());
 
                 if let Some(endpoint_url) = sdk_config.endpoint_url() {
                     debug!(endpoint_url, "Using custom AWS endpoint from profile");
+                    // we'll override this with the explicit endpoint URL from Restate config, if any, later on
                     builder.with_endpoint(endpoint_url)
                 } else {
                     builder
                 }
             }
+
             None => {
-                let sdk_config = aws_config::load_defaults(BehaviorVersion::v2024_03_28()).await;
-
-                let region = sdk_config
+                let default_region = DefaultRegionChain::builder()
+                    .build()
                     .region()
-                    .context("Unable to determine AWS region")?
-                    .to_string();
+                    .await;
 
-                let builder = AmazonS3Builder::new().with_region(region.clone());
+                let region = options
+                    .aws_region
+                    .as_ref()
+                    .map(String::clone)
+                    .map(Region::new)
+                    .or_else(|| default_region)
+                    .context("Unable to determine AWS region")?;
+
+                let builder = AmazonS3Builder::new().with_region(region.to_string());
                 if options.aws_access_key_id.is_none() {
                     debug!(?region, "Using AWS SDK credentials provider");
+                    let credentials_provider = DefaultCredentialsChain::builder().build().await;
                     builder.with_credentials(Arc::new(AwsSdkCredentialsProvider {
-                        credentials_provider: DefaultCredentialsChain::builder().build().await,
+                        credentials_provider,
                     }))
                 } else {
                     builder
@@ -676,6 +692,7 @@ async fn create_object_store_client(
 
         Arc::new(builder.build()?)
     } else {
+        // Since we only compile object_store with AWS support, the only other possibility is a file:// URL
         object_store::parse_url(&destination)?.0.into()
     };
     Ok(object_store)
