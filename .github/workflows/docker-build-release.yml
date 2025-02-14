@@ -1,0 +1,22 @@
+name: Push release Docker images
+
+on:
+  workflow_call:
+    inputs:
+      # comes from cargo-dist workflow call
+      plan:
+        required: true
+        type: string
+
+env:
+  PLAN: ${{ inputs.plan }}
+
+jobs:
+  build-server-docker-image:
+    name: Build server Docker image
+    uses: ./.github/workflows/docker.yml
+    secrets: inherit
+    with:
+      uploadImageAsTarball: docker-build-release
+      parca: true
+      buildIndividually: true

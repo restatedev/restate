@@ -12,16 +12,55 @@ env:
   PLAN: ${{ inputs.plan }}
 
 jobs:
-  build-docker-image:
+  push-server-docker-image:
     name: Build server Docker image
-    uses: ./.github/workflows/docker.yml
-    secrets: inherit
-    with:
-      pushToDockerHub: true
-      parca: true
-      buildIndividually: true
+    runs-on: warp-ubuntu-latest-x64-4x
+    env:
+      REPOSITORY_OWNER: ${{ github.repository_owner }}
+      GHCR_REGISTRY: "ghcr.io"
+      GHCR_REGISTRY_USERNAME: ${{ github.actor }}
+      GHCR_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE_NAME: "restate-cli"
+    steps:
+      # support importing oci-format restate.tar
+      - name: Set up Docker containerd snapshotter
+        uses: crazy-max/ghaction-setup-docker@v3
+        with:
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
 
-  docker-cli:
+      - name: Log into GitHub container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ env.GHCR_REGISTRY_USERNAME }}
+          password: ${{ env.GHCR_REGISTRY_TOKEN }}
+
+      - name: Log into DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Download restate snapshot from in-progress workflow
+        uses: actions/download-artifact@v4
+        with:
+          # the name is docker-build-release, but the extracted file will be 'restate.tar'
+          name: docker-build-release
+
+      - name: Push restate image
+        if: ${{ inputs.restateCommit != '' }}
+        run: |
+          for image in $(docker load --input restate.tar | awk '{print $3}')
+            do docker push $image
+          done
+
+  build-push-cli-docker-image:
     name: Push CLI Docker image
     runs-on: warp-ubuntu-latest-x64-4x
     env:

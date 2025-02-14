@@ -4,10 +4,10 @@ on:
   workflow_call:
     inputs:
       uploadImageAsTarball:
-        description: "uploads the Docker image additionally as a tarball"
+        description: "uploads the Docker image additionally as a tarball with the provided name"
         required: false
-        default: false
-        type: boolean
+        default: ""
+        type: string
       platforms:
         description: "platforms for docker build step"
         required: false
@@ -42,10 +42,10 @@ on:
   workflow_dispatch:
     inputs:
       uploadImageAsTarball:
-        description: "uploads the Docker image additionally as a tarball"
+        description: "uploads the Docker image additionally as a tarball with the provided name"
         required: false
-        default: false
-        type: boolean
+        default: ""
+        type: string
       platforms:
         description: "platforms for docker build step"
         required: false
@@ -166,7 +166,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build${{(inputs.uploadImageAsTarball != true || github.ref == 'refs/heads/main') && ' and push ' || ' '}}Docker image
+      - name: Build${{(inputs.uploadImageAsTarball == '' || github.ref == 'refs/heads/main') && ' and push ' || ' '}}Docker image
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -176,8 +176,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           # push if we aren't uploading as a tarball, or if this is main
           outputs: |
-            ${{ (inputs.uploadImageAsTarball != true || github.ref == 'refs/heads/main') && 'type=registry' || '' }}
-            ${{ inputs.uploadImageAsTarball == true && 'type=oci,dest=restate.tar' || '' }}
+            ${{ (inputs.uploadImageAsTarball == '' || github.ref == 'refs/heads/main') && 'type=registry' || '' }}
+            ${{ inputs.uploadImageAsTarball != '' && 'type=oci,dest=restate.tar' || '' }}
           labels: ${{ steps.meta.outputs.labels }}
           # on main, always push both platforms, otherwise use platform input
           platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
@@ -194,10 +194,10 @@ jobs:
           cache-to: ${{ (!inputs.debug && !inputs.parca) && 'type=gha,url=http://127.0.0.1:49160/,mode=max' || '' }}
 
       - name: Upload docker image tar as artifact
-        if: ${{ inputs.uploadImageAsTarball }}
+        if: ${{ inputs.uploadImageAsTarball != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: restate.tar
+          name: ${{ inputs.uploadImageAsTarball }}
           path: restate.tar
           retention-days: 1
           if-no-files-found: error
