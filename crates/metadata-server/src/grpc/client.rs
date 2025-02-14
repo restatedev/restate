@@ -317,7 +317,8 @@ struct NoKnownMetadataServer;
 fn map_status_to_read_error(address: AdvertisedAddress, status: Status) -> ReadError {
     match &status.code() {
         // Transport errors manifest as unknown statuses, hence mark them as retryable
-        Code::Unavailable | Code::Unknown => {
+        // Killing a remote server that is connected via UDS sometimes results into a cancelled statuses, hence mark them as retryable
+        Code::Unavailable | Code::Unknown | Code::Cancelled => {
             ReadError::retryable(StatusError::new(address, status))
         }
         _ => ReadError::terminal(StatusError::new(address, status)),
@@ -327,7 +328,8 @@ fn map_status_to_read_error(address: AdvertisedAddress, status: Status) -> ReadE
 fn map_status_to_write_error(address: AdvertisedAddress, status: Status) -> WriteError {
     match &status.code() {
         // Transport errors manifest as unknown statuses, hence mark them as retryable
-        Code::Unavailable | Code::Unknown => {
+        // Killing a remote server that is connected via UDS sometimes results into a cancelled statuses, hence mark them as retryable
+        Code::Unavailable | Code::Unknown | Code::Cancelled => {
             WriteError::retryable(StatusError::new(address, status))
         }
         Code::FailedPrecondition => {
@@ -340,7 +342,8 @@ fn map_status_to_write_error(address: AdvertisedAddress, status: Status) -> Writ
 fn map_status_to_provision_error(address: AdvertisedAddress, status: Status) -> ProvisionError {
     match &status.code() {
         // Transport errors manifest as unknown statuses, hence mark them as retryable
-        Code::Unavailable | Code::Unknown => {
+        // Killing a remote server that is connected via UDS sometimes results into a cancelled statuses, hence mark them as retryable
+        Code::Unavailable | Code::Unknown | Code::Cancelled => {
             ProvisionError::retryable(StatusError::new(address, status))
         }
         _ => ProvisionError::terminal(StatusError::new(address, status)),
