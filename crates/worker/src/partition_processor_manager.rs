@@ -433,10 +433,14 @@ impl PartitionProcessorManager {
                                 .remove(processor.as_ref().expect("must be some").key_range());
 
                             match result {
-                                Err(ProcessorError::TrimGapEncountered { gap_to_lsn: to_lsn }) => {
+                                Err(ProcessorError::TrimGapEncountered {
+                                    gap_to_lsn: to_lsn,
+                                    sequence_number,
+                                }) => {
                                     if self.snapshot_repository.is_some() {
                                         info!(
                                             trim_gap_to_lsn = ?to_lsn,
+                                            ?sequence_number,
                                             "Partition processor stopped due to a log trim gap, will attempt to fast-forward on restart",
                                         );
                                         self.fast_forward_on_startup.insert(partition_id, to_lsn);

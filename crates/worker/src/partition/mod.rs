@@ -251,7 +251,11 @@ pub struct PartitionProcessor<InvokerSender> {
 
 #[derive(Debug, derive_more::Display, thiserror::Error)]
 pub enum ProcessorError {
-    TrimGapEncountered { gap_to_lsn: Lsn },
+    #[display("{sequence_number}..{gap_to_lsn}")]
+    TrimGapEncountered {
+        gap_to_lsn: Lsn,
+        sequence_number: Lsn,
+    },
     Storage(#[from] StorageError),
     Decode(#[from] StorageDecodeError),
     Bifrost(#[from] restate_bifrost::Error),
@@ -280,9 +284,10 @@ where
                 match res.as_ref() {
                     // run_inner never returns normally
                     Ok(_) => warn!("Shutting partition processor down because it stopped unexpectedly."),
-                    Err(ProcessorError::TrimGapEncountered { gap_to_lsn }) =>
+                    Err(ProcessorError::TrimGapEncountered { gap_to_lsn, sequence_number }) =>
                         info!(
                             trim_gap_to_lsn = ?gap_to_lsn,
+                            ?sequence_number,
                             "Shutting partition processor down because it encountered a trim gap in the log."
                         ),
                     Err(err) => warn!("Shutting partition processor down because of error: {err}"),
@@ -386,6 +391,7 @@ where
                             gap_to_lsn: entry
                                 .trim_gap_to_sequence_number()
                                 .expect("trim gap has to-LSN"),
+                            sequence_number: entry.sequence_number(),
                         })
                     }
                 }
