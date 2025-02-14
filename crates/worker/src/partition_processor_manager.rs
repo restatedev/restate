@@ -781,6 +781,10 @@ impl PartitionProcessorManager {
     }
 
     fn trigger_periodic_partition_snapshots(&mut self) {
+        let Some(snapshot_repository) = self.snapshot_repository.clone() else {
+            return;
+        };
+
         let Some(records_per_snapshot) = self
             .updateable_config
             .live_load()
@@ -819,11 +823,7 @@ impl PartitionProcessorManager {
                 last_applied_lsn = %status.last_applied_log_lsn.unwrap_or(SequenceNumber::INVALID),
                 "Requesting partition snapshot",
             );
-            self.spawn_create_snapshot_task(
-                partition_id,
-                self.snapshot_repository.clone().expect("is some"), // validated on startup
-                None,
-            );
+            self.spawn_create_snapshot_task(partition_id, snapshot_repository.clone(), None);
         }
     }
 
