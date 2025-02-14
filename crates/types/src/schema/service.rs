@@ -136,7 +136,8 @@ pub enum HandlerMetadataType {
 impl From<InvocationTargetType> for Option<HandlerMetadataType> {
     fn from(value: InvocationTargetType) -> Self {
         match value {
-            InvocationTargetType::Service => None,
+            // TODO(slinkydeveloper) stop writing this field in 1.3, now we still have to write it for back-compat
+            InvocationTargetType::Service => Some(HandlerMetadataType::Shared),
             InvocationTargetType::VirtualObject(h_ty) => match h_ty {
                 VirtualObjectHandlerType::Exclusive => Some(HandlerMetadataType::Exclusive),
                 VirtualObjectHandlerType::Shared => Some(HandlerMetadataType::Shared),
