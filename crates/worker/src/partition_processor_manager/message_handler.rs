@@ -12,7 +12,7 @@ use restate_core::network::{Incoming, MessageHandler};
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{TaskCenter, TaskKind};
 use restate_types::net::partition_processor_manager::{
-    CreateSnapshotRequest, CreateSnapshotResponse, SnapshotError,
+    CreateSnapshotRequest, CreateSnapshotResponse, Snapshot, SnapshotError,
 };
 use tracing::warn;
 
@@ -46,7 +46,10 @@ impl MessageHandler for PartitionProcessorManagerMessageHandler {
 
                 match create_snapshot_result.as_ref() {
                     Ok(snapshot) => msg.to_rpc_response(CreateSnapshotResponse {
-                        result: Ok(snapshot.snapshot_id),
+                        result: Ok(Snapshot {
+                            snapshot_id: snapshot.snapshot_id,
+                            min_applied_lsn: snapshot.min_applied_lsn,
+                        }),
                     }),
                     Err(err) => msg.to_rpc_response(CreateSnapshotResponse {
                         result: Err(SnapshotError::SnapshotCreationFailed(err.to_string())),

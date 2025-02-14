@@ -45,11 +45,11 @@ use restate_core::{
 use restate_types::cluster::cluster_state::ClusterState;
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::health::HealthStatus;
-use restate_types::identifiers::{PartitionId, SnapshotId};
+use restate_types::identifiers::PartitionId;
 use restate_types::live::Live;
 use restate_types::logs::{LogId, LogletId, Lsn};
 use restate_types::net::metadata::MetadataKind;
-use restate_types::net::partition_processor_manager::CreateSnapshotRequest;
+use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, Version};
 
@@ -169,7 +169,7 @@ enum ClusterControllerCommand {
     },
     CreateSnapshot {
         partition_id: PartitionId,
-        response_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
+        response_tx: oneshot::Sender<anyhow::Result<Snapshot>>,
     },
     UpdateClusterConfiguration {
         partition_replication: PartitionReplication,
@@ -221,7 +221,7 @@ impl ClusterControllerHandle {
     pub async fn create_partition_snapshot(
         &self,
         partition_id: PartitionId,
-    ) -> Result<Result<SnapshotId, anyhow::Error>, ShutdownError> {
+    ) -> Result<Result<Snapshot, anyhow::Error>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         let _ = self
@@ -369,7 +369,7 @@ impl<T: TransportConnect> Service<T> {
     async fn create_partition_snapshot(
         &self,
         partition_id: PartitionId,
-        response_tx: oneshot::Sender<anyhow::Result<SnapshotId>>,
+        response_tx: oneshot::Sender<anyhow::Result<Snapshot>>,
     ) {
         let cluster_state = self.cluster_state_refresher.get_cluster_state();
 
@@ -649,7 +649,7 @@ where
         &mut self,
         node_id: GenerationalNodeId,
         partition_id: PartitionId,
-    ) -> anyhow::Result<SnapshotId> {
+    ) -> anyhow::Result<Snapshot> {
         // todo(pavel): make snapshot RPC timeout configurable, especially if this includes remote upload in the future
         let response = tokio::time::timeout(
             Duration::from_secs(90),

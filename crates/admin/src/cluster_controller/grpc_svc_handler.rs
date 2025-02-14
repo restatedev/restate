@@ -18,6 +18,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY};
+use restate_types::net::partition_processor_manager::Snapshot;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::cluster::ClusterConfiguration;
 use restate_types::storage::{StorageCodec, StorageEncode};
@@ -179,8 +180,12 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 info!("Failed creating partition snapshot: {err}");
                 Err(Status::internal(err.to_string()))
             }
-            Ok(snapshot_id) => Ok(Response::new(CreatePartitionSnapshotResponse {
+            Ok(Snapshot {
+                snapshot_id,
+                min_applied_lsn,
+            }) => Ok(Response::new(CreatePartitionSnapshotResponse {
                 snapshot_id: snapshot_id.to_string(),
+                min_applied_lsn: min_applied_lsn.as_u64(),
             })),
         }
     }
