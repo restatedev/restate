@@ -80,7 +80,7 @@ env:
 
 jobs:
   build-and-push-image:
-    runs-on: warp-ubuntu-latest-x64-16x
+    runs-on: ${{ (inputs.debug || inputs.parca) && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
     timeout-minutes: ${{ (inputs.debug || inputs.parca) && 140 || 70 }}
 
     steps:
@@ -190,7 +190,8 @@ jobs:
           secrets: |
             parca=${{ secrets.PARCA_TOKEN }}
           cache-from: type=gha,url=http://127.0.0.1:49160/
-          cache-to: type=gha,url=http://127.0.0.1:49160/,mode=max
+          # don't cache debug/parca builds, its just too big
+          cache-to: ${{ (inputs.debug || inputs.parca) && '' || 'type=gha,url=http://127.0.0.1:49160/,mode=max' }}
 
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball }}
