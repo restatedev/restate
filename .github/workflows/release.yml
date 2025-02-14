@@ -212,12 +212,22 @@ jobs:
       "packages": "read"
       "pull-requests": "write"
 
+  custom-docker-build-release:
+    needs:
+      - plan
+    if: ${{ needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload' }}
+    uses: ./.github/workflows/docker-build-release.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
     needs:
       - plan
       - build-local-artifacts
       - custom-ci
+      - custom-docker-build-release
     runs-on: "warp-ubuntu-latest-arm64-2x"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -264,6 +274,7 @@ jobs:
       - plan
       - build-local-artifacts
       - custom-ci
+      - custom-docker-build-release
     uses: ./.github/workflows/notarize.yml
     with:
       plan: ${{ needs.plan.outputs.val }}
@@ -274,10 +285,11 @@ jobs:
       - plan
       - build-local-artifacts
       - custom-ci
+      - custom-docker-build-release
       - build-global-artifacts
       - custom-notarize
     # Only run if we're "publishing", and only if local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.custom-notarize.result == 'skipped' || needs.custom-notarize.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.custom-ci.result == 'skipped' || needs.custom-ci.result == 'success') }}
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.custom-notarize.result == 'skipped' || needs.custom-notarize.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.custom-ci.result == 'skipped' || needs.custom-ci.result == 'success') && (needs.custom-docker-build-release.result == 'skipped' || needs.custom-docker-build-release.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "warp-ubuntu-latest-arm64-2x"
@@ -378,12 +390,12 @@ jobs:
       "id-token": "write"
       "packages": "write"
 
-  custom-docker-release:
+  custom-docker-push-release:
     needs:
       - plan
       - host
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
-    uses: ./.github/workflows/docker-release.yml
+    uses: ./.github/workflows/docker-push-release.yml
     with:
       plan: ${{ needs.plan.outputs.val }}
     secrets: inherit
@@ -425,13 +437,13 @@ jobs:
       - host
       - publish-npm
       - custom-homebrew
-      - custom-docker-release
+      - custom-docker-push-release
       - custom-npm
       - custom-release-notes
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && (needs.publish-npm.result == 'skipped' || needs.publish-npm.result == 'success') && (needs.custom-homebrew.result == 'skipped' || needs.custom-homebrew.result == 'success') && (needs.custom-docker-release.result == 'skipped' || needs.custom-docker-release.result == 'success') && (needs.custom-npm.result == 'skipped' || needs.custom-npm.result == 'success') && (needs.custom-release-notes.result == 'skipped' || needs.custom-release-notes.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.publish-npm.result == 'skipped' || needs.publish-npm.result == 'success') && (needs.custom-homebrew.result == 'skipped' || needs.custom-homebrew.result == 'success') && (needs.custom-docker-push-release.result == 'skipped' || needs.custom-docker-push-release.result == 'success') && (needs.custom-npm.result == 'skipped' || needs.custom-npm.result == 'success') && (needs.custom-release-notes.result == 'skipped' || needs.custom-release-notes.result == 'success') }}
     runs-on: "warp-ubuntu-latest-arm64-2x"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

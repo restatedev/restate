@@ -24,13 +24,13 @@ cache-builds = false
 publish-prereleases = true
 
 # ci goes here because we want it to start early, and we don't want to create a release unless it succeeds
-local-artifacts-jobs = ["./ci"]
+local-artifacts-jobs = ["./ci", "./docker-build-release"]
 # create release goes here because it needs to have happened before the host steps, which expect a draft release to already exist
 global-artifacts-jobs = ["./notarize"]
 # we still need to include the native 'npm' job as well as our './npm' one, because otherwise publish-prereleases=true is ignored. It will do nothing.
 # https://github.com/axodotdev/cargo-dist/issues/1744
-publish-jobs = ["./homebrew", "./docker-release", "./npm", "npm", "./release-notes"]
-# helm goes here because it shouldn't exist before docker-release happens
+publish-jobs = ["./homebrew", "./docker-push-release", "./npm", "npm", "./release-notes"]
+# helm goes here because it shouldn't exist before docker-push-release happens
 post-announce-jobs = ["./helm"]
 
 [dist.github-custom-job-permissions.ci]
