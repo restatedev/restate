@@ -33,6 +33,11 @@ on:
         required: false
         default: ""
         type: string
+      releaseBuild:
+        description: "prevent non-release features from being included in build"
+        required: false
+        default: false
+        type: boolean
       pushToDockerHub:
         description: "push image to DockerHub"
         required: false
@@ -166,6 +171,14 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
+      - name: Check for non-release features in release builds
+        if: ${{ inputs.releaseBuild }}
+        run: |
+           if [[ "${{ inputs.features }}" =~ "metadata-api" ]]; then
+             echo "Release builds should not contain non-release only features: ${{ inputs.features }}"
+             exit 1
+           fi
+
       - name: Build${{(inputs.uploadImageAsTarball != true || github.ref == 'refs/heads/main') && ' and push ' || ' '}}Docker image
         id: build
         uses: docker/build-push-action@v6
@@ -186,7 +199,7 @@ jobs:
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug || inputs.parca }}
             BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
             UPLOAD_DEBUGINFO=${{ inputs.parca }}
-            RESTATE_FEATURES=${{ inputs.features || '' }}
+            RESTATE_FEATURES=${{ inputs.features || releaseBuild && '' || 'metadata-api' }}
           secrets: |
             parca=${{ secrets.PARCA_TOKEN }}
           cache-from: type=gha,url=http://127.0.0.1:49160/
