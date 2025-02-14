@@ -45,6 +45,10 @@ actions = "read"
 packages = "read"
 contents = "read"
 
+[dist.github-custom-job-permissions.helm]
+packages = "write"
+contents = "read"
+
 [dist.github-custom-job-permissions.release-notes]
 contents = "write"
 
