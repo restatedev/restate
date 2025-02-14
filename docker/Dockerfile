@@ -46,9 +46,8 @@ RUN if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
     just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES chef-cook --release -p restate-cli -p restate-server -p restatectl; \
     fi
 COPY . .
-# Mount the sccache directory as a cache to leverage sccache during build
-# Caching layer if nothing has changed
-# Use sccache during the main build
+
+FROM builder AS upload-false
 RUN --mount=type=cache,target=/var/cache/sccache \
     if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
     just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-cli && \
@@ -62,10 +61,19 @@ RUN --mount=type=cache,target=/var/cache/sccache \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restatectl target/restatectl && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate target/restate
 
-FROM builder AS upload-false
-
 FROM builder AS upload-true
-RUN --mount=type=secret,id=parca \
+RUN --mount=type=secret,id=parca --mount=type=cache,target=/var/cache/sccache \
+    if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-cli && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-server && \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restatectl; \
+    else \
+    just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-cli -p restate-server -p restatectl; \
+    fi && \
+    just notice-file && \
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server && \
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restatectl target/restatectl && \
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate target/restate && \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --only-keep-debug target/restate-server target/restate-server.debug && \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --strip-debug target/restate-server && \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --strip-debug target/restatectl && \
@@ -79,10 +87,10 @@ FROM upload-$UPLOAD_DEBUGINFO AS upload
 FROM debian:bookworm-slim AS runtime
 # useful for health checks
 RUN apt-get update && apt-get install --no-install-recommends -y curl && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /restate/NOTICE /NOTICE
-COPY --from=builder /restate/LICENSE /LICENSE
+COPY --from=upload /restate/NOTICE /NOTICE
+COPY --from=upload /restate/LICENSE /LICENSE
 # copy OS roots
-COPY --from=builder /etc/ssl /etc/ssl
+COPY --from=upload /etc/ssl /etc/ssl
 COPY --from=upload /restate/target/restate-server /usr/local/bin
 COPY --from=upload /restate/target/restatectl /usr/local/bin
 COPY --from=upload /restate/target/restate /usr/local/bin
