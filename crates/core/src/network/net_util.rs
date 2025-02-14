@@ -12,6 +12,7 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use http::Uri;
@@ -30,7 +31,7 @@ use restate_types::net::{AdvertisedAddress, BindAddress};
 
 use crate::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
 
-pub fn create_tonic_channel<T: CommonClientConnectionOptions>(
+pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
     address: AdvertisedAddress,
     options: &T,
 ) -> Channel {
@@ -57,7 +58,10 @@ pub fn create_tonic_channel<T: CommonClientConnectionOptions>(
     }
 }
 
-fn apply_options<T: CommonClientConnectionOptions>(endpoint: Endpoint, options: &T) -> Endpoint {
+fn apply_options<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
+    endpoint: Endpoint,
+    options: &T,
+) -> Endpoint {
     if let Some(request_timeout) = options.request_timeout() {
         endpoint.timeout(request_timeout)
     } else {
@@ -268,6 +272,53 @@ pub trait CommonClientConnectionOptions {
     fn keep_alive_interval(&self) -> Duration;
     fn keep_alive_timeout(&self) -> Duration;
     fn http2_adaptive_window(&self) -> bool;
+}
+
+impl<T: CommonClientConnectionOptions> CommonClientConnectionOptions for &T {
+    fn connect_timeout(&self) -> Duration {
+        (*self).connect_timeout()
+    }
+
+    fn request_timeout(&self) -> Option<Duration> {
+        (*self).request_timeout()
+    }
+
+    fn keep_alive_interval(&self) -> Duration {
+        (*self).keep_alive_interval()
+    }
+
+    fn keep_alive_timeout(&self) -> Duration {
+        (*self).keep_alive_timeout()
+    }
+
+    fn http2_adaptive_window(&self) -> bool {
+        (*self).http2_adaptive_window()
+    }
+}
+
+impl<T> CommonClientConnectionOptions for Arc<T>
+where
+    T: CommonClientConnectionOptions,
+{
+    fn connect_timeout(&self) -> Duration {
+        (**self).connect_timeout()
+    }
+
+    fn request_timeout(&self) -> Option<Duration> {
+        (**self).request_timeout()
+    }
+
+    fn keep_alive_interval(&self) -> Duration {
+        (**self).keep_alive_interval()
+    }
+
+    fn keep_alive_timeout(&self) -> Duration {
+        (**self).keep_alive_timeout()
+    }
+
+    fn http2_adaptive_window(&self) -> bool {
+        (**self).http2_adaptive_window()
+    }
 }
 
 impl CommonClientConnectionOptions for NetworkingOptions {

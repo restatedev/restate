@@ -55,7 +55,7 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
         .collect();
 
     let metadata_store_client_options = MetadataClientOptions {
-        kind: MetadataClientKind::Native { addresses },
+        kind: MetadataClientKind::Replicated { addresses },
         ..MetadataClientOptions::default()
     };
     let client = create_client(metadata_store_client_options)
@@ -151,7 +151,7 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
         .collect();
 
     let metadata_store_client_options = MetadataClientOptions {
-        kind: MetadataClientKind::Native { addresses },
+        kind: MetadataClientKind::Replicated { addresses },
         ..MetadataClientOptions::default()
     };
     let client = create_client(metadata_store_client_options)

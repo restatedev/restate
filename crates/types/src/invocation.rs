@@ -15,7 +15,10 @@ use crate::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, PartitionKey, PartitionProcessorRpcRequestId,
     ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
 };
+use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 use crate::time::MillisSinceEpoch;
+use crate::GenerationalNodeId;
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
@@ -27,7 +30,6 @@ use std::str::FromStr;
 use std::time::Duration;
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
-use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 pub use opentelemetry::trace::TraceId;
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -350,6 +352,10 @@ impl WithInvocationId for InvocationRequest {
 
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    from = "serde_hacks::ServiceInvocation",
+    into = "serde_hacks::ServiceInvocation"
+)]
 pub struct ServiceInvocation {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
@@ -371,6 +377,10 @@ pub struct ServiceInvocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    from = "serde_hacks::SubmitNotificationSink",
+    into = "serde_hacks::SubmitNotificationSink"
+)]
 pub enum SubmitNotificationSink {
     Ingress {
         request_id: PartitionProcessorRpcRequestId,
@@ -500,6 +510,10 @@ impl WithInvocationId for GetInvocationOutputResponse {
 
 /// Definition of the sink where to send the result of a service invocation.
 #[derive(Debug, PartialEq, Eq, Clone, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(
+    from = "serde_hacks::ServiceInvocationResponseSink",
+    into = "serde_hacks::ServiceInvocationResponseSink"
+)]
 pub enum ServiceInvocationResponseSink {
     /// The invocation has been created by a partition processor and is expecting a response.
     PartitionProcessor {
@@ -526,7 +540,7 @@ impl ServiceInvocationResponseSink {
 }
 
 /// Source of an invocation
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Source {
     Ingress(PartitionProcessorRpcRequestId),
     Subscription(SubscriptionId),
@@ -967,6 +981,205 @@ pub struct NotifySignalRequest {
 impl WithInvocationId for NotifySignalRequest {
     fn invocation_id(&self) -> InvocationId {
         self.invocation_id
+    }
+}
+
+mod serde_hacks {
+    //! Module where we hide all the hacks to make back-compat working!
+
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub(super) struct ServiceInvocation {
+        pub invocation_id: InvocationId,
+        pub invocation_target: InvocationTarget,
+        pub argument: Bytes,
+        pub source: Source,
+        pub span_context: ServiceInvocationSpanContext,
+        pub headers: Vec<Header>,
+        pub execution_time: Option<MillisSinceEpoch>,
+        pub completion_retention_duration: Option<Duration>,
+        pub idempotency_key: Option<ByteString>,
+        pub response_sink: Option<ServiceInvocationResponseSink>,
+        pub submit_notification_sink: Option<SubmitNotificationSink>,
+
+        // TODO(slinkydeveloper) this field is here because serde doesn't like much when I change the shape of an enum variant from empty to tuple/named fiels
+        pub source_ingress_rpc_id: Option<PartitionProcessorRpcRequestId>,
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub(super) enum Source {
+        Ingress,
+        Subscription(SubscriptionId),
+        Service(InvocationId, InvocationTarget),
+        /// Internal calls for the non-deterministic built-in services
+        Internal,
+    }
+
+    impl From<ServiceInvocation> for super::ServiceInvocation {
+        fn from(
+            ServiceInvocation {
+                invocation_id,
+                invocation_target,
+                argument,
+                source,
+                span_context,
+                headers,
+                execution_time,
+                completion_retention_duration,
+                idempotency_key,
+                response_sink,
+                submit_notification_sink,
+                source_ingress_rpc_id,
+            }: ServiceInvocation,
+        ) -> Self {
+            Self {
+                invocation_id,
+                invocation_target,
+                argument,
+                span_context,
+                headers,
+                execution_time,
+                completion_retention_duration,
+                idempotency_key,
+                response_sink: response_sink.map(Into::into),
+                submit_notification_sink: submit_notification_sink.map(Into::into),
+                source: match source {
+                    Source::Ingress => {
+                        super::Source::Ingress(source_ingress_rpc_id.unwrap_or_default())
+                    }
+                    Source::Subscription(sid) => super::Source::Subscription(sid),
+                    Source::Service(id, target) => super::Source::Service(id, target),
+                    Source::Internal => super::Source::Internal,
+                },
+            }
+        }
+    }
+
+    impl From<super::ServiceInvocation> for ServiceInvocation {
+        fn from(
+            super::ServiceInvocation {
+                invocation_id,
+                invocation_target,
+                argument,
+                source,
+                span_context,
+                headers,
+                execution_time,
+                completion_retention_duration,
+                idempotency_key,
+                response_sink,
+                submit_notification_sink,
+            }: super::ServiceInvocation,
+        ) -> Self {
+            let source_ingress_rpc_id = if let super::Source::Ingress(rpc_id) = &source {
+                Some(*rpc_id)
+            } else {
+                None
+            };
+
+            Self {
+                invocation_id,
+                invocation_target,
+                argument,
+                span_context,
+                headers,
+                execution_time,
+                completion_retention_duration,
+                idempotency_key,
+                response_sink: response_sink.map(Into::into),
+                submit_notification_sink: submit_notification_sink.map(Into::into),
+                source_ingress_rpc_id,
+                source: match source {
+                    super::Source::Ingress(_) => Source::Ingress,
+                    super::Source::Subscription(subid) => Source::Subscription(subid),
+                    super::Source::Service(id, target) => Source::Service(id, target),
+                    super::Source::Internal => Source::Internal,
+                },
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub(super) enum SubmitNotificationSink {
+        Ingress {
+            // TODO(slinkydeveloper) remove this field in 1.4, it's unused, it's here only to preserve back-compat
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            node_id: Option<GenerationalNodeId>,
+            request_id: PartitionProcessorRpcRequestId,
+        },
+    }
+
+    impl From<SubmitNotificationSink> for super::SubmitNotificationSink {
+        fn from(value: SubmitNotificationSink) -> Self {
+            match value {
+                SubmitNotificationSink::Ingress { request_id, .. } => Self::Ingress { request_id },
+            }
+        }
+    }
+
+    impl From<super::SubmitNotificationSink> for SubmitNotificationSink {
+        fn from(value: super::SubmitNotificationSink) -> Self {
+            match value {
+                super::SubmitNotificationSink::Ingress { request_id } => Self::Ingress {
+                    // TODO(slinkydeveloper) stop writing this field in 1.3, it's unused, it's here only to preserve back-compat
+                    node_id: Some(GenerationalNodeId::new(1, 1)),
+                    request_id,
+                },
+            }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone, Hash, serde::Serialize, serde::Deserialize)]
+    pub(super) enum ServiceInvocationResponseSink {
+        /// The invocation has been created by a partition processor and is expecting a response.
+        PartitionProcessor {
+            caller: InvocationId,
+            entry_index: EntryIndex,
+        },
+        /// The invocation has been generated by a request received at an ingress, and the client is expecting a response back.
+        Ingress {
+            // TODO(slinkydeveloper) remove this field in 1.4, it's unused, it's here only to preserve back-compat
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            node_id: Option<GenerationalNodeId>,
+            request_id: PartitionProcessorRpcRequestId,
+        },
+    }
+
+    impl From<ServiceInvocationResponseSink> for super::ServiceInvocationResponseSink {
+        fn from(value: ServiceInvocationResponseSink) -> Self {
+            match value {
+                ServiceInvocationResponseSink::Ingress { request_id, .. } => {
+                    Self::Ingress { request_id }
+                }
+                ServiceInvocationResponseSink::PartitionProcessor {
+                    entry_index,
+                    caller,
+                } => Self::PartitionProcessor {
+                    entry_index,
+                    caller,
+                },
+            }
+        }
+    }
+
+    impl From<super::ServiceInvocationResponseSink> for ServiceInvocationResponseSink {
+        fn from(value: super::ServiceInvocationResponseSink) -> Self {
+            match value {
+                super::ServiceInvocationResponseSink::Ingress { request_id } => Self::Ingress {
+                    // TODO(slinkydeveloper) stop writing this field in 1.3, it's unused, it's here only to preserve back-compat
+                    node_id: Some(GenerationalNodeId::new(1, 1)),
+                    request_id,
+                },
+                super::ServiceInvocationResponseSink::PartitionProcessor {
+                    entry_index,
+                    caller,
+                } => Self::PartitionProcessor {
+                    caller,
+                    entry_index,
+                },
+            }
+        }
     }
 }
 

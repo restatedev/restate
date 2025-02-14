@@ -16,14 +16,11 @@ pub mod list_logs;
 mod reconfigure;
 mod trim_log;
 
-use std::{ops::RangeInclusive, str::FromStr};
-
 use cling::prelude::*;
 
 use restate_cli_util::_comfy_table::{Cell, Color};
 use restate_cli_util::c_println;
 use restate_types::logs::metadata::{ProviderKind, Segment};
-use restate_types::logs::LogId;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 #[derive(Run, Subcommand, Clone)]
@@ -43,65 +40,6 @@ pub enum Logs {
     Reconfigure(reconfigure::ReconfigureOpts),
     /// Find and show tail state of a log
     FindTail(find_tail::FindTailOpts),
-}
-
-#[derive(Parser, Collect, Clone, Debug)]
-struct LogIdRange {
-    from: u32,
-    to: u32,
-}
-
-impl LogIdRange {
-    fn new(from: u32, to: u32) -> anyhow::Result<Self> {
-        if from > to {
-            anyhow::bail!(
-                "Invalid log id range: {}..{}, start must be <= end range",
-                from,
-                to
-            )
-        } else {
-            Ok(LogIdRange { from, to })
-        }
-    }
-
-    fn iter(&self) -> impl Iterator<Item = u32> {
-        self.from..=self.to
-    }
-}
-
-impl From<&LogId> for LogIdRange {
-    fn from(log_id: &LogId) -> Self {
-        let id = (*log_id).into();
-        LogIdRange::new(id, id).unwrap()
-    }
-}
-
-impl IntoIterator for LogIdRange {
-    type IntoIter = RangeInclusive<u32>;
-    type Item = u32;
-    fn into_iter(self) -> Self::IntoIter {
-        self.from..=self.to
-    }
-}
-
-impl FromStr for LogIdRange {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split("-").collect();
-        match parts.len() {
-            1 => {
-                let n = parts[0].parse()?;
-                Ok(LogIdRange::new(n, n)?)
-            }
-            2 => {
-                let from = parts[0].parse()?;
-                let to = parts[1].parse()?;
-                Ok(LogIdRange::new(from, to)?)
-            }
-            _ => anyhow::bail!("Invalid log id or log range: {}", s),
-        }
-    }
 }
 
 pub fn render_loglet_params<F>(params: &Option<ReplicatedLogletParams>, render_fn: F) -> Cell

@@ -148,7 +148,6 @@ pub struct RaftMetadataServer {
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
     storage: RocksDbStorage,
 
-    metadata_writer: Option<MetadataWriter>,
     health_status: Option<HealthStatus<MetadataServerStatus>>,
 
     request_rx: RequestReceiver,
@@ -163,7 +162,6 @@ pub struct RaftMetadataServer {
 impl RaftMetadataServer {
     pub async fn create(
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-        metadata_writer: Option<MetadataWriter>,
         health_status: HealthStatus<MetadataServerStatus>,
         server_builder: &mut NetworkServerBuilder,
     ) -> Result<Self, BuildError> {
@@ -224,11 +222,10 @@ impl RaftMetadataServer {
             provision_rx: Some(provision_rx),
             join_cluster_rx,
             status_tx,
-            metadata_writer,
         })
     }
 
-    pub async fn run(mut self) -> Result<(), Error> {
+    pub async fn run(mut self, metadata_writer: Option<MetadataWriter>) -> Result<(), Error> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         let health_status = self.health_status.take().expect("to be present");
 
@@ -237,7 +234,7 @@ impl RaftMetadataServer {
                 debug!("Shutting down RaftMetadataServer");
                 Ok(())
             },
-            result = self.run_inner(&health_status) => {
+            result = self.run_inner(&health_status, metadata_writer) => {
                 result.map(|_| ())
             },
         };
@@ -250,8 +247,9 @@ impl RaftMetadataServer {
     async fn run_inner(
         mut self,
         health_status: &HealthStatus<MetadataServerStatus>,
+        mut metadata_writer: Option<MetadataWriter>,
     ) -> Result<Never, Error> {
-        if let Some(metadata_writer) = self.metadata_writer.as_mut() {
+        if let Some(metadata_writer) = metadata_writer.as_mut() {
             // Try to read a persisted nodes configuration in order to learn about the addresses of our
             // potential peers and the metadata store states.
             if let Some(nodes_configuration) = self.storage.get_nodes_configuration()? {
@@ -280,9 +278,9 @@ impl RaftMetadataServer {
         let mut provisioned = if let RaftServerState::Member { my_member_id } =
             self.storage.get_raft_server_state()?
         {
-            Provisioned::Member(self.become_member(my_member_id)?)
+            Provisioned::Member(self.become_member(my_member_id, metadata_writer)?)
         } else {
-            Provisioned::Standby(self.become_standby())
+            Provisioned::Standby(self.become_standby(metadata_writer))
         };
 
         loop {
@@ -502,13 +500,12 @@ impl RaftMetadataServer {
         StorageMarker::new(Configuration::pinned().common.node_name().to_owned())
     }
 
-    fn become_standby(self) -> Standby {
+    fn become_standby(self, metadata_writer: Option<MetadataWriter>) -> Standby {
         let Self {
             connection_manager,
             storage,
             request_rx,
             join_cluster_rx,
-            metadata_writer,
             status_tx,
             ..
         } = self;
@@ -523,13 +520,16 @@ impl RaftMetadataServer {
         )
     }
 
-    fn become_member(self, my_member_id: MemberId) -> Result<Member, Error> {
+    fn become_member(
+        self,
+        my_member_id: MemberId,
+        metadata_writer: Option<MetadataWriter>,
+    ) -> Result<Member, Error> {
         let Self {
             connection_manager,
             storage,
             request_rx,
             join_cluster_rx,
-            metadata_writer,
             status_tx,
             ..
         } = self;
@@ -548,8 +548,8 @@ impl RaftMetadataServer {
 
 #[async_trait::async_trait]
 impl MetadataServer for RaftMetadataServer {
-    async fn run(self) -> anyhow::Result<()> {
-        self.run().await.map_err(Into::into)
+    async fn run(self, metadata_writer: Option<MetadataWriter>) -> anyhow::Result<()> {
+        self.run(metadata_writer).await.map_err(Into::into)
     }
 }
 

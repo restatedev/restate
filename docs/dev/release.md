@@ -3,7 +3,6 @@
 Restate artifacts to release:
 
 * Runtime (this repo)
-* [Service protocol](https://github.com/restatedev/service-protocol)
 * [Documentation](https://github.com/restatedev/documentation/)
 * [Examples](https://github.com/restatedev/examples)
 * [Operator](https://github.com/restatedev/restate-operator)
@@ -27,8 +26,6 @@ Runtime and SDKs follow independent artifact versioning. Restate server and SDK 
 
 Before releasing, make sure all the issues tagged with release-blocker have either been solved, or PRs are ready to solve them:
 https://github.com/issues?q=is%3Aopen+org%3Arestatedev+label%3Arelease-blocker
-
-Make sure that all [supported service protocol versions](../../crates/types/src/service_protocol.rs) are released.
 
 Confirm if any SDK releases are needed to keep up with the runtime and/or service protocol releases.
 

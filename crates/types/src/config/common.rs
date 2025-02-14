@@ -539,7 +539,7 @@ pub struct MetadataClientOptions {
 impl Default for MetadataClientOptions {
     fn default() -> Self {
         Self {
-            kind: MetadataClientKind::Native {
+            kind: MetadataClientKind::Replicated {
                 addresses: vec![DEFAULT_ADVERTISED_ADDRESS
                     .parse()
                     .expect("valid metadata store address")],
@@ -594,8 +594,8 @@ pub enum ObjectStoreCredentials {
     )
 )]
 pub enum MetadataClientKind {
-    /// Store metadata on the native metadata store that runs on nodes with the metadata-server role.
-    Native {
+    /// Store metadata on the replicated metadata store that runs on nodes with the metadata-server role.
+    Replicated {
         #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
         addresses: Vec<AdvertisedAddress>,
     },
@@ -626,7 +626,7 @@ pub enum MetadataClientKind {
 // the `address` configuration param.
 enum MetadataClientKindShadow {
     #[serde(alias = "embedded")]
-    Native {
+    Replicated {
         address: Option<AdvertisedAddress>,
         #[serde(default)]
         addresses: Vec<AdvertisedAddress>,
@@ -652,11 +652,11 @@ impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
                 bucket,
             },
             MetadataClientKindShadow::Etcd { addresses } => Self::Etcd { addresses },
-            MetadataClientKindShadow::Native { address, addresses } => {
+            MetadataClientKindShadow::Replicated { address, addresses } => {
                 let default_address: AdvertisedAddress =
                     DEFAULT_ADVERTISED_ADDRESS.parse().unwrap();
 
-                Self::Native {
+                Self::Replicated {
                     addresses: match address {
                         Some(address)
                             if addresses.is_empty() || addresses == vec![default_address] =>

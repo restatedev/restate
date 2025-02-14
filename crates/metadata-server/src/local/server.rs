@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc::handler::MetadataServerHandler;
-use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 use crate::local::storage::RocksDbStorage;
-use crate::{grpc, MetadataServer, MetadataStoreRequest, RequestError, RequestReceiver};
-use restate_core::cancellation_watcher;
-use restate_core::metadata_store::{serialize_value, Precondition};
-use restate_core::network::NetworkServerBuilder;
+use crate::{MetadataServer, MetadataStoreRequest, RequestError, RequestReceiver, RequestSender};
+use bytestring::ByteString;
+use restate_core::metadata_store::{
+    serialize_value, MetadataStoreClient, Precondition, ProvisionedMetadataStore, ReadError,
+    VersionedValue, WriteError,
+};
+use restate_core::{cancellation_watcher, MetadataWriter, ShutdownError};
 use restate_rocksdb::RocksError;
 use restate_types::config::{Configuration, MetadataServerOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
@@ -23,9 +24,8 @@ use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration};
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
-use restate_types::PlainNodeId;
-use tokio::sync::mpsc;
-use tonic::codec::CompressionEncoding;
+use restate_types::{PlainNodeId, Version};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, trace};
 
 /// Single node metadata store which stores the key value pairs in RocksDB.
@@ -34,6 +34,7 @@ use tracing::{debug, info, trace};
 /// store in a single thread.
 pub struct LocalMetadataServer {
     storage: RocksDbStorage,
+    request_tx: RequestSender,
     request_rx: RequestReceiver,
     health_status: HealthStatus<MetadataServerStatus>,
 }
@@ -43,25 +44,31 @@ impl LocalMetadataServer {
         options: &MetadataServerOptions,
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
         health_status: HealthStatus<MetadataServerStatus>,
-        server_builder: &mut NetworkServerBuilder,
     ) -> Result<Self, RocksError> {
         health_status.update(MetadataServerStatus::StartingUp);
         let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
 
         let storage = RocksDbStorage::create(options, updateable_rocksdb_options).await?;
 
-        server_builder.register_grpc_service(
-            MetadataServerSvcServer::new(MetadataServerHandler::new(request_tx, None, None))
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
-            grpc::FILE_DESCRIPTOR_SET,
-        );
-
         Ok(Self {
             storage,
             health_status,
+            request_tx,
             request_rx,
         })
+    }
+
+    pub fn client(&self) -> MetadataStoreClient {
+        MetadataStoreClient::new(
+            LocalMetadataStoreClient::new(self.request_tx.clone()),
+            Some(
+                Configuration::pinned()
+                    .common
+                    .metadata_client
+                    .backoff_policy
+                    .clone(),
+            ),
+        )
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -133,7 +140,7 @@ impl LocalMetadataServer {
 
 #[async_trait::async_trait]
 impl MetadataServer for LocalMetadataServer {
-    async fn run(self) -> anyhow::Result<()> {
+    async fn run(self, _metadata_writer: Option<MetadataWriter>) -> anyhow::Result<()> {
         self.run().await.map_err(Into::into)
     }
 }
@@ -240,4 +247,103 @@ pub async fn migrate_nodes_configuration(
     }
 
     Ok(())
+}
+
+struct LocalMetadataStoreClient {
+    request_tx: RequestSender,
+}
+
+impl LocalMetadataStoreClient {
+    fn new(request_tx: RequestSender) -> Self {
+        Self { request_tx }
+    }
+}
+
+#[async_trait::async_trait]
+impl ProvisionedMetadataStore for LocalMetadataStoreClient {
+    async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
+        let (result_tx, result_rx) = oneshot::channel();
+        let get_request = MetadataStoreRequest::Get { key, result_tx };
+        self.request_tx
+            .send(get_request)
+            .await
+            .map_err(|_| ReadError::terminal(ShutdownError))?;
+
+        result_rx
+            .await
+            .map_err(|_| ReadError::terminal(ShutdownError))?
+            .map_err(ReadError::other)
+    }
+
+    async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
+        let (result_tx, result_rx) = oneshot::channel();
+        let get_version_request = MetadataStoreRequest::GetVersion { key, result_tx };
+        self.request_tx
+            .send(get_version_request)
+            .await
+            .map_err(|_| ReadError::terminal(ShutdownError))?;
+
+        result_rx
+            .await
+            .map_err(|_| ReadError::terminal(ShutdownError))?
+            .map_err(ReadError::other)
+    }
+
+    async fn put(
+        &self,
+        key: ByteString,
+        value: VersionedValue,
+        precondition: Precondition,
+    ) -> Result<(), WriteError> {
+        let (result_tx, result_rx) = oneshot::channel();
+        let put_request = MetadataStoreRequest::Put {
+            key,
+            value,
+            precondition,
+            result_tx,
+        };
+        self.request_tx
+            .send(put_request)
+            .await
+            .map_err(|_| WriteError::terminal(ShutdownError))?;
+
+        result_rx
+            .await
+            .map_err(|_| WriteError::terminal(ShutdownError))?
+            .map_err(WriteError::from)
+    }
+
+    async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
+        let (result_tx, result_rx) = oneshot::channel();
+        let delete_request = MetadataStoreRequest::Delete {
+            key,
+            precondition,
+            result_tx,
+        };
+        self.request_tx
+            .send(delete_request)
+            .await
+            .map_err(|_| WriteError::terminal(ShutdownError))?;
+
+        result_rx
+            .await
+            .map_err(|_| WriteError::terminal(ShutdownError))?
+            .map_err(WriteError::from)
+    }
+}
+
+impl From<RequestError> for WriteError {
+    fn from(value: RequestError) -> Self {
+        match value {
+            err @ (RequestError::Internal(_)
+            | RequestError::Unavailable(_, _)
+            | RequestError::InvalidArgument(_)) => WriteError::other(err),
+            RequestError::FailedPrecondition(err) => {
+                WriteError::FailedPrecondition(err.to_string())
+            }
+            err @ (RequestError::Encode(_) | RequestError::Decode(_)) => {
+                WriteError::Codec(err.into())
+            }
+        }
+    }
 }

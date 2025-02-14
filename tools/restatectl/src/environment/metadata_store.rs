@@ -15,61 +15,59 @@ use restate_core::network::NetworkServerBuilder;
 use restate_core::{TaskCenter, TaskKind};
 use restate_metadata_server::MetadataServer;
 use restate_types::config;
-use restate_types::config::{MetadataClientOptions, MetadataServerOptions, RocksDbOptions};
+use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
-use restate_types::live::BoxedLiveLoad;
+use restate_types::live::Live;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::protobuf::common::NodeRpcStatus;
 
 pub async fn start_metadata_server(
-    mut metadata_store_client_options: MetadataClientOptions,
-    opts: &MetadataServerOptions,
-    updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    mut config: Configuration,
 ) -> anyhow::Result<MetadataStoreClient> {
     let mut server_builder = NetworkServerBuilder::default();
-
-    let service = restate_metadata_server::create_metadata_server(
-        opts,
-        updateables_rocksdb_options,
-        HealthStatus::default(),
-        None,
-        &mut server_builder,
-    )
-    .await?;
 
     // right now we only support running a local metadata store
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
-    metadata_store_client_options.kind = config::MetadataClientKind::Native {
+    config.common.metadata_client.kind = config::MetadataClientKind::Replicated {
         addresses: vec![AdvertisedAddress::Uds(uds)],
     };
 
-    let rpc_server_health_status = HealthStatus::default();
-    TaskCenter::spawn(TaskKind::RpcServer, "metadata-rpc-server", {
-        let rpc_server_health_status = rpc_server_health_status.clone();
-        async move {
-            server_builder
-                .run(rpc_server_health_status, &bind_address)
-                .await
-        }
-    })?;
+    let (service, client) = restate_metadata_server::create_metadata_server_and_client(
+        Live::from_value(config),
+        HealthStatus::default(),
+        &mut server_builder,
+    )
+    .await?;
+
+    let rpc_server_health = if !server_builder.is_empty() {
+        let rpc_server_health_status = HealthStatus::default();
+        TaskCenter::spawn(TaskKind::RpcServer, "metadata-rpc-server", {
+            let rpc_server_health_status = rpc_server_health_status.clone();
+            async move {
+                server_builder
+                    .run(rpc_server_health_status, &bind_address)
+                    .await
+            }
+        })?;
+        Some(rpc_server_health_status)
+    } else {
+        None
+    };
 
     TaskCenter::spawn(
         TaskKind::MetadataServer,
         "local-metadata-server",
         async move {
-            service.run().await?;
+            service.run(None).await?;
             Ok(())
         },
     )?;
-    info!("Waiting for local metadata store to startup");
-    rpc_server_health_status
-        .wait_for_value(NodeRpcStatus::Ready)
-        .await;
 
-    let client = restate_metadata_server::create_client(metadata_store_client_options)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create metadata store client: {}", e))?;
+    if let Some(rpc_server_health) = rpc_server_health {
+        info!("Waiting for local metadata store to startup");
+        rpc_server_health.wait_for_value(NodeRpcStatus::Ready).await;
+    }
 
     Ok(client)
 }

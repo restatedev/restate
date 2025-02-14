@@ -21,16 +21,16 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::Versioned;
 
-use super::LogIdRange;
 use crate::commands::log;
 use crate::connection::ConnectionInfo;
+use crate::util::RangeParam;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "describe_logs")]
 pub struct DescribeLogIdOpts {
     /// The log id or range to describe, e.g. "0", "1-4"; all logs are shown by default
-    #[arg(value_parser = value_parser!(LogIdRange))]
-    log_id: Vec<LogIdRange>,
+    #[arg()]
+    log_id: Vec<RangeParam>,
 
     /// The first segment id to display
     #[arg(long)]
@@ -73,7 +73,7 @@ async fn describe_logs(
     let log_ids = if opts.log_id.is_empty() {
         logs.iter()
             .sorted_by(|a, b| Ord::cmp(a.0, b.0))
-            .map(|(id, _)| LogIdRange::from(id))
+            .map(|(id, _)| RangeParam::from(*id))
             .collect::<Vec<_>>()
     } else {
         opts.log_id.clone()

@@ -229,7 +229,7 @@ impl Node {
 
         // update nodes with the addresses of the other nodes
         for node in &mut nodes {
-            *node.metadata_store_client_mut() = MetadataClientKind::Native {
+            *node.metadata_store_client_mut() = MetadataClientKind::Replicated {
                 addresses: node_addresses.clone(),
             }
         }
@@ -249,7 +249,7 @@ impl Node {
         let base_dir = base_dir.into();
 
         // ensure file paths are relative to the base dir
-        if let MetadataClientKind::Native { addresses } =
+        if let MetadataClientKind::Replicated { addresses } =
             &mut self.base_config.common.metadata_client.kind
         {
             for advertised_address in addresses {

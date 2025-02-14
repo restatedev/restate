@@ -117,7 +117,6 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
 
     let metadata_server = RaftMetadataServer::create(
         Constant::new(RocksDbOptions::default()).boxed(),
-        None,
         health.metadata_server_status(),
         &mut server_builder,
     )
@@ -131,11 +130,11 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     TaskCenter::spawn_child(
         TaskKind::MetadataServer,
         "replicated-metadata-server",
-        metadata_server.run().map_err(Into::into),
+        metadata_server.run(None).map_err(Into::into),
     )?;
 
     let metadata_client_options = MetadataClientOptions {
-        kind: MetadataClientKind::Native {
+        kind: MetadataClientKind::Replicated {
             addresses: vec![advertised_address],
         },
         ..Default::default()

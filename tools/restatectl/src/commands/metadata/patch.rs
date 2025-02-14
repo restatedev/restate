@@ -18,7 +18,6 @@ use tracing::debug;
 use restate_core::metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
-use restate_types::live::Live;
 use restate_types::Version;
 
 use crate::commands::metadata::{
@@ -89,14 +88,7 @@ async fn patch_value_direct(
         let rocksdb_manager = RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
         debug!("RocksDB Initialized");
 
-        let metadata_store_client = start_metadata_server(
-            config.common.metadata_client.clone(),
-            &config.metadata_server,
-            Live::from_value(config.metadata_server.clone())
-                .map(|c| &c.rocksdb)
-                .boxed(),
-        )
-        .await?;
+        let metadata_store_client = start_metadata_server(config.clone()).await?;
         debug!("Metadata store client created");
 
         let result = patch_value_inner(opts, &patch, &metadata_store_client).await;
