@@ -183,11 +183,11 @@ impl RaftMetadataServer {
             .map_err(|err| BuildError::InitStorage(err.to_string()))?
         {
             if storage_marker.id() != Configuration::pinned().common.node_name() {
-                return Err(BuildError::InitStorage(format!("StorageMarker does not match our own node name. Found node name '{}' while our node name is '{}'", storage_marker.id(), Configuration::pinned().common.node_name())));
+                return Err(BuildError::InitStorage(format!("metadata-server storage marker was found but it was created by another node. Found node name '{}' while this node name is '{}'", storage_marker.id(), Configuration::pinned().common.node_name())));
             } else {
                 debug!(
-                    "Found matching StorageMarker in raft-storage, written at '{}'",
-                    storage_marker.created_at()
+                    "Found matching metadata-server storage marker in raft-storage, written at '{}'",
+                    storage_marker.created_at().to_rfc2822()
                 );
             }
         }
@@ -816,7 +816,7 @@ impl Member {
         }
 
         if self.is_member_plain_node_id(joining_member_id.node_id) {
-            let warning = format!("Node '{}' has registered before with a different storage id. This indicates that this node has lost it's disk. Rejecting the join attempt.", joining_member_id);
+            let warning = format!("Node '{}' has registered before with a different storage id. This indicates that this node has lost its disk. Rejecting the join attempt.", joining_member_id);
             warn!(warning);
             let _ = response_tx.send(Err(JoinClusterError::Internal(warning)));
             return;

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 use restate_core::metadata_store::{retry_on_retryable_error, ReadWriteError, RetryError};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
@@ -150,73 +150,120 @@ impl LogServerService {
             .await
             .context("Cannot load log-server marker from log-store")?;
         // If we have a marker, it must match our own node id.
-        if let Some(marker) = maybe_marker {
+        if let Some(marker) = &maybe_marker {
             if *marker.id() != my_node_id.as_plain() {
                 return Err(anyhow::anyhow!(
-                    "LogStoreMarker doesn't match our own node-id. Found NodeId {} while our node is {}",
+                    "log-server storage marker was found but it was created by another node. Found {} while this node is {}",
                     marker.id(),
                     my_node_id.as_plain()
                 ));
             } else {
                 debug!(
-                    "Found matching LogStoreMarker in log-store, written at '{:?}'",
-                    marker.created_at()
+                    "Found log-server storage marker, written at '{}'",
+                    marker.created_at().to_rfc2822()
                 );
             }
         }
 
-        // Only store the marker if we are in provisioning state.
-        if my_storage_state == StorageState::Provisioning {
-            // If the node is in provisioning and we already have a marker, that's okay as long as
-            // it matches the stored node-id (checked earlier). We override the stored value if
-            // exists and attempt to update the nodes config.
-            log_store
-                .store_marker(LogStoreMarker::new(my_node_id.as_plain()))
-                .await
-                .context("Couldn't store LogStoreMarker on log-store")?;
-            debug!(
-                "Stored LogStoreMarker in log-store for node '{}'",
-                my_node_id.as_plain()
-            );
-            // Self transition our storage state into read-write.
-            my_storage_state =
-                Self::mark_the_node_as_writeable(my_node_id, metadata_writer).await?;
+        match my_storage_state {
+            StorageState::Provisioning => {
+                // Only provision the marker if we are in provisioning state.
+                // If the node is in provisioning and we already have a marker, that's okay as long as
+                // it matches the stored node-id (checked earlier). We override the stored value if
+                // exists and attempt to update the nodes config.
+                let new_marker = LogStoreMarker::new(my_node_id.as_plain());
+                log_store
+                    .store_marker(new_marker.clone())
+                    .await
+                    .context("Couldn't store log-server's storage marker on log-store")?;
+                debug!(
+                    "Written log-server storage marker for my node {} at {}",
+                    new_marker.id(),
+                    new_marker.created_at().to_rfc2822()
+                );
+                // Self transition our storage state into read-write.
+                my_storage_state = Self::update_storage_state(
+                    my_node_id,
+                    metadata_writer,
+                    StorageState::Provisioning,
+                    StorageState::ReadWrite,
+                )
+                .await?;
+                debug!("Log-store self-provisioning is complete, the node's log-store is now in read-write state");
+            }
+            StorageState::DataLoss => {
+                // Reject start. In the future we should be able to start with log-store being in
+                // fail-safe mode but that's not thoroughly tested yet, we choose to stop until
+                // this is fully tested.
+                return Err(anyhow::anyhow!(
+                    "A previous generation of my node {} has marked this log-server's storage-state as `data-loss`. \
+                        If this is a new node, please choose a different node-name to provision it as a new node",
+                    my_node_id.as_plain(),
+                ));
+            }
+            StorageState::Disabled => {
+                // NOTE: This behaviour is subject to change in the future
+                return Err(anyhow::anyhow!(
+                    "This node's storage-state is marked as `disabled`, log-server role cannot run on disabled nodes"
+                ));
+            }
+            StorageState::ReadWrite | StorageState::ReadOnly if maybe_marker.is_none() => {
+                // Mark as data loss
+                warn!("Detected data loss for log-server of my node {}. The log-server marker is missing, storage-state was {}, will transition into `data-loss`",
+                    my_node_id.as_plain(),
+                    my_storage_state
+                );
+                // Self transition our storage state into data-loss
+                Self::update_storage_state(
+                    my_node_id,
+                    metadata_writer,
+                    my_storage_state,
+                    StorageState::DataLoss,
+                )
+                .await?;
+                return Err(anyhow::anyhow!(
+                    "Node cannot start a log-server on {}, it has detected that it has lost its data. storage-state is `data-loss`",
+                    my_node_id.as_plain(),
+                ));
+            }
+            StorageState::ReadWrite | StorageState::ReadOnly => {}
         }
 
         debug!("My storage state: {:?}", my_storage_state);
         Ok(my_storage_state)
     }
 
-    async fn mark_the_node_as_writeable(
+    async fn update_storage_state(
         my_node_id: GenerationalNodeId,
         metadata_writer: &mut MetadataWriter,
+        expected_state: StorageState,
+        target_state: StorageState,
     ) -> anyhow::Result<StorageState> {
         let retry_policy = Configuration::pinned()
             .common
             .network_error_retry_policy
             .clone();
         let mut first_attempt = true;
-        let target_storage_state = StorageState::ReadWrite;
 
         let nodes_config = match retry_on_retryable_error(retry_policy, || {
             metadata_writer.metadata_store_client().read_modify_write(
                 NODES_CONFIG_KEY.clone(),
                 move |nodes_config: Option<NodesConfiguration>| {
                     let mut nodes_config =
-                        nodes_config.ok_or(MarkNodeAsWriteableError::MissingNodesConfiguration)?;
+                        nodes_config.ok_or(StorageStateUpdateError::MissingNodesConfiguration)?;
                     // If this fails, it means that a newer node has started somewhere else, and we
                     // should not attempt to update the storage-state. Instead, we fail.
                     let mut node = nodes_config
                         // note that we find by the generational node id.
                         .find_node_by_id(my_node_id)
-                        .map_err(|_| MarkNodeAsWriteableError::NewerGenerationDetected)?
+                        .map_err(|_| StorageStateUpdateError::NewerGenerationDetected)?
                         .clone();
 
-                    if node.log_server_config.storage_state != StorageState::Provisioning {
+                    if node.log_server_config.storage_state != expected_state {
                         return if first_attempt {
                             // Something might have caused this state to change. This should not happen,
                             // bail!
-                            Err(MarkNodeAsWriteableError::NotInProvisioningState(
+                            Err(StorageStateUpdateError::NotInExpectedState(
                                 node.log_server_config.storage_state,
                             ))
                         } else {
@@ -224,13 +271,13 @@ impl LogServerService {
                             // It cannot happen that there is a newer generation of me that changed the StorageState,
                             // because then I would have failed before when retrieving my NodeConfig with my generational
                             // node id.
-                            Err(MarkNodeAsWriteableError::PreviousAttemptSucceeded(
+                            Err(StorageStateUpdateError::PreviousAttemptSucceeded(
                                 nodes_config,
                             ))
                         };
                     }
 
-                    node.log_server_config.storage_state = target_storage_state;
+                    node.log_server_config.storage_state = target_state;
 
                     first_attempt = false;
                     nodes_config.upsert_node(node);
@@ -243,31 +290,37 @@ impl LogServerService {
         .map_err(|e| e.map(|err| err.transpose()))
         {
             Ok(nodes_config) => nodes_config,
-            Err(RetryError::NotRetryable(MarkNodeAsWriteableError::PreviousAttemptSucceeded(
+            Err(RetryError::NotRetryable(StorageStateUpdateError::PreviousAttemptSucceeded(
                 nodes_config,
             )))
             | Err(RetryError::RetriesExhausted(
-                MarkNodeAsWriteableError::PreviousAttemptSucceeded(nodes_config),
+                StorageStateUpdateError::PreviousAttemptSucceeded(nodes_config),
             )) => nodes_config,
             Err(err) => {
-                return Err(err).context("failed to mark this node as writeable");
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed to update this log-server's storage-state to {}",
+                        target_state
+                    )
+                });
             }
         };
 
         metadata_writer.update(Arc::new(nodes_config)).await?;
-        debug!("Log-store self-provisioning is complete, the node's log-store is now in read-write state");
-        Ok(target_storage_state)
+        Ok(target_state)
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-enum MarkNodeAsWriteableError {
-    #[error("NodesConfiguration must be provisioned before enabling log-store")]
+enum StorageStateUpdateError {
+    #[error("cluster must be provisioned before log-server is started")]
     MissingNodesConfiguration,
-    #[error("another instance of the same node might have started, this node cannot proceed with log-store provisioning")]
+    #[error(
+        "another instance of the same node might have started, updating storage-state will fail"
+    )]
     NewerGenerationDetected,
-    #[error("node is in state '{0}', it must be in provisioning state to proceed with log-store provisioning")]
-    NotInProvisioningState(StorageState),
+    #[error("log-server found an unexpected storage-state '{0}' in metadata store, this could mean that another node has updated it")]
+    NotInExpectedState(StorageState),
     #[error("succeeded updating NodesConfiguration in a previous attempt")]
     PreviousAttemptSucceeded(NodesConfiguration),
     #[error(transparent)]
