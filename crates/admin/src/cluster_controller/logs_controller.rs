@@ -282,10 +282,11 @@ impl LogState {
             LogState::Sealed {
                 seal_lsn,
                 configuration,
-                ..
+                segment_index,
             } => {
                 if let Some(loglet_configuration) = configuration.try_reconfiguring(
                     log_id,
+                    *segment_index,
                     logs_configuration,
                     observed_cluster_state,
                     preferred_sequencer_hint(),
@@ -448,16 +449,6 @@ enum LogletConfiguration {
 }
 
 impl LogletConfiguration {
-    fn loglet_id(&self) -> LogletId {
-        match self {
-            Self::Local(id) => LogletId::from(*id),
-            #[cfg(any(test, feature = "memory-loglet"))]
-            Self::Memory(id) => LogletId::from(*id),
-            #[cfg(feature = "replicated-loglet")]
-            Self::Replicated(params) => params.loglet_id,
-        }
-    }
-
     fn as_provider(&self) -> ProviderKind {
         match self {
             #[cfg(feature = "replicated-loglet")]
@@ -582,20 +573,19 @@ impl LogletConfiguration {
     fn try_reconfiguring(
         &self,
         log_id: LogId,
+        last_segment_index: SegmentIndex,
         logs_configuration: &LogsConfiguration,
         observed_cluster_state: &ObservedClusterState,
         preferred_sequencer: Option<NodeId>,
     ) -> Option<LogletConfiguration> {
-        let loglet_id = self.loglet_id();
+        let next_loglet_id = LogletId::new(log_id, last_segment_index.next());
 
         match logs_configuration.default_provider {
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderConfiguration::InMemory => {
-                Some(LogletConfiguration::Memory(loglet_id.next().into()))
+                Some(LogletConfiguration::Memory(next_loglet_id.into()))
             }
-            ProviderConfiguration::Local => {
-                Some(LogletConfiguration::Local(loglet_id.next().into()))
-            }
+            ProviderConfiguration::Local => Some(LogletConfiguration::Local(next_loglet_id.into())),
             #[cfg(feature = "replicated-loglet")]
             ProviderConfiguration::Replicated(ref config) => {
                 let previous_params = match self {
@@ -606,7 +596,7 @@ impl LogletConfiguration {
                 build_new_replicated_loglet_configuration(
                     log_id,
                     config,
-                    loglet_id.next(),
+                    next_loglet_id,
                     &Metadata::with_current(|m| m.nodes_config_ref()),
                     observed_cluster_state,
                     previous_params,
