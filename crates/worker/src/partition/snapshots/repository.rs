@@ -578,11 +578,6 @@ async fn create_object_store_client(
         let builder = match &options.aws_profile {
             Some(profile) => {
                 debug!(profile, "Using AWS profile for snapshot repository access");
-                let sdk_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
-                    .profile_name(profile)
-                    .load()
-                    .await;
-
                 let default_region = DefaultRegionChain::builder()
                     .profile_name(profile)
                     .build()
@@ -591,10 +586,9 @@ async fn create_object_store_client(
 
                 let region = options
                     .aws_region
-                    .as_ref()
-                    .map(String::clone)
+                    .clone()
                     .map(Region::new)
-                    .or_else(|| default_region)
+                    .or(default_region)
                     .context("Unable to determine AWS region")?;
 
                 debug!(?region, ?profile, "Using AWS SDK credentials provider");
@@ -605,13 +599,18 @@ async fn create_object_store_client(
                     .await;
 
                 let builder = AmazonS3Builder::new()
+                    .with_region(region.to_string())
                     .with_credentials(Arc::new(AwsSdkCredentialsProvider {
                         credentials_provider,
-                    }))
-                    .with_region(region.to_string());
+                    }));
+
+                let sdk_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
+                    .profile_name(profile)
+                    .load()
+                    .await;
 
                 if let Some(endpoint_url) = sdk_config.endpoint_url() {
-                    debug!(endpoint_url, "Using custom AWS endpoint from profile");
+                    debug!(endpoint_url, "Using custom AWS endpoint override");
                     // we'll override this with the explicit endpoint URL from Restate config, if any, later on
                     builder.with_endpoint(endpoint_url)
                 } else {
@@ -621,13 +620,11 @@ async fn create_object_store_client(
 
             None => {
                 let default_region = DefaultRegionChain::builder().build().region().await;
-
                 let region = options
                     .aws_region
-                    .as_ref()
-                    .map(String::clone)
+                    .clone()
                     .map(Region::new)
-                    .or_else(|| default_region)
+                    .or(default_region)
                     .context("Unable to determine AWS region")?;
 
                 let builder = AmazonS3Builder::new().with_region(region.to_string());
@@ -796,12 +793,15 @@ async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
 }
 
 #[derive(Debug)]
-struct AwsSdkCredentialsProvider {
-    credentials_provider: DefaultCredentialsChain,
+struct AwsSdkCredentialsProvider<T: ProvideCredentials> {
+    credentials_provider: T,
 }
 
 #[async_trait]
-impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
+impl<T> object_store::CredentialProvider for AwsSdkCredentialsProvider<T>
+where
+    T: ProvideCredentials,
+{
     type Credential = object_store::aws::AwsCredential;
 
     async fn get_credential(&self) -> object_store::Result<Arc<Self::Credential>> {
