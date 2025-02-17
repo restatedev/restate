@@ -434,8 +434,8 @@ impl PartitionProcessorManager {
 
                             match result {
                                 Err(ProcessorError::TrimGapEncountered {
-                                    gap_to_lsn: to_lsn,
-                                    sequence_number,
+                                    trim_gap_end: to_lsn,
+                                    read_pointer: sequence_number,
                                 }) => {
                                     if self.snapshot_repository.is_some() {
                                         info!(
