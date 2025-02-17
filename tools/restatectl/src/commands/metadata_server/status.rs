@@ -119,6 +119,7 @@ pub async fn list_metadata_servers(connection: &ConnectionInfo) -> anyhow::Resul
         ]);
     }
 
+    c_println!("Metadata service");
     c_println!("{}", metadata_nodes_table);
 
     if !unreachable_nodes.is_empty() {

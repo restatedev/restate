@@ -34,7 +34,7 @@ pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> any
 
     let mut logs_table = Table::new_styled();
 
-    c_println!("Log chain {}", logs.version());
+    c_println!("Logs {}", logs.version());
 
     write_default_provider(
         &mut Console::stdout(),
@@ -45,29 +45,33 @@ pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> any
     // sort by log-id for display
     let logs: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
 
-    for (log_id, chain) in logs {
-        let params = deserialize_replicated_log_params(&chain.tail());
-        logs_table.add_row(vec![
-            Cell::new(log_id),
-            Cell::new(format!("{}", &chain.tail().base_lsn)),
-            Cell::new(format!("{:?}", chain.tail().config.kind)),
-            render_loglet_params(&params, |p| Cell::new(p.loglet_id)),
-            render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
-            render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.sequencer))),
-            render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.nodeset))),
-        ]);
-    }
+    if logs.is_empty() {
+        c_println!("No logs found. Has the cluster been provisioned yet?");
+    } else {
+        for (log_id, chain) in logs {
+            let params = deserialize_replicated_log_params(&chain.tail());
+            logs_table.add_row(vec![
+                Cell::new(log_id),
+                Cell::new(format!("{}", &chain.tail().base_lsn)),
+                Cell::new(format!("{:?}", chain.tail().config.kind)),
+                render_loglet_params(&params, |p| Cell::new(p.loglet_id)),
+                render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
+                render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.sequencer))),
+                render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.nodeset))),
+            ]);
+        }
 
-    logs_table.set_styled_header(vec![
-        "L-ID",
-        "FROM-LSN",
-        "KIND",
-        "LOGLET-ID",
-        "REPLICATION",
-        "SEQUENCER",
-        "NODESET",
-    ]);
-    c_println!("{}", logs_table);
+        logs_table.set_styled_header(vec![
+            "L-ID",
+            "FROM-LSN",
+            "KIND",
+            "LOGLET-ID",
+            "REPLICATION",
+            "SEQUENCER",
+            "NODESET",
+        ]);
+        c_println!("{}", logs_table);
+    }
 
     Ok(())
 }
