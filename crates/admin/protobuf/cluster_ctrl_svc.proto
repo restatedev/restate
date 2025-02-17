@@ -87,7 +87,10 @@ message TrimLogRequest {
 
 message CreatePartitionSnapshotRequest { uint32 partition_id = 1; }
 
-message CreatePartitionSnapshotResponse { string snapshot_id = 1; }
+message CreatePartitionSnapshotResponse {
+  string snapshot_id = 1;
+  uint64 min_applied_lsn = 2;
+}
 
 message ChainExtension {
   // segment_index will be automatically selected (to the index of last segment)

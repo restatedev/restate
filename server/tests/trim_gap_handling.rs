@@ -17,7 +17,7 @@ use googletest::fail;
 use tempfile::TempDir;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use url::Url;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
@@ -133,11 +133,18 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         .create_partition_snapshot(CreatePartitionSnapshotRequest { partition_id: 0 })
         .await?
         .into_inner();
+    info!(
+        "Snapshot created up to at least LSN {}",
+        snapshot_response.min_applied_lsn
+    );
 
-    // todo(pavel): if create snapshot returned an LSN, we could trim the log to that specific LSN instead of guessing
     tokio::time::timeout(
         Duration::from_secs(3),
-        trim_log(&mut client, LogId::new(0), Lsn::new(3)),
+        trim_log(
+            &mut client,
+            LogId::new(0),
+            Lsn::new(snapshot_response.min_applied_lsn),
+        ),
     )
     .await??;
 
@@ -262,7 +269,10 @@ async fn trim_log(
             })
             .await?
             .into_inner();
+        debug!("Got trim log response: {:?}", response);
+
         if response.trim_point >= trim_point.as_u64() {
+            info!("Log trimmed to LSN {}", response.trim_point);
             break;
         }
 

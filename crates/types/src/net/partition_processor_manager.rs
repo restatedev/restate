@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, SnapshotId};
+use crate::logs::Lsn;
 use crate::net::define_rpc;
 use crate::net::{define_message, TargetName};
 use crate::Version;
@@ -74,7 +75,13 @@ pub struct CreateSnapshotRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSnapshotResponse {
-    pub result: Result<SnapshotId, SnapshotError>,
+    pub result: Result<Snapshot, SnapshotError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub snapshot_id: SnapshotId,
+    pub min_applied_lsn: Lsn,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
