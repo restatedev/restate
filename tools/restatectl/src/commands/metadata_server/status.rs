@@ -70,7 +70,10 @@ pub async fn list_metadata_servers(connection: &ConnectionInfo) -> anyhow::Resul
                     (node_id, metadata_store_status)
                 }
             });
-    let results = join_all(futures).await;
+    let results = join_all(futures)
+        .await
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
 
     for (node_id, metadata_store_status) in results {
         let status = match metadata_store_status {
