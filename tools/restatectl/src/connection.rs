@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::{cmp::Ordering, collections::HashMap, fmt::Display, future::Future, sync::Arc};
+use std::collections::{HashMap, HashSet};
+use std::sync::RwLock;
+use std::{cmp::Ordering, fmt::Display, future::Future, sync::Arc};
 
 use cling::{prelude::Parser, Collect};
 use itertools::{Either, Itertools};
 use rand::{rng, seq::SliceRandom};
 use tokio::sync::{Mutex, MutexGuard};
-use tonic::{codec::CompressionEncoding, transport::Channel, Response, Status};
-use tracing::info;
+use tonic::{codec::CompressionEncoding, transport::Channel, Code, Response, Status};
+use tracing::{debug, info};
 
 use restate_core::protobuf::node_ctl_svc::{
     node_ctl_svc_client::NodeCtlSvcClient, GetMetadataRequest, IdentResponse,
@@ -33,10 +35,12 @@ use crate::util::grpc_channel;
 
 #[derive(Clone, Parser, Collect, Debug)]
 pub struct ConnectionInfo {
-    /// Specify server address to connect to.
+    /// Specify one or more server addresses to connect to.
     ///
-    /// It needs access to the node-to-node address (aka. node advertised address)
-    /// Can also accept a comma-separated list or by repeating `--address=<host>`.
+    /// Needs access to the node-to-node address (aka node advertised address).
+    /// Specify multiple addresses as a comma-separated list, or pass multiple
+    /// `--address=<host>` arguments. Additional addresses may be discovered
+    /// based on the configuration of reachable nodes.
     #[clap(
         long,
         short('s'),
@@ -50,8 +54,9 @@ pub struct ConnectionInfo {
     )]
     pub address: Vec<AdvertisedAddress>,
 
-    /// Use this option to avoid receiving stale metadata information from the nodes by reading it
-    /// from the metadata store.
+    /// Force a reload of the metadata from the metadata store. Typically, Restate nodes hold
+    /// a cached view of metadata such as cluster nodes or partition configuration. Use this flag
+    /// to always fetch the latest as part of the request.
     #[arg(long)]
     pub sync_metadata: bool,
 
@@ -62,21 +67,25 @@ pub struct ConnectionInfo {
     logs: Arc<Mutex<Option<Logs>>>,
 
     #[clap(skip)]
-    cache: Arc<Mutex<HashMap<AdvertisedAddress, Channel>>>,
+    open_connections: Arc<Mutex<HashMap<AdvertisedAddress, Channel>>>,
+
+    #[clap(skip)]
+    dead_nodes: Arc<RwLock<HashSet<AdvertisedAddress>>>,
 }
 
 impl ConnectionInfo {
-    /// Gets NodesConfiguration object. This function tries all provided addresses and makes sure
-    /// nodes configuration is cached.
+    /// Gets NodesConfiguration object. Tries all provided addresses and caches the
+    /// response. Always uses the address seed provided on the command line.
     pub async fn get_nodes_configuration(&self) -> Result<NodesConfiguration, ConnectionInfoError> {
         if self.address.is_empty() {
             return Err(ConnectionInfoError::NoAvailableNodes(NoRoleError(None)));
         }
 
         let guard = self.nodes_configuration.lock().await;
+        if guard.is_some() {
+            debug!("Using cached nodes configuration");
+        }
 
-        // get nodes configuration will always use the addresses seed
-        // provided via the cmdline
         self.get_latest_metadata(
             self.address.iter(),
             self.address.len(),
@@ -104,11 +113,19 @@ impl ConnectionInfo {
         nodes_addresses.shuffle(&mut rng());
 
         let cluster_size = nodes_addresses.len();
-        let cached = self.cache.lock().await.keys().cloned().collect::<Vec<_>>();
+        let cached = self
+            .open_connections
+            .lock()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
 
         assert!(!cached.is_empty(), "must have cached connections");
 
-        let try_nodes = cached
+        // To improve our chance of getting the latest logs definition, we read from a simple
+        // majority of nodes. Existing connections take precedence.
+        let logs_source_nodes = cached
             .iter()
             .chain(
                 nodes_addresses
@@ -117,13 +134,8 @@ impl ConnectionInfo {
             )
             .collect::<Vec<_>>();
 
-        // To be sure we landed on the best guess of the latest version of the logs
-        // we need to ask multiple nodes in the nodes config.
-        // We make sure cached nodes has higher precedence + 50% of node set size trimmed to
-        // a total of 50% + 1 nodes.
-
         self.get_latest_metadata(
-            try_nodes.into_iter(),
+            logs_source_nodes.into_iter(),
             (cluster_size / 2) + 1,
             MetadataKind::Logs,
             guard,
@@ -132,15 +144,15 @@ impl ConnectionInfo {
         .await
     }
 
-    /// Gets Metadata object. On successful responses, [`get_latest_metadata`] will only try `try_best_of`
-    /// of the provided addresses, or until all nodes are exhausted.
+    /// Gets the latest metadata value. Stops after `stop_after_responses` nodes
+    /// respond, otherwise keeps trying until all addresses are exhausted.
     async fn get_latest_metadata<T, M>(
         &self,
         addresses: impl Iterator<Item = &AdvertisedAddress>,
-        mut try_best_of: usize,
+        mut stop_after_responses: usize,
         kind: MetadataKind,
         mut guard: MutexGuard<'_, Option<T>>,
-        version_map: M,
+        extract_version: M,
     ) -> Result<T, ConnectionInfoError>
     where
         T: StorageDecode + Versioned + Clone,
@@ -150,10 +162,10 @@ impl ConnectionInfo {
             return Ok(meta.clone());
         }
 
-        let mut latest_meta: Option<T> = None;
-        let mut answer = false;
+        let mut latest_value: Option<T> = None;
+        let mut any_node_responded = false;
         let mut errors = NodesErrors::default();
-        let mut cache = self.cache.lock().await;
+        let mut open_connections = self.open_connections.lock().await;
 
         let request = GetMetadataRequest {
             kind: kind.into(),
@@ -161,7 +173,7 @@ impl ConnectionInfo {
         };
 
         for address in addresses {
-            let channel = cache.entry(address.clone()).or_insert_with(|| {
+            let channel = open_connections.entry(address.clone()).or_insert_with(|| {
                 info!("Connecting to {address}");
                 grpc_channel(address.clone())
             });
@@ -174,25 +186,32 @@ impl ConnectionInfo {
                 Ok(response) => response.into_inner(),
                 Err(status) => {
                     errors.error(address.clone(), status);
+                    self.dead_nodes.write().unwrap().insert(address.clone());
                     continue;
                 }
             };
 
-            // node is reachable and has answered
-            answer = true;
+            any_node_responded = true;
             if response.status != NodeStatus::Alive as i32 {
-                // node did not join the cluster yet.
+                debug!("Node {address} responded but it is not reporting itself as alive, and will be skipped");
                 continue;
             }
 
-            if version_map(&response)
-                <= latest_meta
+            let response_version = extract_version(&response);
+            match response_version.cmp(
+                &latest_value
                     .as_ref()
                     .map(|c| c.version())
-                    .unwrap_or(Version::INVALID)
-            {
-                // has older version than we have.
-                continue;
+                    .unwrap_or(Version::INVALID),
+            ) {
+                Ordering::Less => {
+                    debug!("Node {address} returned an older version {response_version} than we currently have");
+                    continue;
+                }
+                Ordering::Equal => continue,
+                Ordering::Greater => {
+                    debug!("Node {address} returned a newer version {response_version} than we currently have");
+                }
             }
 
             let mut response = match client.get_metadata(request).await {
@@ -207,27 +226,26 @@ impl ConnectionInfo {
                 .map_err(|err| ConnectionInfoError::DecoderError(address.clone(), err))?;
 
             if meta.version()
-                > latest_meta
+                > latest_value
                     .as_ref()
                     .map(|c| c.version())
                     .unwrap_or(Version::INVALID)
             {
-                latest_meta = Some(meta);
+                latest_value = Some(meta);
             }
 
-            try_best_of -= 1;
-            if try_best_of == 0 {
+            stop_after_responses -= 1;
+            if stop_after_responses == 0 {
                 break;
             }
         }
 
-        if !answer {
-            // all nodes have returned error
+        if !any_node_responded {
             return Err(ConnectionInfoError::NodesErrors(errors));
         }
 
-        *guard = latest_meta.clone();
-        latest_meta.ok_or(ConnectionInfoError::MissingMetadata)
+        *guard = latest_value.clone();
+        latest_value.ok_or(ConnectionInfoError::MissingMetadata)
     }
 
     /// Attempts to contact each node in the cluster that matches the specified role
@@ -244,14 +262,14 @@ impl ConnectionInfo {
     pub async fn try_each<F, T, Fut>(
         &self,
         role: Option<Role>,
-        mut closure: F,
+        mut node_operation: F,
     ) -> Result<Response<T>, ConnectionInfoError>
     where
         F: FnMut(Channel) -> Fut,
         Fut: Future<Output = Result<Response<T>, Status>>,
     {
         let nodes_config = self.get_nodes_configuration().await?;
-        let mut channels = self.cache.lock().await;
+        let mut open_connections = self.open_connections.lock().await;
 
         let iterator = match role {
             Some(role) => Either::Left(nodes_config.iter_role(role)),
@@ -260,8 +278,8 @@ impl ConnectionInfo {
         .sorted_by(|a, b| {
             // nodes for which we already have open channels get higher precedence.
             match (
-                channels.contains_key(&a.1.address),
-                channels.contains_key(&b.1.address),
+                open_connections.contains_key(&a.1.address),
+                open_connections.contains_key(&b.1.address),
             ) {
                 (true, false) => Ordering::Less,
                 (false, true) => Ordering::Greater,
@@ -272,17 +290,35 @@ impl ConnectionInfo {
         let mut errors = NodesErrors::default();
 
         for (_, node) in iterator {
-            // avoid creating new channels on each iteration. Instead cheaply copy the channels
-            let channel = channels
-                .entry(node.address.clone())
-                .or_insert_with(|| grpc_channel(node.address.clone()));
+            let channel = self
+                .connect_internal(&node.address, &mut open_connections)
+                .await;
 
-            let result = closure(channel.clone()).await;
-            match result {
-                Ok(response) => return Ok(response),
-                Err(status) => {
-                    errors.error(node.address.clone(), status);
+            if let Some(channel) = channel {
+                debug!("Trying {}...", node.address);
+                let result = node_operation(channel).await;
+                match result {
+                    Ok(response) => return Ok(response),
+                    Err(status) => {
+                        if status.code() == Code::Unavailable
+                            || status.code() == Code::DeadlineExceeded
+                        {
+                            self.dead_nodes
+                                .write()
+                                .unwrap()
+                                .insert(node.address.clone());
+                        }
+                        errors.error(node.address.clone(), status);
+                    }
                 }
+            } else {
+                errors.error(
+                    node.address.clone(),
+                    Status::unavailable(format!(
+                        "Node {} was previously flagged as unreachable, not attempting to connect",
+                        node.address
+                    )),
+                );
             }
         }
 
@@ -291,6 +327,41 @@ impl ConnectionInfo {
         } else {
             Err(ConnectionInfoError::NodesErrors(errors))
         }
+    }
+
+    pub(crate) async fn connect(
+        &self,
+        address: &AdvertisedAddress,
+    ) -> Result<Channel, ConnectionInfoError> {
+        self.connect_internal(address, &mut self.open_connections.lock().await)
+            .await
+            .map(Ok)
+            .unwrap_or(Err(ConnectionInfoError::NodeUnreachable))
+    }
+
+    /// Creates and returns a (lazy) connection to the specified address, or `None` if this
+    /// address was previously flagged as unreachable.
+    async fn connect_internal(
+        &self,
+        address: &AdvertisedAddress,
+        open_connections: &mut MutexGuard<'_, HashMap<AdvertisedAddress, Channel>>,
+    ) -> Option<Channel> {
+        if self.dead_nodes.read().unwrap().contains(address) {
+            debug!(
+                "Node {address} was previously flagged as unreachable, not attempting to connect"
+            );
+            return None;
+        };
+
+        Some(
+            open_connections
+                .entry(address.clone())
+                .or_insert_with(|| {
+                    info!("Adding new connection to {address}");
+                    grpc_channel(address.clone())
+                })
+                .clone(),
+        )
     }
 }
 
@@ -307,6 +378,9 @@ pub enum ConnectionInfoError {
 
     #[error(transparent)]
     NoAvailableNodes(NoRoleError),
+
+    #[error("Node is unreachable")]
+    NodeUnreachable,
 }
 
 #[derive(Debug, thiserror::Error)]

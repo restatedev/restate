@@ -10,9 +10,11 @@
 
 use std::collections::BTreeMap;
 
+use futures::future::join_all;
 use itertools::Itertools;
 use tonic::codec::CompressionEncoding;
-use tonic::IntoRequest;
+use tonic::{IntoRequest, Status};
+use tracing::debug;
 
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
@@ -23,9 +25,10 @@ use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{PlainNodeId, Version};
 
 use crate::connection::ConnectionInfo;
-use crate::util::grpc_channel;
 
 pub async fn list_metadata_servers(connection: &ConnectionInfo) -> anyhow::Result<()> {
+    debug!("Gathering metadata server status information");
+
     let nodes_configuration = connection.get_nodes_configuration().await?;
     let mut metadata_nodes_table = Table::new_styled();
     let header = vec![
@@ -45,13 +48,31 @@ pub async fn list_metadata_servers(connection: &ConnectionInfo) -> anyhow::Resul
 
     let mut unreachable_nodes = BTreeMap::default();
 
-    for (node_id, node_config) in nodes_configuration.iter_role(Role::MetadataServer) {
-        let metadata_channel = grpc_channel(node_config.address.clone());
-        let mut metadata_client = MetadataServerSvcClient::new(metadata_channel)
-            .accept_compressed(CompressionEncoding::Gzip);
+    let futures =
+        nodes_configuration
+            .iter_role(Role::MetadataServer)
+            .map(|(node_id, node_config)| {
+                let address = node_config.address.clone();
+                async move {
+                    let channel = match connection.connect(&address).await {
+                        Ok(channel) => channel,
+                        Err(conn_error) => {
+                            return (node_id, Err(Status::from_error(Box::new(conn_error))));
+                        }
+                    };
 
-        let metadata_store_status = metadata_client.status(().into_request()).await;
+                    let mut metadata_client = MetadataServerSvcClient::new(channel)
+                        .accept_compressed(CompressionEncoding::Gzip);
 
+                    debug!("Querying metadata service status on node {address}");
+                    let metadata_store_status = metadata_client.status(().into_request()).await;
+
+                    (node_id, metadata_store_status)
+                }
+            });
+    let results = join_all(futures).await;
+
+    for (node_id, metadata_store_status) in results {
         let status = match metadata_store_status {
             Ok(response) => response.into_inner(),
             Err(err) => {
