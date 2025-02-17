@@ -16,7 +16,7 @@ use cling::Collect;
 
 use restate_core::network::net_util::CommonClientConnectionOptions;
 
-const DEFAULT_CONNECT_TIMEOUT: u64 = 5_000;
+const DEFAULT_CONNECT_TIMEOUT: u64 = 3_000;
 const DEFAULT_REQUEST_TIMEOUT: u64 = 13_000;
 
 #[derive(ValueEnum, Clone, Copy, Default, PartialEq, Eq)]

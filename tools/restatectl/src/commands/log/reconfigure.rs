@@ -157,7 +157,7 @@ async fn inner_reconfigure(
     c_println!(" ├ Tail LSN: {}", sealed_segment.tail_offset);
     c_println!(" ├ Provider: {}", sealed_segment.provider);
     let Ok(provider) = ProviderKind::from_str(&sealed_segment.provider, true) else {
-        c_eprintln!("Unkown provider type '{}'", sealed_segment.provider);
+        c_eprintln!("Unknown provider type '{}'", sealed_segment.provider);
         return Ok(());
     };
 
@@ -200,7 +200,7 @@ fn replicated_loglet_params(
         ReplicatedLogletParams {
             loglet_id,
             nodeset: if opts.nodeset.is_empty() {
-                anyhow::bail!("Missing nodeset. Nodeset is required if last segment is not of replicated type");
+                bail!("Missing nodeset. Nodeset is required if last segment is not of replicated type");
             } else {
                 NodeSet::from_iter(opts.nodeset.iter().cloned())
             },
