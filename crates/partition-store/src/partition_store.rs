@@ -42,6 +42,7 @@ use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::LocalPartitionSnapshot;
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::logs::LogId;
 use restate_types::storage::StorageCodec;
 
 pub type DB = rocksdb::DB;
@@ -463,6 +464,7 @@ impl PartitionStore {
             base_dir: snapshot_dir,
             files: metadata.get_files(),
             db_comparator_name: metadata.get_db_comparator_name(),
+            log_id: LogId::from(self.partition_id),
             min_applied_lsn: applied_lsn,
             key_range: self.key_range.clone(),
         })

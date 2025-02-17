@@ -765,6 +765,7 @@ impl PartitionProcessorManager {
                     metadata.partition_id,
                     Ok(SnapshotCreated {
                         snapshot_id: metadata.snapshot_id,
+                        log_id: metadata.get_log_id(),
                         min_applied_lsn: metadata.min_applied_lsn,
                         partition_id: metadata.partition_id,
                     }),

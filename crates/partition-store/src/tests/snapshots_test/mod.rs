@@ -19,7 +19,7 @@ use restate_storage_api::Transaction;
 use restate_types::config::WorkerOptions;
 use restate_types::identifiers::{PartitionKey, SnapshotId};
 use restate_types::live::Live;
-use restate_types::logs::Lsn;
+use restate_types::logs::{LogId, Lsn};
 use restate_types::time::MillisSinceEpoch;
 
 pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_store: PartitionStore) {
@@ -41,6 +41,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
         created_at: humantime::Timestamp::from(SystemTime::from(MillisSinceEpoch::new(0))),
         snapshot_id: SnapshotId::from_parts(0, 0),
         key_range: key_range.clone(),
+        log_id: Some(LogId::from(partition_id)),
         min_applied_lsn: snapshot.min_applied_lsn,
         db_comparator_name: snapshot.db_comparator_name.clone(),
         files: snapshot.files.clone(),
@@ -56,6 +57,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
 
     let snapshot = LocalPartitionSnapshot {
         base_dir: snapshots_dir.path().into(),
+        log_id: LogId::from(partition_id),
         min_applied_lsn: snapshot_meta.min_applied_lsn,
         db_comparator_name: snapshot_meta.db_comparator_name.clone(),
         files: snapshot_meta.files.clone(),

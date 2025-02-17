@@ -134,7 +134,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         .await?
         .into_inner();
     info!(
-        "Snapshot created up to at least LSN {}",
+        "Snapshot created including changes up to LSN {}",
         snapshot_response.min_applied_lsn
     );
 

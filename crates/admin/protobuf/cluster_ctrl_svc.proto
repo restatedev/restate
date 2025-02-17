@@ -89,7 +89,8 @@ message CreatePartitionSnapshotRequest { uint32 partition_id = 1; }
 
 message CreatePartitionSnapshotResponse {
   string snapshot_id = 1;
-  uint64 min_applied_lsn = 2;
+  uint32 log_id = 2;
+  uint64 min_applied_lsn = 3;
 }
 
 message ChainExtension {
