@@ -55,10 +55,6 @@ impl LogId {
     pub const fn new(value: u32) -> Self {
         Self(value)
     }
-
-    pub fn as_u32(self) -> u32 {
-        self.0
-    }
 }
 
 impl From<PartitionId> for LogId {
