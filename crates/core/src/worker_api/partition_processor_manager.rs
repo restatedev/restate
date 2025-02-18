@@ -13,7 +13,7 @@ use std::io;
 
 use tokio::sync::{mpsc, oneshot};
 
-use restate_types::logs::Lsn;
+use restate_types::logs::{LogId, Lsn};
 use restate_types::{
     cluster::cluster_state::PartitionProcessorStatus,
     identifiers::{PartitionId, SnapshotId},
@@ -69,6 +69,7 @@ pub type SnapshotResult = Result<SnapshotCreated, SnapshotError>;
 #[display("{}", snapshot_id)]
 pub struct SnapshotCreated {
     pub snapshot_id: SnapshotId,
+    pub log_id: LogId,
     pub min_applied_lsn: Lsn,
     pub partition_id: PartitionId,
 }

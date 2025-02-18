@@ -99,8 +99,9 @@ async fn inner_create_snapshot(
         .into_inner();
 
     c_println!(
-        "Snapshot created for partition {partition_id}: {} (LSN >= {})",
+        "Snapshot created for partition {partition_id}: {} (log {} @ LSN >= {})",
         response.snapshot_id,
+        response.log_id,
         response.min_applied_lsn,
     );
 

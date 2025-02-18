@@ -17,7 +17,7 @@ use serde_with::hex::Hex;
 use serde_with::{serde_as, DeserializeAs, SerializeAs};
 
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
-use restate_types::logs::Lsn;
+use restate_types::logs::{LogId, Lsn};
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SnapshotFormatVersion {
@@ -25,7 +25,11 @@ pub enum SnapshotFormatVersion {
     V1,
 }
 
-/// A partition store snapshot.
+/// A partition store snapshot. Metadata object which is published alongside with the partition
+/// store RocksDB SST files that make up a particular checkpoint for a given partition. Note that
+/// the applied LSN is read from the store itself, before the snapshot checkpoint is created. It
+/// could therefore be smaller than the actual LSN of the snapshot, which can only be determined
+/// when the snapshot is imported and opened for reading.
 #[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartitionSnapshotMetadata {
@@ -51,6 +55,11 @@ pub struct PartitionSnapshotMetadata {
     /// responsible for, at the time the snapshot was generated.
     pub key_range: RangeInclusive<PartitionKey>,
 
+    /// The log id backing the partition. This field is optional as it wasn't always included
+    /// in the snapshot structure. Older snapshots which do not explicitly set this may be
+    /// assumed to be taken from a log with id numerically equal to their `partition_id`.
+    pub log_id: Option<LogId>,
+
     /// The minimum LSN guaranteed to be applied in this snapshot. The actual
     /// LSN may be >= [minimum_lsn].
     pub min_applied_lsn: Lsn,
@@ -63,10 +72,17 @@ pub struct PartitionSnapshotMetadata {
     pub files: Vec<LiveFile>,
 }
 
+impl PartitionSnapshotMetadata {
+    pub fn get_log_id(&self) -> LogId {
+        self.log_id.unwrap_or(LogId::from(self.partition_id))
+    }
+}
+
 /// A locally-stored partition snapshot.
 #[derive(Debug)]
 pub struct LocalPartitionSnapshot {
     pub base_dir: PathBuf,
+    pub log_id: LogId,
     pub min_applied_lsn: Lsn,
     pub db_comparator_name: String,
     pub files: Vec<LiveFile>,

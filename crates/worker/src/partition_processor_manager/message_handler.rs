@@ -48,6 +48,7 @@ impl MessageHandler for PartitionProcessorManagerMessageHandler {
                     Ok(snapshot) => msg.to_rpc_response(CreateSnapshotResponse {
                         result: Ok(Snapshot {
                             snapshot_id: snapshot.snapshot_id,
+                            log_id: snapshot.log_id,
                             min_applied_lsn: snapshot.min_applied_lsn,
                         }),
                     }),

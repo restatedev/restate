@@ -182,9 +182,11 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             }
             Ok(Snapshot {
                 snapshot_id,
+                log_id,
                 min_applied_lsn,
             }) => Ok(Response::new(CreatePartitionSnapshotResponse {
                 snapshot_id: snapshot_id.to_string(),
+                log_id: log_id.into(),
                 min_applied_lsn: min_applied_lsn.as_u64(),
             })),
         }
