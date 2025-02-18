@@ -539,6 +539,7 @@ impl TrimMode {
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use crate::cluster_controller::service::state::{TrimMode, TrimPointsUnavailable};
     use restate_types::cluster::cluster_state::{
@@ -901,6 +902,7 @@ mod tests {
             generational_node_id,
             last_heartbeat_at: MillisSinceEpoch::now(),
             partitions,
+            uptime: Duration::default(),
         })
     }
 

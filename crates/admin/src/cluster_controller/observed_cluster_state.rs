@@ -141,6 +141,7 @@ mod tests {
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
     use std::collections::{BTreeMap, HashMap};
+    use std::time::Duration;
 
     impl ObservedClusterState {
         pub fn remove_node_from_partition(
@@ -203,6 +204,7 @@ mod tests {
             generational_node_id,
             last_heartbeat_at: MillisSinceEpoch::now(),
             partitions,
+            uptime: Duration::default(),
         })
     }
 

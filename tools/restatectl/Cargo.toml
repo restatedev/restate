@@ -44,10 +44,12 @@ cling = { workspace = true }
 crossterm = { version = "0.27.0" }
 ctrlc = { version = "3.4" }
 diff = "0.1.13"
+enumset = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 itertools = { workspace = true }
 json-patch = "2.0.0"
+humantime = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
 rlimit = { workspace = true }

@@ -166,6 +166,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                                 last_heartbeat_at: MillisSinceEpoch::now(),
                                 generational_node_id: peer,
                                 partitions: msg.partition_processor_state.unwrap_or_default(),
+                                uptime: msg.uptime,
                             }),
                         );
                     }

@@ -869,6 +869,7 @@ mod tests {
             let state = [(PartitionId::MIN, partition_processor_status)].into();
             let response = msg.to_rpc_response(NodeStateResponse {
                 partition_processor_state: Some(state),
+                uptime: Duration::from_secs(100),
             });
 
             // We are not really sending something back to target, we just need to provide a known
