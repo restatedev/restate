@@ -162,7 +162,7 @@ pub async fn list_metadata_servers(connection: &ConnectionInfo) -> anyhow::Resul
     Ok(())
 }
 
-fn render_metadata_server_status(metadata_server_status: MetadataServerStatus) -> Cell {
+pub fn render_metadata_server_status(metadata_server_status: MetadataServerStatus) -> Cell {
     match metadata_server_status {
         MetadataServerStatus::Unknown => Cell::new("UNKNOWN").fg(Color::Red),
         MetadataServerStatus::StartingUp => Cell::new("Starting").fg(Color::Yellow),

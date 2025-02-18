@@ -120,8 +120,7 @@ pub async fn list_partitions(
                         .generational_node_id
                         .as_ref()
                         .expect("alive partition has a node id");
-                    let host_node =
-                        GenerationalNodeId::new(host.id, host.generation.expect("generation"));
+                    let host_node = GenerationalNodeId::from(*host);
                     let details = PartitionListEntry { host_node, status };
                     partitions.push((partition_id, details));
 

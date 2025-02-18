@@ -39,11 +39,13 @@ message SuspectNode {
 }
 
 message AliveNode {
-  restate.common.NodeId generational_node_id = 1;
+  restate.common.GenerationalNodeId generational_node_id = 1;
   google.protobuf.Timestamp last_heartbeat_at = 2;
   // partition id is u16 but protobuf doesn't support u16. This must be a value
   // that's safe to convert to u16
   map<uint32, PartitionProcessorStatus> partitions = 3;
+  // uptime of node since the daemon started in seconds
+  uint64 uptime_s = 4;
 }
 
 message DeadNode { google.protobuf.Timestamp last_seen_alive = 1; }
@@ -84,8 +86,9 @@ message BifrostProvider {
   // only required if provider = "replicated"
   optional ReplicationProperty replication_property = 2;
   // only required if provider = "replicated"
-  // The default target for new nodesets. 0 (default) auto-chooses a nodeset-size that
-  // balances read and write availability. It's a reasonable default for most cases.
+  // The default target for new nodesets. 0 (default) auto-chooses a
+  // nodeset-size that balances read and write availability. It's a reasonable
+  // default for most cases.
   uint32 target_nodeset_size = 3;
 }
 

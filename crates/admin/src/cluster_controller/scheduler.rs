@@ -1080,6 +1080,7 @@ mod tests {
             generational_node_id: node_id,
             last_heartbeat_at: MillisSinceEpoch::now(),
             partitions,
+            uptime: Duration::default(),
         }
     }
 

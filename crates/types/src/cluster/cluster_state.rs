@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use prost_dto::IntoProst;
 use serde::{Deserialize, Serialize};
@@ -97,6 +97,10 @@ pub struct AliveNode {
     #[prost(required)]
     pub generational_node_id: GenerationalNodeId,
     pub partitions: BTreeMap<PartitionId, PartitionProcessorStatus>,
+    // age of daemon in seconds
+    #[prost(name=uptime_s)]
+    #[into_prost(map=Duration::as_secs, map_by_ref)]
+    pub uptime: Duration,
 }
 
 #[derive(Debug, Clone, IntoProst)]

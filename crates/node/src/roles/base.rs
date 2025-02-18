@@ -12,6 +12,7 @@ use futures::StreamExt;
 
 use restate_core::{
     network::{Incoming, MessageRouterBuilder, MessageStream},
+    task_center::TaskCenterMonitoring,
     worker_api::ProcessorsManagerHandle,
     ShutdownError, TaskCenter, TaskKind,
 };
@@ -64,6 +65,7 @@ impl BaseRole {
         let _ = msg
             .to_rpc_response(NodeStateResponse {
                 partition_processor_state: partition_state,
+                uptime: TaskCenter::with_current(|t| t.age()),
             })
             .try_send();
     }
