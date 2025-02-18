@@ -57,10 +57,10 @@ async fn cluster_status(
     if !status_opts.extra {
         return match connection.get_nodes_configuration().await {
             Ok(nodes_config) => compact_cluster_status(nodes_config, connection).await,
-            Err(ConnectionInfoError::MissingMetadata(ident_responses)) => {
+            Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes }) => {
                 warn!("Could not read nodes configuration from cluster, using GetIdent responses to render basic list");
 
-                list_nodes_lite(&ident_responses, &ListNodesOpts { extra: false });
+                list_nodes_lite(&contacted_nodes, &ListNodesOpts { extra: false });
 
                 // short-circuit if called as part of `restatectl status`
                 Err(ConnectionInfoError::ClusterNotProvisioned.into())

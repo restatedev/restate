@@ -247,7 +247,9 @@ impl ConnectionInfo {
         }
 
         *guard = latest_value.clone();
-        latest_value.ok_or(ConnectionInfoError::MissingMetadata(ident_responses))
+        latest_value.ok_or(ConnectionInfoError::MetadataValueNotAvailable {
+            contacted_nodes: ident_responses,
+        })
     }
 
     /// Attempts to contact each node in the cluster that matches the specified role
@@ -369,8 +371,12 @@ impl ConnectionInfo {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionInfoError {
+    /// The requested metadata key could not be retrieved from any known metadata servers.
+    /// The servers which did respond are included in the error.
     #[error("Could not retrieve cluster metadata. Has the cluster been provisioned yet?")]
-    MissingMetadata(HashMap<AdvertisedAddress, IdentResponse>),
+    MetadataValueNotAvailable {
+        contacted_nodes: HashMap<AdvertisedAddress, IdentResponse>,
+    },
 
     #[error(
         "The cluster appears to not be provisioned. You can do so with `restatectl provision`"

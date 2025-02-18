@@ -48,19 +48,19 @@ pub struct ListNodesOpts {
 pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> anyhow::Result<()> {
     match connection.get_nodes_configuration().await {
         Ok(nodes_configuration) => list_nodes_configuration(&nodes_configuration, opts).await,
-        Err(ConnectionInfoError::MissingMetadata(ident_responses))
-            if !ident_responses.is_empty() =>
+        Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes })
+            if !contacted_nodes.is_empty() =>
         {
             warn!("Could not read nodes configuration from cluster, using GetIdent responses to render basic list");
-            list_nodes_lite(&ident_responses, opts);
+            list_nodes_lite(&contacted_nodes, opts);
 
             // short-circuit if called as part of `restatectl status`
-            if ident_responses.iter().any(|(_, ident)| {
+            if contacted_nodes.iter().any(|(_, ident)| {
                 ident.metadata_server_status() == MetadataServerStatus::AwaitingProvisioning
             }) {
                 Err(ConnectionInfoError::ClusterNotProvisioned.into())
             } else {
-                Err(ConnectionInfoError::MissingMetadata(ident_responses).into())
+                Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes }.into())
             }
         }
         Err(err) => Err(err.into()),
@@ -172,7 +172,7 @@ pub fn list_nodes_lite(
     }
 
     c_println!(
-        "The cluster metadata service was unavailable but the following nodes responded directly"
+        "The cluster metadata service was unavailable but the following node(s) from the address list responded directly"
     );
     c_println!("{}", nodes_table);
 }
@@ -203,7 +203,7 @@ fn render_ident_extras(ident_response: &IdentResponse) -> Vec<Cell> {
         format!("v{}", ident_response.schema_version),
         format!("v{}", ident_response.partition_table_version),
     ]
-    .iter()
+    .into_iter()
     .map(Cell::new)
     .collect()
 }
