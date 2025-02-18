@@ -195,7 +195,8 @@ async fn set_storage_state(connection: &ConnectionInfo, opts: &SetOpts) -> anyho
 
         if !safe {
             return Err(anyhow::anyhow!(
-                    "This node is currently in `{current_state}` storage-state. Transitioning into `{current_state}` is unsafe."
+                    "This node is currently in `{current_state}` storage-state. Transitioning into `{}` is unsafe.",
+                    opts.storage_state
                  ));
         }
     }
