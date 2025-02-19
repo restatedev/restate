@@ -231,7 +231,9 @@ impl Default for InvokerOptions {
             message_size_warning: NonZeroUsize::new(10_000_000).unwrap(), // 10MB
             message_size_limit: None,
             tmp_dir: None,
-            concurrent_invocations_limit: Some(NonZeroUsize::new(100).unwrap()),
+            // Let users configure a limit once they hit a problem with the number of concurrent
+            // invocations.
+            concurrent_invocations_limit: None,
             disable_eager_state: false,
         }
     }
