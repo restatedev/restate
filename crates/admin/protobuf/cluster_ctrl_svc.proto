@@ -99,7 +99,17 @@ message ChainExtension {
   optional uint32 segment_index = 2;
   // check `ProviderKind` for possible values.
   string provider = 4;
+
+  // [deprecated] We return an error if this
+  // field is set.
   string params = 5;
+
+  // replication_property is required if provider=="replicated"
+  optional restate.cluster.ReplicationProperty replication = 6;
+  // optional if provider=="replicated", otherwise ignored
+  optional restate.common.NodeId sequencer = 7;
+  // optional if provider="replicated", otherwise ignored
+  repeated restate.common.NodeId nodeset = 8;
 }
 
 message SealAndExtendChainRequest {
