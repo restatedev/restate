@@ -369,7 +369,7 @@ pub enum StorageState {
     Disabled,
 
     // [authoritative]
-    /// Node is not picked for new write sets, but it may still accept writes on existing node sets,
+    /// Node is not picked for new write sets, but it may still accept writes on existing nodesets,
     /// and it's included in critical metadata updates (seal, release, etc.).
     ///
     /// - should read from: **yes**
