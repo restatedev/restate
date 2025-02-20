@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use anyhow::bail;
 use cling::prelude::*;
 
 use restate_cli_util::_comfy_table::{Cell, Table};
@@ -46,7 +47,12 @@ pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> any
     let logs: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
 
     if logs.is_empty() {
-        c_println!("No logs found. Has the cluster been provisioned yet?");
+        c_println!("No logs found. Has the cluster been provisioned yet? You can do so with `restatectl provision`.");
+
+        // short-circuits `restatectl status` to avoid trying to list partitions
+        bail!(
+            "The cluster appears to not be provisioned. You can do so with `restatectl provision`"
+        );
     } else {
         for (log_id, chain) in logs {
             let params = deserialize_replicated_log_params(&chain.tail());

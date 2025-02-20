@@ -16,6 +16,7 @@ use cling::prelude::*;
 use itertools::Itertools;
 use tokio::task::JoinSet;
 use tonic::codec::CompressionEncoding;
+use tracing::warn;
 
 use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::c_println;
@@ -23,10 +24,12 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::{duration_to_human_rough, Tense};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::IdentResponse;
+use restate_types::health::MetadataServerStatus;
+use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::PlainNodeId;
 
-use crate::connection::ConnectionInfo;
+use crate::connection::{ConnectionInfo, ConnectionInfoError};
 use crate::util::grpc_channel;
 
 // Default timeout for the [optional] GetIdent call made to all nodes
@@ -43,12 +46,35 @@ pub struct ListNodesOpts {
 }
 
 pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> anyhow::Result<()> {
-    let nodes_configuration = connection.get_nodes_configuration().await?;
+    match connection.get_nodes_configuration().await {
+        Ok(nodes_configuration) => list_nodes_configuration(&nodes_configuration, opts).await,
+        Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes })
+            if !contacted_nodes.is_empty() =>
+        {
+            warn!("Could not read nodes configuration from cluster, using GetIdent responses to render basic list");
+            list_nodes_lite(&contacted_nodes, opts);
 
+            // short-circuit if called as part of `restatectl status`
+            if contacted_nodes.iter().any(|(_, ident)| {
+                ident.metadata_server_status() == MetadataServerStatus::AwaitingProvisioning
+            }) {
+                Err(ConnectionInfoError::ClusterNotProvisioned.into())
+            } else {
+                Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes }.into())
+            }
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+async fn list_nodes_configuration(
+    nodes_configuration: &NodesConfiguration,
+    opts: &ListNodesOpts,
+) -> anyhow::Result<()> {
     let nodes = nodes_configuration.iter().collect::<BTreeMap<_, _>>();
 
     let nodes_extra_info = if opts.extra {
-        fetch_extra_info(&nodes_configuration).await?
+        fetch_extra_info(nodes_configuration).await?
     } else {
         HashMap::new()
     };
@@ -83,30 +109,9 @@ pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> an
         ];
 
         if opts.extra {
-            node_row.extend(render_extra_columns(
+            node_row.extend(render_optional_columns(
                 nodes_extra_info.get(&node_id),
-                |ident_response| {
-                    vec![
-                        duration_to_human_rough(
-                            TimeDelta::seconds(ident_response.age_s as i64),
-                            Tense::Present,
-                        ),
-                        // We reuse the prost-generated Debug formatting but cut out the "Unknown"s
-                        format!("{:?}", ident_response.status()).replace("Unknown", "-"),
-                        format!("{:?}", ident_response.admin_status()).replace("Unknown", "-"),
-                        format!("{:?}", ident_response.worker_status()).replace("Unknown", "-"),
-                        format!("{:?}", ident_response.log_server_status()).replace("Unknown", "-"),
-                        format!("{:?}", ident_response.metadata_server_status())
-                            .replace("Unknown", "-"),
-                        format!("v{}", ident_response.nodes_config_version),
-                        format!("v{}", ident_response.logs_version),
-                        format!("v{}", ident_response.schema_version),
-                        format!("v{}", ident_response.partition_table_version),
-                    ]
-                    .iter()
-                    .map(Cell::new)
-                    .collect()
-                },
+                render_ident_extras,
             ));
         }
         nodes_table.add_row(node_row);
@@ -116,13 +121,91 @@ pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> an
     Ok(())
 }
 
-fn render_extra_columns<F>(ident_response: Option<&IdentResponse>, f: F) -> Vec<Cell>
+pub fn list_nodes_lite(
+    ident_responses: &HashMap<AdvertisedAddress, IdentResponse>,
+    opts: &ListNodesOpts,
+) {
+    let mut nodes_table = Table::new_styled();
+    let mut header = vec!["NODE", "GEN", "NAME", "ADDRESS", "ROLES"];
+    if opts.extra {
+        header.extend(vec![
+            "UPTIME", "STATUS", "ADMIN", "WORKER", "LOG-SVR", "META", "NODES", "LOGS", "SCHEMA",
+            "PRTNS",
+        ]);
+    }
+    nodes_table.set_styled_header(header);
+
+    for (address, ident) in ident_responses
+        .iter()
+        .sorted_by_key(|&(addr, _)| addr.to_string())
+    {
+        let mut node_row = vec![
+            Cell::new(
+                ident
+                    .node_id
+                    .map(|id| format!("{}", id.id))
+                    .unwrap_or("n/a".to_owned()),
+            ),
+            Cell::new(
+                ident
+                    .node_id
+                    .and_then(|id| id.generation)
+                    .map(|gen| format!("{}", gen))
+                    .unwrap_or("".to_owned()),
+            ),
+            Cell::new("-"),
+            Cell::new(address.to_string()),
+            Cell::new(
+                ident
+                    .roles
+                    .iter()
+                    .map(|r| r.to_string())
+                    .sorted()
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            ),
+        ];
+        if opts.extra {
+            node_row.extend(render_ident_extras(ident));
+        }
+        nodes_table.add_row(node_row);
+    }
+
+    c_println!(
+        "The cluster metadata service was unavailable but the following node(s) from the address list responded directly"
+    );
+    c_println!("{}", nodes_table);
+}
+
+fn render_optional_columns<F>(ident_response: Option<&IdentResponse>, f: F) -> Vec<Cell>
 where
     F: FnOnce(&IdentResponse) -> Vec<Cell>,
 {
     ident_response
         .map(f)
         .unwrap_or(vec![Cell::new("N/A"), Cell::new("Unknown")])
+}
+
+fn render_ident_extras(ident_response: &IdentResponse) -> Vec<Cell> {
+    vec![
+        duration_to_human_rough(
+            TimeDelta::seconds(ident_response.age_s as i64),
+            Tense::Present,
+        ),
+        // We reuse the prost-generated Debug formatting but cut out the "Unknown"s
+        format!("{:?}", ident_response.status()).replace("Unknown", "-"),
+        format!("{:?}", ident_response.admin_status()).replace("Unknown", "-"),
+        format!("{:?}", ident_response.worker_status()).replace("Unknown", "-"),
+        format!("{:?}", ident_response.log_server_status()).replace("Unknown", "-"),
+        format!("{:?}", ident_response.metadata_server_status()).replace("Unknown", "-"),
+        format!("v{}", ident_response.nodes_config_version),
+        format!("v{}", ident_response.logs_version),
+        format!("v{}", ident_response.schema_version),
+        format!("v{}", ident_response.partition_table_version),
+    ]
+    .into_iter()
+    .map(Cell::new)
+    .collect()
 }
 
 async fn fetch_extra_info(

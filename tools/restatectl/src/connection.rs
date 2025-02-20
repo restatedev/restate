@@ -13,7 +13,7 @@ use std::sync::RwLock;
 use std::{cmp::Ordering, fmt::Display, future::Future, sync::Arc};
 
 use cling::{prelude::Parser, Collect};
-use itertools::{Either, Itertools};
+use itertools::{Either, Itertools, Position};
 use rand::{rng, seq::SliceRandom};
 use tokio::sync::{Mutex, MutexGuard};
 use tonic::{codec::CompressionEncoding, transport::Channel, Code, Response, Status};
@@ -163,6 +163,7 @@ impl ConnectionInfo {
         }
 
         let mut latest_value: Option<T> = None;
+        let mut ident_responses = HashMap::new();
         let mut any_node_responded = false;
         let mut errors = NodesErrors::default();
         let mut open_connections = self.open_connections.lock().await;
@@ -190,10 +191,11 @@ impl ConnectionInfo {
                     continue;
                 }
             };
+            ident_responses.insert(address.clone(), response.clone());
 
             any_node_responded = true;
             if response.status != NodeStatus::Alive as i32 {
-                debug!("Node {address} responded but it is not reporting itself as alive, and will be skipped");
+                debug!("Node {address} responded to GetIdent but it is not reporting itself as alive, and will be skipped");
                 continue;
             }
 
@@ -245,7 +247,9 @@ impl ConnectionInfo {
         }
 
         *guard = latest_value.clone();
-        latest_value.ok_or(ConnectionInfoError::MissingMetadata)
+        latest_value.ok_or(ConnectionInfoError::MetadataValueNotAvailable {
+            contacted_nodes: ident_responses,
+        })
     }
 
     /// Attempts to contact each node in the cluster that matches the specified role
@@ -367,8 +371,17 @@ impl ConnectionInfo {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionInfoError {
+    /// The requested metadata key could not be retrieved from any known metadata servers.
+    /// The servers which did respond are included in the error.
     #[error("Could not retrieve cluster metadata. Has the cluster been provisioned yet?")]
-    MissingMetadata,
+    MetadataValueNotAvailable {
+        contacted_nodes: HashMap<AdvertisedAddress, IdentResponse>,
+    },
+
+    #[error(
+        "The cluster appears to not be provisioned. You can do so with `restatectl provision`"
+    )]
+    ClusterNotProvisioned,
 
     #[error("Failed to decode metadata from node {0}: {1}")]
     DecoderError(AdvertisedAddress, StorageDecodeError),
@@ -418,9 +431,19 @@ impl NodesErrors {
 
 impl Display for NodesErrors {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Encountered multiple errors:")?;
-        for (address, status) in &self.node_status {
-            writeln!(f, " - {address} -> {status}")?;
+        for (position, (address, status)) in self.node_status.iter().with_position() {
+            match position {
+                Position::Only => {
+                    writeln!(f, "{address}: {status}")?;
+                }
+                Position::First => {
+                    writeln!(f, "Encountered multiple errors:")?;
+                    writeln!(f, " - {address} -> {status}")?;
+                }
+                Position::Middle | Position::Last => {
+                    writeln!(f, " - {address} -> {status}")?;
+                }
+            }
         }
         Ok(())
     }

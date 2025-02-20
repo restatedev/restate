@@ -19,7 +19,7 @@ use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvc
 use restate_types::health::MetadataServerStatus;
 use tonic::codec::CompressionEncoding;
 use tonic::{Code, IntoRequest};
-use tracing::error;
+use tracing::{error, warn};
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::ClusterStateRequest;
@@ -27,16 +27,16 @@ use restate_cli_util::_comfy_table::{Cell, Color, Row, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::logs::metadata::Logs;
-use restate_types::nodes_config::{NodeConfig, Role};
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::protobuf::cluster::{AliveNode, RunMode};
 use restate_types::{GenerationalNodeId, NodeId};
 
 use crate::commands::log::list_logs::{list_logs, ListLogsOpts};
 use crate::commands::metadata_server::status::list_metadata_servers;
-use crate::commands::node::list_nodes::{list_nodes, ListNodesOpts};
+use crate::commands::node::list_nodes::{list_nodes, list_nodes_lite, ListNodesOpts};
 use crate::commands::partition::list::{list_partitions, ListPartitionsOpts};
-use crate::connection::ConnectionInfo;
+use crate::connection::{ConnectionInfo, ConnectionInfoError};
 use crate::util::grpc_channel;
 
 use super::log::deserialize_replicated_log_params;
@@ -55,12 +55,27 @@ async fn cluster_status(
     status_opts: &ClusterStatusOpts,
 ) -> anyhow::Result<()> {
     if !status_opts.extra {
-        compact_cluster_status(connection).await?;
+        return match connection.get_nodes_configuration().await {
+            Ok(nodes_config) => compact_cluster_status(nodes_config, connection).await,
+            Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes }) => {
+                warn!("Could not read nodes configuration from cluster, using GetIdent responses to render basic list");
 
-        return Ok(());
+                list_nodes_lite(&contacted_nodes, &ListNodesOpts { extra: false });
+
+                // short-circuit if called as part of `restatectl status`
+                Err(ConnectionInfoError::ClusterNotProvisioned.into())
+            }
+            Err(err) => Err(err.into()),
+        };
     }
 
-    list_nodes(connection, &ListNodesOpts { extra: false }).await?;
+    list_nodes(
+        connection,
+        &ListNodesOpts {
+            extra: status_opts.extra,
+        },
+    )
+    .await?;
     c_println!();
 
     list_logs(connection, &ListLogsOpts {}).await?;
@@ -74,8 +89,10 @@ async fn cluster_status(
     Ok(())
 }
 
-async fn compact_cluster_status(connection: &ConnectionInfo) -> anyhow::Result<()> {
-    let nodes_config = connection.get_nodes_configuration().await?;
+async fn compact_cluster_status(
+    nodes_config: NodesConfiguration,
+    connection: &ConnectionInfo,
+) -> anyhow::Result<()> {
     let logs = connection.get_logs().await?;
 
     let cluster_state = connection
