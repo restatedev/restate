@@ -339,58 +339,63 @@ impl Versioned for NodesConfiguration {
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum StorageState {
     // [authoritative]
-    /// The node is not expected to be a member in any write set and the node will self-provision
-    /// its log-store to `ReadWrite` once it's written its own storage marker on disk.
+    /// The node is not expected to be a member of any write set. The node will self-provision its
+    /// log-store to `ReadWrite` once it's written its own storage marker to disk.
     ///
-    /// The node can never transition back to `Provisioning` once it has transitioned out of it.
+    /// A node can never transition back to `Provisioning` once it has transitioned out of it.
     ///
-    /// or all intents and purposes, this is equivalent to a `ReadOnly` state, except that it's
-    /// excluded from nodeset generation. The difference
-    /// between this and `ReadOnly` is that if a node is in Provisioning state, we are confident
-    /// that it has not been added to nodesets and we can safely remove it from the cluster without
-    /// checking the log-chain or trim points of loglets. Note that if this node happens to be in a
-    /// nodeset (although control plan shouldn't add it) spread selectors will not write any data
-    /// to it until they observe a state transition to ReadWrite. This behaviour matches `ReadOnly`
-    /// state.
+    /// For all intents and purposes, this is equivalent to a `ReadOnly` state, except that it's
+    /// excluded from nodeset generation. The difference between this and `ReadOnly` is that, if a
+    /// node is in Provisioning state, we are confident that it has not been added to node sets, and
+    /// we can safely remove it from the cluster without checking the log-chain or trim points of
+    /// loglets. Note that if this node happens to be in a nodeset (although control plane shouldn't
+    /// add it), spread selectors will not write any data to it until they observe a state
+    /// transition to `ReadWrite`. This behaviour matches the `ReadOnly` state.
     ///
-    /// can read from: yes (likely to not have data, but it might if it transitioned into RW)
-    /// can write to: yes - but excluded from new nodesets. If you see it in a nodeset, try writing to it.
+    /// - can read from: **yes** (likely to not have data, but it might if it transitioned into `ReadWrite`)
+    /// - can write to: **yes** but excluded from new node sets; if you see it in a nodeset, try writing to it
+    /// - new node sets: **excluded**
     #[default]
     Provisioning,
+
     // [authoritative empty]
-    /// Node's storage is not expected to be accessed in reads nor write. The node is not
-    /// considered as part of the replicated log cluster. Node can be safely decommissioned.
+    /// Node's storage is not expected to be accessed for reads or writes. The node is not
+    /// considered as part of the replicated log cluster, and can be safely decommissioned.
     ///
     /// The node can never transition out of `Disabled` after it has transitioned into it.
     ///
-    /// should read from: no
-    /// can write to: no
+    /// - should read from: **no**
+    /// - can write to: **no**
     Disabled,
+
     // [authoritative]
-    /// Node is not picked in new write sets, but it may still accept writes on existing nodeset
-    /// and it's included in critical metadata updates (seal, release, etc.)
+    /// Node is not picked for new write sets, but it may still accept writes on existing nodesets,
+    /// and it's included in critical metadata updates (seal, release, etc.).
     ///
-    /// should read from: yes
-    /// can write to: yes
-    /// **should write to: no**
-    /// **excluded from new nodesets**
+    /// - should read from: **yes**
+    /// - can write to: **yes**
+    /// - should write to: **no**
+    /// - new node sets: **excluded**
     ReadOnly,
+
     // [authoritative]
     /// Can be picked up in new write sets and accepts writes in existing write sets.
     ///
-    /// should read from: yes
-    /// can write to: yes
+    /// - should read from: **yes**
+    /// - can write to: **yes**
+    /// - new node sets: **included**
     ReadWrite,
+
     // **[non-authoritative]**
-    /// Node detected that some/all of its local storage has been deleted and it cannot be used
-    /// as authoritative source for quorum-dependent queries.
+    /// Node detected that some/all of its local storage has been lost. It cannot be used as an
+    /// authoritative source for quorum-dependent queries.
     ///
     /// Some data might have permanently been lost. It behaves like ReadOnly in spread selectors,
-    /// but participates unauthoritatively in f-majority checks. This node can transition back to
-    /// ReadWrite if it has been repaired.
+    /// but participates non-authoritatively in f-majority checks. This node can transition back to
+    /// `ReadWrite` if it has been repaired.
     ///
-    /// should read from: yes (non-quorum reads)
-    /// can write to: no
+    /// - should read from: **may (non-quorum reads only)**
+    /// - can write to: **no**
     DataLoss,
 }
 
