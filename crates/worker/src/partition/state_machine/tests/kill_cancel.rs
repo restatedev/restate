@@ -33,15 +33,19 @@ use test_log::test;
 async fn kill_inboxed_invocation(
     #[case] experimental_features: EnumSet<ExperimentalFeature>,
 ) -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+    let mut test_env = TestEnvBuilder::new()
+        .with_experimental_features(experimental_features)
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::mock_generate(&invocation_target);
+    let invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
 
     let inboxed_target = invocation_target.clone();
-    let inboxed_id = InvocationId::mock_generate(&inboxed_target);
+    let inboxed_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
 
-    let caller_id = InvocationId::mock_random();
+    let caller_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
 
     let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {
@@ -181,15 +185,20 @@ async fn terminate_scheduled_invocation(
 async fn kill_call_tree(
     #[case] experimental_features: EnumSet<ExperimentalFeature>,
 ) -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+    let mut test_env = TestEnvBuilder::new()
+        .with_experimental_features(experimental_features)
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
 
-    let call_invocation_id = InvocationId::mock_random();
+    let call_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
     let background_call_invocation_id = InvocationId::mock_random();
     let finished_call_invocation_id = InvocationId::mock_random();
 
     let invocation_target = InvocationTarget::mock_virtual_object();
-    let invocation_id = InvocationId::mock_generate(&invocation_target);
-    let enqueued_invocation_id_on_same_target = InvocationId::mock_generate(&invocation_target);
+    let invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
+    let enqueued_invocation_id_on_same_target =
+        InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
 
     let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {
@@ -369,14 +378,17 @@ async fn kill_call_tree(
 
 #[test(restate_core::test)]
 async fn cancel_invoked_invocation() -> Result<(), Error> {
-    let mut test_env = TestEnv::create().await;
+    let mut test_env = TestEnvBuilder::new()
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
 
-    let call_invocation_id = InvocationId::mock_random();
+    let call_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
     let background_call_invocation_id = InvocationId::mock_random();
     let finished_call_invocation_id = InvocationId::mock_random();
 
     let invocation_target = InvocationTarget::mock_workflow();
-    let invocation_id = InvocationId::mock_generate(&invocation_target);
+    let invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
 
     let _ = test_env
         .apply_multiple([
@@ -491,14 +503,17 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
 
 #[test(restate_core::test)]
 async fn cancel_suspended_invocation() -> Result<(), Error> {
-    let mut test_env = TestEnv::create().await;
+    let mut test_env = TestEnvBuilder::new()
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
 
-    let call_invocation_id = InvocationId::mock_random();
+    let call_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
     let background_call_invocation_id = InvocationId::mock_random();
     let finished_call_invocation_id = InvocationId::mock_random();
 
     let invocation_target = InvocationTarget::mock_workflow();
-    let invocation_id = InvocationId::mock_generate(&invocation_target);
+    let invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
 
     let _ = test_env
         .apply_multiple([
@@ -625,13 +640,16 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 
 #[test(restate_core::test)]
 async fn cancel_invocation_entry_referring_to_previous_entry() {
-    let mut test_env = TestEnv::create().await;
+    let mut test_env = TestEnvBuilder::new()
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
 
     let invocation_target = InvocationTarget::mock_service();
-    let invocation_id = InvocationId::mock_random();
+    let invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
 
-    let callee_1 = InvocationId::mock_random();
-    let callee_2 = InvocationId::mock_random();
+    let callee_1 = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
+    let callee_2 = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
 
     let _ = test_env
         .apply(Command::Invoke(ServiceInvocation {

@@ -144,12 +144,12 @@ where
 #[cfg(test)]
 mod tests {
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
-    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnvBuilder};
     use crate::partition::state_machine::Action;
     use bytes::Bytes;
     use googletest::prelude::{all, assert_that, contains, eq, none, pat};
     use googletest::{elements_are, property};
-    use restate_types::identifiers::{InvocationId, ServiceId};
+    use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
     use restate_types::invocation::{
         Header, InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocationResponseSink,
     };
@@ -164,16 +164,21 @@ mod tests {
 
     #[restate_core::test]
     async fn call_with_headers() {
-        let mut test_env = TestEnv::create().await;
-        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        let mut test_env = TestEnvBuilder::new()
+            .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+            .build()
+            .await;
+        let caller_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
+        fixtures::mock_start_invocation_with_invocation_id(&mut test_env, caller_invocation_id)
+            .await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, caller_invocation_id).await;
 
         let invocation_id_completion_id = 1;
         let result_completion_id = 2;
         let callee_service_id = ServiceId::mock_random();
         let callee_invocation_target =
             InvocationTarget::mock_from_service_id(callee_service_id.clone());
-        let callee_invocation_id = InvocationId::mock_generate(&callee_invocation_target);
+        let callee_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
         let success_result = Bytes::from_static(b"success");
 
         let call_command = CallCommand {
@@ -187,9 +192,9 @@ mod tests {
         };
         let actions = test_env
             .apply_multiple([
-                invoker_entry_effect(invocation_id, call_command.clone()),
+                invoker_entry_effect(caller_invocation_id, call_command.clone()),
                 Command::InvocationResponse(InvocationResponse {
-                    id: invocation_id,
+                    id: caller_invocation_id,
                     entry_index: result_completion_id,
                     result: ResponseResult::Success(success_result.clone()),
                 }),
@@ -216,7 +221,7 @@ mod tests {
                                 headers: eq(vec![Header::new("foo", "bar")]),
                                 response_sink: eq(Some(
                                     ServiceInvocationResponseSink::partition_processor(
-                                        invocation_id,
+                                        caller_invocation_id,
                                         result_completion_id
                                     )
                                 ))
@@ -225,11 +230,11 @@ mod tests {
                     )
                 })),
                 contains(matchers::actions::forward_notification(
-                    invocation_id,
+                    caller_invocation_id,
                     call_invocation_id_completion.clone()
                 )),
                 contains(matchers::actions::forward_notification(
-                    invocation_id,
+                    caller_invocation_id,
                     call_completion.clone()
                 ))
             ]
@@ -237,7 +242,7 @@ mod tests {
 
         // Check journal
         assert_that!(
-            test_env.read_journal_to_vec(invocation_id, 4).await,
+            test_env.read_journal_to_vec(caller_invocation_id, 4).await,
             elements_are![
                 property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
                 matchers::entry_eq(call_command),
@@ -254,15 +259,20 @@ mod tests {
     #[case(false)]
     #[restate_core::test]
     async fn one_way_call(#[case] add_invoke_time: bool) {
-        let mut test_env = TestEnv::create().await;
-        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        let mut test_env = TestEnvBuilder::new()
+            .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+            .build()
+            .await;
+        let caller_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
+        fixtures::mock_start_invocation_with_invocation_id(&mut test_env, caller_invocation_id)
+            .await;
+        fixtures::mock_pinned_deployment_v4(&mut test_env, caller_invocation_id).await;
 
         let invocation_id_completion_id = 1;
         let callee_service_id = ServiceId::mock_random();
         let callee_invocation_target =
             InvocationTarget::mock_from_service_id(callee_service_id.clone());
-        let callee_invocation_id = InvocationId::mock_generate(&callee_invocation_target);
+        let callee_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
         let invoke_time = if add_invoke_time {
             MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60))
         } else {
@@ -277,7 +287,7 @@ mod tests {
         };
         let actions = test_env
             .apply_multiple([invoker_entry_effect(
-                invocation_id,
+                caller_invocation_id,
                 one_way_call_command.clone(),
             )])
             .await;
@@ -306,7 +316,7 @@ mod tests {
                     )
                 })),
                 contains(matchers::actions::forward_notification(
-                    invocation_id,
+                    caller_invocation_id,
                     call_invocation_id_completion.clone()
                 ))
             ]
@@ -314,7 +324,7 @@ mod tests {
 
         // Check journal
         assert_that!(
-            test_env.read_journal_to_vec(invocation_id, 3).await,
+            test_env.read_journal_to_vec(caller_invocation_id, 3).await,
             elements_are![
                 property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
                 matchers::entry_eq(one_way_call_command),

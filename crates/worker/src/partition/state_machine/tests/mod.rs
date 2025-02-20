@@ -30,7 +30,9 @@ use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat, property};
 use restate_core::TaskCenter;
 use restate_invoker_api::{EffectKind, InvokeInputJournal};
-use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
+use restate_partition_store::{
+    OpenMode, PartitionStore, PartitionStoreManager, PartitionStoreTransaction,
+};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::inbox_table::ReadOnlyInboxTable;
@@ -57,6 +59,7 @@ use restate_types::invocation::{
     ServiceInvocation, ServiceInvocationResponseSink, Source, VirtualObjectHandlerType,
 };
 use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::raw::RawEntry;
 use restate_types::journal::{
     CompleteAwakeableEntry, Completion, CompletionResult, EntryResult, InvokeRequest,
 };
@@ -67,37 +70,80 @@ use std::collections::{HashMap, HashSet};
 use test_log::test;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-pub struct TestEnv {
-    pub state_machine: StateMachine,
-    // TODO for the time being we use rocksdb storage because we have no mocks for storage interfaces.
-    //  Perhaps we could make these tests faster by having those.
-    pub storage: PartitionStore,
+pub struct TestEnvBuilder {
+    inbox_seq_number: MessageIndex,
+    outbox_seq_number: MessageIndex,
+    outbox_head_seq_number: Option<MessageIndex>,
+    partition_key_range: RangeInclusive<PartitionKey>,
+    experimental_features: EnumSet<ExperimentalFeature>,
 }
 
-impl TestEnv {
-    pub async fn shutdown(self) {
-        TaskCenter::shutdown_node("test complete", 0).await;
-        RocksDbManager::get().shutdown().await;
+impl Default for TestEnvBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(dead_code)]
+impl TestEnvBuilder {
+    pub fn new() -> Self {
+        Self {
+            inbox_seq_number: 0,
+            outbox_seq_number: 0,
+            outbox_head_seq_number: None,
+            partition_key_range: PartitionKey::MIN..=PartitionKey::MAX,
+            experimental_features: Default::default(),
+        }
     }
 
-    pub async fn create() -> Self {
-        Self::create_with_experimental_features(Default::default()).await
+    pub fn with_inbox_seq_number(mut self, inbox_seq_number: MessageIndex) -> Self {
+        self.inbox_seq_number = inbox_seq_number;
+        self
     }
 
-    pub async fn create_with_experimental_features(
-        experimental_features: EnumSet<ExperimentalFeature>,
+    pub fn with_outbox_seq_number(mut self, outbox_seq_number: MessageIndex) -> Self {
+        self.outbox_seq_number = outbox_seq_number;
+        self
+    }
+
+    pub fn with_outbox_head_seq_number(
+        mut self,
+        outbox_head_seq_number: Option<MessageIndex>,
     ) -> Self {
-        Self::create_with_state_machine(StateMachine::new(
-            0,    /* inbox_seq_number */
-            0,    /* outbox_seq_number */
-            None, /* outbox_head_seq_number */
-            PartitionKey::MIN..=PartitionKey::MAX,
-            experimental_features,
-        ))
-        .await
+        self.outbox_head_seq_number = outbox_head_seq_number;
+        self
     }
 
-    pub async fn create_with_state_machine(state_machine: StateMachine) -> Self {
+    pub fn with_partition_key_range(
+        mut self,
+        partition_key_range: RangeInclusive<PartitionKey>,
+    ) -> Self {
+        self.partition_key_range = partition_key_range;
+        self
+    }
+
+    pub fn with_experimental_feature(mut self, exp_feature: ExperimentalFeature) -> Self {
+        self.experimental_features.insert(exp_feature);
+        self
+    }
+
+    pub fn with_experimental_features(
+        mut self,
+        exp_features: EnumSet<ExperimentalFeature>,
+    ) -> Self {
+        self.experimental_features.insert_all(exp_features);
+        self
+    }
+
+    pub async fn build(self) -> TestEnv {
+        let state_machine = StateMachine::new(
+            self.inbox_seq_number,
+            self.outbox_seq_number,
+            self.outbox_head_seq_number,
+            self.partition_key_range,
+            self.experimental_features,
+        );
+
         // Try init logging, if not already initialized. This removes the need for the test_log macro
         let _ = tracing_subscriber::FmtSubscriber::builder().with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .with_span_events(  match std::env::var_os("RUST_LOG_SPAN_EVENTS") {
@@ -143,10 +189,37 @@ impl TestEnv {
             .await
             .unwrap();
 
-        Self {
+        TestEnv {
             state_machine,
             storage: rocksdb_storage,
         }
+    }
+}
+
+pub struct TestEnv {
+    pub state_machine: StateMachine,
+    // TODO for the time being we use rocksdb storage because we have no mocks for storage interfaces.
+    //  Perhaps we could make these tests faster by having those.
+    pub storage: PartitionStore,
+}
+
+impl TestEnv {
+    pub async fn shutdown(self) {
+        TaskCenter::shutdown_node("test complete", 0).await;
+        RocksDbManager::get().shutdown().await;
+    }
+
+    pub async fn create() -> Self {
+        TestEnvBuilder::new().build().await
+    }
+
+    pub async fn create_with_experimental_features(
+        experimental_features: EnumSet<ExperimentalFeature>,
+    ) -> Self {
+        TestEnvBuilder::new()
+            .with_experimental_features(experimental_features)
+            .build()
+            .await
     }
 
     pub async fn apply(&mut self, command: Command) -> Vec<Action> {
@@ -175,6 +248,10 @@ impl TestEnv {
 
     pub fn storage(&mut self) -> &mut PartitionStore {
         &mut self.storage
+    }
+
+    pub fn transaction(&mut self) -> PartitionStoreTransaction<'_> {
+        self.storage.transaction()
     }
 
     pub async fn read_journal_to_vec(
@@ -363,10 +440,14 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
 
 #[test(restate_core::test)]
 async fn complete_awakeable_with_success() {
-    let mut test_env = TestEnv::create().await;
-    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+    let mut test_env = TestEnvBuilder::new()
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
+    let caller_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
+    fixtures::mock_start_invocation_with_invocation_id(&mut test_env, caller_invocation_id).await;
 
-    let callee_invocation_id = InvocationId::mock_random();
+    let callee_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
     let callee_entry_index = 10;
     let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
         CompleteAwakeableEntry {
@@ -379,7 +460,7 @@ async fn complete_awakeable_with_success() {
 
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
-            invocation_id,
+            invocation_id: caller_invocation_id,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry,
@@ -406,10 +487,14 @@ async fn complete_awakeable_with_success() {
 
 #[test(restate_core::test)]
 async fn complete_awakeable_with_failure() {
-    let mut test_env = TestEnv::create().await;
-    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+    let mut test_env = TestEnvBuilder::new()
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
+    let caller_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
+    fixtures::mock_start_invocation_with_invocation_id(&mut test_env, caller_invocation_id).await;
 
-    let callee_invocation_id = InvocationId::mock_random();
+    let callee_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
     let callee_entry_index = 10;
     let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
         CompleteAwakeableEntry {
@@ -422,7 +507,7 @@ async fn complete_awakeable_with_failure() {
 
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
-            invocation_id,
+            invocation_id: caller_invocation_id,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry,
@@ -452,27 +537,50 @@ async fn complete_awakeable_with_failure() {
 
 #[test(restate_core::test)]
 async fn invoke_with_headers() -> TestResult {
-    let mut test_env = TestEnv::create().await;
-    let service_id = ServiceId::mock_random();
-    let invocation_id =
-        fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
+    let mut test_env = TestEnvBuilder::new()
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
+    let caller_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
+    fixtures::mock_start_invocation_with_invocation_id(&mut test_env, caller_invocation_id).await;
+
+    let callee_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
+    let (_, entry) = ProtobufRawEntryCodec::serialize_enriched(Entry::invoke(
+        InvokeRequest {
+            service_name: "MyService".into(),
+            handler_name: "MyMethod".into(),
+            parameter: Bytes::default(),
+            headers: vec![Header::new("foo", "bar")],
+            key: "My_key".into(),
+            idempotency_key: None,
+        },
+        None,
+    ))
+    .into_inner();
+    let entry = RawEntry::new(
+        EnrichedEntryHeader::Call {
+            is_completed: false,
+            enrichment_result: Some(CallEnrichmentResult {
+                invocation_id: callee_invocation_id,
+                invocation_target: InvocationTarget::virtual_object(
+                    "MyService",
+                    "My_key",
+                    "MyMethod",
+                    VirtualObjectHandlerType::Exclusive,
+                ),
+                completion_retention_time: None,
+                span_context: Default::default(),
+            }),
+        },
+        entry,
+    );
 
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
-            invocation_id,
+            invocation_id: caller_invocation_id,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
-                entry: ProtobufRawEntryCodec::serialize_enriched(Entry::invoke(
-                    InvokeRequest {
-                        service_name: service_id.service_name,
-                        handler_name: "MyMethod".into(),
-                        parameter: Bytes::default(),
-                        headers: vec![Header::new("foo", "bar")],
-                        key: service_id.key,
-                        idempotency_key: None,
-                    },
-                    None,
-                )),
+                entry,
             },
         }))
         .await;
@@ -483,6 +591,7 @@ async fn invoke_with_headers() -> TestResult {
             message: pat!(
                 restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(pat!(
                     restate_types::invocation::ServiceInvocation {
+                        invocation_id: eq(callee_invocation_id),
                         headers: eq(vec![Header::new("foo", "bar")])
                     }
                 ))
@@ -731,20 +840,24 @@ async fn get_invocation_id_entry() {
 
 #[restate_core::test]
 async fn attach_invocation_entry() {
-    let mut test_env = TestEnv::create().await;
-    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+    let target_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
+    let caller_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
 
-    let callee_invocation_id = InvocationId::mock_random();
+    let mut test_env = TestEnvBuilder::new()
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
+    fixtures::mock_start_invocation_with_invocation_id(&mut test_env, caller_invocation_id).await;
 
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
-            invocation_id,
+            invocation_id: caller_invocation_id,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::AttachInvocation(
                     AttachInvocationEntry {
                         target: AttachInvocationTarget::InvocationId(
-                            callee_invocation_id.to_string().into(),
+                            target_invocation_id.to_string().into(),
                         ),
                         result: None,
                     },
@@ -758,10 +871,10 @@ async fn attach_invocation_entry() {
             message: pat!(
                 restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(pat!(
                     restate_types::invocation::AttachInvocationRequest {
-                        invocation_query: eq(InvocationQuery::Invocation(callee_invocation_id)),
+                        invocation_query: eq(InvocationQuery::Invocation(target_invocation_id)),
                         block_on_inflight: eq(true),
                         response_sink: eq(ServiceInvocationResponseSink::partition_processor(
-                            invocation_id,
+                            caller_invocation_id,
                             1
                         )),
                     }
@@ -775,20 +888,24 @@ async fn attach_invocation_entry() {
 
 #[restate_core::test]
 async fn get_invocation_output_entry() {
-    let mut test_env = TestEnv::create().await;
-    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+    let caller_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 2);
+    let target_invocation_id = InvocationId::mock_with_partition_key(PartitionKey::MAX - 1);
 
-    let callee_invocation_id = InvocationId::mock_random();
+    let mut test_env = TestEnvBuilder::new()
+        .with_partition_key_range(PartitionKey::MIN..=(PartitionKey::MAX - 2))
+        .build()
+        .await;
+    fixtures::mock_start_invocation_with_invocation_id(&mut test_env, caller_invocation_id).await;
 
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
-            invocation_id,
+            invocation_id: caller_invocation_id,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::GetInvocationOutput(
                     GetInvocationOutputEntry {
                         target: AttachInvocationTarget::InvocationId(
-                            callee_invocation_id.to_string().into(),
+                            target_invocation_id.to_string().into(),
                         ),
                         result: None,
                     },
@@ -803,10 +920,10 @@ async fn get_invocation_output_entry() {
             message: pat!(
                 restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(pat!(
                     restate_types::invocation::AttachInvocationRequest {
-                        invocation_query: eq(InvocationQuery::Invocation(callee_invocation_id)),
+                        invocation_query: eq(InvocationQuery::Invocation(target_invocation_id)),
                         block_on_inflight: eq(false),
                         response_sink: eq(ServiceInvocationResponseSink::partition_processor(
-                            invocation_id,
+                            caller_invocation_id,
                             1
                         )),
                     }
@@ -818,7 +935,7 @@ async fn get_invocation_output_entry() {
     // Let's try to complete it with not ready, this should forward empty
     let actions = test_env
         .apply(Command::InvocationResponse(InvocationResponse {
-            id: invocation_id,
+            id: caller_invocation_id,
             entry_index: 1,
             result: NOT_READY_INVOCATION_ERROR.into(),
         }))
@@ -826,7 +943,7 @@ async fn get_invocation_output_entry() {
     assert_that!(
         actions,
         contains(matchers::actions::forward_completion(
-            invocation_id,
+            caller_invocation_id,
             eq(Completion::new(1, CompletionResult::Empty))
         ))
     );
@@ -969,14 +1086,11 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
     let outbox_head_index = 3;
     let outbox_tail_index = 5;
 
-    let mut test_env = TestEnv::create_with_state_machine(StateMachine::new(
-        0,
-        outbox_tail_index,
-        Some(outbox_head_index),
-        PartitionKey::MIN..=PartitionKey::MAX,
-        EnumSet::empty(),
-    ))
-    .await;
+    let mut test_env = TestEnvBuilder::new()
+        .with_outbox_seq_number(outbox_tail_index)
+        .with_outbox_head_seq_number(Some(outbox_head_index))
+        .build()
+        .await;
 
     test_env
         .apply(Command::TruncateOutbox(outbox_tail_index))

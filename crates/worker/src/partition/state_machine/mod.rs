@@ -96,7 +96,7 @@ use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::Command;
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
@@ -124,6 +124,9 @@ pub struct StateMachine {
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
     invoker_apply_latency: Histogram,
+
+    // To avoid allocating this every time
+    reusable_commands_queue_to_process: VecDeque<Command>,
 
     /// Enabled experimental features.
     experimental_features: EnumSet<ExperimentalFeature>,
@@ -209,6 +212,7 @@ impl StateMachine {
             outbox_head_seq_number,
             partition_key_range,
             invoker_apply_latency,
+            reusable_commands_queue_to_process: VecDeque::with_capacity(1),
             experimental_features,
         }
     }
@@ -223,6 +227,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     partition_key_range: RangeInclusive<PartitionKey>,
     invoker_apply_latency: &'a Histogram,
     experimental_features: &'a EnumSet<ExperimentalFeature>,
+    commands_queue_to_process: &'a mut VecDeque<Command>,
     is_leader: bool,
 }
 
@@ -238,29 +243,39 @@ impl StateMachine {
         action_collector: &mut ActionCollector,
         is_leader: bool,
     ) -> Result<(), Error> {
-        let span = utils::state_machine_apply_command_span(is_leader, &command);
-        async {
-            let start = Instant::now();
-            // Apply the command
-            let command_type = command.name();
-            let res = StateMachineApplyContext {
-                storage: transaction,
-                action_collector,
-                inbox_seq_number: &mut self.inbox_seq_number,
-                outbox_seq_number: &mut self.outbox_seq_number,
-                outbox_head_seq_number: &mut self.outbox_head_seq_number,
-                partition_key_range: self.partition_key_range.clone(),
-                invoker_apply_latency: &self.invoker_apply_latency,
-                experimental_features: &self.experimental_features,
-                is_leader,
+        let commands_queue_to_process = &mut self.reusable_commands_queue_to_process;
+        commands_queue_to_process.clear();
+        commands_queue_to_process.push_back(command);
+
+        while let Some(command) = commands_queue_to_process.pop_front() {
+            let span = utils::state_machine_apply_command_span(is_leader, &command);
+            async {
+                let start = Instant::now();
+                // Apply the command
+                let command_type = command.name();
+                let res = StateMachineApplyContext {
+                    storage: transaction,
+                    action_collector,
+                    inbox_seq_number: &mut self.inbox_seq_number,
+                    outbox_seq_number: &mut self.outbox_seq_number,
+                    outbox_head_seq_number: &mut self.outbox_head_seq_number,
+                    partition_key_range: self.partition_key_range.clone(),
+                    invoker_apply_latency: &self.invoker_apply_latency,
+                    experimental_features: &self.experimental_features,
+                    commands_queue_to_process,
+                    is_leader,
+                }
+                .on_apply(command)
+                .await;
+                histogram!(PARTITION_APPLY_COMMAND, "command" => command_type)
+                    .record(start.elapsed());
+                res
             }
-            .on_apply(command)
-            .await;
-            histogram!(PARTITION_APPLY_COMMAND, "command" => command_type).record(start.elapsed());
-            res
+            .instrument(span)
+            .await?
         }
-        .instrument(span)
-        .await
+
+        Ok(())
     }
 }
 
@@ -3311,22 +3326,103 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: OutboxTable + FsmTable,
     {
-        // TODO Here we could add an optimization to immediately execute outbox message command
-        //  for partition_key within the range of this PP, but this is problematic due to how we tie
-        //  the effects buffer with tracing. Once we solve that, we could implement that by roughly uncommenting this code :)
-        //  if self.partition_key_range.contains(&message.partition_key()) {
-        //             // We can process this now!
-        //             let command = message.to_command();
-        //             return self.on_apply(
-        //                 command,
-        //                 effects,
-        //                 state
-        //             ).await
-        //         }
+        let seq_number = *self.outbox_seq_number;
+        match &message {
+            OutboxMessage::ServiceInvocation(service_invocation) => {
+                debug_if_leader!(
+                    self.is_leader,
+                    rpc.service = %service_invocation.invocation_target.service_name(),
+                    rpc.method = %service_invocation.invocation_target.handler_name(),
+                    restate.invocation.id = %service_invocation.invocation_id,
+                    restate.invocation.target = %service_invocation.invocation_target,
+                    restate.outbox.seq = seq_number,
+                    "Effect: Send service invocation to partition processor"
+                )
+            }
+            OutboxMessage::ServiceResponse(InvocationResponse {
+                result: ResponseResult::Success(_),
+                entry_index,
+                id,
+            }) => {
+                debug_if_leader!(
+                    self.is_leader,
+                    restate.invocation.id = %id,
+                    restate.outbox.seq = seq_number,
+                    "Effect: Send success response to another invocation, completing entry index {}",
+                    entry_index
+                )
+            }
+            OutboxMessage::InvocationTermination(invocation_termination) => {
+                debug_if_leader!(
+                    self.is_leader,
+                    restate.invocation.id = %invocation_termination.invocation_id,
+                    restate.outbox.seq = seq_number,
+                    "Effect: Send invocation termination command '{:?}' to partition processor",
+                    invocation_termination.flavor
+                )
+            }
+            OutboxMessage::ServiceResponse(InvocationResponse {
+                result: ResponseResult::Failure(e),
+                entry_index,
+                id,
+            }) => {
+                debug_if_leader!(
+                    self.is_leader,
+                    restate.invocation.id = %id,
+                    restate.outbox.seq = seq_number,
+                    "Effect: Send failure '{}' response to another invocation, completing entry index {}",
+                    e,
+                    entry_index
+                )
+            }
+            OutboxMessage::AttachInvocation(AttachInvocationRequest {
+                invocation_query, ..
+            }) => {
+                debug_if_leader!(
+                    self.is_leader,
+                    restate.outbox.seq = seq_number,
+                    "Effect: Enqueuing attach invocation request to '{:?}'",
+                    invocation_query,
+                )
+            }
+            OutboxMessage::NotifySignal(NotifySignalRequest {
+                invocation_id,
+                signal,
+            }) => {
+                debug_if_leader!(
+                    self.is_leader,
+                    restate.outbox.seq = seq_number,
+                    "Notifying signal to {invocation_id} with signal id {:?}",
+                    signal.id,
+                )
+            }
+        };
 
-        self.do_enqueue_into_outbox(*self.outbox_seq_number, message)
-            .await?;
+        if self.partition_key_range.contains(&message.partition_key()) {
+            // --- Skip the outbox, just append it to the queue of commands to execute next.
+            debug_if_leader!(
+                self.is_leader,
+                "Skipping the outbox because the message belongs to this partition"
+            );
+
+            self.commands_queue_to_process
+                .push_back(message.to_command());
+
+            return Ok(());
+        }
+
+        // Store on the inbox table, and add it to the actions
+
+        self.storage.put_outbox_message(seq_number, &message).await;
+        // need to store the next outbox sequence number
+        self.storage.put_outbox_seq_number(seq_number + 1).await;
+
+        self.action_collector.push(Action::NewOutboxMessage {
+            seq_number,
+            message,
+        });
         *self.outbox_seq_number += 1;
+
         Ok(())
     }
 
@@ -3624,97 +3720,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         self.storage
             .delete_inbox_entry(&service_id, sequence_number)
             .await;
-
-        Ok(())
-    }
-
-    async fn do_enqueue_into_outbox(
-        &mut self,
-        seq_number: MessageIndex,
-        message: OutboxMessage,
-    ) -> Result<(), Error>
-    where
-        S: OutboxTable + FsmTable,
-    {
-        match &message {
-            OutboxMessage::ServiceInvocation(service_invocation) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    rpc.service = %service_invocation.invocation_target.service_name(),
-                    rpc.method = %service_invocation.invocation_target.handler_name(),
-                    restate.invocation.id = %service_invocation.invocation_id,
-                    restate.invocation.target = %service_invocation.invocation_target,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send service invocation to partition processor"
-                )
-            }
-            OutboxMessage::ServiceResponse(InvocationResponse {
-                result: ResponseResult::Success(_),
-                entry_index,
-                id,
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.invocation.id = %id,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send success response to another invocation, completing entry index {}",
-                    entry_index
-                )
-            }
-            OutboxMessage::InvocationTermination(invocation_termination) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.invocation.id = %invocation_termination.invocation_id,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send invocation termination command '{:?}' to partition processor",
-                    invocation_termination.flavor
-                )
-            }
-            OutboxMessage::ServiceResponse(InvocationResponse {
-                result: ResponseResult::Failure(e),
-                entry_index,
-                id,
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.invocation.id = %id,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Send failure '{}' response to another invocation, completing entry index {}",
-                    e,
-                    entry_index
-                )
-            }
-            OutboxMessage::AttachInvocation(AttachInvocationRequest {
-                invocation_query, ..
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.outbox.seq = seq_number,
-                    "Effect: Enqueuing attach invocation request to '{:?}'",
-                    invocation_query,
-                )
-            }
-            OutboxMessage::NotifySignal(NotifySignalRequest {
-                invocation_id,
-                signal,
-            }) => {
-                debug_if_leader!(
-                    self.is_leader,
-                    restate.outbox.seq = seq_number,
-                    "Notifying signal to {invocation_id} with signal id {:?}",
-                    signal.id,
-                )
-            }
-        };
-
-        self.storage.put_outbox_message(seq_number, &message).await;
-        // need to store the next outbox sequence number
-        self.storage.put_outbox_seq_number(seq_number + 1).await;
-
-        self.action_collector.push(Action::NewOutboxMessage {
-            seq_number,
-            message,
-        });
 
         Ok(())
     }
