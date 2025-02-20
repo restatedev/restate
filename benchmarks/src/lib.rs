@@ -23,10 +23,12 @@ use restate_node::Node;
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::{
-    CommonOptionsBuilder, Configuration, ConfigurationBuilder, WorkerOptionsBuilder,
+    BifrostOptionsBuilder, CommonOptionsBuilder, Configuration, ConfigurationBuilder,
+    MetadataServerKind, MetadataServerOptionsBuilder, RaftOptions, WorkerOptionsBuilder,
 };
 use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::Constant;
+use restate_types::logs::metadata::ProviderKind;
 use restate_types::retries::RetryPolicy;
 use tokio::runtime::Runtime;
 use tracing::warn;
@@ -142,9 +144,21 @@ pub fn restate_configuration() -> Configuration {
         .build()
         .expect("building worker options should work");
 
+    let metadata_server_options = MetadataServerOptionsBuilder::default()
+        .kind(Some(MetadataServerKind::Raft(RaftOptions::default())))
+        .build()
+        .expect("building metadata server options should work");
+
+    let bifrost_options = BifrostOptionsBuilder::default()
+        .default_provider(ProviderKind::Replicated)
+        .build()
+        .expect("building bifrost options should work");
+
     let config = ConfigurationBuilder::default()
         .common(common_options)
         .worker(worker_options)
+        .metadata_server(metadata_server_options)
+        .bifrost(bifrost_options)
         .build()
         .expect("building the configuration should work");
 
