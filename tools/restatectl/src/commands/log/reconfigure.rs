@@ -18,13 +18,13 @@ use tracing::error;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{ChainExtension, SealAndExtendChainRequest};
 use restate_cli_util::{c_eprintln, c_println};
-use restate_types::logs::metadata::{Logs, ProviderKind, Segment, SegmentIndex};
-use restate_types::logs::{LogId, LogletId};
+use restate_types::logs::metadata::{Logs, ProviderKind, Segment};
+use restate_types::logs::LogId;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::Version;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
-use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::{GenerationalNodeId, PlainNodeId};
+use restate_types::replication::ReplicationProperty;
+use restate_types::{NodeId, PlainNodeId};
 
 use crate::connection::ConnectionInfo;
 use crate::util::RangeParam;
@@ -53,10 +53,10 @@ pub struct ReconfigureOpts {
     /// By default reuse the sealed segment's value iff its provider kind was also "replicated"
     #[clap(long, value_delimiter=',', num_args = 0..)]
     nodeset: Vec<PlainNodeId>,
-    /// The generational node id of the sequencer node, e.g. N1:1
+    /// The node id of the sequencer node, e.g. N1
     /// By default reuse the sealed segment's value iff its provider kind was also "replicated"
     #[clap(long)]
-    sequencer: Option<GenerationalNodeId>,
+    sequencer: Option<PlainNodeId>,
 }
 
 async fn reconfigure(connection: &ConnectionInfo, opts: &ReconfigureOpts) -> anyhow::Result<()> {
@@ -84,20 +84,11 @@ async fn inner_reconfigure(
 
     let tail_segment = chain.tail();
 
-    let tail_index = opts
-        .segment_index
-        .map(SegmentIndex::from)
-        .unwrap_or(chain.tail_index());
-
-    let next_loglet_id = LogletId::new(log_id, tail_index.next());
-
     let provider = opts.provider.unwrap_or(tail_segment.config.kind);
 
-    let params = match (provider, tail_segment.config.kind) {
+    let extension = match (provider, tail_segment.config.kind) {
         // we can always go to replicated loglet
-        (ProviderKind::Replicated, _) => {
-            replicated_loglet_params(opts, next_loglet_id, &tail_segment)?
-        }
+        (ProviderKind::Replicated, _) => replicated_loglet_params(opts, &tail_segment)?,
         // but never back to anything else
         (_, ProviderKind::Replicated) => {
             bail!(
@@ -109,21 +100,23 @@ async fn inner_reconfigure(
             if opts.sequencer.is_some() || !opts.nodeset.is_empty() {
                 bail!("'sequencer' or 'nodeset' are only allowed with 'replicated' provider");
             }
-            u64::from(next_loglet_id).to_string()
+            ChainExtension {
+                segment_index: opts.segment_index,
+                provider: provider.to_string(),
+                ..Default::default()
+            }
         }
         #[cfg(any(test, feature = "memory-loglet"))]
         (ProviderKind::InMemory, _) => {
             if opts.sequencer.is_some() || !opts.nodeset.is_empty() {
                 bail!("'sequencer' or 'nodeset' are only allowed with 'replicated' provider");
             }
-            u64::from(next_loglet_id).to_string()
+            ChainExtension {
+                segment_index: opts.segment_index,
+                provider: provider.to_string(),
+                ..Default::default()
+            }
         }
-    };
-
-    let extension = ChainExtension {
-        provider: provider.to_string(),
-        segment_index: Some(tail_index.into()),
-        params,
     };
 
     let request = SealAndExtendChainRequest {
@@ -176,38 +169,54 @@ async fn inner_reconfigure(
 
 fn replicated_loglet_params(
     opts: &ReconfigureOpts,
-    loglet_id: LogletId,
     tail: &Segment<'_>,
-) -> anyhow::Result<String> {
-    let params = if tail.config.kind == ProviderKind::Replicated {
+) -> anyhow::Result<ChainExtension> {
+    let ext = if tail.config.kind == ProviderKind::Replicated {
         let last_params = ReplicatedLogletParams::deserialize_from(tail.config.params.as_bytes())
             .context("Last segment params in chain is invalid")?;
 
-        ReplicatedLogletParams {
-            loglet_id,
+        ChainExtension {
+            segment_index: opts.segment_index,
+            provider: ProviderKind::Replicated.to_string(),
             nodeset: if opts.nodeset.is_empty() {
-                last_params.nodeset
+                last_params
+                    .nodeset
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect()
             } else {
-                NodeSet::from_iter(opts.nodeset.iter().cloned())
+                opts.nodeset.iter().cloned().map(Into::into).collect()
             },
             replication: opts
                 .replication
                 .clone()
-                .unwrap_or(last_params.replication.clone()),
-            sequencer: opts.sequencer.unwrap_or(last_params.sequencer),
+                .or_else(|| Some(last_params.replication.clone()))
+                .map(Into::into),
+            sequencer: Some(
+                opts.sequencer
+                    .map(Into::into)
+                    .unwrap_or(NodeId::from(last_params.sequencer))
+                    .into(),
+            ),
+            // (deprecated) intentionally empty
+            params: String::default(),
         }
     } else {
-        ReplicatedLogletParams {
-            loglet_id,
+        ChainExtension{
+            segment_index: opts.segment_index,
+            provider: ProviderKind::Replicated.to_string(),
             nodeset: if opts.nodeset.is_empty() {
                 bail!("Missing nodeset. Nodeset is required if last segment is not of replicated type");
             } else {
-                NodeSet::from_iter(opts.nodeset.iter().cloned())
+                opts.nodeset.iter().cloned().map(Into::into).collect()
             },
-            replication: opts.replication.clone().context("Missing replication. Replication factor is required if last segment is not of replicated type")?,
-            sequencer: opts.sequencer.context("Missing sequencer. Sequencer is required if last segment is not of replicated type")?,
+            replication: Some(opts.replication.clone().map(Into::into).context("Missing replication. Replication factor is required if last segment is not of replicated type")?),
+            sequencer: Some(opts.sequencer.map(Into::into).context("Missing sequencer. Sequencer is required if last segment is not of replicated type")?),
+            // (deprecated) intentionally empty
+            params: String::default()
         }
     };
 
-    params.serialize().map_err(Into::into)
+    Ok(ext)
 }

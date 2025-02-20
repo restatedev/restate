@@ -16,6 +16,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context};
 use codederror::CodedError;
 use futures::never::Never;
+use restate_types::replication::{NodeSet, ReplicationProperty};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
@@ -24,7 +25,8 @@ use tracing::{debug, info, trace, warn};
 
 use restate_metadata_server::ReadModifyWriteError;
 use restate_types::logs::metadata::{
-    LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind, SegmentIndex,
+    LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
+    ReplicatedLogletConfig, SegmentIndex,
 };
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::partition_table::{
@@ -51,7 +53,7 @@ use restate_types::logs::{LogId, LogletId, Lsn};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
 use restate_types::protobuf::common::AdminStatus;
-use restate_types::{GenerationalNodeId, Version};
+use restate_types::{GenerationalNodeId, NodeId, Version};
 
 use self::state::ClusterControllerState;
 use super::cluster_state_refresher::ClusterStateRefresher;
@@ -156,7 +158,9 @@ pub struct ChainExtension {
     /// Segment index to seal. Last if None
     pub segment_index_to_seal: Option<SegmentIndex>,
     pub provider_kind: ProviderKind,
-    pub params: LogletParams,
+    pub nodeset: Option<NodeSet>,
+    pub sequencer: Option<NodeId>,
+    pub replication: Option<ReplicationProperty>,
 }
 
 #[derive(Debug)]
@@ -676,16 +680,13 @@ struct SealAndExtendTask {
 }
 
 impl SealAndExtendTask {
-    async fn run(mut self) -> anyhow::Result<SealedSegment> {
+    async fn run(self) -> anyhow::Result<SealedSegment> {
         let last_segment_index = self
             .extension
             .as_ref()
             .and_then(|ext| ext.segment_index_to_seal);
 
-        let (provider, params) = match self.extension.take() {
-            Some(extension) => (extension.provider_kind, extension.params),
-            None => self.next_segment().await?,
-        };
+        let (provider, params) = self.next_segment()?;
 
         let sealed_segment = self
             .bifrost
@@ -702,7 +703,7 @@ impl SealAndExtendTask {
         Ok(sealed_segment)
     }
 
-    async fn next_segment(&self) -> anyhow::Result<(ProviderKind, LogletParams)> {
+    fn next_segment(&self) -> anyhow::Result<(ProviderKind, LogletParams)> {
         let logs = Metadata::with_current(|m| m.logs_ref());
 
         let segment = logs
@@ -721,7 +722,49 @@ impl SealAndExtendTask {
             None
         };
 
-        let (provider, params) = match &logs.configuration().default_provider {
+        // override the provider configuration, if extension is set.
+        let provider_config = match &self.extension {
+            None => logs.configuration().default_provider.clone(),
+            Some(ext) => match ext.provider_kind {
+                #[cfg(any(test, feature = "memory-loglet"))]
+                ProviderKind::InMemory => ProviderConfiguration::InMemory,
+                ProviderKind::Local => ProviderConfiguration::Local,
+                ProviderKind::Replicated => {
+                    ProviderConfiguration::Replicated(ReplicatedLogletConfig {
+                        replication_property: ext
+                            .replication
+                            .clone()
+                            .ok_or_else(|| anyhow::anyhow!("replication property is required"))?,
+                        // use the provided nodeset size or 0
+                        target_nodeset_size: ext
+                            .nodeset
+                            .as_ref()
+                            .map(|n| n.len() as u16)
+                            .unwrap_or_default()
+                            .try_into()?,
+                    })
+                }
+            },
+        };
+
+        let preferred_nodes = self
+            .extension
+            .as_ref()
+            .and_then(|ext| ext.nodeset.as_ref())
+            .or_else(|| previous_params.as_ref().map(|params| &params.nodeset));
+
+        let preferred_sequencer = self
+            .extension
+            .as_ref()
+            .and_then(|ext| ext.sequencer)
+            .or_else(|| {
+                Metadata::with_current(|m| {
+                    PartitionTableNodeSetSelectorHints::from(m.partition_table_snapshot())
+                })
+                .preferred_sequencer(&self.log_id)
+            });
+
+        let (provider, params) = match &provider_config {
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderConfiguration::InMemory => (
                 ProviderKind::InMemory,
@@ -739,11 +782,8 @@ impl SealAndExtendTask {
                     next_loglet_id,
                     &Metadata::with_current(|m| m.nodes_config_ref()),
                     &self.observed_cluster_state,
-                    previous_params.as_ref(),
-                    Metadata::with_current(|m| {
-                        PartitionTableNodeSetSelectorHints::from(m.partition_table_snapshot())
-                    })
-                    .preferred_sequencer(&self.log_id),
+                    preferred_nodes,
+                    preferred_sequencer,
                 )
                 .ok_or_else(|| anyhow::anyhow!("Insufficient writeable nodes in the nodeset"))?;
 

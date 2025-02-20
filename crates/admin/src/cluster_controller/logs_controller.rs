@@ -40,7 +40,7 @@ use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, StorageState};
 use restate_types::partition_table::PartitionTable;
 use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
-use restate_types::replication::{NodeSetSelector, NodeSetSelectorOptions};
+use restate_types::replication::{NodeSet, NodeSetSelector, NodeSetSelectorOptions};
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::{logs, GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
 
@@ -374,7 +374,7 @@ pub fn build_new_replicated_loglet_configuration(
     loglet_id: LogletId,
     nodes_config: &NodesConfiguration,
     observed_cluster_state: &ObservedClusterState,
-    previous_params: Option<&ReplicatedLogletParams>,
+    preferred_nodes: Option<&NodeSet>,
     preferred_sequencer: Option<NodeId>,
 ) -> Option<ReplicatedLogletParams> {
     use restate_types::replication::{NodeSetSelector, NodeSetSelectorOptions};
@@ -383,8 +383,6 @@ pub fn build_new_replicated_loglet_configuration(
     let mut rng = rng();
 
     let replication = replicated_loglet_config.replication_property.clone();
-
-    let preferred_nodes = previous_params.map(|p| &p.nodeset);
 
     let &sequencer = preferred_sequencer
         .and_then(|node_id| {
@@ -599,7 +597,7 @@ impl LogletConfiguration {
                     next_loglet_id,
                     &Metadata::with_current(|m| m.nodes_config_ref()),
                     observed_cluster_state,
-                    previous_params,
+                    previous_params.map(|params| &params.nodeset),
                     preferred_sequencer,
                 )
                 .map(LogletConfiguration::Replicated)
@@ -1638,7 +1636,7 @@ pub mod tests {
             seq_n0.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
-            Some(&seq_n0),
+            Some(&seq_n0.nodeset),
             Some(seq_n0.sequencer.into()),
         )
         .unwrap();
@@ -1669,7 +1667,7 @@ pub mod tests {
             seq_n0.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
-            Some(&seq_n0),
+            Some(&seq_n0.nodeset),
             Some(seq_n0.sequencer.into()),
         )
         .unwrap();
@@ -1730,7 +1728,7 @@ pub mod tests {
             initial.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
-            Some(&initial),
+            Some(&initial.nodeset),
             Some(initial.sequencer.into()),
         )
         .unwrap();
@@ -1755,7 +1753,7 @@ pub mod tests {
             config.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
-            Some(&config),
+            Some(&config.nodeset),
             Some(config.sequencer.into()),
         )
         .unwrap();
@@ -1773,7 +1771,7 @@ pub mod tests {
             config.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
-            Some(&config),
+            Some(&config.nodeset),
             Some(NodeId::Generational(config.sequencer)),
         )
         .unwrap();
@@ -1802,7 +1800,7 @@ pub mod tests {
             config.loglet_id,
             &nodes.nodes_config,
             &nodes.observed_state,
-            Some(&config),
+            Some(&config.nodeset),
             Some(config.sequencer.into()),
         )
         .unwrap();

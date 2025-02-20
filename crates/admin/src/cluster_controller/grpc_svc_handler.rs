@@ -22,7 +22,7 @@ use restate_types::net::partition_processor_manager::Snapshot;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::cluster::ClusterConfiguration;
 use restate_types::storage::{StorageCodec, StorageEncode};
-use restate_types::{Version, Versioned};
+use restate_types::{PlainNodeId, Version, Versioned};
 
 use crate::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use crate::cluster_controller::protobuf::{
@@ -199,15 +199,41 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         let request = request.into_inner();
 
         let extension = match request.extension {
-            Some(ext) => Some(ChainExtension {
-                segment_index_to_seal: ext.segment_index.map(SegmentIndex::from),
+            Some(ext) => {
+                if !ext.params.is_empty() {
+                    // `params`` is no longer supported. It's better to fail loudly
+                    // than act unexpectedly on invalid request version
+                    return Err(Status::invalid_argument(
+                            "Detected a deprecated argument. Please upgrade to the latest version of restatectl tool to ensure compatibility.",
+                        ));
+                }
 
-                provider_kind: ext
-                    .provider
-                    .parse()
-                    .map_err(|_| Status::invalid_argument("Provider type is not supported"))?,
-                params: ext.params.into(),
-            }),
+                Some(ChainExtension {
+                    segment_index_to_seal: ext.segment_index.map(SegmentIndex::from),
+
+                    provider_kind: ext
+                        .provider
+                        .parse()
+                        .map_err(|_| Status::invalid_argument("Provider type is not supported"))?,
+
+                    nodeset: if !ext.nodeset.is_empty() {
+                        Some(
+                            ext.nodeset
+                                .iter()
+                                .map(|node_id| PlainNodeId::new(node_id.id))
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    },
+                    sequencer: ext.sequencer.map(Into::into),
+                    replication: ext
+                        .replication
+                        .map(|p| p.try_into())
+                        .transpose()
+                        .map_err(|_| Status::invalid_argument("Invalid replication property"))?,
+                })
+            }
             None => None,
         };
 
