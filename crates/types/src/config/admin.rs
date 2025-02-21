@@ -94,6 +94,9 @@ pub struct AdminOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub default_partition_replication: PartitionReplication,
 
+    /// Disable serving the Restate Web UI on the admin port. Default is `false`.
+    pub disable_web_ui: bool,
+
     #[cfg(any(test, feature = "test-util"))]
     pub disable_cluster_controller: bool,
 }
@@ -164,6 +167,7 @@ impl Default for AdminOptions {
             default_partition_replication: PartitionReplication::default(),
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
+            disable_web_ui: false,
             log_tail_update_interval: Duration::from_secs(5 * 60).into(),
         }
     }
@@ -191,6 +195,7 @@ impl From<AdminOptionsShadow> for AdminOptions {
             log_trim_threshold: value.log_trim_threshold,
             log_tail_update_interval: value.log_tail_update_interval,
             default_partition_replication: value.default_partition_replication,
+            disable_web_ui: value.disable_web_ui,
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: value.disable_cluster_controller,
         }
@@ -228,6 +233,8 @@ struct AdminOptionsShadow {
     log_tail_update_interval: humantime::Duration,
 
     default_partition_replication: PartitionReplication,
+
+    disable_web_ui: bool,
 
     #[cfg(any(test, feature = "test-util"))]
     disable_cluster_controller: bool,
