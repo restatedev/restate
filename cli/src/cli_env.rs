@@ -194,11 +194,11 @@ impl CliEnv {
                 .to_owned();
 
             figment
-                .join((
+                .merge((
                     "ingress_base_url",
                     Url::parse(&format!("{restate_host_scheme}://{restate_host}:8080/"))?,
                 ))
-                .join((
+                .merge((
                     "admin_base_url",
                     Url::parse(&format!("{restate_host_scheme}://{restate_host}:9070/"))?,
                 ))
@@ -207,19 +207,19 @@ impl CliEnv {
         };
 
         let figment = if let Some(ingress_url) = os_env.get(INGRESS_URL_ENV) {
-            figment.join(("ingress_base_url", Url::parse(&ingress_url)?))
+            figment.merge(("ingress_base_url", Url::parse(&ingress_url)?))
         } else {
             figment
         };
 
         let figment = if let Some(admin_url) = os_env.get(ADMIN_URL_ENV) {
-            figment.join(("admin_base_url", Url::parse(&admin_url)?))
+            figment.merge(("admin_base_url", Url::parse(&admin_url)?))
         } else {
             figment
         };
 
         let figment = if let Some(bearer_token) = os_env.get(RESTATE_AUTH_TOKEN_ENV) {
-            figment.join(("bearer_token", bearer_token))
+            figment.merge(("bearer_token", bearer_token))
         } else {
             figment
         };
@@ -407,6 +407,7 @@ mod tests {
 
         // RESTATE_INGRESS_URL/RESTATE_ADMIN_URL override the base URLs!
         os_env.clear();
+        os_env.insert(RESTATE_HOST_ENV, "foobar.com".to_owned());
         os_env.insert(INGRESS_URL_ENV, "https://api.restate.dev:4567".to_string());
         os_env.insert(ADMIN_URL_ENV, "https://admin.restate.dev:4567".to_string());
         os_env.insert(RESTATE_HOST_SCHEME_ENV, "https".to_string());
