@@ -81,7 +81,7 @@ fn get_virtual_object_status<S: StorageAccess>(
 fn all_virtual_object_status<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send + '_> {
+) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send + use<'_, S>> {
     let iter = storage.iterator_from(FullScanPartitionKeyRange::<ServiceStatusKey>(range))?;
     Ok(stream::iter(OwnedIterator::new(iter).map(
         |(mut key, mut value)| {

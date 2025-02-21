@@ -223,7 +223,7 @@ fn invoked_or_killed_invocations<S: StorageAccess>(
 fn all_invocation_status<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send + '_> {
+) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send + use<'_, S>> {
     Ok(stream::iter(
         OwnedIterator::new(storage.iterator_from(FullScanPartitionKeyRange::<
             InvocationStatusKeyV1,

@@ -104,7 +104,7 @@ fn get_journal<S: StorageAccess>(
 fn all_journals<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send + '_> {
+) -> Result<impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send + use<'_, S>> {
     let iter = storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range))?;
     Ok(stream::iter(OwnedIterator::new(iter).map(
         |(mut key, mut value)| {

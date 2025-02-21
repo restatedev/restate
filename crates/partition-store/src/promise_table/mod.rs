@@ -62,7 +62,7 @@ fn get_promise<S: StorageAccess>(
 fn all_promise<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<OwnedPromiseRow>> + Send + '_> {
+) -> Result<impl Stream<Item = Result<OwnedPromiseRow>> + Send + use<'_, S>> {
     let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<PromiseKey>(range))?;
     Ok(stream::iter(OwnedIterator::new(iter).map(
         |(mut k, mut v)| {
