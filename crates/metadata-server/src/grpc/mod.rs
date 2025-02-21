@@ -185,7 +185,7 @@ pub mod pb_conversions {
 
     impl From<Ulid> for ulid::Ulid {
         fn from(value: Ulid) -> Self {
-            Self::from((value.high as u128) << 64 | value.low as u128)
+            Self::from((u128::from(value.high) << 64) | value.low as u128)
         }
     }
 
