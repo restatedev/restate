@@ -354,7 +354,6 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         )
         .run(self.networking.clone())
         .await
-        .map_err(Into::into)
     }
 
     #[instrument(
