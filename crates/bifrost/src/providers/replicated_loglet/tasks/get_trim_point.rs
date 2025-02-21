@@ -114,11 +114,13 @@ impl<'a> GetTrimPointTask<'a> {
                         request,
                         &trim_rpc_router,
                         &known_global_tail,
-                        Configuration::pinned()
-                            .bifrost
-                            .replicated_loglet
-                            .log_server_retry_policy
-                            .clone(),
+                        Configuration::with_current(|config| {
+                            config
+                                .bifrost
+                                .replicated_loglet
+                                .log_server_retry_policy
+                                .clone()
+                        }),
                     );
 
                     (node_id, task.run(on_info_response, &networking).await)

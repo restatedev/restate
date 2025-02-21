@@ -84,7 +84,7 @@ async fn patch_value_direct(
     opts: &PatchValueOpts,
     patch: Patch,
 ) -> anyhow::Result<Option<GenericMetadataValue>> {
-    let value = run_in_task_center(opts.metadata.config_file.as_ref(), |config| async move {
+    let value = run_in_task_center(opts.metadata.config_file.as_ref(), async |config| {
         let rocksdb_manager = RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
         debug!("RocksDB Initialized");
 

@@ -38,7 +38,8 @@ impl TransportConnect for GrpcConnector {
         let address = nodes_config.find_node_by_id(node_id)?.address.clone();
 
         trace!("Attempting to connect to node {} at {}", node_id, address);
-        let channel = create_tonic_channel(address, &Configuration::pinned().networking);
+        let channel =
+            Configuration::with_current(|config| create_tonic_channel(address, &config.networking));
 
         // Establish the connection
         let mut client = CoreNodeSvcClient::new(channel)

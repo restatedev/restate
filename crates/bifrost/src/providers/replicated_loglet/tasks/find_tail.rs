@@ -509,10 +509,9 @@ impl<'a> FindTailOnNode<'a> {
         self,
         networking: &'a Networking<T>,
     ) -> (PlainNodeId, NodeTailStatus) {
-        let request_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
+        let request_timeout = *Configuration::with_current(|config| {
+            config.bifrost.replicated_loglet.log_server_rpc_timeout
+        });
 
         let request = GetLogletInfo {
             header: LogServerRequestHeader::new(
@@ -587,16 +586,17 @@ impl WaitForTailOnNode {
         requested_tail: LogletOffset,
         networking: Networking<T>,
     ) -> (PlainNodeId, NodeTailStatus) {
-        let request_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
+        let request_timeout = *Configuration::with_current(|config| {
+            config.bifrost.replicated_loglet.log_server_rpc_timeout
+        });
 
-        let retry_policy = Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_retry_policy
-            .clone();
+        let retry_policy = Configuration::with_current(|config| {
+            config
+                .bifrost
+                .replicated_loglet
+                .log_server_retry_policy
+                .clone()
+        });
 
         let mut retry_iter = retry_policy.into_iter();
         loop {

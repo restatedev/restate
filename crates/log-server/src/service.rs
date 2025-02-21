@@ -242,10 +242,8 @@ impl LogServerService {
         expected_state: StorageState,
         target_state: StorageState,
     ) -> anyhow::Result<StorageState> {
-        let retry_policy = Configuration::pinned()
-            .common
-            .network_error_retry_policy
-            .clone();
+        let retry_policy =
+            Configuration::with_current(|config| config.common.network_error_retry_policy.clone());
         let mut first_attempt = true;
 
         let nodes_config = match retry_on_retryable_error(retry_policy, || {

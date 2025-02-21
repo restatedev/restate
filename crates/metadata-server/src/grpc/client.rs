@@ -283,19 +283,24 @@ impl MetadataStore for GrpcMetadataServerClient {
 
         // We can't assume that we have joined the cluster yet. That's why we read our roles
         // from the configuration and not from the NodesConfiguration.
-        let config = Configuration::pinned();
+        let mut client = Configuration::with_current(|config| {
+            if !config.common.roles.contains(Role::MetadataServer) {
+                return Err(ProvisionError::NotSupported(format!(
+                    "Node '{}' does not run the metadata-server role. Try to provision a different node.",
+                    config.common.advertised_address
+                )));
+            }
 
-        if !config.common.roles.contains(Role::MetadataServer) {
-            return Err(ProvisionError::NotSupported(format!(
-                "Node '{}' does not run the metadata-server role. Try to provision a different node.",
-                config.common.advertised_address
-            )));
-        }
-
-        let mut client = MetadataServerSvcClientWithAddress::new(ChannelWithAddress::new(
-            config.common.advertised_address.clone(),
-            create_tonic_channel(config.common.advertised_address.clone(), &config.networking),
-        ));
+            Ok(MetadataServerSvcClientWithAddress::new(
+                ChannelWithAddress::new(
+                    config.common.advertised_address.clone(),
+                    create_tonic_channel(
+                        config.common.advertised_address.clone(),
+                        &config.networking,
+                    ),
+                ),
+            ))
+        })?;
 
         let mut buffer = BytesMut::new();
         StorageCodec::encode(nodes_configuration, &mut buffer)

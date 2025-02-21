@@ -175,7 +175,7 @@ fn main() {
         warn!("Failed to increase the number of open file descriptors limit.");
     }
     let tc = TaskCenterBuilder::default()
-        .options(Configuration::pinned().common.clone())
+        .options(Configuration::with_current(|config| config.common.clone()))
         .build()
         .expect("task_center builds");
     tc.block_on({
@@ -183,7 +183,7 @@ fn main() {
             // Apply tracing config globally
             // We need to apply this first to log correctly
             let tracing_guard =
-                init_tracing_and_logging(&Configuration::pinned().common, "restate-server")
+                Configuration::with_current(|config| init_tracing_and_logging(&config.common, "restate-server"))
                     .expect("failed to configure logging and tracing!");
             // Starts prometheus periodic upkeep tasks
             prometheus.start_upkeep_task();
@@ -201,13 +201,14 @@ fn main() {
             } else {
                 "[default]".to_owned()
             };
-            info!(
-                node_name = Configuration::pinned().node_name(),
+            Configuration::with_current(|config| {
+                                            info!(
+                node_name = config.node_name(),
                 config_source = %config_source,
                 base_dir = %restate_types::config::node_filepath("").display(),
                 "Starting Restate Server {}",
                 build_info::build_info()
-            );
+            ); });
 
             // Initialize rocksdb manager
             let rocksdb_manager =
@@ -217,7 +218,7 @@ fn main() {
             config_loader.start();
 
             // Initialize telemetry
-            let telemetry = telemetry::Telemetry::create(&Configuration::pinned().common);
+            let telemetry = Configuration::with_current(|config| telemetry::Telemetry::create(&config.common));
             telemetry.start();
 
             let node = Node::create(Configuration::updateable(), prometheus).await;
@@ -242,7 +243,7 @@ fn main() {
                         let signal_reason = format!("received signal {signal_name}");
 
                         let shutdown_with_timeout = tokio::time::timeout(
-                            Configuration::pinned().common.shutdown_grace_period(),
+                            Configuration::with_current(|config| config.common.shutdown_grace_period()),
                             async {
                                 TaskCenter::shutdown_node(&signal_reason, 0).await;
                                 rocksdb_manager.shutdown().await;
@@ -271,10 +272,10 @@ fn main() {
             }
 
             shutdown_tracing(
-                Configuration::pinned()
+                Configuration::with_current(|config| config
                     .common
                     .shutdown_grace_period()
-                    .div(2),
+                    .div(2)),
                 tracing_guard,
             )
             .await;

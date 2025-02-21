@@ -90,7 +90,10 @@ impl<'a> BifrostAdmin<'a> {
                 break sealed_segment;
             }
             debug!(%log_id, %segment_index, "Segment is not sealed yet");
-            tokio::time::sleep(Configuration::pinned().bifrost.seal_retry_interval.into()).await;
+            tokio::time::sleep(Configuration::with_current(|config| {
+                config.bifrost.seal_retry_interval.into()
+            }))
+            .await;
         };
 
         let proposed_params =
@@ -141,7 +144,10 @@ impl<'a> BifrostAdmin<'a> {
                 break sealed_segment;
             }
             debug!(%log_id, %segment_index, "Segment is not sealed yet");
-            tokio::time::sleep(Configuration::pinned().bifrost.seal_retry_interval.into()).await;
+            tokio::time::sleep(Configuration::with_current(|config| {
+                config.bifrost.seal_retry_interval.into()
+            }))
+            .await;
         };
 
         self.add_segment_with_params(
@@ -212,10 +218,8 @@ impl<'a> BifrostAdmin<'a> {
         params: LogletParams,
     ) -> Result<()> {
         self.inner.fail_if_shutting_down()?;
-        let retry_policy = Configuration::pinned()
-            .common
-            .network_error_retry_policy
-            .clone();
+        let retry_policy =
+            Configuration::with_current(|config| config.common.network_error_retry_policy.clone());
         let logs = retry_on_retryable_error(retry_policy, || {
             self.inner
                 .metadata_writer
@@ -257,10 +261,8 @@ impl<'a> BifrostAdmin<'a> {
         params: LogletParams,
     ) -> Result<()> {
         self.inner.fail_if_shutting_down()?;
-        let retry_policy = Configuration::pinned()
-            .common
-            .network_error_retry_policy
-            .clone();
+        let retry_policy =
+            Configuration::with_current(|config| config.common.network_error_retry_policy.clone());
         let logs = retry_on_retryable_error(retry_policy, || {
             self.inner
                 .metadata_writer
@@ -290,10 +292,8 @@ impl<'a> BifrostAdmin<'a> {
     /// Creates empty metadata if none exists for bifrost and publishes it to metadata
     /// manager.
     pub async fn init_metadata(&self) -> Result<(), Error> {
-        let retry_policy = Configuration::pinned()
-            .common
-            .network_error_retry_policy
-            .clone();
+        let retry_policy =
+            Configuration::with_current(|config| config.common.network_error_retry_policy.clone());
 
         let logs = retry_on_retryable_error(retry_policy, || {
             self.inner
@@ -301,7 +301,7 @@ impl<'a> BifrostAdmin<'a> {
                 .metadata_store_client()
                 .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
                     debug!("Attempting to initialize logs metadata in metadata store");
-                    Logs::from_configuration(&Configuration::pinned())
+                    Configuration::with_current(Logs::from_configuration)
                 })
         })
         .await

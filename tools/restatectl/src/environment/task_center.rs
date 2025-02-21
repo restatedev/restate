@@ -8,21 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::future::Future;
 use std::path::PathBuf;
-
 use tracing::warn;
 
 use restate_core::TaskCenterBuilder;
 use restate_types::config::Configuration;
 use restate_types::config_loader::ConfigLoaderBuilder;
-use restate_types::live::Pinned;
 
 /// Loads configuration, creates a task center, executes the supplied function body in scope of TC, and shuts down.
-pub async fn run_in_task_center<F, O>(config_file: Option<&PathBuf>, fn_body: F) -> O::Output
+pub async fn run_in_task_center<F, O>(config_file: Option<&PathBuf>, fn_body: F) -> O
 where
-    F: FnOnce(Pinned<Configuration>) -> O,
-    O: Future,
+    F: AsyncFnOnce(&Configuration) -> O,
 {
     let config_path = config_file
         .as_ref()
@@ -48,7 +44,7 @@ where
         warn!("Failed to increase the number of open file descriptors limit.");
     }
 
-    let config = Configuration::pinned();
+    let config = Configuration::current();
 
     let task_center = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -58,7 +54,7 @@ where
         .expect("task_center builds")
         .into_handle();
 
-    let result = task_center.run_sync(|| fn_body(config)).await;
+    let result = task_center.run_sync(|| fn_body(&config)).await;
 
     task_center.shutdown_node("finished", 0).await;
     result

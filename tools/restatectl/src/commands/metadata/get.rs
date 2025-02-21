@@ -60,7 +60,7 @@ async fn get_value_remote(
 }
 
 async fn get_value_direct(opts: &GetValueOpts) -> anyhow::Result<Option<GenericMetadataValue>> {
-    run_in_task_center(opts.metadata.config_file.as_ref(), |config| async move {
+    run_in_task_center(opts.metadata.config_file.as_ref(), async |config| {
         let rocksdb_manager = RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
         debug!("RocksDB Initialized");
 

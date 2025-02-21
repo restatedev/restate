@@ -83,10 +83,9 @@ where
     ) -> Result<O, TaskError> {
         let start = Instant::now();
         let loglet_id = self.request.header().loglet_id;
-        let request_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
+        let request_timeout = Configuration::with_current(|config| {
+            *config.bifrost.replicated_loglet.log_server_rpc_timeout
+        });
 
         let mut retry_iter = self.retry_policy.into_iter();
 

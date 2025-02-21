@@ -37,10 +37,12 @@ pub async fn cluster_health() -> Result<Json<ClusterHealthResponse>, GenericRest
             )
         })?;
 
-    let mut node_ctl_svc_client = NodeCtlSvcClient::new(create_tonic_channel(
-        node_config.address.clone(),
-        &Configuration::pinned().networking,
-    ));
+    let mut node_ctl_svc_client = Configuration::with_current(|config| {
+        NodeCtlSvcClient::new(create_tonic_channel(
+            node_config.address.clone(),
+            &config.networking,
+        ))
+    });
     let cluster_health = node_ctl_svc_client
         .cluster_health(())
         .await

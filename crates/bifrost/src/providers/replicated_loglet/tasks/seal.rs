@@ -78,11 +78,13 @@ impl SealTask {
             &my_params.replication,
         );
 
-        let retry_policy = Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_retry_policy
-            .clone();
+        let retry_policy = Configuration::with_current(|config| {
+            config
+                .bifrost
+                .replicated_loglet
+                .log_server_retry_policy
+                .clone()
+        });
 
         let mut inflight_requests = JoinSet::new();
 

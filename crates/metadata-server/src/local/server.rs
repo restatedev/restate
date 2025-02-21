@@ -61,13 +61,9 @@ impl LocalMetadataServer {
     pub fn client(&self) -> MetadataStoreClient {
         MetadataStoreClient::new(
             LocalMetadataStoreClient::new(self.request_tx.clone()),
-            Some(
-                Configuration::pinned()
-                    .common
-                    .metadata_client
-                    .backoff_policy
-                    .clone(),
-            ),
+            Some(Configuration::with_current(|config| {
+                config.common.metadata_client.backoff_policy.clone()
+            })),
         )
     }
 
@@ -174,9 +170,9 @@ pub async fn migrate_nodes_configuration(
 
     let mut modified = false;
 
-    if let Some(node_config) =
-        nodes_configuration.find_node_by_name(Configuration::pinned().common.node_name())
-    {
+    if let Some(node_config) = Configuration::with_current(|config| {
+        nodes_configuration.find_node_by_name(config.common.node_name())
+    }) {
         // Only needed if we resume from a Restate version that has not properly set the
         // MetadataServerState to Member in the NodesConfiguration.
         if !matches!(
@@ -204,24 +200,27 @@ pub async fn migrate_nodes_configuration(
             return Err(MigrationError::MultiNodeCluster);
         }
 
-        assert_eq!(
-            node_config.name,
-            Configuration::pinned().node_name(),
-            "The only known node of this cluster is {} but my node name is {}. This indicates that my node name was changed after an initial provisioning of the node",
-            node_config.name,
-            Configuration::pinned().node_name()
-        );
+        Configuration::with_current(|config| {
+            assert_eq!(
+                node_config.name,
+                config.node_name(),
+                "The only known node of this cluster is {} but my node name is {}. This indicates that my node name was changed after an initial provisioning of the node",
+                node_config.name,
+                config.node_name()
+            )
+        });
 
-        let plain_node_id_to_migrate_to =
-            if let Some(force_node_id) = Configuration::pinned().common.force_node_id {
-                assert_ne!(
-                    force_node_id, zero,
-                    "It should no longer be allowed to force the node id to 0"
-                );
-                force_node_id
-            } else {
-                PlainNodeId::MIN
-            };
+        let plain_node_id_to_migrate_to = if let Some(force_node_id) =
+            Configuration::with_current(|config| config.common.force_node_id)
+        {
+            assert_ne!(
+                force_node_id, zero,
+                "It should no longer be allowed to force the node id to 0"
+            );
+            force_node_id
+        } else {
+            PlainNodeId::MIN
+        };
 
         let mut new_node_config = node_config.clone();
         new_node_config.current_generation = plain_node_id_to_migrate_to

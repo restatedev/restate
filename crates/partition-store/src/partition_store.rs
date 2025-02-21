@@ -656,11 +656,9 @@ impl Transaction for PartitionStoreTransaction<'_> {
         if self.write_batch_with_index.is_empty() {
             return Ok(());
         }
-        let io_mode = if Configuration::pinned()
-            .worker
-            .storage
-            .always_commit_in_background
-        {
+        let io_mode = if Configuration::with_current(|config| {
+            config.worker.storage.always_commit_in_background
+        }) {
             IoMode::AlwaysBackground
         } else {
             IoMode::Default

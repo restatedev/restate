@@ -64,7 +64,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     let mut nodes_configuration =
         NodesConfiguration::new(Version::MIN, "migration-local-to-replicated".to_owned());
     let my_node_config = NodeConfig::new(
-        Configuration::pinned().common.node_name().to_owned(),
+        Configuration::with_current(|config| config.common.node_name().to_owned()),
         // configure a zero node id to test the migration path for zero node ids
         PlainNodeId::from(0).with_generation(my_generation),
         NodeLocation::default(),
@@ -155,9 +155,10 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
 
     assert_eq!(actual_nodes_configuration.len(), 1);
 
-    let my_actual_node_config = actual_nodes_configuration
-        .find_node_by_name(Configuration::pinned().common.node_name())
-        .expect("my node config should be present");
+    let my_actual_node_config = Configuration::with_current(|config| {
+        actual_nodes_configuration.find_node_by_name(config.common.node_name())
+    })
+    .expect("my node config should be present");
     // validate that the zero node id was migrated to a non-zero value
     assert_ne!(
         my_actual_node_config.current_generation.as_plain(),

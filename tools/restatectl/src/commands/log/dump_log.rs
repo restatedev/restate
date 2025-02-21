@@ -59,7 +59,7 @@ struct DecodedLogRecord {
 }
 
 async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
-    run_in_task_center(opts.config_file.as_ref(), |config| async move {
+    run_in_task_center(opts.config_file.as_ref(), async |config| {
         if !config.bifrost.local.data_dir().exists() {
             bail!(
                 "The specified path '{}' does not contain a local-loglet directory.",

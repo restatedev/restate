@@ -154,11 +154,13 @@ impl<T: TransportConnect> Sequencer<T> {
             my_params.replication.clone(),
         );
 
-        let max_in_flight_records_in_config: usize = Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .maximum_inflight_records
-            .into();
+        let max_in_flight_records_in_config: usize = Configuration::with_current(|config| {
+            config
+                .bifrost
+                .replicated_loglet
+                .maximum_inflight_records
+                .into()
+        });
 
         let record_permits = Arc::new(Semaphore::new(max_in_flight_records_in_config));
 

@@ -70,7 +70,7 @@ impl<'a> NodeInit<'a> {
     }
 
     pub async fn init(self) -> anyhow::Result<()> {
-        let config = Configuration::pinned().into_arc();
+        let config = Configuration::current();
 
         let join_cluster = Self::join_cluster(
             self.metadata_store_client,
@@ -123,9 +123,8 @@ impl<'a> NodeInit<'a> {
         // fetch the latest metadata
         let metadata = Metadata::current();
 
-        let config = Configuration::pinned();
-
-        let retry_policy = config.common.network_error_retry_policy.clone();
+        let retry_policy =
+            Configuration::with_current(|config| config.common.network_error_retry_policy.clone());
 
         if let Err(err) = retry_policy
             .retry_if(

@@ -55,10 +55,9 @@ impl<T: TransportConnect> Factory<T> {
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         // Handling Sequencer(s) incoming requests
-        let request_pump = RequestPump::new(
-            &Configuration::pinned().bifrost.replicated_loglet,
-            router_builder,
-        );
+        let request_pump = Configuration::with_current(|config| {
+            RequestPump::new(&config.bifrost.replicated_loglet, router_builder)
+        });
 
         let logserver_rpc_routers = LogServersRpc::new(router_builder);
         let sequencer_rpc_routers = SequencersRpc::new(router_builder);
@@ -184,11 +183,13 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                 // releases/check-seals.
                 let (duration, opts) = if is_local_sequencer {
                     (
-                        Configuration::pinned()
-                            .bifrost
-                            .replicated_loglet
-                            .sequencer_inactivity_timeout
-                            .into(),
+                        Configuration::with_current(|config| {
+                            config
+                                .bifrost
+                                .replicated_loglet
+                                .sequencer_inactivity_timeout
+                                .into()
+                        }),
                         FindTailFlags::ForceSealCheck,
                     )
                 } else {
@@ -252,7 +253,7 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
 
         let my_node = my_node_id();
         // If we are a log-server, it should be preferred.
-        if Configuration::pinned().roles().contains(Role::LogServer) {
+        if Configuration::with_current(|config| config.roles().contains(Role::LogServer)) {
             preferred_nodes.insert(my_node);
         }
 

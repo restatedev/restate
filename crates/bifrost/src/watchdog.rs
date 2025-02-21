@@ -106,10 +106,12 @@ impl Watchdog {
                     return Ok(());
                 }
                 // todo(asoli): Notify providers about trimmed loglets for pruning.
-                let opts = Configuration::pinned();
-                retry_on_retryable_error(opts.common.network_error_retry_policy.clone(), || {
-                    trim_chain_if_needed(&bifrost, log_id, requested_trim_point, trim_point)
-                })
+                retry_on_retryable_error(
+                    Configuration::with_current(|config| {
+                        config.common.network_error_retry_policy.clone()
+                    }),
+                    || trim_chain_if_needed(&bifrost, log_id, requested_trim_point, trim_point),
+                )
                 .await
                 .with_context(|| {
                     format!(

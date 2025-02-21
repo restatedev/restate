@@ -52,7 +52,7 @@ use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use super::live::{LiveLoad, Pinned};
+use super::live::LiveLoad;
 use crate::PlainNodeId;
 use crate::errors::GenericError;
 use crate::live::Live;
@@ -176,19 +176,38 @@ pub struct Configuration {
 }
 
 impl Configuration {
-    /// Potentially fast access to a snapshot, should be used if an Updateable<T>
-    /// isn't possible (Updateable trait is not object-safe, and requires mut to load()).
-    /// Guard acquired doesn't track config updates. ~10x slower than Updateable's load().
+    /// Gets the current configuration as an owned value. This might entail a [`ArcSwap::load_full`]
+    pub fn current() -> Arc<Configuration> {
+        CONFIGURATION.load_full()
+    }
+
+    /// Potentially fast access to a snapshot, should be used if a [`Live<T>`]
+    /// isn't possible ([`Live`] trait is not object-safe, and requires mut to load()).
+    /// Guard acquired doesn't track config updates. ~10x slower than Live's load().
     ///
     /// There’s only limited number of “fast” slots for borrowing from the underlying ArcSwap
     /// for each single thread (currently 8, but this might change). If these run out, the
-    /// algorithm falls back to slower path (fallback to `snapshot()`).
+    /// algorithm falls back to slower path (fallback to [`Self::current()`]).
     ///
     /// If too many Guards are kept around, the performance might be poor. These are not intended
     /// to be stored in data structures or used across async yield points.
-    pub fn pinned() -> Pinned<Configuration> {
-        let c: &Arc<ArcSwap<_>> = &CONFIGURATION;
-        Pinned::new(c)
+    pub fn with_current<F, R>(f: F) -> R
+    where
+        F: FnOnce(&Configuration) -> R,
+    {
+        f(&CONFIGURATION.load())
+    }
+
+    /// The best way to access live when holding a mutable [`LiveLoad`] is
+    /// viable.
+    ///
+    /// ~10% slower than [`Self::current()`] to create (YMMV), [`LiveLoad::live_load()`] is as fast as accessing local objects,
+    /// and will always load the latest configuration reference. The downside is that [`LiveLoad::live_load()`] requires
+    /// exclusive reference. This should be the preferred method for accessing the live value.
+    /// Avoid using [`Self::with_current`] or [`Self::current`] in tight loops. Instead, get a new live value,
+    /// and pass it down to the loop by value for very efficient access.
+    pub fn live() -> impl LiveLoad<Self> {
+        Live::from(CONFIGURATION.clone())
     }
 
     /// The best way to access an updateable when holding a mutable Updateable is

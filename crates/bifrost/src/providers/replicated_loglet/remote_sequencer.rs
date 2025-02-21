@@ -76,11 +76,13 @@ where
         known_global_tail: TailOffsetWatch,
         sequencers_rpc: SequencersRpc,
     ) -> Self {
-        let max_inflight_records_in_config: usize = Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .maximum_inflight_records
-            .into();
+        let max_inflight_records_in_config: usize = Configuration::with_current(|config| {
+            config
+                .bifrost
+                .replicated_loglet
+                .maximum_inflight_records
+                .into()
+        });
 
         let record_permits = Arc::new(Semaphore::new(max_inflight_records_in_config));
 

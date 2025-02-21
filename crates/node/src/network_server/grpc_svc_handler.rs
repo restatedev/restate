@@ -188,7 +188,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         request: Request<ProvisionClusterRequest>,
     ) -> Result<Response<ProvisionClusterResponse>, Status> {
         let request = request.into_inner();
-        let config = Configuration::pinned();
+        let config = Configuration::current();
 
         let dry_run = request.dry_run;
         let cluster_configuration = Self::resolve_cluster_configuration(&config, request)
@@ -235,10 +235,12 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let mut max_metadata_cluster_configuration = None;
 
         for (node_id, node_config) in nodes_configuration.iter_role(Role::MetadataServer) {
-            let mut metadata_server_client = MetadataServerSvcClient::new(create_tonic_channel(
-                node_config.address.clone(),
-                &Configuration::pinned().networking,
-            ));
+            let mut metadata_server_client = Configuration::with_current(|config| {
+                MetadataServerSvcClient::new(create_tonic_channel(
+                    node_config.address.clone(),
+                    &config.networking,
+                ))
+            });
 
             let response = match metadata_server_client.status(()).await {
                 Ok(response) => response.into_inner(),

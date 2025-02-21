@@ -53,7 +53,9 @@ impl RocksDbPerfGuard {
     /// This guard should not be used across await points. Stats are thread local.
     #[must_use]
     pub fn new(name: &'static str) -> Self {
-        let rocks_level = convert_perf_level(Configuration::pinned().common.rocksdb_perf_level);
+        let rocks_level = Configuration::with_current(|config| {
+            convert_perf_level(config.common.rocksdb_perf_level)
+        });
         rocksdb::perf::set_perf_stats(rocks_level);
         // Behind the scenes, this "gets" the thread-local perf context and doesn't clear it up.
         let mut context = PerfContext::default();

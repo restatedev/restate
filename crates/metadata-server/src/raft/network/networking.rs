@@ -128,12 +128,14 @@ where
 
             self.connection_attempts.insert(
                 target,
-                Self::try_connecting_to(
-                    self.connection_manager.clone(),
-                    target,
-                    address.clone(),
-                    &Configuration::pinned().networking,
-                )?,
+                Configuration::with_current(|config| {
+                    Self::try_connecting_to(
+                        self.connection_manager.clone(),
+                        target,
+                        address.clone(),
+                        &config.networking,
+                    )
+                })?,
             );
             return Err(TrySendError::Connecting(message));
         } else {

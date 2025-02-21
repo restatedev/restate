@@ -182,11 +182,17 @@ impl RaftMetadataServer {
             .get_marker()
             .map_err(|err| BuildError::InitStorage(err.to_string()))?
         {
-            if storage_marker.id() != Configuration::pinned().common.node_name() {
-                return Err(BuildError::InitStorage(format!(
-                    "metadata-server storage marker was found but it was created by another node. Found node name '{}' while this node name is '{}'",
-                    storage_marker.id(),
-                    Configuration::pinned().common.node_name()
+            if Configuration::with_current(|config| {
+                storage_marker.id() != config.common.node_name()
+            }) {
+                return Err(BuildError::InitStorage(Configuration::with_current(
+                    |config| {
+                        format!(
+                            "metadata-server storage marker was found but it was created by another node. Found node name '{}' while this node name is '{}'",
+                            storage_marker.id(),
+                            config.common.node_name()
+                        )
+                    },
                 )));
             } else {
                 debug!(
@@ -328,7 +334,7 @@ impl RaftMetadataServer {
     async fn await_provisioning_signal(&mut self) -> Result<(), Error> {
         let mut nodes_config_watcher =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
-        if !Configuration::pinned().common.auto_provision {
+        if !Configuration::with_current(|config| config.common.auto_provision) {
             info!(
                 "Cluster has not been provisioned, yet. Awaiting provisioning via `restatectl provision`"
             );
@@ -381,10 +387,9 @@ impl RaftMetadataServer {
     ) -> anyhow::Result<MemberId> {
         debug!("Initialize storage from nodes configuration");
 
-        let my_plain_node_id = prepare_initial_nodes_configuration(
-            &Configuration::pinned(),
-            &mut nodes_configuration,
-        )?;
+        let my_plain_node_id = Configuration::with_current(|config| {
+            prepare_initial_nodes_configuration(config, &mut nodes_configuration)
+        })?;
 
         let mut initial_state = KvMemoryStorage::new(None);
         let versioned_value = serialize_value(&nodes_configuration)?;
@@ -403,10 +408,9 @@ impl RaftMetadataServer {
         let mut nodes_configuration = initial_state.last_seen_nodes_configuration().clone();
 
         let previous_version = nodes_configuration.version();
-        let my_plain_node_id = prepare_initial_nodes_configuration(
-            &Configuration::pinned(),
-            &mut nodes_configuration,
-        )?;
+        let my_plain_node_id = Configuration::with_current(|config| {
+            prepare_initial_nodes_configuration(config, &mut nodes_configuration)
+        })?;
         nodes_configuration.increment_version();
 
         let versioned_value = serialize_value(&nodes_configuration)?;
@@ -506,7 +510,9 @@ impl RaftMetadataServer {
     }
 
     fn create_storage_marker() -> StorageMarker {
-        StorageMarker::new(Configuration::pinned().common.node_name().to_owned())
+        StorageMarker::new(Configuration::with_current(|config| {
+            config.common.node_name().to_owned()
+        }))
     }
 
     fn become_standby(self, metadata_writer: Option<MetadataWriter>) -> Standby {
@@ -613,17 +619,20 @@ impl Member {
 
         networking.register_address(
             my_member_id.node_id,
-            Configuration::pinned().common.advertised_address.clone(),
+            Configuration::with_current(|config| config.common.advertised_address.clone()),
         );
 
         // todo remove additional indirection from Arc
         connection_manager.store(Some(Arc::new(new_connection_manager)));
 
-        let_assert!(
-            MetadataServerKind::Raft(raft_options) =
-                &Configuration::pinned().metadata_server.kind(),
-            "Expecting that the replicated/raft metadata server has been configured"
-        );
+        let raft_options = Configuration::with_current(|config| {
+            let_assert!(
+                MetadataServerKind::Raft(raft_options) = &config.metadata_server.kind(),
+                "Expecting that the replicated/raft metadata server has been configured"
+            );
+
+            raft_options.clone()
+        });
 
         let mut config = Config {
             id: to_raft_id(my_member_id.node_id),
@@ -1497,7 +1506,8 @@ impl Standby {
         let mut nodes_config_watcher =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
         nodes_config_watcher.mark_changed();
-        let my_node_name = Configuration::pinned().common.node_name().to_owned();
+        let my_node_name =
+            Configuration::with_current(|config| config.common.node_name().to_owned());
         let mut my_member_id = None;
 
         loop {
@@ -1612,7 +1622,8 @@ impl Standby {
                 .clone()
         };
 
-        let channel = create_tonic_channel(address, &Configuration::pinned().networking);
+        let channel =
+            Configuration::with_current(|config| create_tonic_channel(address, &config.networking));
 
         let mut client = MetadataServerNetworkSvcClient::new(channel)
             .accept_compressed(CompressionEncoding::Gzip)

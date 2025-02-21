@@ -401,11 +401,9 @@ impl BifrostInner {
         let start = Instant::now();
         // uses the same retry policy as reads to not add too many configuration keys
         let mut logged = false;
-        let mut retry_iter = Configuration::pinned()
-            .bifrost
-            .read_retry_policy
-            .clone()
-            .into_iter();
+        let mut retry_iter = Configuration::with_current(|config| {
+            config.bifrost.read_retry_policy.clone().into_iter()
+        });
         loop {
             match loglet.find_tail(opts).await {
                 Ok(tail) => {

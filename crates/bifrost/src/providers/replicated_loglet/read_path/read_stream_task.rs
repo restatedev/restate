@@ -100,13 +100,9 @@ impl ReadStreamTask {
         if move_beyond_global_tail && read_to.is_none() {
             panic!("read_to must be set if move_beyond_global_tail=true");
         }
-        let (tx, rx) = mpsc::channel(
-            Configuration::pinned()
-                .bifrost
-                .replicated_loglet
-                .readahead_records
-                .into(),
-        );
+        let (tx, rx) = mpsc::channel(Configuration::with_current(|config| {
+            config.bifrost.replicated_loglet.readahead_records.into()
+        }));
         // Reading from INVALID resets to OLDEST.
         let from_offset = from_offset.max(LogletOffset::OLDEST);
 
@@ -137,10 +133,9 @@ impl ReadStreamTask {
         networking: Networking<T>,
     ) -> Result<(), OperationError> {
         let mut nodes_config = Metadata::with_current(|m| m.updateable_nodes_config());
-        let records_rpc_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
+        let records_rpc_timeout = *Configuration::with_current(|config| {
+            config.bifrost.replicated_loglet.log_server_rpc_timeout
+        });
         // Channel size. This is the largest number of records we will try to readahead, if we can
         // acquire the capacity for it.
         //
@@ -149,11 +144,13 @@ impl ReadStreamTask {
         // This is automatically capped. This is the minimum number of slots that needs to be
         // available in order to trigger fetching a new batch.
         let readahead_trigger = {
-            let ratio = Configuration::pinned()
-                .bifrost
-                .replicated_loglet
-                .readahead_trigger_ratio
-                .clamp(0.0, 1.0) as f64;
+            let ratio = Configuration::with_current(|config| {
+                config
+                    .bifrost
+                    .replicated_loglet
+                    .readahead_trigger_ratio
+                    .clamp(0.0, 1.0) as f64
+            });
             let trigger = (readahead_max as f64 * ratio).ceil() as usize;
             1.max(trigger)
         };

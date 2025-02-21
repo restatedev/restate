@@ -29,9 +29,8 @@ pub async fn version() -> Json<VersionInformation> {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         min_admin_api_version: MIN_ADMIN_API_VERSION.as_repr(),
         max_admin_api_version: MAX_ADMIN_API_VERSION.as_repr(),
-        ingress_endpoint: Configuration::pinned()
-            .ingress
-            .advertised_ingress_endpoint
-            .clone(),
+        ingress_endpoint: Configuration::with_current(|config| {
+            config.ingress.advertised_ingress_endpoint.clone()
+        }),
     })
 }

@@ -180,12 +180,9 @@ impl Node {
         let partition_routing_refresher = PartitionRoutingRefresher::default();
 
         #[cfg(feature = "replicated-loglet")]
-        let record_cache = RecordCache::new(
-            Configuration::pinned()
-                .bifrost
-                .record_cache_memory_size
-                .as_usize(),
-        );
+        let record_cache = RecordCache::new(Configuration::with_current(|config| {
+            config.bifrost.record_cache_memory_size.as_usize()
+        }));
 
         // Setup bifrost
         // replicated-loglet

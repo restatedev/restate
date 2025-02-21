@@ -177,7 +177,7 @@ impl ConnectionManager {
         debug!("Accepting incoming connection");
         let (header, hello) = wait_for_hello(
             &mut incoming,
-            Configuration::pinned().networking.handshake_timeout.into(),
+            Configuration::with_current(|config| config.networking.handshake_timeout.into()),
         )
         .await?;
         let nodes_config = metadata.nodes_config_ref();
@@ -225,12 +225,9 @@ impl ConnectionManager {
 
         self.verify_node_id(peer_node_id, &header, &nodes_config, &metadata)?;
 
-        let (tx, output_stream) = mpsc::channel(
-            Configuration::pinned()
-                .networking
-                .outbound_queue_length
-                .get(),
-        );
+        let (tx, output_stream) = mpsc::channel(Configuration::with_current(|config| {
+            config.networking.outbound_queue_length.get()
+        }));
         let output_stream = ReceiverStream::new(output_stream);
         // Enqueue the welcome message
         let welcome = Welcome::new(my_node_id, selected_protocol_version);
@@ -279,9 +276,9 @@ impl ConnectionManager {
             let guard = self.inner.lock();
             guard.get_random_connection(
                 &node_id,
-                Configuration::pinned()
-                    .networking
-                    .num_concurrent_connections(),
+                Configuration::with_current(|config| {
+                    config.networking.num_concurrent_connections()
+                }),
             )
             // lock is dropped.
         };
@@ -327,12 +324,9 @@ impl ConnectionManager {
         let nodes_config = metadata.nodes_config_snapshot();
         let cluster_name = nodes_config.cluster_name().to_owned();
 
-        let (tx, output_stream) = mpsc::channel(
-            Configuration::pinned()
-                .networking
-                .outbound_queue_length
-                .get(),
-        );
+        let (tx, output_stream) = mpsc::channel(Configuration::with_current(|config| {
+            config.networking.outbound_queue_length.get()
+        }));
         let output_stream = ReceiverStream::new(output_stream);
         let hello = Hello::new(my_node_id, cluster_name);
 
@@ -359,7 +353,7 @@ impl ConnectionManager {
         // finish the handshake
         let (_header, welcome) = wait_for_welcome(
             &mut incoming,
-            Configuration::pinned().networking.handshake_timeout.into(),
+            Configuration::with_current(|config| config.networking.handshake_timeout.into()),
         )
         .await?;
         let protocol_version = welcome.protocol_version();
@@ -395,12 +389,9 @@ impl ConnectionManager {
 
     #[instrument(skip_all)]
     fn connect_loopback(&self) -> Result<Arc<OwnedConnection>, NetworkError> {
-        let (tx, rx) = mpsc::channel(
-            Configuration::pinned()
-                .networking
-                .outbound_queue_length
-                .get(),
-        );
+        let (tx, rx) = mpsc::channel(Configuration::with_current(|config| {
+            config.networking.outbound_queue_length.get()
+        }));
         let connection = OwnedConnection::new(
             my_node_id(),
             restate_types::net::CURRENT_PROTOCOL_VERSION,

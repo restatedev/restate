@@ -269,10 +269,9 @@ impl MetadataManager {
     pub async fn run(mut self) -> anyhow::Result<()> {
         debug!("Metadata manager started");
 
-        let update_interval = Configuration::pinned()
-            .common
-            .metadata_update_interval
-            .into();
+        let update_interval =
+            Configuration::with_current(|config| config.common.metadata_update_interval.into());
+
         let mut update_interval = tokio::time::interval(update_interval);
         update_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut cancel = std::pin::pin!(cancellation_watcher());
