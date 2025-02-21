@@ -43,7 +43,7 @@ impl LogletId {
     /// Creates a new [`LogletId`] from a [`LogId`] and a [`SegmentIndex`]. The upper
     /// 32 bits are the log_id and the lower are the segment_index.
     pub fn new(log_id: LogId, segment_index: SegmentIndex) -> Self {
-        let id = u64::from(u32::from(log_id)) << 32 | u64::from(u32::from(segment_index));
+        let id = (u64::from(u32::from(log_id)) << 32) | u64::from(u32::from(segment_index));
         Self(id)
     }
 
