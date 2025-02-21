@@ -29,7 +29,9 @@ use datafusion::arrow::datatypes::UInt64Type;
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_plan::SendableRecordBatchStream;
-use futures::{stream, StreamExt};
+use futures::{stream, Sink, SinkExt, StreamExt};
+use pgwire::messages::response::NoticeResponse;
+use pgwire::messages::PgWireBackendMessage;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -83,7 +85,50 @@ impl PgWireServerHandlers for HandlerFactory {
 
 pub(crate) struct NoAuthHandler {}
 
-impl NoopStartupHandler for NoAuthHandler {}
+#[async_trait]
+impl NoopStartupHandler for NoAuthHandler {
+    async fn post_startup<C>(
+        &self,
+        client: &mut C,
+        _message: pgwire::messages::PgWireFrontendMessage,
+    ) -> PgWireResult<()>
+    where
+        C: ClientInfo + Sink<pgwire::messages::PgWireBackendMessage> + Unpin + Send,
+        C::Error: std::fmt::Debug,
+        PgWireError: From<<C as Sink<pgwire::messages::PgWireBackendMessage>>::Error>,
+    {
+        client
+            .send(PgWireBackendMessage::NoticeResponse(NoticeResponse::new(
+                vec![
+                    (
+                        b'S', // severity
+                        "WARNING".into(),
+                    ),
+                    (
+                        b'V', // severity again
+                        "WARNING".into(),
+                    ),
+                    (
+                        b'C', // error code
+                        "01000".into(),
+                    ),
+                    (
+                        b'M', // message
+                        "Restate's :9071 PSQL endpoint is deprecated and will be removed in a future release."
+                            .into(),
+                    ),
+                    (
+                        b'H', // hint
+                        "You can make SQL queries using the CLI or with the :9070/query API."
+                            .into(),
+                    )
+                ],
+            )))
+            .await?;
+
+        Ok(())
+    }
+}
 
 impl HandlerFactory {
     pub fn new(ctx: QueryContext) -> Self {
@@ -330,7 +375,7 @@ fn encode_value(
         DataType::LargeUtf8 => encoder.encode_field(&get_large_utf8_value(arr, idx))?,
         DataType::Binary => encoder.encode_field(&get_binary_value(arr, idx))?,
         DataType::LargeBinary => encoder.encode_field(&get_large_binary_value(arr, idx))?,
-        DataType::Timestamp(TimeUnit::Millisecond, None) => {
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
             encoder.encode_field(&get_timestamp_value(arr, idx))?
         }
         _ => {
