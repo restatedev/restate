@@ -150,7 +150,7 @@ impl LogletWrapper {
         commit.await
     }
 
-    pub fn watch_tail(&self) -> impl Stream<Item = TailState<Lsn>> {
+    pub fn watch_tail(&self) -> impl Stream<Item = TailState<Lsn>> + use<> {
         let base_lsn = self.base_lsn;
         self.loglet.watch_tail().map(move |tail_state| {
             let offset = std::cmp::max(tail_state.offset(), LogletOffset::OLDEST);
