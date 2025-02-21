@@ -12,6 +12,8 @@
 /// the metrics' sink.
 use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
+pub const PARTITION_LABEL: &str = "partition";
+
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command.seconds";
 pub const PARTITION_ACTUATOR_HANDLED: &str = "restate.partition.actuator_handled.total";
 pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_created.total";
@@ -23,18 +25,24 @@ pub const PARTITION_TIME_SINCE_LAST_STATUS_UPDATE: &str =
     "restate.partition.time_since_last_status_update";
 pub const PARTITION_TIME_SINCE_LAST_RECORD: &str = "restate.partition.time_since_last_record";
 pub const PARTITION_LAST_APPLIED_LOG_LSN: &str = "restate.partition.last_applied_lsn";
+pub const PARTITION_LAST_APPLIED_LSN_LAG: &str = "restate.partition.applied_lsn_lag";
 pub const PARTITION_LAST_PERSISTED_LOG_LSN: &str = "restate.partition.last_persisted_lsn";
 pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_leader";
 pub const PARTITION_IS_ACTIVE: &str = "restate.partition.is_active";
 
-pub const PP_APPLY_COMMAND_DURATION: &str = "restate.partition.apply_command_duration.seconds";
-pub const PP_APPLY_COMMAND_BATCH_SIZE: &str = "restate.partition.apply_command_batch_size";
+pub const PARTITION_APPLY_COMMAND_DURATION: &str =
+    "restate.partition.apply_command_duration.seconds";
+pub const PARTITION_APPLY_COMMAND_BATCH_SIZE: &str = "restate.partition.apply_command_batch_size";
 pub const PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION: &str =
     "restate.partition.handle_action_batch_duration.seconds";
 pub const PARTITION_HANDLE_INVOKER_EFFECT_COMMAND: &str =
     "restate.partition.handle_invoker_effect.seconds";
-
-pub const PARTITION_LABEL: &str = "partition";
+pub const PARTITION_RPC_QUEUE_UTILIZATION_PERCENT: &str =
+    "restate.partition.rpc_queue.utilization.percent";
+pub const PARTITION_RPC_QUEUE_OUTSTANDING_REQUESTS: &str =
+    "restate.partition.rpc_queue.outstanding_requests";
+pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
+    "restate.partition.record_committed_to_read_latency.seconds";
 
 pub(crate) fn describe_metrics() {
     describe_histogram!(
@@ -58,12 +66,12 @@ pub(crate) fn describe_metrics() {
         "Storage transactions committed by applying partition state machine commands"
     );
     describe_histogram!(
-        PP_APPLY_COMMAND_DURATION,
+        PARTITION_APPLY_COMMAND_DURATION,
         Unit::Seconds,
         "Time spent processing a single bifrost message"
     );
     describe_histogram!(
-        PP_APPLY_COMMAND_BATCH_SIZE,
+        PARTITION_APPLY_COMMAND_BATCH_SIZE,
         Unit::Count,
         "Size of the applied command batch"
     );
@@ -81,6 +89,12 @@ pub(crate) fn describe_metrics() {
         PARTITION_HANDLE_INVOKER_EFFECT_COMMAND,
         Unit::Seconds,
         "Time spent handling an invoker effect command"
+    );
+
+    describe_histogram!(
+        PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+        Unit::Seconds,
+        "Duration between the record commit time to read time"
     );
 
     describe_gauge!(
@@ -114,6 +128,12 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_gauge!(
+        PARTITION_LAST_APPLIED_LSN_LAG,
+        Unit::Count,
+        "Number of records between last applied lsn and the log tail"
+    );
+
+    describe_gauge!(
         PARTITION_LAST_PERSISTED_LOG_LSN,
         Unit::Count,
         "Raw value of the LSN that can be trimmed"
@@ -123,5 +143,17 @@ pub(crate) fn describe_metrics() {
         PARTITION_TIME_SINCE_LAST_RECORD,
         Unit::Seconds,
         "Number of seconds since the last record was applied"
+    );
+
+    describe_gauge!(
+        PARTITION_RPC_QUEUE_UTILIZATION_PERCENT,
+        Unit::Percent,
+        "Partition processor requests queue utilization, 0 to 100%"
+    );
+
+    describe_gauge!(
+        PARTITION_RPC_QUEUE_OUTSTANDING_REQUESTS,
+        Unit::Count,
+        "Number of outstanding requests in the partition processor request queue"
     );
 }
