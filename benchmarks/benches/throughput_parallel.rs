@@ -33,6 +33,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
 
     let config = restate_benchmarks::restate_configuration();
     let tc = restate_benchmarks::spawn_restate(config);
+    restate_benchmarks::spawn_mock_service_endpoint(&tc);
 
     let BenchmarkSettings {
         num_requests,
@@ -85,9 +86,7 @@ async fn send_parallel_counter_requests(
             let counter_name = Alphanumeric.sample_string(&mut rand::rng(), 8);
             pending_requests.push(async move {
                 client
-                    .post(format!(
-                        "http://localhost:8080/Counter/{counter_name}/getAndAdd"
-                    ))
+                    .post(format!("http://localhost:8080/Counter/{counter_name}/add"))
                     .header(CONTENT_TYPE, "application/json")
                     .body("10")
                     .send()

@@ -29,6 +29,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
 
     let config = restate_benchmarks::restate_configuration();
     let tc = restate_benchmarks::spawn_restate(config);
+    restate_benchmarks::spawn_mock_service_endpoint(&tc);
 
     let current_thread_rt = Builder::new_current_thread()
         .enable_all()
@@ -61,7 +62,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
 async fn send_sequential_counter_requests(client: &reqwest::Client, num_requests: u64) {
     for _ in 0..num_requests {
         let response = client
-            .post("http://localhost:8080/Counter/1/getAndAdd")
+            .post("http://localhost:8080/Counter/1/add")
             .header(CONTENT_TYPE, "application/json")
             .body("10")
             .send()
