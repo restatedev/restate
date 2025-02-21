@@ -37,7 +37,8 @@ async fn get_idempotency_key() {
             invocation_id: invocation_id_1,
         },
     )
-    .await;
+    .await
+    .unwrap();
     let invocation_id_2 = InvocationId::mock_random();
     tx.put_idempotency_metadata(
         &IdempotencyId::new(
@@ -50,7 +51,8 @@ async fn get_idempotency_key() {
             invocation_id: invocation_id_2,
         },
     )
-    .await;
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let records = engine

@@ -56,12 +56,12 @@ pub trait ReadOnlyJournalTable {
         &mut self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
-    ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send;
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send>;
 
     fn all_journals(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send;
+    ) -> Result<impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send>;
 }
 
 pub trait JournalTable: ReadOnlyJournalTable {
@@ -70,11 +70,11 @@ pub trait JournalTable: ReadOnlyJournalTable {
         invocation_id: &InvocationId,
         journal_index: u32,
         journal_entry: &JournalEntry,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn delete_journal(
         &mut self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 }

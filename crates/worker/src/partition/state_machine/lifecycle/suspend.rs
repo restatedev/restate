@@ -81,9 +81,8 @@ where
         // Store invocation status
         ctx.storage
             .put_invocation_status(&self.invocation_id, &invocation_status)
-            .await;
-
-        Ok(())
+            .await
+            .map_err(Error::Storage)
     }
 }
 

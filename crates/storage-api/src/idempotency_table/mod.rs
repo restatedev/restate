@@ -29,7 +29,7 @@ pub trait ReadOnlyIdempotencyTable {
     fn all_idempotency_metadata(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send;
+    ) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send>;
 }
 
 pub trait IdempotencyTable: ReadOnlyIdempotencyTable {
@@ -37,10 +37,10 @@ pub trait IdempotencyTable: ReadOnlyIdempotencyTable {
         &mut self,
         idempotency_id: &IdempotencyId,
         metadata: &IdempotencyMetadata,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn delete_idempotency_metadata(
         &mut self,
         idempotency_id: &IdempotencyId,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 }

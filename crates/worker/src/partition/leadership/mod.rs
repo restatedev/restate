@@ -407,7 +407,9 @@ where
             .map_err(Error::Invoker)?;
 
         {
-            let invoked_or_killed_invocations = partition_store.all_invoked_or_killed_invocations();
+            let invoked_or_killed_invocations = partition_store
+                .all_invoked_or_killed_invocations()
+                .map_err(Error::Storage)?;
             tokio::pin!(invoked_or_killed_invocations);
 
             let mut count = 0;
@@ -572,6 +574,7 @@ impl restate_timer::TimerReader<TimerKeyValue> for TimerReader {
     ) -> Vec<TimerKeyValue> {
         self.0
             .next_timers_greater_than(previous_timer_key.as_ref(), num_timers)
+            .expect("timers should be read from storage successfully")
             .map(|result| result.map(|(timer_key, timer)| TimerKeyValue::new(timer_key, timer)))
             // TODO: Update timer service to maintain transaction while reading the timer stream: See https://github.com/restatedev/restate/issues/273
             // have to collect the stream because it depends on the local transaction

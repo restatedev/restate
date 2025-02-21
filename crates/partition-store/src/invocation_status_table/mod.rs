@@ -115,14 +115,10 @@ fn put_invocation_status<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
     status: &InvocationStatus,
-) {
+) -> Result<()> {
     match status {
-        InvocationStatus::Free => {
-            storage.delete_key(&create_invocation_status_key(invocation_id));
-        }
-        _ => {
-            storage.put_kv(create_invocation_status_key(invocation_id), status);
-        }
+        InvocationStatus::Free => storage.delete_key(&create_invocation_status_key(invocation_id)),
+        _ => storage.put_kv(create_invocation_status_key(invocation_id), status),
     }
 }
 
@@ -168,8 +164,8 @@ fn try_migrate_and_get_invocation_status<S: StorageAccess>(
                 *v1_key.invocation_uuid_ok_or()?,
             ),
             &status_v1.0,
-        );
-        storage.delete_key(&v1_key);
+        )?;
+        storage.delete_key(&v1_key)?;
         return Ok(status_v1.0);
     }
 
@@ -184,16 +180,19 @@ fn try_migrate_and_get_invocation_status<S: StorageAccess>(
         })
 }
 
-fn delete_invocation_status<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) {
+fn delete_invocation_status<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+) -> Result<()> {
     // TODO remove this once we remove the old InvocationStatus
-    storage.delete_key(&create_invocation_status_key_v1(invocation_id));
-    storage.delete_key(&create_invocation_status_key(invocation_id));
+    storage.delete_key(&create_invocation_status_key_v1(invocation_id))?;
+    storage.delete_key(&create_invocation_status_key(invocation_id))
 }
 
 fn invoked_or_killed_invocations<S: StorageAccess>(
     storage: &mut S,
     partition_key_range: RangeInclusive<PartitionKey>,
-) -> Vec<Result<InvokedOrKilledInvocationStatusLite>> {
+) -> Result<Vec<Result<InvokedOrKilledInvocationStatusLite>>> {
     let _x = RocksDbPerfGuard::new("invoked-invocations");
     let mut invocations = storage.for_each_key_value_in_place(
         FullScanPartitionKeyRange::<InvocationStatusKeyV1>(partition_key_range.clone()),
@@ -205,7 +204,7 @@ fn invoked_or_killed_invocations<S: StorageAccess>(
                 TableScanIterationDecision::Continue
             }
         },
-    );
+    )?;
     invocations.extend(storage.for_each_key_value_in_place(
         FullScanPartitionKeyRange::<InvocationStatusKey>(partition_key_range),
         |mut k, mut v| {
@@ -216,19 +215,19 @@ fn invoked_or_killed_invocations<S: StorageAccess>(
                 TableScanIterationDecision::Continue
             }
         },
-    ));
+    )?);
 
-    invocations
+    Ok(invocations)
 }
 
 fn all_invocation_status<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send + '_ {
-    stream::iter(
-        OwnedIterator::new(storage.iterator_from(
-            FullScanPartitionKeyRange::<InvocationStatusKeyV1>(range.clone()),
-        ))
+) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send + '_> {
+    Ok(stream::iter(
+        OwnedIterator::new(storage.iterator_from(FullScanPartitionKeyRange::<
+            InvocationStatusKeyV1,
+        >(range.clone()))?)
         .map(|(mut key, mut value)| {
             let state_key = InvocationStatusKeyV1::deserialize_from(&mut key)?;
             let state_value = InvocationStatusV1::decode(&mut value)?;
@@ -242,7 +241,7 @@ fn all_invocation_status<S: StorageAccess>(
         .chain(
             OwnedIterator::new(storage.iterator_from(FullScanPartitionKeyRange::<
                 InvocationStatusKey,
-            >(range.clone())))
+            >(range.clone()))?)
             .map(|(mut key, mut value)| {
                 let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
                 let state_value = InvocationStatus::decode(&mut value)?;
@@ -254,7 +253,7 @@ fn all_invocation_status<S: StorageAccess>(
                 ))
             }),
         ),
-    )
+    ))
 }
 
 // TODO remove this once we remove the old InvocationStatus
@@ -303,23 +302,23 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
         &mut self,
         invocation_id: &InvocationId,
     ) -> Result<InvocationStatus> {
-        self.assert_partition_key(invocation_id);
+        self.assert_partition_key(invocation_id)?;
         get_invocation_status(self, invocation_id)
     }
 
     fn all_invoked_or_killed_invocations(
         &mut self,
-    ) -> impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send {
-        stream::iter(invoked_or_killed_invocations(
+    ) -> Result<impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send> {
+        Ok(stream::iter(invoked_or_killed_invocations(
             self,
             self.partition_key_range().clone(),
-        ))
+        )?))
     }
 
     fn all_invocation_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send {
+    ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send> {
         all_invocation_status(self, range)
     }
 }
@@ -329,23 +328,23 @@ impl ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'_> {
         &mut self,
         invocation_id: &InvocationId,
     ) -> Result<InvocationStatus> {
-        self.assert_partition_key(invocation_id);
+        self.assert_partition_key(invocation_id)?;
         try_migrate_and_get_invocation_status(self, invocation_id)
     }
 
     fn all_invoked_or_killed_invocations(
         &mut self,
-    ) -> impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send {
-        stream::iter(invoked_or_killed_invocations(
+    ) -> Result<impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send> {
+        Ok(stream::iter(invoked_or_killed_invocations(
             self,
             self.partition_key_range().clone(),
-        ))
+        )?))
     }
 
     fn all_invocation_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send {
+    ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send> {
         all_invocation_status(self, range)
     }
 }
@@ -355,13 +354,13 @@ impl InvocationStatusTable for PartitionStoreTransaction<'_> {
         &mut self,
         invocation_id: &InvocationId,
         status: &InvocationStatus,
-    ) {
-        self.assert_partition_key(invocation_id);
+    ) -> Result<()> {
+        self.assert_partition_key(invocation_id)?;
         put_invocation_status(self, invocation_id, status)
     }
 
-    async fn delete_invocation_status(&mut self, invocation_id: &InvocationId) {
-        self.assert_partition_key(invocation_id);
+    async fn delete_invocation_status(&mut self, invocation_id: &InvocationId) -> Result<()> {
+        self.assert_partition_key(invocation_id)?;
         delete_invocation_status(self, invocation_id)
     }
 }

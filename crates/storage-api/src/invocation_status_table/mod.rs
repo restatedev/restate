@@ -592,12 +592,12 @@ pub trait ReadOnlyInvocationStatusTable {
 
     fn all_invoked_or_killed_invocations(
         &mut self,
-    ) -> impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send;
+    ) -> Result<impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send>;
 
     fn all_invocation_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send;
+    ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
 }
 
 pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
@@ -605,12 +605,12 @@ pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
         &mut self,
         invocation_id: &InvocationId,
         status: &InvocationStatus,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn delete_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 #[cfg(any(test, feature = "test-util"))]

@@ -109,7 +109,9 @@ pub trait ReadOnlyDeduplicationTable {
         producer_id: &ProducerId,
     ) -> impl Future<Output = Result<Option<DedupSequenceNumber>>> + Send;
 
-    fn get_all_sequence_numbers(&mut self) -> impl Stream<Item = Result<DedupInformation>> + Send;
+    fn get_all_sequence_numbers(
+        &mut self,
+    ) -> Result<impl Stream<Item = Result<DedupInformation>> + Send>;
 }
 
 pub trait DeduplicationTable: ReadOnlyDeduplicationTable {
@@ -117,5 +119,5 @@ pub trait DeduplicationTable: ReadOnlyDeduplicationTable {
         &mut self,
         producer_id: ProducerId,
         dedup_sequence_number: &DedupSequenceNumber,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 }

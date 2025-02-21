@@ -8,11 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::slice;
-use std::sync::Arc;
-
+use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
 use codederror::CodedError;
@@ -29,6 +25,10 @@ use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::{BoundColumnFamily, SliceTransform};
 use static_assertions::const_assert_eq;
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::slice;
+use std::sync::Arc;
 use tracing::trace;
 
 use restate_core::ShutdownError;
@@ -308,20 +308,25 @@ impl PartitionStore {
     }
 
     #[inline]
-    pub fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) {
-        assert_partition_key(&self.key_range, partition_key);
+    pub fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
+        assert_partition_key_or_err(&self.key_range, partition_key)
     }
 
     pub fn contains_partition_key(&self, key: PartitionKey) -> bool {
         self.key_range.contains(&key)
     }
 
-    fn table_handle(&self, table_kind: TableKind) -> Arc<BoundColumnFamily> {
+    fn table_handle(&self, table_kind: TableKind) -> Result<Arc<BoundColumnFamily>> {
         find_cf_handle(&self.rocksdb, &self.data_cf_name, table_kind)
     }
 
-    fn prefix_iterator(&self, table: TableKind, _key_kind: KeyKind, prefix: Bytes) -> DBIterator {
-        let table = self.table_handle(table);
+    fn prefix_iterator(
+        &self,
+        table: TableKind,
+        _key_kind: KeyKind,
+        prefix: Bytes,
+    ) -> Result<DBIterator> {
+        let table = self.table_handle(table)?;
         let mut opts = ReadOptions::default();
         opts.set_prefix_same_as_start(true);
         opts.set_iterate_range(PrefixRange(prefix.clone()));
@@ -329,7 +334,7 @@ impl PartitionStore {
         opts.set_total_order_seek(false);
         let mut it = self.raw_db.raw_iterator_cf_opt(&table, opts);
         it.seek(prefix);
-        it
+        Ok(it)
     }
 
     fn range_iterator(
@@ -339,8 +344,8 @@ impl PartitionStore {
         scan_mode: ScanMode,
         from: Bytes,
         to: Bytes,
-    ) -> DBIterator {
-        let table = self.table_handle(table);
+    ) -> Result<DBIterator> {
+        let table = self.table_handle(table)?;
         let mut opts = ReadOptions::default();
         // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
         // binding.
@@ -350,14 +355,14 @@ impl PartitionStore {
 
         let mut it = self.raw_db.raw_iterator_cf_opt(&table, opts);
         it.seek(from);
-        it
+        Ok(it)
     }
 
     #[track_caller]
     fn iterator_from<K: TableKey>(
         &self,
         scan: TableScan<K>,
-    ) -> DBRawIteratorWithThreadMode<'_, DB> {
+    ) -> Result<DBRawIteratorWithThreadMode<'_, DB>> {
         let scan: PhysicalScan = scan.into();
         match scan {
             PhysicalScan::Prefix(table, key_kind, prefix) => {
@@ -475,11 +480,13 @@ fn find_cf_handle<'a>(
     db: &'a Arc<RocksDb>,
     data_cf_name: &CfName,
     _table_kind: TableKind,
-) -> Arc<BoundColumnFamily<'a>> {
+) -> Result<Arc<BoundColumnFamily<'a>>> {
     // At the moment, everything is in one cf
-    db.inner()
-        .cf_handle(data_cf_name)
-        .unwrap_or_else(|| panic!("Access a column family that must exist: {data_cf_name}"))
+    db.inner().cf_handle(data_cf_name).ok_or_else(|| {
+        StorageError::Generic(anyhow!(
+            "Access a column family that must exist: {data_cf_name}"
+        ))
+    })
 }
 
 impl Storage for PartitionStore {
@@ -499,7 +506,7 @@ impl StorageAccess for PartitionStore {
     fn iterator_from<K: TableKey>(
         &self,
         scan: TableScan<K>,
-    ) -> DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>> {
+    ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
         self.iterator_from(scan)
     }
 
@@ -519,22 +526,31 @@ impl StorageAccess for PartitionStore {
 
     #[inline]
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
-        let table = self.table_handle(table);
+        let table = self.table_handle(table)?;
         self.raw_db
             .get_pinned_cf(&table, key)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
     #[inline]
-    fn put_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
-        let table = self.table_handle(table);
-        self.raw_db.put_cf(&table, key, value).unwrap();
+    fn put_cf(
+        &mut self,
+        table: TableKind,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Result<()> {
+        let table = self.table_handle(table)?;
+        self.raw_db
+            .put_cf(&table, key, value)
+            .map_err(|error| StorageError::Generic(error.into()))
     }
 
     #[inline]
-    fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) {
-        let table = self.table_handle(table);
-        self.raw_db.delete_cf(&table, key).unwrap();
+    fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) -> Result<()> {
+        let table = self.table_handle(table)?;
+        self.raw_db
+            .delete_cf(&table, key)
+            .map_err(|error| StorageError::Generic(error.into()))
     }
 }
 
@@ -565,7 +581,7 @@ impl PartitionStoreTransaction<'_> {
         table: TableKind,
         _key_kind: KeyKind,
         prefix: Bytes,
-    ) -> DBIterator {
+    ) -> Result<DBIterator> {
         let table = self.table_handle(table);
         let mut opts = rocksdb::ReadOptions::default();
         opts.set_iterate_range(PrefixRange(prefix.clone()));
@@ -575,7 +591,7 @@ impl PartitionStoreTransaction<'_> {
         let it = self.raw_db.raw_iterator_cf_opt(table, opts);
         let mut it = self.write_batch_with_index.iterator_with_base_cf(it, table);
         it.seek(prefix);
-        it
+        Ok(it)
     }
 
     pub(crate) fn range_iterator(
@@ -585,7 +601,7 @@ impl PartitionStoreTransaction<'_> {
         scan_mode: ScanMode,
         from: Bytes,
         to: Bytes,
-    ) -> DBIterator {
+    ) -> Result<DBIterator> {
         let table = self.table_handle(table);
         let mut opts = rocksdb::ReadOptions::default();
         // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
@@ -596,7 +612,7 @@ impl PartitionStoreTransaction<'_> {
         let it = self.raw_db.raw_iterator_cf_opt(table, opts);
         let mut it = self.write_batch_with_index.iterator_with_base_cf(it, table);
         it.seek(from);
-        it
+        Ok(it)
     }
 
     pub(crate) fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily> {
@@ -614,19 +630,20 @@ impl PartitionStoreTransaction<'_> {
     }
 
     #[inline]
-    pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) {
-        assert_partition_key(self.partition_key_range, partition_key);
+    pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
+        assert_partition_key_or_err(self.partition_key_range, partition_key)
     }
 }
 
-#[inline]
-fn assert_partition_key(
+fn assert_partition_key_or_err(
     partition_key_range: &RangeInclusive<PartitionKey>,
     partition_key: &impl WithPartitionKey,
-) {
+) -> Result<()> {
     let partition_key = partition_key.partition_key();
-    assert!(partition_key_range.contains(&partition_key),
-            "Partition key '{partition_key}' is not part of PartitionStore's partition '{partition_key_range:?}'. This indicates a bug.");
+    if partition_key_range.contains(&partition_key) {
+        return Ok(());
+    }
+    Err(StorageError::Generic(anyhow!("Partition key '{partition_key}' is not part of PartitionStore's partition '{partition_key_range:?}'. This indicates a bug.")))
 }
 
 impl Transaction for PartitionStoreTransaction<'_> {
@@ -671,7 +688,7 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
     fn iterator_from<K: TableKey>(
         &self,
         scan: TableScan<K>,
-    ) -> DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>> {
+    ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
         let scan: PhysicalScan = scan.into();
         match scan {
             PhysicalScan::Prefix(table, key_kind, prefix) => {
@@ -733,15 +750,22 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
     }
 
     #[inline]
-    fn put_cf(&mut self, _table: TableKind, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+    fn put_cf(
+        &mut self,
+        _table: TableKind,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Result<()> {
         self.write_batch_with_index
             .put_cf(&self.data_cf_handle, key, value);
+        Ok(())
     }
 
     #[inline]
-    fn delete_cf(&mut self, _table: TableKind, key: impl AsRef<[u8]>) {
+    fn delete_cf(&mut self, _table: TableKind, key: impl AsRef<[u8]>) -> Result<()> {
         self.write_batch_with_index
             .delete_cf(&self.data_cf_handle, key);
+        Ok(())
     }
 }
 
@@ -753,7 +777,7 @@ pub(crate) trait StorageAccess {
     fn iterator_from<K: TableKey>(
         &self,
         scan: TableScan<K>,
-    ) -> DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>;
+    ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>>;
 
     fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 
@@ -761,17 +785,22 @@ pub(crate) trait StorageAccess {
 
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>>;
 
-    fn put_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>);
+    fn put_cf(
+        &mut self,
+        table: TableKind,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Result<()>;
 
-    fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>);
+    fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) -> Result<()>;
 
     #[inline]
-    fn put_kv_raw<K: TableKey, V: AsRef<[u8]>>(&mut self, key: K, value: V) {
+    fn put_kv_raw<K: TableKey, V: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<()> {
         let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
         key.serialize_to(key_buffer);
         let key_buffer = key_buffer.split();
 
-        self.put_cf(K::TABLE, key_buffer, value);
+        self.put_cf(K::TABLE, key_buffer, value)
     }
 
     #[inline]
@@ -779,7 +808,7 @@ pub(crate) trait StorageAccess {
         &mut self,
         key: K,
         value: &V,
-    ) {
+    ) -> Result<()> {
         let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
         key.serialize_to(key_buffer);
         let key_buffer = key_buffer.split();
@@ -789,19 +818,19 @@ pub(crate) trait StorageAccess {
             &ProtobufStorageWrapper::<V::ProtobufType>(value.clone().into()),
             value_buffer,
         )
-        .unwrap();
+        .map_err(|e| StorageError::Generic(e.into()))?;
         let value_buffer = value_buffer.split();
 
-        self.put_cf(K::TABLE, key_buffer, value_buffer);
+        self.put_cf(K::TABLE, key_buffer, value_buffer)
     }
 
     #[inline]
-    fn delete_key<K: TableKey>(&mut self, key: &K) {
+    fn delete_key<K: TableKey>(&mut self, key: &K) -> Result<()> {
         let buffer = self.cleared_key_buffer_mut(key.serialized_length());
         key.serialize_to(buffer);
         let buffer = buffer.split();
 
-        self.delete_cf(K::TABLE, buffer);
+        self.delete_cf(K::TABLE, buffer)
     }
 
     #[inline]
@@ -836,7 +865,7 @@ pub(crate) trait StorageAccess {
         K: TableKey,
         F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
     {
-        let iterator = self.iterator_from(scan);
+        let iterator = self.iterator_from(scan)?;
         f(iterator.item())
     }
 
@@ -860,14 +889,18 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn for_each_key_value_in_place<K, F, R>(&self, scan: TableScan<K>, mut op: F) -> Vec<Result<R>>
+    fn for_each_key_value_in_place<K, F, R>(
+        &self,
+        scan: TableScan<K>,
+        mut op: F,
+    ) -> Result<Vec<Result<R>>>
     where
         K: TableKey,
         F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>,
     {
-        let mut res = Vec::new();
+        let mut res = Vec::new(); // TODO: this should be passed in.
 
-        let mut iterator = self.iterator_from(scan);
+        let mut iterator = self.iterator_from(scan)?;
 
         while let Some((k, v)) = iterator.item() {
             match op(k, v) {
@@ -889,6 +922,6 @@ pub(crate) trait StorageAccess {
             };
         }
 
-        res
+        Ok(res)
     }
 }

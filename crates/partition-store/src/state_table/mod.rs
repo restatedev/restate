@@ -21,8 +21,6 @@ use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use std::future;
-use std::future::Future;
 use std::ops::RangeInclusive;
 
 define_table_key!(
@@ -60,18 +58,18 @@ fn put_user_state<S: StorageAccess>(
     service_id: &ServiceId,
     state_key: impl AsRef<[u8]>,
     state_value: impl AsRef<[u8]>,
-) {
+) -> Result<()> {
     let key = write_state_entry_key(service_id, state_key);
-    storage.put_kv_raw(key, state_value.as_ref());
+    storage.put_kv_raw(key, state_value.as_ref())
 }
 
 fn delete_user_state<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
     state_key: impl AsRef<[u8]>,
-) {
+) -> Result<()> {
     let key = write_state_entry_key(service_id, state_key);
-    storage.delete_key(&key);
+    storage.delete_key(&key)
 }
 
 fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) -> Result<()> {
@@ -83,10 +81,11 @@ fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &Service
     let keys = storage.for_each_key_value_in_place(
         TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
         |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
-    );
+    )?;
 
     for k in keys {
-        storage.delete_cf(State, &k?);
+        let key = k?;
+        storage.delete_cf(State, &key)?;
     }
 
     Ok(())
@@ -105,7 +104,7 @@ fn get_user_state<S: StorageAccess>(
 fn get_all_user_states_for_service<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
-) -> Vec<Result<(Bytes, Bytes)>> {
+) -> Result<Vec<Result<(Bytes, Bytes)>>> {
     let _x = RocksDbPerfGuard::new("get-all-user-state");
     let key = StateKey::default()
         .partition_key(service_id.partition_key())
@@ -121,95 +120,115 @@ fn get_all_user_states_for_service<S: StorageAccess>(
 fn get_all_user_states<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send + '_ {
+) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send + '_> {
     let _x = RocksDbPerfGuard::new("get-all-user-state");
     let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<StateKey>(range));
-    stream::iter(OwnedIterator::new(iter).map(|(mut key, value)| {
-        let row_key = StateKey::deserialize_from(&mut key)?;
-        let (partition_key, service_name, service_key, state_key) = row_key.into_inner_ok_or()?;
+    Ok(stream::iter(OwnedIterator::new(iter?).map(
+        |(mut key, value)| {
+            let row_key = StateKey::deserialize_from(&mut key)?;
+            let (partition_key, service_name, service_key, state_key) =
+                row_key.into_inner_ok_or()?;
 
-        Ok((
-            ServiceId::from_parts(partition_key, service_name, service_key),
-            state_key,
-            value,
-        ))
-    }))
+            Ok((
+                ServiceId::from_parts(partition_key, service_name, service_key),
+                state_key,
+                value,
+            ))
+        },
+    )))
 }
 
 impl ReadOnlyStateTable for PartitionStore {
-    fn get_user_state(
+    async fn get_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
-    ) -> impl Future<Output = Result<Option<Bytes>>> + Send {
-        self.assert_partition_key(service_id);
-        future::ready(get_user_state(self, service_id, state_key))
+    ) -> Result<Option<Bytes>> {
+        self.assert_partition_key(service_id)?;
+        get_user_state(self, service_id, state_key)
     }
 
     fn get_all_user_states_for_service(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
-        self.assert_partition_key(service_id);
-        stream::iter(get_all_user_states_for_service(self, service_id))
+    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send> {
+        self.assert_partition_key(service_id)?;
+        Ok(stream::iter(get_all_user_states_for_service(
+            self, service_id,
+        )?))
     }
 
-    fn get_all_user_states(&self) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send {
+    fn get_all_user_states(
+        &self,
+    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send> {
         get_all_user_states(self, self.partition_key_range().clone())
+    }
+
+    fn get_all_user_states_in_range(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send> {
+        get_all_user_states(self, range)
     }
 }
 
 impl ReadOnlyStateTable for PartitionStoreTransaction<'_> {
-    fn get_user_state(
+    async fn get_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]>,
-    ) -> impl Future<Output = Result<Option<Bytes>>> + Send {
-        self.assert_partition_key(service_id);
-        future::ready(get_user_state(self, service_id, state_key))
+        state_key: impl AsRef<[u8]> + Send,
+    ) -> Result<Option<Bytes>> {
+        self.assert_partition_key(service_id)?;
+        get_user_state(self, service_id, state_key)
     }
 
     fn get_all_user_states_for_service(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
-        self.assert_partition_key(service_id);
-        stream::iter(get_all_user_states_for_service(self, service_id))
+    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send> {
+        self.assert_partition_key(service_id)?;
+        Ok(stream::iter(get_all_user_states_for_service(
+            self, service_id,
+        )?))
     }
 
-    fn get_all_user_states(&self) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send {
+    fn get_all_user_states(
+        &self,
+    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send> {
         get_all_user_states(self, self.partition_key_range().clone())
+    }
+
+    fn get_all_user_states_in_range(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send> {
+        get_all_user_states(self, range)
     }
 }
 
 impl StateTable for PartitionStoreTransaction<'_> {
-    fn put_user_state(
+    async fn put_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
         state_value: impl AsRef<[u8]>,
-    ) -> impl Future<Output = ()> + Send {
-        self.assert_partition_key(service_id);
-        put_user_state(self, service_id, state_key, state_value);
-        future::ready(())
+    ) -> Result<()> {
+        self.assert_partition_key(service_id)?;
+        put_user_state(self, service_id, state_key, state_value)
     }
 
-    fn delete_user_state(
+    async fn delete_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
-    ) -> impl Future<Output = ()> + Send {
-        self.assert_partition_key(service_id);
-        delete_user_state(self, service_id, state_key);
-        future::ready(())
+    ) -> Result<()> {
+        self.assert_partition_key(service_id)?;
+        delete_user_state(self, service_id, state_key)
     }
 
-    fn delete_all_user_state(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Future<Output = Result<()>> + Send {
-        self.assert_partition_key(service_id);
-        future::ready(delete_all_user_state(self, service_id))
+    async fn delete_all_user_state(&mut self, service_id: &ServiceId) -> Result<()> {
+        self.assert_partition_key(service_id)?;
+        delete_all_user_state(self, service_id)
     }
 }
 

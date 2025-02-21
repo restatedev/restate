@@ -44,7 +44,8 @@ async fn get_entries() {
             },
         ))),
     )
-    .await;
+    .await
+    .unwrap();
     let invoked_invocation_id = InvocationId::mock_random();
     let invoked_invocation_target = InvocationTarget::mock_virtual_object();
     tx.put_journal_entry(
@@ -63,7 +64,8 @@ async fn get_entries() {
             Bytes::new(),
         )),
     )
-    .await;
+    .await
+    .unwrap();
     tx.put_journal_entry(
         &journal_invocation_id,
         2,
@@ -77,7 +79,8 @@ async fn get_entries() {
             .into(),
         )),
     )
-    .await;
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let records = engine
@@ -141,7 +144,8 @@ async fn select_count_star() {
             },
         ))),
     )
-    .await;
+    .await
+    .unwrap();
     tx.put_journal_entry(
         &journal_invocation_id,
         1,
@@ -158,7 +162,8 @@ async fn select_count_star() {
             Bytes::new(),
         )),
     )
-    .await;
+    .await
+    .unwrap();
     tx.put_journal_entry(
         &journal_invocation_id,
         2,
@@ -172,7 +177,8 @@ async fn select_count_star() {
             .into(),
         )),
     )
-    .await;
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let records = engine

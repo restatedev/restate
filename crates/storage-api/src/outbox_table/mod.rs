@@ -57,7 +57,7 @@ pub trait OutboxTable: ReadOnlyOutboxTable {
         &mut self,
         message_index: u64,
         outbox_message: &OutboxMessage,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn get_next_outbox_message(
         &mut self,
@@ -69,5 +69,8 @@ pub trait OutboxTable: ReadOnlyOutboxTable {
         sequence_number: u64,
     ) -> impl Future<Output = Result<Option<OutboxMessage>>> + Send;
 
-    fn truncate_outbox(&mut self, range: RangeInclusive<u64>) -> impl Future<Output = ()> + Send;
+    fn truncate_outbox(
+        &mut self,
+        range: RangeInclusive<u64>,
+    ) -> impl Future<Output = Result<()>> + Send;
 }

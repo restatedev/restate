@@ -81,7 +81,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
 
 async fn insert_test_data(partition: &mut PartitionStore) {
     let mut txn = partition.transaction();
-    txn.put_applied_lsn(Lsn::new(100)).await;
+    txn.put_applied_lsn(Lsn::new(100)).await.unwrap();
     txn.commit().await.expect("commit succeeds");
 }
 

@@ -23,6 +23,7 @@ use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition}
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
+use restate_storage_api::StorageError;
 use restate_types::identifiers::{JournalEntryId, PartitionKey};
 use restate_types::journal_v2::raw::RawEntry;
 
@@ -63,14 +64,15 @@ impl ScanLocalPartition for JournalScanner {
     fn scan_partition_store(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send {
-        let v1 = ReadOnlyJournalTable::all_journals(partition_store, range.clone())
+    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
+    {
+        let v1 = ReadOnlyJournalTable::all_journals(partition_store, range.clone())?
             .map(|x| x.map(|(id, entry)| (id, ScannedEntry::V1(entry))));
 
-        let v2 = ReadOnlyJournalTableV2::all_journals(partition_store, range)
+        let v2 = ReadOnlyJournalTableV2::all_journals(partition_store, range)?
             .map(|x| x.map(|(id, entry)| (id, ScannedEntry::V2(entry))));
 
-        v1.merge(v2)
+        Ok(v1.merge(v2))
     }
 
     fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {

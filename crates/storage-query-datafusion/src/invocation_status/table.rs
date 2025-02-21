@@ -18,6 +18,7 @@ use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
+use restate_storage_api::StorageError;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -61,7 +62,8 @@ impl ScanLocalPartition for StatusScanner {
     fn scan_partition_store(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send {
+    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
+    {
         partition_store.all_invocation_statuses(range)
     }
 

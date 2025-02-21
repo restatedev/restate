@@ -34,7 +34,8 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
         },
         &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 0),
     )
-    .await;
+    .await
+    .unwrap();
 
     txn.put_timer(
         &TimerKey {
@@ -46,7 +47,8 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
         },
         &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 1),
     )
-    .await;
+    .await
+    .unwrap();
 
     let service_invocation = ServiceInvocation {
         ..mock_service_invocation(ServiceId::new("svc-2", "key-2"))
@@ -60,7 +62,8 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
         },
         &Timer::Invoke(service_invocation),
     )
-    .await;
+    .await
+    .unwrap();
 
     //
     // add a successor and a predecessor partitions
@@ -75,11 +78,12 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
         },
         &Timer::CompleteJournalEntry(InvocationId::from_parts(1336, FIXTURE_INVOCATION_UUID), 0),
     )
-    .await;
+    .await
+    .unwrap();
 }
 
 async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T) {
-    let mut stream = pin!(txn.next_timers_greater_than(None, usize::MAX));
+    let mut stream = pin!(txn.next_timers_greater_than(None, usize::MAX).unwrap());
 
     let mut count = 0;
     while stream.next().await.is_some() {
@@ -97,7 +101,9 @@ async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
         },
         timestamp: 0,
     };
-    let mut stream = pin!(txn.next_timers_greater_than(Some(timer_key), usize::MAX));
+    let mut stream = pin!(txn
+        .next_timers_greater_than(Some(timer_key), usize::MAX)
+        .unwrap());
 
     if let Some(Ok((key, _))) = stream.next().await {
         // make sure that we skip the first timer that has a journal_index of 0
@@ -128,7 +134,8 @@ async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
         },
         timestamp: 0,
     })
-    .await;
+    .await
+    .unwrap();
 }
 
 async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
@@ -139,7 +146,9 @@ async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
         },
         timestamp: 0,
     };
-    let mut stream = pin!(txn.next_timers_greater_than(Some(timer_key), usize::MAX,));
+    let mut stream = pin!(txn
+        .next_timers_greater_than(Some(timer_key), usize::MAX,)
+        .unwrap());
 
     if let Some(Ok((key, _))) = stream.next().await {
         assert_that!(

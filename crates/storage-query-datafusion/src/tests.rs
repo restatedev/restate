@@ -72,7 +72,8 @@ async fn query_sys_invocation() {
             ..InFlightInvocationMetadata::mock()
         }),
     )
-    .await;
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let records = engine

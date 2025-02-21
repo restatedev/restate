@@ -23,7 +23,6 @@ use restate_storage_api::inbox_table::{
 use restate_storage_api::Result;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
-use std::future::Future;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
@@ -66,80 +65,80 @@ fn peek_inbox<S: StorageAccess>(
 fn inbox<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
-) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
     let key = InboxKey::default()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
 
-    stream::iter(storage.for_each_key_value_in_place(
+    Ok(stream::iter(storage.for_each_key_value_in_place(
         TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
         |k, v| {
             let inbox_entry = decode_inbox_key_value(k, v);
             TableScanIterationDecision::Emit(inbox_entry)
         },
-    ))
+    )?))
 }
 
 fn all_inboxes<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
-    stream::iter(storage.for_each_key_value_in_place(
+) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
+    Ok(stream::iter(storage.for_each_key_value_in_place(
         TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
         |k, v| {
             let inbox_entry = decode_inbox_key_value(k, v);
             TableScanIterationDecision::Emit(inbox_entry)
         },
-    ))
+    )?))
 }
 
 impl ReadOnlyInboxTable for PartitionStore {
-    fn peek_inbox(
+    async fn peek_inbox(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Future<Output = Result<Option<SequenceNumberInboxEntry>>> + Send {
-        self.assert_partition_key(service_id);
-        futures::future::ready(peek_inbox(self, service_id))
+    ) -> Result<Option<SequenceNumberInboxEntry>> {
+        self.assert_partition_key(service_id)?;
+        peek_inbox(self, service_id)
     }
 
     fn inbox(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
-        self.assert_partition_key(service_id);
+    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
+        self.assert_partition_key(service_id)?;
         inbox(self, service_id)
     }
 
     fn all_inboxes(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
         all_inboxes(self, range)
     }
 }
 
 impl ReadOnlyInboxTable for PartitionStoreTransaction<'_> {
-    fn peek_inbox(
+    async fn peek_inbox(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Future<Output = Result<Option<SequenceNumberInboxEntry>>> + Send {
-        self.assert_partition_key(service_id);
-        futures::future::ready(peek_inbox(self, service_id))
+    ) -> Result<Option<SequenceNumberInboxEntry>> {
+        self.assert_partition_key(service_id)?;
+        peek_inbox(self, service_id)
     }
 
     fn inbox(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
-        self.assert_partition_key(service_id);
+    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
+        self.assert_partition_key(service_id)?;
         inbox(self, service_id)
     }
 
     fn all_inboxes(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
         all_inboxes(self, range)
     }
 }
@@ -149,9 +148,9 @@ impl InboxTable for PartitionStoreTransaction<'_> {
         &mut self,
         inbox_sequence_number: MessageIndex,
         inbox_entry: &InboxEntry,
-    ) {
+    ) -> Result<()> {
         let service_id = inbox_entry.service_id();
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(service_id)?;
 
         let key = InboxKey::default()
             .partition_key(service_id.partition_key())
@@ -159,24 +158,28 @@ impl InboxTable for PartitionStoreTransaction<'_> {
             .service_key(service_id.key.clone())
             .sequence_number(inbox_sequence_number);
 
-        self.put_kv(key, inbox_entry);
+        self.put_kv(key, inbox_entry)
     }
 
-    async fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: u64) {
-        self.assert_partition_key(service_id);
-        delete_inbox_entry(self, service_id, sequence_number);
+    async fn delete_inbox_entry(
+        &mut self,
+        service_id: &ServiceId,
+        sequence_number: u64,
+    ) -> Result<()> {
+        self.assert_partition_key(service_id)?;
+        delete_inbox_entry(self, service_id, sequence_number)
     }
 
     async fn pop_inbox(
         &mut self,
         service_id: &ServiceId,
     ) -> Result<Option<SequenceNumberInboxEntry>> {
-        self.assert_partition_key(service_id);
+        self.assert_partition_key(service_id)?;
         let _x = RocksDbPerfGuard::new("pop-inbox");
         let result = peek_inbox(self, service_id);
 
         if let Ok(Some(ref inbox_entry)) = result {
-            delete_inbox_entry(self, service_id, inbox_entry.inbox_sequence_number)
+            delete_inbox_entry(self, service_id, inbox_entry.inbox_sequence_number)?;
         }
 
         result
@@ -187,14 +190,14 @@ fn delete_inbox_entry(
     txn: &mut PartitionStoreTransaction,
     service_id: &ServiceId,
     sequence_number: u64,
-) {
+) -> Result<()> {
     let key = InboxKey::default()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone())
         .sequence_number(sequence_number);
 
-    txn.delete_key(&key);
+    txn.delete_key(&key)
 }
 
 fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxEntry> {

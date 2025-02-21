@@ -64,7 +64,8 @@ where
                                 state: PromiseState::Completed(self.entry.value.clone().into()),
                             },
                         )
-                        .await;
+                        .await
+                        .map_err(Error::Storage)?;
                     CompletePromiseResult::Void
                 }
                 Some(Promise {
@@ -105,7 +106,8 @@ where
                                 state: PromiseState::Completed(self.entry.value.clone().into()),
                             },
                         )
-                        .await;
+                        .await
+                        .map_err(Error::Storage)?;
                     CompletePromiseResult::Void
                 }
                 Some(Promise {

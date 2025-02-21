@@ -16,6 +16,7 @@ use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::promise_table::{OwnedPromiseRow, ReadOnlyPromiseTable};
+use restate_storage_api::StorageError;
 use restate_types::identifiers::PartitionKey;
 
 use super::row::append_promise_row;
@@ -57,7 +58,8 @@ impl ScanLocalPartition for PromiseScanner {
     fn scan_partition_store(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send {
+    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
+    {
         partition_store.all_promises(range)
     }
 

@@ -767,7 +767,7 @@ where
         transaction: &mut PartitionStoreTransaction<'b>,
         action_collector: &mut ActionCollector,
     ) -> Result<Option<(Header, AnnounceLeader)>, state_machine::Error> {
-        transaction.put_applied_lsn(lsn).await;
+        transaction.put_applied_lsn(lsn).await?;
 
         // Update replay status
         self.status.last_applied_log_lsn = Some(lsn);
@@ -800,7 +800,8 @@ where
                         dedup_information.producer_id.clone(),
                         &dedup_information.sequence_number,
                     )
-                    .await;
+                    .await
+                    .map_err(state_machine::Error::Storage)?;
             }
 
             // todo: check whether it's worth passing the arc further down

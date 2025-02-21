@@ -65,7 +65,8 @@ where
                 )
                 .await?;
                 journal_table_v1::JournalTable::delete_journal(ctx.storage, &self.invocation_id, 1)
-                    .await;
+                    .await
+                    .map_err(Error::Storage)?;
             } else {
                 // We're already in journal table v2, nothing to migrate!!!
             }

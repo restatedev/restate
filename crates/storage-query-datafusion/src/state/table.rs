@@ -17,6 +17,7 @@ use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::state_table::ReadOnlyStateTable;
+use restate_storage_api::StorageError;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -57,9 +58,10 @@ impl ScanLocalPartition for StateScanner {
 
     fn scan_partition_store(
         partition_store: &PartitionStore,
-        _range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send {
-        partition_store.get_all_user_states()
+        range: RangeInclusive<PartitionKey>,
+    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
+    {
+        partition_store.get_all_user_states_in_range(range)
     }
 
     fn append_row(row_builder: &mut Self::Builder, _: &mut String, value: Self::Item) {

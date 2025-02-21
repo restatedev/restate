@@ -264,7 +264,8 @@ async fn complete_already_completed_invocation(
     // Prepare idempotency metadata and completed status
     let mut txn = test_env.storage().transaction();
     txn.put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
-        .await;
+        .await
+        .unwrap();
     txn.put_invocation_status(
         &invocation_id,
         &InvocationStatus::Completed(CompletedInvocation {
@@ -277,7 +278,8 @@ async fn complete_already_completed_invocation(
             completion_retention_duration: Default::default(),
         }),
     )
-    .await;
+    .await
+    .unwrap();
     txn.commit().await.unwrap();
 
     // Send a request, should be completed immediately with result
@@ -548,7 +550,8 @@ async fn attach_inboxed_with_send_service_invocation(
             &invocation_target.as_keyed_service_id().unwrap(),
             &VirtualObjectStatus::Locked(InvocationId::mock_generate(&invocation_target)),
         )
-        .await;
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
     }
     .await;
@@ -799,7 +802,8 @@ async fn purge_completed_idempotent_invocation(
     // Prepare idempotency metadata and completed status
     let mut txn = test_env.storage().transaction();
     txn.put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
-        .await;
+        .await
+        .unwrap();
     txn.put_invocation_status(
         &invocation_id,
         &InvocationStatus::Completed(CompletedInvocation {
@@ -808,7 +812,8 @@ async fn purge_completed_idempotent_invocation(
             ..CompletedInvocation::mock_neo()
         }),
     )
-    .await;
+    .await
+    .unwrap();
     txn.commit().await.unwrap();
 
     // Send purge command

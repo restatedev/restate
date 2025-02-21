@@ -346,7 +346,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_timer(timer_value.key(), timer_value.value())
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         self.action_collector
             .push(Action::RegisterTimer { timer_value });
@@ -662,7 +663,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 .expect("When the handler type is Workflow, the invocation target must have a key"),
                             &VirtualObjectStatus::Locked(invocation_id),
                         )
-                        .await;
+                        .await.map_err(Error::Storage)?;
             }
             // TODO get rid of this code when we remove the idempotency table
             if has_idempotency_key
@@ -793,7 +794,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                         ScheduledInvocation::from_pre_flight_invocation_metadata(metadata),
                     ),
                 )
-                .await;
+                .await
+                .map_err(Error::Storage)?;
             // The span will be created later on invocation
             return Ok(None);
         }
@@ -843,7 +845,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                             ),
                         ),
                     )
-                    .await;
+                    .await
+                    .map_err(Error::Storage)?;
 
                 return Ok(None);
             } else {
@@ -859,7 +862,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                         &keyed_service_id,
                         &VirtualObjectStatus::Locked(invocation_id),
                     )
-                    .await;
+                    .await
+                    .map_err(Error::Storage)?;
             }
         }
         Ok(Some(metadata))
@@ -914,7 +918,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         ));
         self.storage
             .put_journal_entry(&invocation_id, 0, &input_entry)
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         let_assert!(JournalEntry::Entry(input_entry) = input_entry);
 
@@ -958,7 +963,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                 &invocation_id,
                 &InvocationStatus::Invoked(in_flight_invocation_metadata),
             )
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -974,9 +980,15 @@ impl<S> StateMachineApplyContext<'_, S> {
             "Enqueue inbox entry"
         );
 
-        self.storage.put_inbox_entry(seq_number, &inbox_entry).await;
+        self.storage
+            .put_inbox_entry(seq_number, &inbox_entry)
+            .await
+            .map_err(Error::Storage)?;
         // need to store the next inbox sequence number
-        self.storage.put_inbox_seq_number(seq_number + 1).await;
+        self.storage
+            .put_inbox_seq_number(seq_number + 1)
+            .await
+            .map_err(Error::Storage)?;
         *self.inbox_seq_number += 1;
         Ok(seq_number)
     }
@@ -1249,7 +1261,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             inbox_sequence_number,
         )
         .await?;
-        self.do_free_invocation(invocation_id).await;
+        self.do_free_invocation(invocation_id).await?;
 
         self.notify_invocation_result(
             invocation_id,
@@ -1307,7 +1319,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         } else {
             warn!("Scheduled invocations must always have an execution time.");
         }
-        self.do_free_invocation(invocation_id).await;
+        self.do_free_invocation(invocation_id).await?;
 
         self.notify_invocation_result(
             invocation_id,
@@ -1351,7 +1363,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
             self.storage
                 .put_invocation_status(&invocation_id, &InvocationStatus::Killed(metadata))
-                .await;
+                .await
+                .map_err(Error::Storage)?;
             self.do_send_abort_invocation_to_invoker(invocation_id, true);
         } else {
             self.end_invocation(
@@ -1414,7 +1427,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.storage,
                 *invocation_id,
                 journal_length,
-            )
+            )?
             .try_filter_map(|(_, journal_entry)| async {
                 if let Some(cmd) = journal_entry.inner.try_as_command() {
                     if let journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
@@ -1430,7 +1443,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             .try_collect()
             .await?
         } else {
-            ReadOnlyJournalTable::get_journal(self.storage, invocation_id, journal_length)
+            ReadOnlyJournalTable::get_journal(self.storage, invocation_id, journal_length)?
                 .try_filter_map(|(_, journal_entry)| async {
                     if let JournalEntry::Entry(enriched_entry) = journal_entry {
                         let (h, _) = enriched_entry.into_inner();
@@ -1474,7 +1487,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         let journal_entries_to_cancel: Vec<(EntryIndex, EnrichedRawEntry)> = self
             .storage
-            .get_journal(&invocation_id, journal_length)
+            .get_journal(&invocation_id, journal_length)?
             .try_filter_map(|(journal_index, journal_entry)| async move {
                 if let JournalEntry::Entry(journal_entry) = journal_entry {
                     if let Some(is_completed) = journal_entry.header().is_completed() {
@@ -1589,7 +1602,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 idempotency_key,
                 ..
             }) => {
-                self.do_free_invocation(invocation_id).await;
+                self.do_free_invocation(invocation_id).await?;
 
                 // Also cleanup the associated idempotency key if any
                 if let Some(idempotency_key) = idempotency_key {
@@ -1877,7 +1890,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         invocation_metadata,
                         waiting_for_completed_entries,
                     )
-                    .await;
+                    .await?;
                 }
             }
             InvokerEffectKind::SuspendedV2 {
@@ -2004,7 +2017,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     response_result,
                 );
                 self.do_store_completed_invocation(invocation_id, completed_invocation)
-                    .await;
+                    .await?;
             }
         } else {
             // Just notify Ok, no need to read the output entry
@@ -2020,7 +2033,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // If no retention, immediately cleanup the invocation status
         if completion_retention_time.is_zero() {
-            self.do_free_invocation(invocation_id).await;
+            self.do_free_invocation(invocation_id).await?;
         }
 
         self.do_drop_journal(
@@ -2134,7 +2147,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 &keyed_service_id,
                                 &VirtualObjectStatus::Locked(invocation_id),
                             )
-                            .await;
+                            .await
+                            .map_err(Error::Storage)?;
 
                         let (in_flight_invocation_meta, invocation_input) =
                             InFlightInvocationMetadata::from_inboxed_invocation(inboxed_invocation);
@@ -2157,7 +2171,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             // We consumed the inbox, nothing else to do here
             self.storage
                 .put_virtual_object_status(&keyed_service_id, &VirtualObjectStatus::Unlocked)
-                .await;
+                .await
+                .map_err(Error::Storage)?;
         }
 
         Ok(())
@@ -2249,7 +2264,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
                     self.do_set_state(service_id, invocation_id, key, value)
-                        .await;
+                        .await?;
                 } else {
                     warn!(
                         "Trying to process entry {} for a target that has no state",
@@ -2279,7 +2294,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
-                    self.do_clear_state(service_id, invocation_id, key).await;
+                    self.do_clear_state(service_id, invocation_id, key).await?;
                 } else {
                     warn!(
                         "Trying to process entry {} for a target that has no state",
@@ -2319,7 +2334,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         invocation_metadata.invocation_target.as_keyed_service_id()
                     {
                         self.storage
-                            .get_all_user_states_for_service(&service_id)
+                            .get_all_user_states_for_service(&service_id)?
                             .map(|res| res.map(|v| v.0))
                             .try_collect()
                             .await?
@@ -2386,7 +2401,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                         state: PromiseState::NotCompleted(v),
                                     },
                                 )
-                                .await;
+                                .await?;
                             }
                             None => {
                                 self.do_put_promise(
@@ -2398,7 +2413,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                         ]),
                                     },
                                 )
-                                .await
+                                .await?;
                             }
                         }
                     } else {
@@ -2481,7 +2496,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                         state: PromiseState::Completed(completion.into()),
                                     },
                                 )
-                                .await;
+                                .await?;
                                 CompletionResult::Empty
                             }
                             Some(Promise {
@@ -2507,7 +2522,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                         state: PromiseState::Completed(completion.into()),
                                     },
                                 )
-                                .await;
+                                .await?;
                                 CompletionResult::Empty
                             }
                             Some(Promise {
@@ -2871,7 +2886,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             entry_index,
             &JournalEntry::Entry(journal_entry),
         )
-        .await;
+        .await?;
         // In the old journal world, command_index == entry_index
         self.action_collector.push(Action::AckStoredCommand {
             invocation_id,
@@ -3520,7 +3535,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         let invocation_target = metadata.invocation_target.clone();
         self.storage
             .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         self.action_collector.push(Action::Invoke {
             invocation_id,
@@ -3545,7 +3561,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: InvocationId,
         mut metadata: InFlightInvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
-    ) where
+    ) -> Result<(), Error>
+    where
         S: InvocationStatusTable,
     {
         debug_if_leader!(
@@ -3567,14 +3584,16 @@ impl<S> StateMachineApplyContext<'_, S> {
                         .collect(),
                 },
             )
-            .await;
+            .await
+            .map_err(Error::Storage)
     }
 
     async fn do_store_completed_invocation(
         &mut self,
         invocation_id: InvocationId,
         completed_invocation: CompletedInvocation,
-    ) where
+    ) -> Result<(), Error>
+    where
         S: InvocationStatusTable,
     {
         debug_if_leader!(
@@ -3588,10 +3607,11 @@ impl<S> StateMachineApplyContext<'_, S> {
                 &invocation_id,
                 &InvocationStatus::Completed(completed_invocation),
             )
-            .await;
+            .await
+            .map_err(Error::Storage)
     }
 
-    async fn do_free_invocation(&mut self, invocation_id: InvocationId)
+    async fn do_free_invocation(&mut self, invocation_id: InvocationId) -> Result<(), Error>
     where
         S: InvocationStatusTable,
     {
@@ -3603,7 +3623,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_invocation_status(&invocation_id, &InvocationStatus::Free)
-            .await;
+            .await
+            .map_err(Error::Storage)
     }
 
     async fn do_delete_inbox_entry(
@@ -3623,7 +3644,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .delete_inbox_entry(&service_id, sequence_number)
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -3707,9 +3729,15 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
         };
 
-        self.storage.put_outbox_message(seq_number, &message).await;
+        self.storage
+            .put_outbox_message(seq_number, &message)
+            .await
+            .map_err(Error::Storage)?;
         // need to store the next outbox sequence number
-        self.storage.put_outbox_seq_number(seq_number + 1).await;
+        self.storage
+            .put_outbox_seq_number(seq_number + 1)
+            .await
+            .map_err(Error::Storage)?;
 
         self.action_collector.push(Action::NewOutboxMessage {
             seq_number,
@@ -3731,7 +3759,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_virtual_object_status(&service_id, &VirtualObjectStatus::Unlocked)
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -3752,7 +3781,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: InvocationId,
         key: Bytes,
         value: Bytes,
-    ) where
+    ) -> Result<(), Error>
+    where
         S: StateTable,
     {
         debug_if_leader!(
@@ -3761,7 +3791,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             "Effect: Set state"
         );
 
-        self.storage.put_user_state(&service_id, key, value).await;
+        self.storage
+            .put_user_state(&service_id, key, value)
+            .await
+            .map_err(Error::Storage)
     }
 
     #[tracing::instrument(
@@ -3779,7 +3812,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         service_id: ServiceId,
         invocation_id: InvocationId,
         key: Bytes,
-    ) where
+    ) -> Result<(), Error>
+    where
         S: StateTable,
     {
         debug_if_leader!(
@@ -3788,7 +3822,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             "Effect: Clear state"
         );
 
-        self.storage.delete_user_state(&service_id, &key).await;
+        self.storage
+            .delete_user_state(&service_id, &key)
+            .await
+            .map_err(Error::Storage)
     }
 
     #[tracing::instrument(
@@ -3825,7 +3862,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             "Effect: Delete timer"
         );
 
-        self.storage.delete_timer(&timer_key).await;
+        self.storage
+            .delete_timer(&timer_key)
+            .await
+            .map_err(Error::Storage)?;
         self.action_collector
             .push(Action::DeleteTimer { timer_key });
 
@@ -3841,7 +3881,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         mut previous_invocation_status: InvocationStatus,
         entry_index: EntryIndex,
         journal_entry: &JournalEntry,
-    ) where
+    ) -> Result<(), Error>
+    where
         S: JournalTable + InvocationStatusTable,
     {
         debug_if_leader!(
@@ -3855,7 +3896,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         // Store journal entry
         self.storage
             .put_journal_entry(&invocation_id, entry_index, journal_entry)
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         // update the journal metadata length
         let journal_meta = previous_invocation_status
@@ -3875,7 +3917,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         // Store invocation status
         self.storage
             .put_invocation_status(&invocation_id, &previous_invocation_status)
-            .await;
+            .await
+            .map_err(Error::Storage)
     }
 
     async fn do_drop_journal(
@@ -3899,9 +3942,12 @@ impl<S> StateMachineApplyContext<'_, S> {
                 invocation_id,
                 journal_length,
             )
-            .await?;
+            .await
+            .map_err(Error::Storage)?
         } else {
-            JournalTable::delete_journal(self.storage, &invocation_id, journal_length).await;
+            JournalTable::delete_journal(self.storage, &invocation_id, journal_length)
+                .await
+                .map_err(Error::Storage)?;
         }
         Ok(())
     }
@@ -3916,7 +3962,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             "Effect: Truncate outbox"
         );
 
-        self.storage.truncate_outbox(range).await;
+        self.storage
+            .truncate_outbox(range)
+            .await
+            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -3986,7 +4035,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                     completion.entry_index,
                     &JournalEntry::Entry(journal_entry),
                 )
-                .await;
+                .await
+                .map_err(Error::Storage)?;
             Ok(Some(completion))
         } else {
             // In case we don't have the journal entry (only awakeables case),
@@ -3997,7 +4047,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                     completion.entry_index,
                     &JournalEntry::Completion(completion.result),
                 )
-                .await;
+                .await
+                .map_err(Error::Storage)?;
             Ok(None)
         }
     }
@@ -4045,7 +4096,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_invocation_status(&invocation_id, &previous_invocation_status)
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -4067,7 +4119,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -4084,7 +4137,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .delete_idempotency_metadata(&idempotency_id)
-            .await;
+            .await
+            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -4117,13 +4171,21 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    async fn do_put_promise(&mut self, service_id: ServiceId, key: ByteString, promise: Promise)
+    async fn do_put_promise(
+        &mut self,
+        service_id: ServiceId,
+        key: ByteString,
+        promise: Promise,
+    ) -> Result<(), Error>
     where
         S: PromiseTable,
     {
         debug_if_leader!(self.is_leader, rpc.service = %service_id.service_name, "Effect: Put promise {} in non completed state", key);
 
-        self.storage.put_promise(&service_id, &key, &promise).await;
+        self.storage
+            .put_promise(&service_id, &key, &promise)
+            .await
+            .map_err(Error::Storage)
     }
 
     async fn do_clear_all_promises(&mut self, service_id: ServiceId) -> Result<(), Error>
@@ -4136,9 +4198,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             "Effect: Clear all promises"
         );
 
-        self.storage.delete_all_promises(&service_id).await;
-
-        Ok(())
+        self.storage
+            .delete_all_promises(&service_id)
+            .await
+            .map_err(Error::Storage)
     }
 
     async fn mutate_state(&mut self, state_mutation: ExternalStateMutation) -> StorageResult<()>
@@ -4155,7 +4218,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // are not contained in state
         let all_user_states: Vec<(Bytes, Bytes)> = self
             .storage
-            .get_all_user_states_for_service(&service_id)
+            .get_all_user_states_for_service(&service_id)?
             .try_collect()
             .await?;
 
@@ -4171,13 +4234,13 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         for (key, _) in &all_user_states {
             if !state.contains_key(key) {
-                self.storage.delete_user_state(&service_id, key).await;
+                self.storage.delete_user_state(&service_id, key).await?;
             }
         }
 
         // overwrite existing key value pairs
         for (key, value) in state {
-            self.storage.put_user_state(&service_id, key, value).await
+            self.storage.put_user_state(&service_id, key, value).await?;
         }
 
         Ok(())

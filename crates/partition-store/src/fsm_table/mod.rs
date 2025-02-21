@@ -58,11 +58,11 @@ fn put<S: StorageAccess>(
     partition_id: PartitionId,
     state_id: u64,
     state_value: &(impl PartitionStoreProtobufValue + Clone + 'static),
-) {
+) -> Result<()> {
     let key = PartitionStateMachineKey::default()
         .partition_id(partition_id.into())
         .state_id(state_id);
-    storage.put_kv(key, state_value);
+    storage.put_kv(key, state_value)
 }
 
 impl ReadOnlyFsmTable for PartitionStore {
@@ -100,7 +100,7 @@ impl ReadOnlyFsmTable for PartitionStoreTransaction<'_> {
 }
 
 impl FsmTable for PartitionStoreTransaction<'_> {
-    async fn put_applied_lsn(&mut self, lsn: Lsn) {
+    async fn put_applied_lsn(&mut self, lsn: Lsn) -> Result<()> {
         put(
             self,
             self.partition_id(),
@@ -109,7 +109,7 @@ impl FsmTable for PartitionStoreTransaction<'_> {
         )
     }
 
-    async fn put_inbox_seq_number(&mut self, seq_number: MessageIndex) {
+    async fn put_inbox_seq_number(&mut self, seq_number: MessageIndex) -> Result<()> {
         put(
             self,
             self.partition_id(),
@@ -118,7 +118,7 @@ impl FsmTable for PartitionStoreTransaction<'_> {
         )
     }
 
-    async fn put_outbox_seq_number(&mut self, seq_number: MessageIndex) {
+    async fn put_outbox_seq_number(&mut self, seq_number: MessageIndex) -> Result<()> {
         put(
             self,
             self.partition_id(),

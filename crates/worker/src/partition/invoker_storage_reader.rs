@@ -73,7 +73,7 @@ where
                     &mut self.0,
                     *invocation_id,
                     journal_metadata.length,
-                )
+                )?
                 .map(|entry| {
                     entry
                         .map_err(InvokerStorageReaderError::Storage)
@@ -90,7 +90,7 @@ where
                     &mut self.0,
                     invocation_id,
                     journal_metadata.length,
-                )
+                )?
                 .map(|entry| {
                     entry
                         .map_err(InvokerStorageReaderError::Storage)
@@ -131,7 +131,7 @@ where
     ) -> Result<EagerState<Self::StateIter>, Self::Error> {
         let user_states = self
             .0
-            .get_all_user_states_for_service(service_id)
+            .get_all_user_states_for_service(service_id)?
             .try_collect::<Vec<_>>()
             .await?;
 

@@ -19,13 +19,15 @@ async fn populate_data<T: VirtualObjectStatusTable>(txn: &mut T) {
         &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
         &VirtualObjectStatus::Locked(InvocationId::from_parts(1337, FIXTURE_INVOCATION)),
     )
-    .await;
+    .await
+    .expect("");
 
     txn.put_virtual_object_status(
         &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
         &VirtualObjectStatus::Locked(InvocationId::from_parts(1337, FIXTURE_INVOCATION)),
     )
-    .await;
+    .await
+    .expect("");
 }
 
 async fn verify_point_lookups<T: VirtualObjectStatusTable>(txn: &mut T) {

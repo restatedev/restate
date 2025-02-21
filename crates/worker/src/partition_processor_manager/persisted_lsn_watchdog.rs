@@ -218,7 +218,7 @@ mod tests {
         );
         let mut txn = partition_store.transaction();
         let lsn = Lsn::OLDEST + Lsn::from(storage_options.persist_lsn_threshold);
-        txn.put_applied_lsn(lsn).await;
+        txn.put_applied_lsn(lsn).await.unwrap();
         txn.commit().await?;
 
         watch_rx.changed().await?;
@@ -231,7 +231,7 @@ mod tests {
         // we are short by one to hit the persist lsn threshold
         let next_lsn = lsn.prev() + Lsn::from(storage_options.persist_lsn_threshold);
         let mut txn = partition_store.transaction();
-        txn.put_applied_lsn(next_lsn).await;
+        txn.put_applied_lsn(next_lsn).await.unwrap();
         txn.commit().await?;
 
         // await the persist lsn interval so that we have a chance to see the update
@@ -246,7 +246,7 @@ mod tests {
 
         let next_persisted_lsn = next_lsn + Lsn::from(1);
         let mut txn = partition_store.transaction();
-        txn.put_applied_lsn(next_persisted_lsn).await;
+        txn.put_applied_lsn(next_persisted_lsn).await.unwrap();
         txn.commit().await?;
 
         watch_rx.changed().await?;

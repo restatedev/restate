@@ -11,37 +11,45 @@
 use crate::Result;
 use bytes::Bytes;
 use futures_util::Stream;
-use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{PartitionKey, ServiceId};
 use std::future::Future;
+use std::ops::RangeInclusive;
 
 pub trait ReadOnlyStateTable {
     fn get_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]>,
+        state_key: impl AsRef<[u8]> + Send,
     ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
 
     fn get_all_user_states_for_service(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send;
+    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send>;
 
-    fn get_all_user_states(&self) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send;
+    fn get_all_user_states(
+        &self,
+    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send>;
+
+    fn get_all_user_states_in_range(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send>;
 }
 
 pub trait StateTable: ReadOnlyStateTable {
     fn put_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]>,
-        state_value: impl AsRef<[u8]>,
-    ) -> impl Future<Output = ()> + Send;
+        state_key: impl AsRef<[u8]> + Send,
+        state_value: impl AsRef<[u8]> + Send,
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn delete_user_state(
         &mut self,
         service_id: &ServiceId,
-        state_key: impl AsRef<[u8]>,
-    ) -> impl Future<Output = ()> + Send;
+        state_key: impl AsRef<[u8]> + Send,
+    ) -> impl Future<Output = Result<()>> + Send;
 
     fn delete_all_user_state(
         &mut self,

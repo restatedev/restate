@@ -55,8 +55,8 @@ fn get_dedup_sequence_number<S: StorageAccess>(
 fn get_all_sequence_numbers<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
-) -> impl Stream<Item = Result<DedupInformation>> + Send {
-    stream::iter(storage.for_each_key_value_in_place(
+) -> Result<impl Stream<Item = Result<DedupInformation>> + Send> {
+    Ok(stream::iter(storage.for_each_key_value_in_place(
         TableScan::SinglePartition::<DeduplicationKey>(partition_id),
         move |k, mut v| {
             let key =
@@ -72,7 +72,7 @@ fn get_all_sequence_numbers<S: StorageAccess>(
             };
             TableScanIterationDecision::Emit(res)
         },
-    ))
+    )?))
 }
 
 impl ReadOnlyDeduplicationTable for PartitionStore {
@@ -83,7 +83,9 @@ impl ReadOnlyDeduplicationTable for PartitionStore {
         get_dedup_sequence_number(self, self.partition_id(), producer_id)
     }
 
-    fn get_all_sequence_numbers(&mut self) -> impl Stream<Item = Result<DedupInformation>> + Send {
+    fn get_all_sequence_numbers(
+        &mut self,
+    ) -> Result<impl Stream<Item = Result<DedupInformation>> + Send> {
         get_all_sequence_numbers(self, self.partition_id())
     }
 }
@@ -96,7 +98,9 @@ impl ReadOnlyDeduplicationTable for PartitionStoreTransaction<'_> {
         get_dedup_sequence_number(self, self.partition_id(), producer_id)
     }
 
-    fn get_all_sequence_numbers(&mut self) -> impl Stream<Item = Result<DedupInformation>> + Send {
+    fn get_all_sequence_numbers(
+        &mut self,
+    ) -> Result<impl Stream<Item = Result<DedupInformation>> + Send> {
         get_all_sequence_numbers(self, self.partition_id())
     }
 }
@@ -106,10 +110,11 @@ impl DeduplicationTable for PartitionStoreTransaction<'_> {
         &mut self,
         producer_id: ProducerId,
         dedup_sequence_number: &DedupSequenceNumber,
-    ) {
+    ) -> Result<()> {
         let key = DeduplicationKey::default()
             .partition_id(self.partition_id().into())
             .producer_id(producer_id);
-        self.put_kv(key, dedup_sequence_number);
+
+        self.put_kv(key, dedup_sequence_number)
     }
 }

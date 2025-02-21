@@ -133,31 +133,36 @@ async fn populate_data<T: InvocationStatusTable>(txn: &mut T) {
         &INVOCATION_ID_1,
         &invoked_status(INVOCATION_TARGET_1.clone()),
     )
-    .await;
+    .await
+    .unwrap();
 
     txn.put_invocation_status(
         &INVOCATION_ID_2,
         &invoked_status(INVOCATION_TARGET_2.clone()),
     )
-    .await;
+    .await
+    .expect("");
 
     txn.put_invocation_status(
         &INVOCATION_ID_3,
         &suspended_status(INVOCATION_TARGET_3.clone()),
     )
-    .await;
+    .await
+    .unwrap();
 
     txn.put_invocation_status(
         &INVOCATION_ID_4,
         &killed_status(INVOCATION_TARGET_4.clone()),
     )
-    .await;
+    .await
+    .unwrap();
 
     txn.put_invocation_status(
         &INVOCATION_ID_5,
         &suspended_status(INVOCATION_TARGET_5.clone()),
     )
-    .await;
+    .await
+    .unwrap();
 }
 
 async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
@@ -179,6 +184,7 @@ async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
 async fn verify_all_svc_with_status_invoked_or_killed<T: InvocationStatusTable>(txn: &mut T) {
     let actual = txn
         .all_invoked_or_killed_invocations()
+        .unwrap()
         .try_collect::<Vec<_>>()
         .await
         .unwrap();
@@ -228,7 +234,8 @@ async fn test_migration() {
             .partition_key(invocation_id.partition_key())
             .invocation_uuid(invocation_id.invocation_uuid()),
         &InvocationStatusV1(status.clone()),
-    );
+    )
+    .unwrap();
     txn.commit().await.unwrap();
 
     // Make sure we can read without mutating

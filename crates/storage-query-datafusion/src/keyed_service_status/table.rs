@@ -18,6 +18,7 @@ use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
 };
+use restate_storage_api::StorageError;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -62,7 +63,8 @@ impl ScanLocalPartition for VirtualObjectStatusScanner {
     fn scan_partition_store(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send {
+    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
+    {
         partition_store.all_virtual_object_statuses(range)
     }
 
