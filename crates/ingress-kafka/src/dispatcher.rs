@@ -62,11 +62,7 @@ impl KafkaIngressEvent {
         };
 
         let invocation_target = match subscription.sink() {
-            Sink::DeprecatedService {
-                ref name,
-                ref handler,
-                ty,
-            } => match ty {
+            Sink::DeprecatedService { name, handler, ty } => match ty {
                 EventReceiverServiceType::VirtualObject => InvocationTarget::virtual_object(
                     &**name,
                     std::str::from_utf8(&key)

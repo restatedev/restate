@@ -50,7 +50,7 @@ impl LogStateUpdates {
     pub fn update_release_pointer(mut self, release_pointer: LogletOffset) -> Self {
         // update existing release pointer if exists, otherwise, add to the vec.
         for update in &mut self.updates {
-            if let LogStateUpdate::ReleasePointer(ref mut existing) = update {
+            if let LogStateUpdate::ReleasePointer(existing) = update {
                 *existing = (*existing).max(release_pointer.into());
                 return self;
             }
@@ -63,7 +63,7 @@ impl LogStateUpdates {
     pub fn update_trim_point(mut self, trim_point: LogletOffset) -> Self {
         // update existing release pointer if exists, otherwise, add to the vec.
         for update in &mut self.updates {
-            if let LogStateUpdate::TrimPoint(ref mut existing) = update {
+            if let LogStateUpdate::TrimPoint(existing) = update {
                 *existing = (*existing).max(trim_point.into());
                 return self;
             }
