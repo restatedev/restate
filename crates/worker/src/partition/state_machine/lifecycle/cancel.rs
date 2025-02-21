@@ -75,7 +75,10 @@ where
                 ctx.send_abort_invocation_to_invoker(self.invocation_id, true);
             }
             InvocationStatus::Completed(_) => {
-                debug!("Received cancel command for completed invocation '{}'. To cleanup the invocation after it's been completed, use the purge invocation command.", self.invocation_id);
+                debug!(
+                    "Received cancel command for completed invocation '{}'. To cleanup the invocation after it's been completed, use the purge invocation command.",
+                    self.invocation_id
+                );
             }
             InvocationStatus::Free => {
                 trace!(
@@ -98,7 +101,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::{assert_that, contains};
     use restate_types::invocation::InvocationTermination;
     use restate_types::journal_v2::CANCEL_SIGNAL;

@@ -13,7 +13,7 @@
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use figment::providers::{Format, Serialized, Toml};
 use figment::{Figment, Profile};
 use serde::{Deserialize, Serialize};
@@ -254,14 +254,22 @@ impl CliEnv {
     pub fn ingress_base_url(&self) -> Result<&Url> {
         match self.config.ingress_base_url.as_ref() {
             Some(ingress_base_url) => Ok(ingress_base_url),
-            None => Err(anyhow!("No Restate ingress endpoint has been configured for environment '{}'; provide it using ${}, or add to the config file with `restate config edit`", self.environment.as_str(), RESTATE_HOST_ENV)),
+            None => Err(anyhow!(
+                "No Restate ingress endpoint has been configured for environment '{}'; provide it using ${}, or add to the config file with `restate config edit`",
+                self.environment.as_str(),
+                RESTATE_HOST_ENV
+            )),
         }
     }
 
     pub fn admin_base_url(&self) -> Result<&Url> {
         match self.config.admin_base_url.as_ref() {
             Some(admin_base_url) => Ok(admin_base_url),
-            None => Err(anyhow!("No Restate admin endpoint has been configured for environment '{}'; provide it using ${}, or add to the config file with `restate config edit`", self.environment.as_str(), RESTATE_HOST_ENV)),
+            None => Err(anyhow!(
+                "No Restate admin endpoint has been configured for environment '{}'; provide it using ${}, or add to the config file with `restate config edit`",
+                self.environment.as_str(),
+                RESTATE_HOST_ENV
+            )),
         }
     }
 

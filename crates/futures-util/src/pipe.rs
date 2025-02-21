@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::future::{poll_fn, Future};
+use std::future::{Future, poll_fn};
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 
 use pin_project::pin_project;
 use tokio::sync::mpsc;
@@ -435,7 +435,7 @@ mod multi_target {
             loop {
                 match (*this.left_state, *this.right_state) {
                     (PipeState::Closed(err), _) | (_, PipeState::Closed(err)) => {
-                        return Poll::Ready(Err(err))
+                        return Poll::Ready(Err(err));
                     }
                     (PipeState::NotReady, _) => {
                         *this.left_state = match ready!(left_target.as_mut().poll_ready(cx)) {

@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap, hash_map};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::ready;
 use std::task::Poll;
+use std::task::ready;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -29,13 +29,13 @@ use restate_types::logs::{
     KeyFilter, LogId, LogletId, LogletOffset, MatchKeyQuery, Record, SequenceNumber, TailState,
 };
 
+use crate::LogEntry;
+use crate::Result;
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
     Loglet, LogletCommit, LogletProvider, LogletProviderFactory, LogletReadStream, OperationError,
     SendableLogletReadStream,
 };
-use crate::LogEntry;
-use crate::Result;
 
 #[derive(Default)]
 pub struct Factory {

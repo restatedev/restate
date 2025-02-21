@@ -22,9 +22,9 @@ use self::deployment::DeploymentSchemas;
 use self::deployment::DeploymentType;
 use self::service::ServiceSchemas;
 use self::subscriptions::Subscription;
-use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::Version;
 use crate::Versioned;
+use crate::identifiers::{DeploymentId, SubscriptionId};
 
 /// The schema information
 #[serde_as]

@@ -13,8 +13,8 @@ use restate_invoker_api::{Effect, InvocationStatusReport, InvokeInputJournal, St
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
-use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::CommandIndex;
+use restate_types::journal_v2::raw::RawNotification;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 // -- Input messages

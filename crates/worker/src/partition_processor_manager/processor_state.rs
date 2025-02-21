@@ -196,7 +196,9 @@ impl ProcessorState {
     ) -> Result<(), ProcessorStateError> {
         match self {
             ProcessorState::Starting { .. } => {
-                debug!("Received leader epoch while starting partition processor. Probably originated from a previous attempt.");
+                debug!(
+                    "Received leader epoch while starting partition processor. Probably originated from a previous attempt."
+                );
             }
             ProcessorState::Started {
                 processor,
@@ -214,7 +216,9 @@ impl ProcessorState {
                         debug!(%leader_epoch, "Instruct partition processor to run as leader.");
                         *leader_state = LeaderState::Leader(leader_epoch);
                     } else {
-                        debug!("Received leader epoch token does not match the expected token. Ignoring.");
+                        debug!(
+                            "Received leader epoch token does not match the expected token. Ignoring."
+                        );
                     }
                 }
                 LeaderState::Follower => {

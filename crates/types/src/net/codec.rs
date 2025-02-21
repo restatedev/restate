@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use bytes::Buf;
 use bytes::Bytes;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::net::CodecError;
 use crate::protobuf::common::ProtocolVersion;

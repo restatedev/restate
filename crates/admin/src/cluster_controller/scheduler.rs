@@ -14,13 +14,13 @@ use std::time::Duration;
 
 use itertools::Itertools;
 use rand::seq::IteratorRandom;
-use tracing::{debug, enabled, info, instrument, trace, Level};
+use tracing::{Level, debug, enabled, info, instrument, trace};
 
 use restate_core::metadata_store::{Precondition, ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
 use restate_core::{
-    cancellation_watcher, Metadata, MetadataKind, MetadataWriter, ShutdownError, SyncError,
-    TargetVersion, TaskCenter, TaskHandle, TaskKind,
+    Metadata, MetadataKind, MetadataWriter, ShutdownError, SyncError, TargetVersion, TaskCenter,
+    TaskHandle, TaskKind, cancellation_watcher,
 };
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::cluster::cluster_state::RunMode;
@@ -590,8 +590,8 @@ mod tests {
     use googletest::matcher::{Matcher, MatcherResult};
     use http::Uri;
     use itertools::Itertools;
-    use rand::prelude::ThreadRng;
     use rand::Rng;
+    use rand::prelude::ThreadRng;
     use test_log::test;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
@@ -803,15 +803,19 @@ mod tests {
                         // assert that every partition has a leader which is part of the alive nodes set
                         assert!(target_state.node_set.is_subset(&alive_nodes));
 
-                        assert!(target_state
-                            .leader
-                            .is_some_and(|leader| alive_nodes.contains(leader)));
+                        assert!(
+                            target_state
+                                .leader
+                                .is_some_and(|leader| alive_nodes.contains(leader))
+                        );
                     }
                     PartitionReplication::Limit(replication_property) => {
                         // assert that every partition has a leader which is part of the alive nodes set
-                        assert!(target_state
-                            .leader
-                            .is_some_and(|leader| alive_nodes.contains(leader)));
+                        assert!(
+                            target_state
+                                .leader
+                                .is_some_and(|leader| alive_nodes.contains(leader))
+                        );
 
                         assert_eq!(
                             target_state.node_set.len(),

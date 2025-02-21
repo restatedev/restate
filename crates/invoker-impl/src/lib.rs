@@ -524,10 +524,11 @@ where
             .invocation_state_machine_manager
             .has_partition(partition)
         {
-            debug_assert!(self
-                .invocation_state_machine_manager
-                .resolve_invocation(partition, &invocation_id)
-                .is_none());
+            debug_assert!(
+                self.invocation_state_machine_manager
+                    .resolve_invocation(partition, &invocation_id)
+                    .is_none()
+            );
 
             let storage_reader = self
                 .invocation_state_machine_manager
@@ -1271,9 +1272,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use restate_core::{TaskCenter, TaskKind};
+    use restate_invoker_api::InvokerHandle;
     use restate_invoker_api::entry_enricher;
     use restate_invoker_api::test_util::EmptyStorageReader;
-    use restate_invoker_api::InvokerHandle;
     use restate_test_util::{check, let_assert};
     use restate_types::config::InvokerOptionsBuilder;
     use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceRevision};
@@ -1560,11 +1561,13 @@ mod tests {
         );
 
         // Check status and quota
-        assert!(service_inner
-            .status_store
-            .resolve_invocation(MOCK_PARTITION, &invocation_id_1)
-            .unwrap()
-            .in_flight());
+        assert!(
+            service_inner
+                .status_store
+                .resolve_invocation(MOCK_PARTITION, &invocation_id_1)
+                .unwrap()
+                .in_flight()
+        );
         assert!(!service_inner.quota.is_slot_available());
 
         // Step again to remove sid_1 from task queue. This should not invoke sid_2!
@@ -1573,10 +1576,12 @@ mod tests {
                 .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
                 .await
         );
-        assert!(service_inner
-            .status_store
-            .resolve_invocation(MOCK_PARTITION, &invocation_id_2)
-            .is_none());
+        assert!(
+            service_inner
+                .status_store
+                .resolve_invocation(MOCK_PARTITION, &invocation_id_2)
+                .is_none()
+        );
         assert!(!service_inner.quota.is_slot_available());
 
         // Send the close signal
@@ -1593,15 +1598,19 @@ mod tests {
                 .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
                 .await
         );
-        assert!(service_inner
-            .status_store
-            .resolve_invocation(MOCK_PARTITION, &invocation_id_1)
-            .is_none());
-        assert!(service_inner
-            .status_store
-            .resolve_invocation(MOCK_PARTITION, &invocation_id_2)
-            .unwrap()
-            .in_flight());
+        assert!(
+            service_inner
+                .status_store
+                .resolve_invocation(MOCK_PARTITION, &invocation_id_1)
+                .is_none()
+        );
+        assert!(
+            service_inner
+                .status_store
+                .resolve_invocation(MOCK_PARTITION, &invocation_id_2)
+                .unwrap()
+                .in_flight()
+        );
         assert!(!service_inner.quota.is_slot_available());
     }
 

@@ -53,7 +53,9 @@ where
 
         let mut invocation_status = self.invocation_status;
         if any_completed {
-            trace!("Resuming instead of suspending service because a notification is already available.");
+            trace!(
+                "Resuming instead of suspending service because a notification is already available."
+            );
             super::ResumeInvocationCommand {
                 invocation_id: self.invocation_id,
                 invocation_status: &mut invocation_status,
@@ -88,19 +90,19 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::fixtures::{
         invoker_entry_effect, invoker_suspended,
     };
-    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
-    use crate::partition::state_machine::Action;
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::{all, assert_that, contains, eq, pat};
     use googletest::{elements_are, property};
     use restate_types::journal_v2::{
         CommandType, Entry, EntryMetadata, EntryType, NotificationId, SleepCommand, SleepCompletion,
     };
     use restate_types::time::MillisSinceEpoch;
-    use restate_wal_protocol::timer::TimerKeyValue;
     use restate_wal_protocol::Command;
+    use restate_wal_protocol::timer::TimerKeyValue;
     use std::time::{Duration, SystemTime};
 
     #[restate_core::test]

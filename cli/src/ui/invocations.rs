@@ -17,7 +17,7 @@ use chrono_humanize::Tense;
 use comfy_table::{Attribute, Cell, Table};
 use dialoguer::console::Style as DStyle;
 use dialoguer::console::StyledObject;
-use dialoguer::console::{style, Style};
+use dialoguer::console::{Style, style};
 use restate_cli_util::c_indent_table;
 use restate_cli_util::c_indentln;
 use restate_cli_util::c_println;

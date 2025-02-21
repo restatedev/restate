@@ -11,8 +11,8 @@
 mod appender;
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 
 use bytes::BytesMut;
@@ -22,16 +22,16 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, info, instrument, trace};
 
 use restate_core::{
-    network::{rpc_router::RpcRouter, Networking, TransportConnect},
     ShutdownError, TaskCenter, TaskKind,
+    network::{Networking, TransportConnect, rpc_router::RpcRouter},
 };
 use restate_types::{
+    GenerationalNodeId,
     config::Configuration,
     logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber},
     net::log_server::Store,
     replicated_loglet::ReplicatedLogletParams,
     replication::{NodeSet, ReplicationProperty},
-    GenerationalNodeId,
 };
 
 use self::appender::SequencerAppender;
@@ -39,7 +39,7 @@ use super::{
     log_server_manager::RemoteLogServerManager,
     replication::spread_selector::{SelectorStrategy, SpreadSelector},
 };
-use crate::loglet::{util::TailOffsetWatch, LogletCommit, OperationError};
+use crate::loglet::{LogletCommit, OperationError, util::TailOffsetWatch};
 
 /// A soft-limit of the actual number of records we want to allow in a loglet, this
 /// leaves plenty of space for slop in the overflow check. The actual loglet records are allowed to

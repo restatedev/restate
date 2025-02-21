@@ -11,18 +11,18 @@
 use bytestring::ByteString;
 use enumset::EnumSet;
 use googletest::prelude::err;
-use googletest::{assert_that, pat, IntoTestResult};
+use googletest::{IntoTestResult, assert_that, pat};
 use rand::seq::IndexedMutRandom;
 use restate_core::metadata_store::{Precondition, WriteError};
-use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
+use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_local_cluster_runner::cluster::Cluster;
 use restate_local_cluster_runner::node::{BinarySource, HealthCheck, Node};
 use restate_metadata_server::create_client;
 use restate_metadata_server::tests::Value;
+use restate_types::Versioned;
 use restate_types::config::{
     Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind, RaftOptions,
 };
-use restate_types::Versioned;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tracing::info;

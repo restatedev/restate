@@ -18,18 +18,18 @@ use restate_core::task_center::TaskCenterMonitoring;
 use tracing::trace;
 
 use bifrost_benchpress::util::{print_prometheus_stats, print_rocksdb_stats};
-use bifrost_benchpress::{append_latency, write_to_read, Arguments, Command};
+use bifrost_benchpress::{Arguments, Command, append_latency, write_to_read};
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_core::{
-    spawn_metadata_manager, task_center, MetadataBuilder, MetadataManager, TaskCenter,
-    TaskCenterBuilder,
+    MetadataBuilder, MetadataManager, TaskCenter, TaskCenterBuilder, spawn_metadata_manager,
+    task_center,
 };
 use restate_errors::fmt::RestateCode;
 use restate_metadata_server::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_types::config::{
-    reset_base_temp_dir, reset_base_temp_dir_and_retain, set_base_temp_dir, Configuration,
+    Configuration, reset_base_temp_dir, reset_base_temp_dir_and_retain, set_base_temp_dir,
 };
 use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::Live;

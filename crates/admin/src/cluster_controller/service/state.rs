@@ -21,7 +21,7 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::TransportConnect;
-use restate_core::{my_node_id, Metadata};
+use restate_core::{Metadata, my_node_id};
 use restate_types::cluster::cluster_state::{
     AliveNode, ClusterState, NodeState, PartitionProcessorStatus,
 };
@@ -488,9 +488,7 @@ impl TrimMode {
 
                     trace!(
                         ?partition_id,
-                        "Safe trim point for log {}: {:?}",
-                        log_id,
-                        min_persisted_lsn
+                        "Safe trim point for log {}: {:?}", log_id, min_persisted_lsn
                     );
                     safe_trim_points.insert(log_id, (min_persisted_lsn, *partition_id));
                 }
@@ -542,6 +540,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::cluster_controller::service::state::{TrimMode, TrimPointsUnavailable};
+    use RunMode::{Follower, Leader};
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
         SuspectNode,
@@ -550,7 +549,6 @@ mod tests {
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-    use RunMode::{Follower, Leader};
 
     #[test]
     fn safe_trim_points_no_snapshots() {

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::extensions::Extensions;
-use super::{builder, path::ParameterStyle, set_value, Header};
+use super::{Header, builder, path::ParameterStyle, set_value};
 
 builder! {
     EncodingBuilder;

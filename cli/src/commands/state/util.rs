@@ -13,7 +13,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use arrow_convert::{ArrowDeserialize, ArrowField};
 use base64::alphabet::URL_SAFE;
 use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
@@ -59,7 +59,9 @@ pub(crate) async fn get_current_state(
         },
         Err(MetasClientError::Api(err)) if allow_missing_service && err.http_status_code == 404 => {
             // continue as it is reasonable to get state for a deleted service
-            c_warn!("This service does not exist in the registry; it may have been deleted, or never existed")
+            c_warn!(
+                "This service does not exist in the registry; it may have been deleted, or never existed"
+            )
         }
         Err(err) => return Err(err.into()),
     }

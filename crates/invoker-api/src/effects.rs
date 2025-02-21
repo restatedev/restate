@@ -11,8 +11,8 @@
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
-use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::EntryIndex;
+use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_v2;
 use restate_types::journal_v2::CommandIndex;
 use std::collections::HashSet;

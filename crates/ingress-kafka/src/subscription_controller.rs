@@ -267,7 +267,9 @@ mod task_orchestrator {
                 match result {
                     Ok((_, Ok(_))) => {} // the normal case; a removed subscription should exit cleanly
                     Ok((_, Err(e))) => {
-                        warn!("Consumer task for removed subscription unexpectedly returned error: {e}");
+                        warn!(
+                            "Consumer task for removed subscription unexpectedly returned error: {e}"
+                        );
                     }
                     Err(e) => {
                         warn!("Consumer task for removed subscription unexpectedly panicked: {e}");
@@ -282,10 +284,14 @@ mod task_orchestrator {
                     warn!("Consumer task for subscription {subscription_id} unexpectedly closed");
                 }
                 Ok((_, Err(e))) => {
-                    warn!("Consumer task for subscription {subscription_id} unexpectedly returned error: {e}");
+                    warn!(
+                        "Consumer task for subscription {subscription_id} unexpectedly returned error: {e}"
+                    );
                 }
                 Err(e) => {
-                    warn!("Consumer task for subscription {subscription_id} unexpectedly panicked: {e}");
+                    warn!(
+                        "Consumer task for subscription {subscription_id} unexpectedly panicked: {e}"
+                    );
                 }
             };
 
@@ -298,7 +304,9 @@ mod task_orchestrator {
                 self.timer_queue
                     .sleep_until(SystemTime::now() + next_timer, subscription_id);
             } else {
-                warn!("Not going to retry consumer task for subscription {subscription_id} because retry limit exhausted.");
+                warn!(
+                    "Not going to retry consumer task for subscription {subscription_id} because retry limit exhausted."
+                );
                 self.subscription_id_to_task_state.remove(&subscription_id);
             }
         }

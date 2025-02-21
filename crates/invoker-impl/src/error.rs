@@ -12,14 +12,14 @@ use http::{HeaderName, HeaderValue};
 use restate_invoker_api::InvocationErrorReport;
 use restate_service_client::ServiceClientError;
 use restate_service_protocol::message::{EncodingError, MessageType};
-use restate_types::errors::{codes, InvocationError, InvocationErrorCode};
+use restate_types::errors::{InvocationError, InvocationErrorCode, codes};
 use restate_types::identifiers::DeploymentId;
 use restate_types::journal::raw::RawEntryCodecError;
 use restate_types::journal::{EntryIndex, EntryType};
 use restate_types::journal_v2;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::service_protocol::{
-    ServiceProtocolVersion, MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION,
+    MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION, ServiceProtocolVersion,
 };
 use std::collections::HashSet;
 use std::error::Error as StdError;
@@ -33,7 +33,9 @@ pub(crate) enum InvokerError {
     #[error("no deployment was found to process the invocation")]
     #[code(restate_errors::RT0011)]
     NoDeploymentForService,
-    #[error("the invocation has a deployment id associated, but it was not found in the registry. This might indicate that a deployment was forcefully removed from the registry, but there are still in-flight invocations pinned to it")]
+    #[error(
+        "the invocation has a deployment id associated, but it was not found in the registry. This might indicate that a deployment was forcefully removed from the registry, but there are still in-flight invocations pinned to it"
+    )]
     #[code(restate_errors::RT0011)]
     UnknownDeployment(DeploymentId),
 
@@ -74,7 +76,9 @@ pub(crate) enum InvokerError {
     #[error("cannot decode entry: {0}")]
     #[code(restate_errors::RT0012)]
     RawEntryV2(#[from] journal_v2::raw::RawEntryError),
-    #[error("Unexpected end of invocation stream, after EndMessage or ErrorMessage or SuspensionMessage no other bytes should be received")]
+    #[error(
+        "Unexpected end of invocation stream, after EndMessage or ErrorMessage or SuspensionMessage no other bytes should be received"
+    )]
     #[code(restate_errors::RT0012)]
     WriteAfterEndOfStream,
     #[error("Cannot decode header '{0}': {1}")]
@@ -119,9 +123,7 @@ pub(crate) enum InvokerError {
     #[error("cannot process entry {1} (index {0}) because of a failed precondition: {2}")]
     #[code(restate_errors::RT0017)]
     EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
-    #[error(
-        "cannot process command {1} (command index {0}) because of a failed precondition: {2}"
-    )]
+    #[error("cannot process command {1} (command index {0}) because of a failed precondition: {2}")]
     CommandPrecondition(
         CommandIndex,
         journal_v2::EntryType,
@@ -158,16 +160,14 @@ pub(crate) enum InvokerError {
 impl InvokerError {
     pub(crate) fn error_stacktrace(&self) -> Option<&str> {
         match self {
-            InvokerError::Sdk(s) => {
-                s.error
-                    .stacktrace()
-                    .and_then(|s| if s.is_empty() { None } else { Some(s) })
-            }
-            InvokerError::SdkV2(s) => {
-                s.error
-                    .stacktrace()
-                    .and_then(|s| if s.is_empty() { None } else { Some(s) })
-            }
+            InvokerError::Sdk(s) => s
+                .error
+                .stacktrace()
+                .and_then(|s| if s.is_empty() { None } else { Some(s) }),
+            InvokerError::SdkV2(s) => s
+                .error
+                .stacktrace()
+                .and_then(|s| if s.is_empty() { None } else { Some(s) }),
             _ => None,
         }
     }

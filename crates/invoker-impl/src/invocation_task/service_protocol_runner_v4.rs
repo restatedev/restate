@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::Notification;
 use crate::error::{
     CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
-    invocation_id_to_header_value, service_protocol_version_to_header_value, InvocationTask,
-    InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender, ResponseChunk,
-    ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
+    InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
+    ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
+    invocation_id_to_header_value, service_protocol_version_to_header_value,
 };
-use crate::Notification;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::FusedFuture;
@@ -32,7 +32,7 @@ use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::{
-    proto, Decoder, Encoder, Message, MessageHeader, MessageType,
+    Decoder, Encoder, Message, MessageHeader, MessageType, proto,
 };
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
@@ -552,7 +552,7 @@ where
                 return Err(InvokerError::UnexpectedContentType(
                     None,
                     expected_content_type,
-                ))
+                ));
             }
         }
 
@@ -621,10 +621,11 @@ where
             Message::ProposeRunCompletion(run_completion) => {
                 let notification: Entry = RunCompletion {
                     completion_id: run_completion.result_completion_id,
-                    result: match crate::shortcircuit!(run_completion
-                        .result
-                        .ok_or(InvokerError::MalformedProposeRunCompletion))
-                    {
+                    result: match crate::shortcircuit!(
+                        run_completion
+                            .result
+                            .ok_or(InvokerError::MalformedProposeRunCompletion)
+                    ) {
                         proto::propose_run_completion_message::Result::Value(b) => {
                             RunResult::Success(b)
                         }
@@ -661,21 +662,19 @@ where
             }
             Message::GetInvocationOutputCommand(cmd) => {
                 // Verify the provided InvocationId is valid
-                let _: Entry = crate::shortcircuit!(RawCommand::new(
-                    CommandType::GetInvocationOutput,
-                    cmd.clone()
-                )
-                .decode::<ServiceProtocolV4Codec, _>());
+                let _: Entry = crate::shortcircuit!(
+                    RawCommand::new(CommandType::GetInvocationOutput, cmd.clone())
+                        .decode::<ServiceProtocolV4Codec, _>()
+                );
                 self.handle_new_command(mh, RawCommand::new(CommandType::GetInvocationOutput, cmd));
                 TerminalLoopState::Continue(())
             }
             Message::AttachInvocationCommand(cmd) => {
                 // Verify the provided InvocationId is valid
-                let _: Entry = crate::shortcircuit!(RawCommand::new(
-                    CommandType::AttachInvocation,
-                    cmd.clone()
-                )
-                .decode::<ServiceProtocolV4Codec, _>());
+                let _: Entry = crate::shortcircuit!(
+                    RawCommand::new(CommandType::AttachInvocation, cmd.clone())
+                        .decode::<ServiceProtocolV4Codec, _>()
+                );
                 self.handle_new_command(mh, RawCommand::new(CommandType::AttachInvocation, cmd));
                 TerminalLoopState::Continue(())
             }
@@ -685,31 +684,34 @@ where
             }
             Message::SendSignalCommand(cmd) => {
                 // Verify the provided InvocationId is valid
-                let _: Entry =
-                    crate::shortcircuit!(RawCommand::new(CommandType::SendSignal, cmd.clone())
-                        .decode::<ServiceProtocolV4Codec, _>());
+                let _: Entry = crate::shortcircuit!(
+                    RawCommand::new(CommandType::SendSignal, cmd.clone())
+                        .decode::<ServiceProtocolV4Codec, _>()
+                );
                 self.handle_new_command(mh, RawCommand::new(CommandType::SendSignal, cmd));
                 TerminalLoopState::Continue(())
             }
             Message::OneWayCallCommand(cmd) => {
                 let entry: Entry = OneWayCallCommand {
-                    request: crate::shortcircuit!(resolve_call_request(
-                        self.invocation_task.schemas.live_load(),
-                        InvokeRequest {
-                            service_name: cmd.service_name.into(),
-                            handler_name: cmd.handler_name.into(),
-                            parameter: cmd.parameter,
-                            headers: cmd.headers.into_iter().map(Into::into).collect(),
-                            key: cmd.key.into(),
-                            idempotency_key: cmd.idempotency_key.map(|s| s.into()),
-                            span_relation: parent_span_context.as_linked()
-                        }
-                    )
-                    .map_err(|e| InvokerError::CommandPrecondition(
-                        self.command_index,
-                        EntryType::Command(CommandType::OneWayCall),
-                        e
-                    ))),
+                    request: crate::shortcircuit!(
+                        resolve_call_request(
+                            self.invocation_task.schemas.live_load(),
+                            InvokeRequest {
+                                service_name: cmd.service_name.into(),
+                                handler_name: cmd.handler_name.into(),
+                                parameter: cmd.parameter,
+                                headers: cmd.headers.into_iter().map(Into::into).collect(),
+                                key: cmd.key.into(),
+                                idempotency_key: cmd.idempotency_key.map(|s| s.into()),
+                                span_relation: parent_span_context.as_linked()
+                            }
+                        )
+                        .map_err(|e| InvokerError::CommandPrecondition(
+                            self.command_index,
+                            EntryType::Command(CommandType::OneWayCall),
+                            e
+                        ))
+                    ),
                     invoke_time: cmd.invoke_time.into(),
                     invocation_id_completion_id: cmd.invocation_id_notification_idx,
                     name: cmd.name.into(),
@@ -727,23 +729,25 @@ where
             }
             Message::CallCommand(cmd) => {
                 let entry: Entry = CallCommand {
-                    request: crate::shortcircuit!(resolve_call_request(
-                        self.invocation_task.schemas.live_load(),
-                        InvokeRequest {
-                            service_name: cmd.service_name.into(),
-                            handler_name: cmd.handler_name.into(),
-                            parameter: cmd.parameter,
-                            headers: cmd.headers.into_iter().map(Into::into).collect(),
-                            key: cmd.key.into(),
-                            idempotency_key: cmd.idempotency_key.map(|s| s.into()),
-                            span_relation: parent_span_context.as_linked()
-                        }
-                    )
-                    .map_err(|e| InvokerError::CommandPrecondition(
-                        self.command_index,
-                        EntryType::Command(CommandType::Call),
-                        e
-                    ))),
+                    request: crate::shortcircuit!(
+                        resolve_call_request(
+                            self.invocation_task.schemas.live_load(),
+                            InvokeRequest {
+                                service_name: cmd.service_name.into(),
+                                handler_name: cmd.handler_name.into(),
+                                parameter: cmd.parameter,
+                                headers: cmd.headers.into_iter().map(Into::into).collect(),
+                                key: cmd.key.into(),
+                                idempotency_key: cmd.idempotency_key.map(|s| s.into()),
+                                span_relation: parent_span_context.as_linked()
+                            }
+                        )
+                        .map_err(|e| InvokerError::CommandPrecondition(
+                            self.command_index,
+                            EntryType::Command(CommandType::Call),
+                            e
+                        ))
+                    ),
                     invocation_id_completion_id: cmd.invocation_id_notification_idx,
                     result_completion_id: cmd.result_completion_id,
                     name: cmd.name.into(),
@@ -876,11 +880,10 @@ where
             }
             Message::CompleteAwakeableCommand(cmd) => {
                 // Verify the provided InvocationId is valid
-                let _: Entry = crate::shortcircuit!(RawCommand::new(
-                    CommandType::CompleteAwakeable,
-                    cmd.clone()
-                )
-                .decode::<ServiceProtocolV4Codec, _>());
+                let _: Entry = crate::shortcircuit!(
+                    RawCommand::new(CommandType::CompleteAwakeable, cmd.clone())
+                        .decode::<ServiceProtocolV4Codec, _>()
+                );
                 self.handle_new_command(mh, RawCommand::new(CommandType::CompleteAwakeable, cmd));
                 TerminalLoopState::Continue(())
             }

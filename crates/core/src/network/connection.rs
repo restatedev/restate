@@ -12,19 +12,19 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
 
-use enum_map::{enum_map, EnumMap};
+use enum_map::{EnumMap, enum_map};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::Instant;
 use tracing::{debug, trace};
 
+use restate_types::net::ProtocolVersion;
 use restate_types::net::codec::Targeted;
 use restate_types::net::codec::WireEncode;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::net::ProtocolVersion;
-use restate_types::protobuf::node::message;
 use restate_types::protobuf::node::Header;
 use restate_types::protobuf::node::Message;
+use restate_types::protobuf::node::message;
 use restate_types::{GenerationalNodeId, Version};
 
 use super::NetworkError;
@@ -315,33 +315,34 @@ pub mod test_util {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use futures::stream::BoxStream;
     use futures::StreamExt;
+    use futures::stream::BoxStream;
     use tokio::sync::mpsc;
     use tokio::sync::mpsc::error::TrySendError;
     use tokio_stream::wrappers::ReceiverStream;
     use tracing::info;
     use tracing::warn;
 
+    use restate_types::net::CodecError;
+    use restate_types::net::ProtocolVersion;
     use restate_types::net::codec::MessageBodyExt;
     use restate_types::net::codec::Targeted;
     use restate_types::net::codec::WireEncode;
-    use restate_types::net::CodecError;
-    use restate_types::net::ProtocolVersion;
     use restate_types::nodes_config::NodesConfiguration;
-    use restate_types::protobuf::node::message;
-    use restate_types::protobuf::node::message::BinaryMessage;
-    use restate_types::protobuf::node::message::Body;
-    use restate_types::protobuf::node::message::ConnectionControl;
     use restate_types::protobuf::node::Header;
     use restate_types::protobuf::node::Hello;
     use restate_types::protobuf::node::Message;
     use restate_types::protobuf::node::Welcome;
+    use restate_types::protobuf::node::message;
+    use restate_types::protobuf::node::message::BinaryMessage;
+    use restate_types::protobuf::node::message::Body;
+    use restate_types::protobuf::node::message::ConnectionControl;
     use restate_types::{GenerationalNodeId, Version};
 
+    use crate::TaskCenter;
+    use crate::TaskHandle;
+    use crate::TaskKind;
     use crate::cancellation_watcher;
-    use crate::network::handshake::negotiate_protocol_version;
-    use crate::network::handshake::wait_for_hello;
     use crate::network::ConnectionManager;
     use crate::network::Handler;
     use crate::network::Incoming;
@@ -351,9 +352,8 @@ pub mod test_util {
     use crate::network::PeerMetadataVersion;
     use crate::network::ProtocolError;
     use crate::network::TransportConnect;
-    use crate::TaskCenter;
-    use crate::TaskHandle;
-    use crate::TaskKind;
+    use crate::network::handshake::negotiate_protocol_version;
+    use crate::network::handshake::wait_for_hello;
 
     // For testing
     //
@@ -468,7 +468,7 @@ pub mod test_util {
                 Ok(permit) => permit,
                 Err(TrySendError::Full(_)) => return Err(NetworkError::Full),
                 Err(TrySendError::Closed(_)) => {
-                    return Err(NetworkError::ConnectionClosed(self.peer))
+                    return Err(NetworkError::ConnectionClosed(self.peer));
                 }
             };
 

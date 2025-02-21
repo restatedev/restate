@@ -21,8 +21,8 @@ use restate_rocksdb::{CfName, RocksDbManager};
 use restate_types::config::CommonOptions;
 
 use crate::network_server::prometheus_helpers::{
-    format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
-    format_rocksdb_stat_ticker_for_prometheus, MetricUnit,
+    MetricUnit, format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
+    format_rocksdb_stat_ticker_for_prometheus,
 };
 use crate::network_server::state::NodeCtrlHandlerState;
 

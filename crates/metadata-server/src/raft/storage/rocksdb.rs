@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::raft::storage::keys::{
-    LogEntryKey, CONF_STATE_KEY, HARD_STATE_KEY, MARKER_KEY, NODES_CONFIGURATION_KEY,
+    CONF_STATE_KEY, HARD_STATE_KEY, LogEntryKey, MARKER_KEY, NODES_CONFIGURATION_KEY,
     RAFT_SERVER_STATE_KEY, SNAPSHOT_KEY,
 };
 use crate::raft::storage::rocksdb_builder::build_rocksdb;
@@ -25,7 +25,7 @@ use restate_types::config::{MetadataServerOptions, RocksDbOptions};
 use restate_types::errors::GenericError;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::nodes_config::NodesConfiguration;
-use rocksdb::{BoundColumnFamily, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions, DB};
+use rocksdb::{BoundColumnFamily, DB, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions};
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::{error, mem};
@@ -934,14 +934,16 @@ mod tests {
             ),
             Err(RaftError::Store(StorageError::Compacted))
         );
-        assert!(storage
-            .entries(
-                last_index + 1,
-                last_index + 2,
-                None,
-                GetEntriesContext::empty(false)
-            )
-            .is_err());
+        assert!(
+            storage
+                .entries(
+                    last_index + 1,
+                    last_index + 2,
+                    None,
+                    GetEntriesContext::empty(false)
+                )
+                .is_err()
+        );
 
         RocksDbManager::get().shutdown().await;
         Ok(())

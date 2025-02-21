@@ -20,12 +20,12 @@ use bytestring::ByteString;
 use futures_util::TryStreamExt;
 use googletest::prelude::*;
 
+use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
     InvokedOrKilledInvocationStatusLite, JournalMetadata, ReadOnlyInvocationStatusTable,
     StatusTimestamps,
 };
-use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
@@ -254,22 +254,26 @@ async fn test_migration() {
     txn.commit().await.unwrap();
 
     // Let's check migration was done
-    assert!(rocksdb
-        .get_kv_raw(
-            InvocationStatusKeyV1::default()
-                .partition_key(invocation_id.partition_key())
-                .invocation_uuid(invocation_id.invocation_uuid()),
-            |_, v| Ok(v.is_none())
-        )
-        .unwrap());
-    assert!(rocksdb
-        .get_kv_raw(
-            InvocationStatusKey::default()
-                .partition_key(invocation_id.partition_key())
-                .invocation_uuid(invocation_id.invocation_uuid()),
-            |_, v| Ok(v.is_some())
-        )
-        .unwrap());
+    assert!(
+        rocksdb
+            .get_kv_raw(
+                InvocationStatusKeyV1::default()
+                    .partition_key(invocation_id.partition_key())
+                    .invocation_uuid(invocation_id.invocation_uuid()),
+                |_, v| Ok(v.is_none())
+            )
+            .unwrap()
+    );
+    assert!(
+        rocksdb
+            .get_kv_raw(
+                InvocationStatusKey::default()
+                    .partition_key(invocation_id.partition_key())
+                    .invocation_uuid(invocation_id.invocation_uuid()),
+                |_, v| Ok(v.is_some())
+            )
+            .unwrap()
+    );
 
     // Make sure we can read without mutating V2
     assert_eq!(

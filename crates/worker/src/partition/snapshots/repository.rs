@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
 use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_config::default_provider::region::DefaultRegionChain;
@@ -381,10 +381,10 @@ impl SnapshotRepository {
 
         if snapshot_metadata.cluster_name != self.cluster_name {
             // todo(pavel): revisit whether we shouldn't just panic at this point - this is a bad sign!
-            warn!("Snapshot does not match the cluster name of latest snapshot at destination in snapshot id {}! Expected: cluster name=\"{}\", found: \"{}\"",
-                   snapshot_metadata.snapshot_id,
-                   self.cluster_name,
-                   snapshot_metadata.cluster_name);
+            warn!(
+                "Snapshot does not match the cluster name of latest snapshot at destination in snapshot id {}! Expected: cluster name=\"{}\", found: \"{}\"",
+                snapshot_metadata.snapshot_id, self.cluster_name, snapshot_metadata.cluster_name
+            );
             return Ok(None); // perhaps this needs to be a configuration error
         }
 
@@ -520,7 +520,9 @@ impl SnapshotRepository {
                     .map_err(|e| anyhow!("Failed to parse latest snapshot metadata: {}", e))?;
                 if snapshot.cluster_name != latest.cluster_name {
                     // This indicates a serious misconfiguration and we should complain loudly
-                    bail!("Snapshot does not match the cluster name of latest snapshot at destination!");
+                    bail!(
+                        "Snapshot does not match the cluster name of latest snapshot at destination!"
+                    );
                 }
                 Ok(Some((latest, version)))
             }
@@ -830,15 +832,15 @@ where
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use object_store::path::Path as ObjectPath;
     use object_store::ObjectStore;
+    use object_store::path::Path as ObjectPath;
     use std::time::SystemTime;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
     use tracing::info;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
     use url::Url;
 
     use super::{LatestSnapshot, SnapshotRepository, UniqueSnapshotKey};

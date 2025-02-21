@@ -229,14 +229,18 @@ impl SubscriptionValidator for IngressOptions {
         if cluster_options.contains_key("enable.auto.commit")
             || subscription.metadata().contains_key("enable.auto.commit")
         {
-            warn!("The configuration option enable.auto.commit should not be set and it will be ignored.");
+            warn!(
+                "The configuration option enable.auto.commit should not be set and it will be ignored."
+            );
         }
         if cluster_options.contains_key("enable.auto.offset.store")
             || subscription
                 .metadata()
                 .contains_key("enable.auto.offset.store")
         {
-            warn!("The configuration option enable.auto.offset.store should not be set and it will be ignored.");
+            warn!(
+                "The configuration option enable.auto.offset.store should not be set and it will be ignored."
+            );
         }
 
         // Set the group.id if unset

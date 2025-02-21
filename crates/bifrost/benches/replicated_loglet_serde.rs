@@ -13,15 +13,16 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use pprof::criterion::{Output, PProfProfiler};
 use pprof::flamegraph::Options;
 use prost::Message as _;
 use rand::distr::Alphanumeric;
-use rand::{random, Rng};
+use rand::{Rng, random};
 
 use restate_bifrost::InputRecord;
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber, ProducerId};
+use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext,
@@ -32,7 +33,6 @@ use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
 use restate_types::net::replicated_loglet::{Append, CommonRequestHeader};
 use restate_types::protobuf::node::Message;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::GenerationalNodeId;
 use restate_wal_protocol::{Command, Destination, Envelope};
 
 #[cfg(not(target_env = "msvc"))]

@@ -15,7 +15,7 @@ use std::str::FromStr;
 use assert2::let_assert;
 use async_stream::{stream, try_stream};
 use bytes::Bytes;
-use futures::{pin_mut, Stream, StreamExt};
+use futures::{Stream, StreamExt, pin_mut};
 use http_body_util::{BodyStream, Either, Empty, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::{Request, Response};
@@ -29,7 +29,7 @@ use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryCodecError
 use restate_types::journal::{Entry, EntryType, InputEntry};
 use restate_types::service_protocol::start_message::StateEntry;
 use restate_types::service_protocol::{
-    self, get_state_entry_message, output_entry_message, ServiceProtocolVersion, StartMessage,
+    self, ServiceProtocolVersion, StartMessage, get_state_entry_message, output_entry_message,
 };
 
 #[derive(Debug, thiserror::Error)]

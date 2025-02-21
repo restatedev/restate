@@ -16,7 +16,7 @@ use quote::ToTokens;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap as Map, BTreeSet as Set};
 use syn::punctuated::Punctuated;
-use syn::{parse_quote, GenericArgument, Generics, Ident, PathArguments, Token, Type, WhereClause};
+use syn::{GenericArgument, Generics, Ident, PathArguments, Token, Type, WhereClause, parse_quote};
 
 pub struct ParamsInScope<'a> {
     names: Set<&'a Ident>,

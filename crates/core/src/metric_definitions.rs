@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics::{describe_counter, describe_histogram, Unit};
+use metrics::{Unit, describe_counter, describe_histogram};
 
 // value of label `kind` in TC_SPAWN are defined in [`crate::TaskKind`].
 pub const TC_SPAWN: &str = "restate.task_center.spawned.total";

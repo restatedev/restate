@@ -23,5 +23,5 @@ mod tasks;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
-pub use provider::logserver_candidate_filter;
 pub use provider::Factory;
+pub use provider::logserver_candidate_filter;

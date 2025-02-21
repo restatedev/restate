@@ -8,20 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
+use crate::TableScan::FullScanPartitionKeyRange;
+use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::TableScan::FullScanPartitionKeyRange;
 use crate::{PartitionStore, TableKind};
 use crate::{PartitionStoreTransaction, StorageAccess};
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
+use restate_storage_api::Result;
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
-use restate_storage_api::Result;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use std::ops::RangeInclusive;

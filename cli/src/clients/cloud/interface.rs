@@ -10,7 +10,7 @@
 
 use super::client::Envelope;
 
-use super::{generated::*, CloudClient};
+use super::{CloudClient, generated::*};
 
 pub trait CloudClientInterface {
     async fn list_accounts(&self) -> reqwest::Result<Envelope<ListAccountsResponse>>;

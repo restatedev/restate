@@ -10,9 +10,9 @@
 
 use rand::prelude::*;
 
+use crate::PlainNodeId;
 use crate::nodes_config::NodesConfiguration;
 use crate::replication::NodeSet;
-use crate::PlainNodeId;
 
 /// Extension trait for NodeSet with helpers for log-server/replicated-loglet use-cases
 pub trait LogNodeSetExt {

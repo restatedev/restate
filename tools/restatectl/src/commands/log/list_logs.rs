@@ -17,9 +17,9 @@ use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::output::Console;
-use restate_types::logs::metadata::Chain;
-use restate_types::logs::LogId;
 use restate_types::Versioned;
+use restate_types::logs::LogId;
+use restate_types::logs::metadata::Chain;
 
 use crate::commands::log::{deserialize_replicated_log_params, render_loglet_params};
 use crate::connection::ConnectionInfo;
@@ -47,7 +47,9 @@ pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> any
     let logs: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
 
     if logs.is_empty() {
-        c_println!("No logs found. Has the cluster been provisioned yet? You can do so with `restatectl provision`.");
+        c_println!(
+            "No logs found. Has the cluster been provisioned yet? You can do so with `restatectl provision`."
+        );
 
         // short-circuits `restatectl status` to avoid trying to list partitions
         bail!(

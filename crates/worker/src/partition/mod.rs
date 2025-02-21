@@ -20,11 +20,11 @@ use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
 use metrics::histogram;
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, error, info, instrument, trace, warn, Span};
+use tracing::{Span, debug, error, info, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{HasConnection, Incoming, Outgoing};
-use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -852,9 +852,13 @@ where
         // Check whether we have seen this message before
         let is_duplicate = if let Some(last_dsn) = last_dsn {
             match (last_dsn, &dedup_information.sequence_number) {
-                (DedupSequenceNumber::Esn(last_esn), DedupSequenceNumber::Esn(esn)) => last_esn >= *esn,
+                (DedupSequenceNumber::Esn(last_esn), DedupSequenceNumber::Esn(esn)) => {
+                    last_esn >= *esn
+                }
                 (DedupSequenceNumber::Sn(last_sn), DedupSequenceNumber::Sn(sn)) => last_sn >= *sn,
-                (last_dsn, dsn) => panic!("sequence number types do not match: last sequence number '{last_dsn:?}', received sequence number '{dsn:?}'"),
+                (last_dsn, dsn) => panic!(
+                    "sequence number types do not match: last sequence number '{last_dsn:?}', received sequence number '{dsn:?}'"
+                ),
             }
         } else {
             false

@@ -705,7 +705,7 @@ impl schemars::JsonSchema for LambdaARN {
         "LambdaARN".into()
     }
 
-    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn json_schema(_: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
         schemars::schema::SchemaObject {
             instance_type: Some(schemars::schema::InstanceType::String.into()),
             format: Some("arn".to_string()),
@@ -735,7 +735,9 @@ impl Display for LambdaARN {
 pub enum InvalidLambdaARN {
     #[error("A qualified ARN must have 8 components delimited by `:`")]
     InvalidFormat,
-    #[error("A qualified ARN needs a version or alias suffix. If you want to use the unpublished version, provide $LATEST and make sure your shell doesn't treat it as a variable")]
+    #[error(
+        "A qualified ARN needs a version or alias suffix. If you want to use the unpublished version, provide $LATEST and make sure your shell doesn't treat it as a variable"
+    )]
     MissingVersionSuffix,
     #[error("First component of the ARN must be `arn`")]
     InvalidPrefix,
@@ -947,7 +949,7 @@ macro_rules! ulid_backed_id {
                     <String as schemars::JsonSchema>::schema_name()
                 }
 
-                fn json_schema(g: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+                fn json_schema(g: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
                     <String as schemars::JsonSchema>::json_schema(g)
                 }
             }
@@ -1132,8 +1134,8 @@ impl WithInvocationId for ExternalSignalIdentifier {
 mod mocks {
     use super::*;
 
-    use rand::distr::{Alphanumeric, SampleString};
     use rand::Rng;
+    use rand::distr::{Alphanumeric, SampleString};
 
     impl InvocationUuid {
         pub fn mock_generate(invocation_target: &InvocationTarget) -> Self {

@@ -19,7 +19,7 @@ use arrow::datatypes::{Int64Type, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
-use arrow_convert::deserialize::{arrow_array_deserialize_iterator, ArrowDeserialize};
+use arrow_convert::deserialize::{ArrowDeserialize, arrow_array_deserialize_iterator};
 use arrow_convert::field::ArrowField;
 use bytes::Buf;
 use itertools::Itertools;
@@ -33,7 +33,9 @@ use url::Url;
 #[error(transparent)]
 pub enum Error {
     Api(#[from] Box<ApiError>),
-    #[error("The Restate server '{0}' lacks JSON /query support. Please update the CLI to match the Restate server version '{1}'.")]
+    #[error(
+        "The Restate server '{0}' lacks JSON /query support. Please update the CLI to match the Restate server version '{1}'."
+    )]
     JSONSupport(Url, String),
     #[error("(Protocol error) {0}")]
     Serialization(#[from] serde_json::Error),

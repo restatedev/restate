@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use cling::prelude::*;
 use convert_case::{Case, Casing};
-use dialoguer::theme::ColorfulTheme;
 use dialoguer::Select;
+use dialoguer::theme::ColorfulTheme;
 use futures::StreamExt;
 use octocrab::models::repos::Asset;
 use octocrab::repos::RepoHandler;
@@ -25,7 +25,7 @@ use tokio::io::AsyncWriteExt;
 
 use restate_cli_util::ui::stylesheet::Style;
 
-use crate::console::{c_println, Styled};
+use crate::console::{Styled, c_println};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_examples")]

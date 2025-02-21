@@ -11,22 +11,22 @@
 use codederror::CodedError;
 
 use restate_bifrost::Bifrost;
+use restate_core::TaskCenter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
-use restate_core::TaskCenter;
-use restate_core::{cancellation_watcher, Metadata, MetadataKind};
+use restate_core::{Metadata, MetadataKind, cancellation_watcher};
 use restate_core::{ShutdownError, TaskKind};
 use restate_metadata_server::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
+use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::subscriptions::SubscriptionResolver;
-use restate_types::Version;
 use restate_worker::SubscriptionController;
 use restate_worker::Worker;
 

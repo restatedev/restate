@@ -13,8 +13,8 @@ use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 use tracing::error;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::TrimLogRequest;
+use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_cli_util::c_println;
 use restate_types::nodes_config::Role;
 

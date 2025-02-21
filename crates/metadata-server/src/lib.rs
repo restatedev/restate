@@ -16,7 +16,7 @@ mod metric_definitions;
 pub mod raft;
 
 use crate::local::LocalMetadataServer;
-use crate::raft::{create_replicated_metadata_client, RaftMetadataServer};
+use crate::raft::{RaftMetadataServer, create_replicated_metadata_client};
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -24,10 +24,10 @@ use grpc::pb_conversions::ConversionError;
 use itertools::Itertools;
 use prost::Message;
 use raft_proto::eraftpb::Snapshot;
-use restate_core::metadata_store::providers::{
-    create_object_store_based_meta_store, EtcdMetadataStore,
-};
 use restate_core::metadata_store::VersionedValue;
+use restate_core::metadata_store::providers::{
+    EtcdMetadataStore, create_object_store_based_meta_store,
+};
 pub use restate_core::metadata_store::{
     MetadataStoreClient, Precondition, ReadError, ReadModifyWriteError, WriteError,
 };
@@ -45,7 +45,7 @@ use restate_types::nodes_config::{
 };
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
-use restate_types::{config, GenerationalNodeId, PlainNodeId, Version};
+use restate_types::{GenerationalNodeId, PlainNodeId, Version, config};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -723,7 +723,7 @@ fn prepare_initial_nodes_configuration(
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod tests {
-    use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
+    use restate_types::{Version, Versioned, flexbuffers_storage_encode_decode};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]

@@ -10,6 +10,7 @@
 
 //! This module contains all the core types representing a service invocation.
 
+use crate::GenerationalNodeId;
 use crate::errors::InvocationError;
 use crate::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, PartitionKey, PartitionProcessorRpcRequestId,
@@ -17,12 +18,11 @@ use crate::identifiers::{
 };
 use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 use crate::time::MillisSinceEpoch;
-use crate::GenerationalNodeId;
 
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
-use serde_with::{serde_as, FromInto};
+use serde_with::{FromInto, serde_as};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Deref;

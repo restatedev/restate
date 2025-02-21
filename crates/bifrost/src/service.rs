@@ -15,7 +15,7 @@ use enum_map::EnumMap;
 use tracing::{debug, error, trace};
 
 use restate_core::{
-    cancellation_watcher, MetadataWriter, TaskCenter, TaskCenterFutureExt, TaskKind,
+    MetadataWriter, TaskCenter, TaskCenterFutureExt, TaskKind, cancellation_watcher,
 };
 use restate_types::config::Configuration;
 use restate_types::live::Live;
@@ -26,7 +26,7 @@ use crate::providers::local_loglet;
 #[cfg(any(test, feature = "memory-loglet"))]
 use crate::providers::memory_loglet;
 use crate::watchdog::{Watchdog, WatchdogCommand};
-use crate::{loglet::LogletProviderFactory, Bifrost};
+use crate::{Bifrost, loglet::LogletProviderFactory};
 
 pub struct BifrostService {
     inner: Arc<BifrostInner>,

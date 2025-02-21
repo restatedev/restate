@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use datafusion::error::DataFusionError;
 use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
-use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
+use okapi_operation::{Components, ToMediaTypes, ToResponses, okapi};
 use schemars::JsonSchema;
 use serde::Serialize;
 

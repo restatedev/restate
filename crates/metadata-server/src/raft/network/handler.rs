@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use crate::raft::network::connection_manager::ConnectionError;
-use crate::raft::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
 use crate::raft::network::grpc_svc::JoinClusterRequest;
-use crate::raft::network::{grpc_svc, ConnectionManager, NetworkMessage, PEER_METADATA_KEY};
+use crate::raft::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
+use crate::raft::network::{ConnectionManager, NetworkMessage, PEER_METADATA_KEY, grpc_svc};
 use crate::{JoinClusterError, JoinClusterHandle, MemberId};
-use arc_swap::access::Access;
 use arc_swap::ArcSwapOption;
+use arc_swap::access::Access;
 use restate_types::PlainNodeId;
 use std::str::FromStr;
 use std::sync::Arc;

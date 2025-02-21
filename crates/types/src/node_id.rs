@@ -103,7 +103,7 @@ impl GenerationalNodeId {
 
     pub fn encode(&self, buf: &mut BytesMut) {
         buf.reserve(2 * size_of::<u32>());
-        buf.put_u32(self.0 .0);
+        buf.put_u32(self.0.0);
         buf.put_u32(self.1);
     }
 
@@ -206,7 +206,7 @@ impl NodeId {
     pub fn id(self) -> PlainNodeId {
         match self {
             NodeId::Plain(id) => id,
-            NodeId::Generational(gen) => gen.as_plain(),
+            NodeId::Generational(generation) => generation.as_plain(),
         }
     }
 
@@ -316,7 +316,7 @@ impl GenerationalNodeId {
     }
 
     pub fn raw_id(self) -> u32 {
-        self.0 .0
+        self.0.0
     }
 
     pub fn raw_generation(self) -> u32 {

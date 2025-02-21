@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tracing::{debug_span, event_enabled, trace_span, Level, Span};
+use tracing::{Level, Span, debug_span, event_enabled, trace_span};
 
 use restate_types::{identifiers::InvocationId, invocation::InvocationTarget};
 use restate_wal_protocol::Command;

@@ -27,12 +27,12 @@ use restate_types::live::Live;
 use restate_types::logs::Lsn;
 use restate_types::schema::Schema;
 
+use crate::PartitionProcessorBuilder;
 use crate::invoker_integration::EntryEnricher;
+use crate::partition::ProcessorError;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::snapshots::SnapshotRepository;
-use crate::partition::ProcessorError;
 use crate::partition_processor_manager::processor_state::StartedProcessor;
-use crate::PartitionProcessorBuilder;
 
 pub struct SpawnPartitionProcessorTask {
     task_name: &'static str,

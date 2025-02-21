@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_storage_api::Result;
+use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 
-use crate::keys::{define_table_key, KeyKind};
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::TableKind::PartitionStateMachine;
+use crate::keys::{KeyKind, define_table_key};
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::{PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess};
 
 define_table_key!(

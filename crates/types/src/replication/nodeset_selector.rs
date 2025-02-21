@@ -15,11 +15,11 @@ use std::hash::Hasher;
 use tracing::{debug, error};
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::PlainNodeId;
 use crate::locality::{LocationScope, NodeLocation};
 use crate::logs::metadata::NodeSetSize;
 use crate::nodes_config::{NodeConfig, NodesConfiguration};
 use crate::replication::{NodeSet, ReplicationProperty};
-use crate::PlainNodeId;
 
 // A virtual safety net, nodeset that big can cause all sorts of problems. I hope that
 // we don't hit this limit, ever. That said, even if the entire cluster is in the nodeset, a
@@ -30,17 +30,23 @@ pub const MAX_NODESET_SIZE: u32 = NodeSetSize::MAX.as_u32();
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NodeSelectorError {
-    #[error("not enough candidate nodes to satisfy the replication factor; available={nodeset_len} nodes but replication={replication_factor}")]
+    #[error(
+        "not enough candidate nodes to satisfy the replication factor; available={nodeset_len} nodes but replication={replication_factor}"
+    )]
     InsufficientNodes {
         nodeset_len: usize,
         replication_factor: u8,
     },
-    #[error("node location for node {node_id} is missing. Node locations are required if domain-aware replication is enabled. Domain-aware replication is enabled due to replication-property set to {replication}")]
+    #[error(
+        "node location for node {node_id} is missing. Node locations are required if domain-aware replication is enabled. Domain-aware replication is enabled due to replication-property set to {replication}"
+    )]
     NodeLocationMissing {
         node_id: PlainNodeId,
         replication: ReplicationProperty,
     },
-    #[error("node location for node {node_id} is configured to be '{location}', but is not defined at scope {missing_scope}. The scope is required because replication {replication} is defined at this scope.")]
+    #[error(
+        "node location for node {node_id} is configured to be '{location}', but is not defined at scope {missing_scope}. The scope is required because replication {replication} is defined at this scope."
+    )]
     IncompleteNodeLocation {
         node_id: PlainNodeId,
         location: NodeLocation,
@@ -370,7 +376,10 @@ impl DomainAwareNodeSetSelector {
                     break;
                 }
                 if output_nodeset.len() >= MAX_NODESET_SIZE as usize {
-                    debug!("Hit the maximum allowed nodeset size {} when selecting nodeset for id '{}', will truncate.", MAX_NODESET_SIZE, options.hashing_id);
+                    debug!(
+                        "Hit the maximum allowed nodeset size {} when selecting nodeset for id '{}', will truncate.",
+                        MAX_NODESET_SIZE, options.hashing_id
+                    );
                     break;
                 }
 

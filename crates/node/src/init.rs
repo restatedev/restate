@@ -11,8 +11,9 @@
 use crate::cluster_marker::mark_cluster_as_provisioned;
 use restate_core::metadata_store::{MetadataStoreClient, ReadWriteError};
 use restate_core::{
-    cancellation_token, Metadata, MetadataWriter, ShutdownError, SyncError, TargetVersion,
+    Metadata, MetadataWriter, ShutdownError, SyncError, TargetVersion, cancellation_token,
 };
+use restate_types::PlainNodeId;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -21,10 +22,9 @@ use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration,
 };
 use restate_types::retries::RetryPolicy;
-use restate_types::PlainNodeId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, enabled, info, trace, warn, Level};
+use tracing::{Level, debug, enabled, info, trace, warn};
 
 #[derive(Debug, thiserror::Error)]
 enum JoinError {
@@ -34,12 +34,16 @@ enum JoinError {
     ConcurrentNodeRegistration(String),
     #[error("failed writing to metadata store: {0}")]
     MetadataStore(#[from] ReadWriteError),
-    #[error("trying to join wrong cluster; expected '{expected_cluster_name}', actual '{actual_cluster_name}'")]
+    #[error(
+        "trying to join wrong cluster; expected '{expected_cluster_name}', actual '{actual_cluster_name}'"
+    )]
     ClusterMismatch {
         expected_cluster_name: String,
         actual_cluster_name: String,
     },
-    #[error("node id mismatch; configured node id '{configured_node_id}', actual node id '{actual_node_id}'")]
+    #[error(
+        "node id mismatch; configured node id '{configured_node_id}', actual node id '{actual_node_id}'"
+    )]
     NodeIdMismatch {
         configured_node_id: PlainNodeId,
         actual_node_id: PlainNodeId,
@@ -354,7 +358,7 @@ mod tests {
     use googletest::assert_that;
     use googletest::matchers::{contains_substring, displays_as, err};
     use restate_core::TestCoreEnvBuilder;
-    use restate_types::config::{set_current_config, Configuration};
+    use restate_types::config::{Configuration, set_current_config};
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 

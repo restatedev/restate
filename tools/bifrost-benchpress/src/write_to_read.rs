@@ -20,8 +20,8 @@ use restate_bifrost::{Bifrost, ErrorRecoveryStrategy};
 use restate_core::{Metadata, TaskCenter, TaskHandle, TaskKind};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, WithKeys};
 
-use crate::util::{print_latencies, DummyPayload};
 use crate::Arguments;
+use crate::util::{DummyPayload, print_latencies};
 
 const LOG_ID: LogId = LogId::new(0);
 

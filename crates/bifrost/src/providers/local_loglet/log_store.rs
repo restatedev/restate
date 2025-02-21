@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use restate_types::errors::MaybeRetryableError;
-use rocksdb::{BoundColumnFamily, DBCompressionType, SliceTransform, DB};
+use rocksdb::{BoundColumnFamily, DB, DBCompressionType, SliceTransform};
 use static_assertions::const_assert;
 
 use restate_rocksdb::{
@@ -21,8 +21,8 @@ use restate_types::config::{LocalLogletOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 
-use super::keys::{MetadataKey, MetadataKind, DATA_KEY_PREFIX_LENGTH};
-use super::log_state::{log_state_full_merge, log_state_partial_merge, LogState};
+use super::keys::{DATA_KEY_PREFIX_LENGTH, MetadataKey, MetadataKind};
+use super::log_state::{LogState, log_state_full_merge, log_state_partial_merge};
 use super::log_store_writer::LogStoreWriter;
 
 // matches the default directory name

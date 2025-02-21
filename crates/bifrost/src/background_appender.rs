@@ -13,10 +13,10 @@ use std::sync::Arc;
 use futures::FutureExt;
 use pin_project::pin_project;
 use restate_types::logs::Record;
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::{trace, warn};
 
-use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskHandle};
+use restate_core::{ShutdownError, TaskCenter, TaskHandle, cancellation_watcher};
 use restate_types::storage::StorageEncode;
 
 use crate::error::EnqueueError;

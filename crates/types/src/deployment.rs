@@ -34,8 +34,8 @@ impl PinnedDeployment {
 mod tests {
     use super::*;
 
-    use crate::identifiers::{ResourceId, TimestampAwareId};
     use crate::IdEncoder;
+    use crate::identifiers::{ResourceId, TimestampAwareId};
 
     #[test]
     fn test_deployment_id_format() {

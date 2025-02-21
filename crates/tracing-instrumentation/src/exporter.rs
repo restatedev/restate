@@ -14,8 +14,8 @@ use arc_swap::ArcSwap;
 use futures::future::BoxFuture;
 use opentelemetry::trace::TraceError;
 use opentelemetry::{Key, KeyValue, StringValue, Value};
-use opentelemetry_sdk::export::trace::{SpanData, SpanExporter};
 use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::export::trace::{SpanData, SpanExporter};
 use opentelemetry_semantic_conventions::attribute::{RPC_SERVICE, SERVICE_NAME};
 use std::sync::OnceLock;
 
@@ -60,7 +60,7 @@ impl<T: SpanExporter + 'static> SpanExporter for UserServiceModifierSpanExporter
             None => {
                 return Box::pin(std::future::ready(Err(TraceError::Other(
                     "exporter is already shut down".into(),
-                ))))
+                ))));
             }
         };
 
@@ -90,7 +90,7 @@ impl<T: SpanExporter + 'static> SpanExporter for UserServiceModifierSpanExporter
                     let mut exporter_guard = match exporter.lock() {
                         Ok(exporter) => exporter,
                         Err(_) => {
-                            return Err(TraceError::Other("exporter mutex is poisoned".into()))
+                            return Err(TraceError::Other("exporter mutex is poisoned".into()));
                         }
                     };
                     match service_name {
@@ -126,7 +126,7 @@ impl<T: SpanExporter + 'static> SpanExporter for UserServiceModifierSpanExporter
             None => {
                 return Box::pin(std::future::ready(Err(TraceError::Other(
                     "exporter is already shut down".into(),
-                ))))
+                ))));
             }
         };
         // wait for any in-flight export to finish
@@ -135,7 +135,7 @@ impl<T: SpanExporter + 'static> SpanExporter for UserServiceModifierSpanExporter
             Err(_) => {
                 return Box::pin(std::future::ready(Err(TraceError::Other(
                     "exporter mutex is poisoned".into(),
-                ))))
+                ))));
             }
         };
         let fut = exporter_guard.force_flush();
@@ -158,8 +158,8 @@ mod service_per_binary {
     use futures::future::BoxFuture;
     use opentelemetry::KeyValue;
     use opentelemetry_sdk::{
-        export::trace::{SpanData, SpanExporter},
         Resource,
+        export::trace::{SpanData, SpanExporter},
     };
     use opentelemetry_semantic_conventions::attribute::SERVICE_INSTANCE_ID;
 
@@ -238,10 +238,10 @@ mod service_per_crate {
 
     use arc_swap::ArcSwap;
     use futures::future::BoxFuture;
-    use opentelemetry::{trace::TraceError, Key, KeyValue, StringValue, Value};
+    use opentelemetry::{Key, KeyValue, StringValue, Value, trace::TraceError};
     use opentelemetry_sdk::{
-        export::trace::{SpanData, SpanExporter},
         Resource,
+        export::trace::{SpanData, SpanExporter},
     };
     use opentelemetry_semantic_conventions::attribute::{
         CODE_NAMESPACE, SERVICE_INSTANCE_ID, SERVICE_NAME,
@@ -280,7 +280,7 @@ mod service_per_crate {
                 None => {
                     return Box::pin(std::future::ready(Err(TraceError::Other(
                         "exporter is already shut down".into(),
-                    ))))
+                    ))));
                 }
             };
 
@@ -333,7 +333,7 @@ mod service_per_crate {
                         let mut exporter_guard = match exporter.lock() {
                             Ok(exporter) => exporter,
                             Err(_) => {
-                                return Err(TraceError::Other("exporter mutex is poisoned".into()))
+                                return Err(TraceError::Other("exporter mutex is poisoned".into()));
                             }
                         };
                         match service_name {
@@ -369,7 +369,7 @@ mod service_per_crate {
                 None => {
                     return Box::pin(std::future::ready(Err(TraceError::Other(
                         "exporter is already shut down".into(),
-                    ))))
+                    ))));
                 }
             };
             // wait for any in-flight export to finish
@@ -378,7 +378,7 @@ mod service_per_crate {
                 Err(_) => {
                     return Box::pin(std::future::ready(Err(TraceError::Other(
                         "exporter mutex is poisoned".into(),
-                    ))))
+                    ))));
                 }
             };
             let fut = exporter_guard.force_flush();

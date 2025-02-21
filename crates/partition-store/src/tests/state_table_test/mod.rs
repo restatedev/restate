@@ -12,8 +12,8 @@ use super::{assert_stream_eq, storage_test_environment};
 
 use crate::PartitionStore;
 use bytes::Bytes;
-use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_storage_api::Transaction;
+use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_types::identifiers::ServiceId;
 
 async fn populate_data<T: StateTable>(table: &mut T) {
@@ -141,12 +141,13 @@ async fn test_delete_all() {
     .await;
 
     // key-2 should be untouched
-    assert!(txn
-        .get_user_state(
+    assert!(
+        txn.get_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
             &Bytes::from_static(b"k2"),
         )
         .await
         .expect("should not fail")
-        .is_some());
+        .is_some()
+    );
 }

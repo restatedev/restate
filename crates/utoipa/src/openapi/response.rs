@@ -10,7 +10,7 @@ use crate::openapi::{Ref, RefOr};
 
 use super::extensions::Extensions;
 use super::link::Link;
-use super::{builder, header::Header, set_value, Content};
+use super::{Content, builder, header::Header, set_value};
 
 builder! {
     ResponsesBuilder;

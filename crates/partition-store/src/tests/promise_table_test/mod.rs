@@ -16,10 +16,10 @@ use super::storage_test_environment;
 
 use bytes::Bytes;
 use bytestring::ByteString;
+use restate_storage_api::Transaction;
 use restate_storage_api::promise_table::{
     Promise, PromiseResult, PromiseState, PromiseTable, ReadOnlyPromiseTable,
 };
-use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, InvocationUuid, JournalEntryId, ServiceId};
 
 const SERVICE_ID_1: ServiceId = ServiceId::from_static(10, "MySvc", "a");

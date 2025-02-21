@@ -13,8 +13,8 @@ use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use hyper::header::{HeaderName, HeaderValue};
 use hyper::HeaderMap;
+use hyper::header::{HeaderName, HeaderValue};
 
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::Serialize;

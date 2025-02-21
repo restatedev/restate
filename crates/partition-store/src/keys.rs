@@ -326,9 +326,9 @@ macro_rules! define_table_key {
 use crate::PaddedPartitionId;
 use crate::TableKind;
 pub(crate) use define_table_key;
+use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::ProducerId;
 use restate_storage_api::timer_table::TimerKeyKind;
-use restate_storage_api::StorageError;
 use restate_types::identifiers::InvocationUuid;
 use restate_types::journal_v2::{CompletionId, NotificationId, SignalIndex};
 
@@ -500,7 +500,7 @@ impl KeyCodec for ProducerId {
                 return Err(StorageError::Generic(anyhow!(
                     "Unexpected wrong discriminator for SequenceNumberSource: {}",
                     i
-                )))
+                )));
             }
         })
     }
@@ -576,7 +576,7 @@ impl KeyCodec for TimerKeyKind {
                 return Err(StorageError::Generic(anyhow!(
                     "Unknown discriminator for TimerKind: '{}'",
                     i
-                )))
+                )));
             }
         })
     }
@@ -651,7 +651,7 @@ impl KeyCodec for NotificationId {
                 return Err(StorageError::Generic(anyhow!(
                     "Unknown discriminator for NotificationId: '{}'",
                     i
-                )))
+                )));
             }
         })
     }

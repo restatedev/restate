@@ -13,7 +13,7 @@ use serde_with::serde_as;
 
 use crate::locality::NodeLocation;
 use crate::net::AdvertisedAddress;
-use crate::{flexbuffers_storage_encode_decode, GenerationalNodeId, NodeId, PlainNodeId};
+use crate::{GenerationalNodeId, NodeId, PlainNodeId, flexbuffers_storage_encode_decode};
 use crate::{Version, Versioned};
 use ahash::HashMap;
 

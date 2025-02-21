@@ -12,8 +12,8 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-use http::uri::{InvalidUri, Parts, Scheme};
 use http::Uri;
+use http::uri::{InvalidUri, Parts, Scheme};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 

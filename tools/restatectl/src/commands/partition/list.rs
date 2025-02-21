@@ -20,12 +20,12 @@ use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::Cluste
 use restate_admin::cluster_controller::protobuf::{ClusterStateRequest, ListLogsRequest};
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::c_println;
-use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::Tense;
+use restate_cli_util::ui::console::StyledTable;
 use restate_types::logs::metadata::{Chain, Logs};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::protobuf::cluster::{
-    node_state, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode, SuspectNode,
+    DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode, SuspectNode, node_state,
 };
 use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};

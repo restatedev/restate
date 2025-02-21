@@ -16,8 +16,8 @@ use crate::metadata_store::{Precondition, ReadError, VersionedValue, WriteError}
 use bytes::{BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use rand::random;
-use restate_types::config::MetadataClientKind;
 use restate_types::Version;
+use restate_types::config::MetadataClientKind;
 use std::borrow::Cow;
 
 pub(crate) struct OptimisticLockingMetadataStoreBuilder {
@@ -139,7 +139,7 @@ impl OptimisticLockingMetadataStore {
                         Err(VersionRepositoryError::NotFound) => {
                             return Err(WriteError::FailedPrecondition(
                                 "no current version exists".to_string(),
-                            ))
+                            ));
                         }
                         Err(e) => return Err(WriteError::retryable(e)),
                     };
@@ -193,7 +193,7 @@ impl OptimisticLockingMetadataStore {
                     Err(VersionRepositoryError::NotFound) => {
                         return Err(WriteError::FailedPrecondition(
                             "No version found".to_string(),
-                        ))
+                        ));
                     }
                     Err(e) => return Err(WriteError::retryable(e)),
                 };

@@ -18,7 +18,7 @@ use rocksdb::{BlockBasedOptions, Cache, LogLevel, WriteBufferManager};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_serde_util::ByteCount;
 use restate_types::config::{
     CommonOptions, Configuration, RocksDbLogLevel, RocksDbOptions, StatisticsLevel,
@@ -26,7 +26,7 @@ use restate_types::config::{
 use restate_types::live::{BoxedLiveLoad, LiveLoad};
 
 use crate::background::ReadyStorageTask;
-use crate::{metric_definitions, DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError};
+use crate::{DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError, metric_definitions};
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 

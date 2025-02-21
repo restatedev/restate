@@ -20,16 +20,16 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::Float32Type;
 use datafusion::arrow::datatypes::Float64Type;
+use datafusion::arrow::datatypes::Int8Type;
 use datafusion::arrow::datatypes::Int16Type;
 use datafusion::arrow::datatypes::Int32Type;
 use datafusion::arrow::datatypes::Int64Type;
-use datafusion::arrow::datatypes::Int8Type;
 use datafusion::arrow::datatypes::UInt32Type;
 use datafusion::arrow::datatypes::UInt64Type;
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_plan::SendableRecordBatchStream;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -342,7 +342,7 @@ fn encode_value(
                     arr.data_type(),
                     &arr
                 ),
-            ))))
+            ))));
         }
     }
     Ok(())

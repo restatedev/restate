@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::task::{ready, Poll};
+use std::task::{Poll, ready};
 
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::sync::mpsc;
@@ -17,8 +17,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use restate_core::TaskHandle;
 use restate_types::logs::LogletOffset;
 
-use crate::loglet::{LogletReadStream, OperationError};
 use crate::LogEntry;
+use crate::loglet::{LogletReadStream, OperationError};
 
 pub(crate) struct ReplicatedLogletReadStream {
     // the next record this stream will attempt to return when polled

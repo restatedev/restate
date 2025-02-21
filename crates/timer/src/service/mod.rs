@@ -17,7 +17,7 @@ use std::fmt::Debug;
 use std::future;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{ready, Context, Poll, Waker};
+use std::task::{Context, Poll, Waker, ready};
 use tokio_util::sync::ReusableBoxFuture;
 use tracing::trace;
 
@@ -237,7 +237,9 @@ where
                         ProcessTimersStateProj::AwaitTimer { timer_key, .. } => {
                             // we might wait for a later timer if the newly added timer fires earlier
                             if new_timer_key < *timer_key {
-                                trace!("Reset process timer state to ReadNextTimer because added timer fires earlier.");
+                                trace!(
+                                    "Reset process timer state to ReadNextTimer because added timer fires earlier."
+                                );
                                 process_timers_state.set(ProcessTimersState::ReadNextTimer);
                             }
                         }
@@ -246,7 +248,9 @@ where
                         }
                     }
                 } else {
-                    trace!("Ignore timer {timer:?} because it is not contained in the current timer batch {timer_batch:?}.");
+                    trace!(
+                        "Ignore timer {timer:?} because it is not contained in the current timer batch {timer_batch:?}."
+                    );
                 }
             }
         }
@@ -265,7 +269,9 @@ where
                 );
             }
             StateProj::LoadTimers { removed_timers, .. } => {
-                trace!("Remove timer '{key:?}' from timer queue and remember for filtering out newly loaded timers while loading.");
+                trace!(
+                    "Remove timer '{key:?}' from timer queue and remember for filtering out newly loaded timers while loading."
+                );
                 timer_queue.remove(&key);
                 removed_timers
                     .as_mut()
@@ -368,7 +374,9 @@ where
                                     .1
                                     < timer_key
                             {
-                                trace!("Finished loading timers from storage because the in memory limit has been reached.");
+                                trace!(
+                                    "Finished loading timers from storage because the in memory limit has been reached."
+                                );
                                 break;
                             } else {
                                 trace!("Load timer {next_timer:?} into in memory queue.");
@@ -410,7 +418,9 @@ where
                         if let Some((_, timer_key)) = timer_queue.peek_min() {
                             let wake_up_time = timer_key.wake_up_time();
                             if let Some(sleep) = this.clock.sleep_until(wake_up_time) {
-                                trace!("Awaiting next timer {timer_key:?} which is due at {wake_up_time}.");
+                                trace!(
+                                    "Awaiting next timer {timer_key:?} which is due at {wake_up_time}."
+                                );
                                 process_timers_state.set(ProcessTimersState::AwaitTimer {
                                     timer_key: timer_key.clone(),
                                     sleep,
@@ -428,7 +438,10 @@ where
                                 "Max fired timer should coincide with end of batch."
                             );
 
-                            trace!("Finished processing of current timer batch '{:?}'. Trying loading new timers from storage.", end_of_batch);
+                            trace!(
+                                "Finished processing of current timer batch '{:?}'. Trying loading new timers from storage.",
+                                end_of_batch
+                            );
 
                             let removed_timers = this.removed_timers.take();
 

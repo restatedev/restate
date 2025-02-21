@@ -30,11 +30,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use rocksdb::ExportImportFilesMetaData;
 use rocksdb::checkpoint::Checkpoint;
 use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
-use rocksdb::ExportImportFilesMetaData;
 
 // re-exports
 pub use self::db_manager::RocksDbManager;
@@ -179,7 +179,9 @@ impl RocksDb {
         match io_mode {
             IoMode::AllowBlockingIO => {
                 let _x = RocksDbPerfGuard::new(name);
-                debug!("Blocking IO is allowed for write_batch, stall detection will not be used in this operation!");
+                debug!(
+                    "Blocking IO is allowed for write_batch, stall detection will not be used in this operation!"
+                );
                 write_options.set_no_slowdown(false);
                 write_op(self.db.as_ref(), &write_options)?;
                 counter!(STORAGE_IO_OP,

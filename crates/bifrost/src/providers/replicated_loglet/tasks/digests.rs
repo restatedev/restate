@@ -16,7 +16,7 @@ use tracing::{debug, trace, warn};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, TransportConnect};
-use restate_core::{cancellation_watcher, ShutdownError, TaskCenterFutureExt};
+use restate_core::{ShutdownError, TaskCenterFutureExt, cancellation_watcher};
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
     Digest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
@@ -26,13 +26,13 @@ use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::NodeSet;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
-use crate::loglet::util::TailOffsetWatch;
+use crate::LogEntry;
 use crate::loglet::OperationError;
+use crate::loglet::util::TailOffsetWatch;
+use crate::providers::replicated_loglet::replication::NodeSetChecker;
 use crate::providers::replicated_loglet::replication::spread_selector::{
     SelectorStrategy, SpreadSelector,
 };
-use crate::providers::replicated_loglet::replication::NodeSetChecker;
-use crate::LogEntry;
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not replicate record, exhausted all store attempts")]

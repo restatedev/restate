@@ -10,13 +10,13 @@
 
 use crate::{RequestDispatcher, RequestDispatcherError};
 use anyhow::anyhow;
+use restate_core::network::TransportConnect;
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
 };
 use restate_core::network::partition_processor_rpc_client::{
     PartitionProcessorRpcClient, PartitionProcessorRpcClientError,
 };
-use restate_core::network::TransportConnect;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithInvocationId};
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
@@ -24,7 +24,7 @@ use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocat
 use restate_types::retries::RetryPolicy;
 use std::future::Future;
 use std::time::Duration;
-use tracing::{debug_span, trace, Instrument};
+use tracing::{Instrument, debug_span, trace};
 
 pub struct RpcRequestDispatcher<C> {
     partition_processor_rpc_client: PartitionProcessorRpcClient<C>,

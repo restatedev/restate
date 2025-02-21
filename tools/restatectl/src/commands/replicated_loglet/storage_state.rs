@@ -13,8 +13,8 @@ use cling::prelude::*;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_core::metadata_store::{retry_on_retryable_error, ReadWriteError};
-use restate_metadata_server::{create_client, MetadataStoreClient};
+use restate_core::metadata_store::{ReadWriteError, retry_on_retryable_error};
+use restate_metadata_server::{MetadataStoreClient, create_client};
 use restate_types::config::{CommonOptions, MetadataClientKind, MetadataClientOptions};
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -195,9 +195,9 @@ async fn set_storage_state(connection: &ConnectionInfo, opts: &SetOpts) -> anyho
 
         if !safe {
             return Err(anyhow::anyhow!(
-                    "This node is currently in `{current_state}` storage-state. Transitioning into `{}` is unsafe.",
-                    opts.storage_state
-                 ));
+                "This node is currently in `{current_state}` storage-state. Transitioning into `{}` is unsafe.",
+                opts.storage_state
+            ));
         }
     }
 
@@ -277,7 +277,9 @@ enum StorageStateUpdateError {
     MissingNodesConfiguration,
     #[error(transparent)]
     NodesConfigError(#[from] restate_types::nodes_config::NodesConfigError),
-    #[error("log-server found an unexpected storage-state '{0}' in metadata store, this could mean that another node has updated it")]
+    #[error(
+        "log-server found an unexpected storage-state '{0}' in metadata store, this could mean that another node has updated it"
+    )]
     NotInExpectedState(StorageState),
     #[error("succeeded updating NodesConfiguration in a previous attempt")]
     PreviousAttemptSucceeded(NodesConfiguration),

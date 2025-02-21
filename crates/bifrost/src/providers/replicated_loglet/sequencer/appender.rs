@@ -16,19 +16,19 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, trace, warn};
 
 use restate_core::{
-    network::{rpc_router::RpcRouter, Incoming, NetworkError, Networking, TransportConnect},
     TaskCenterFutureExt,
+    network::{Incoming, NetworkError, Networking, TransportConnect, rpc_router::RpcRouter},
 };
 use restate_types::replicated_loglet::Spread;
 use restate_types::retries::with_jitter;
 use restate_types::{
+    Merge, PlainNodeId,
     config::Configuration,
     live::Live,
     logs::{LogletOffset, Record, SequenceNumber, TailState},
     net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
     replication::{DecoratedNodeSet, NodeSet},
     time::MillisSinceEpoch,
-    Merge, PlainNodeId,
 };
 
 use super::{RecordsExt, SequencerSharedState};

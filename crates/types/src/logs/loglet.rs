@@ -11,8 +11,8 @@
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
-use crate::logs::metadata::SegmentIndex;
 use crate::logs::LogId;
+use crate::logs::metadata::SegmentIndex;
 
 /// LogletId is a helper type to generate reliably unique identifiers for individual loglets in a
 /// single chain.

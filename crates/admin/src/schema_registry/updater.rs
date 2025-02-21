@@ -18,21 +18,21 @@ use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
+use restate_types::schema::Schema;
 use restate_types::schema::deployment::DeploymentMetadata;
 use restate_types::schema::deployment::DeploymentSchemas;
 use restate_types::schema::invocation_target::{
-    InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
-    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
+    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InputRules,
+    InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
 };
 use restate_types::schema::service::{HandlerSchemas, ServiceLocation, ServiceSchemas};
 use restate_types::schema::subscriptions::{
     EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Source, Subscription,
     SubscriptionValidator,
 };
-use restate_types::schema::Schema;
 use serde_json::Value;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::error::Error;
 use tracing::{debug, info, warn};
 
@@ -525,7 +525,7 @@ impl SchemaUpdater {
             _ => {
                 return Err(SchemaError::Subscription(
                     SubscriptionError::InvalidSourceScheme(source),
-                ))
+                ));
             }
         };
 
@@ -599,7 +599,7 @@ impl SchemaUpdater {
                         | InvocationTargetType::VirtualObject(_) => {
                             return Err(SchemaError::Subscription(
                                 SubscriptionError::InvalidSinkSharedHandler(sink),
-                            ))
+                            ));
                         }
                         InvocationTargetType::Service => EventReceiverServiceType::Service,
                     };
@@ -614,7 +614,7 @@ impl SchemaUpdater {
             _ => {
                 return Err(SchemaError::Subscription(
                     SubscriptionError::InvalidSinkScheme(sink),
-                ))
+                ));
             }
         };
 
@@ -739,7 +739,7 @@ impl DiscoveredHandlerMetadata {
                 return Err(ServiceError::BadServiceAndHandlerType(
                     service_type,
                     handler.ty,
-                ))
+                ));
             }
         };
 
@@ -895,7 +895,9 @@ impl DiscoveredHandlerMetadata {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("the schema contains an external reference {0}. This is not supported, all schemas uploaded to Restate should be normalized first, bundling the external references.")]
+#[error(
+    "the schema contains an external reference {0}. This is not supported, all schemas uploaded to Restate should be normalized first, bundling the external references."
+)]
 struct UnsupportedExternalRefRetrieveError(String);
 
 struct UnsupportedExternalRefRetriever;
@@ -1010,9 +1012,11 @@ mod tests {
         let schemas = updater.into_inner();
 
         schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
-        assert!(schemas
-            .resolve_latest_service(ANOTHER_GREETER_SERVICE_NAME)
-            .is_none());
+        assert!(
+            schemas
+                .resolve_latest_service(ANOTHER_GREETER_SERVICE_NAME)
+                .is_none()
+        );
 
         updater = SchemaUpdater::new(schemas, false);
         deployment_2.id = updater
@@ -1143,9 +1147,11 @@ mod tests {
         let schemas = updater.into_inner();
 
         schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
-        assert!(schemas
-            .resolve_latest_service(ANOTHER_GREETER_SERVICE_NAME)
-            .is_none());
+        assert!(
+            schemas
+                .resolve_latest_service(ANOTHER_GREETER_SERVICE_NAME)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1200,9 +1206,11 @@ mod tests {
         schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
         schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
         assert!(version_before_removal < schemas.version());
-        assert!(schemas
-            .resolve_latest_service(ANOTHER_GREETER_SERVICE_NAME)
-            .is_none());
+        assert!(
+            schemas
+                .resolve_latest_service(ANOTHER_GREETER_SERVICE_NAME)
+                .is_none()
+        );
         assert!(schemas.get_deployment(&deployment_1.id).is_none());
     }
 
@@ -1364,11 +1372,13 @@ mod tests {
             .find_existing_deployment_by_id(&deployment_1.id)
             .unwrap();
 
-        assert!(updated_deployment
-            .metadata
-            .delivery_options
-            .additional_headers
-            .contains_key(&HeaderName::from_static("foo")));
+        assert!(
+            updated_deployment
+                .metadata
+                .delivery_options
+                .additional_headers
+                .contains_key(&HeaderName::from_static("foo"))
+        );
     }
 
     #[test]
@@ -1420,11 +1430,13 @@ mod tests {
             .find_existing_deployment_by_id(&deployment_1.id)
             .unwrap();
 
-        assert!(updated_deployment
-            .metadata
-            .delivery_options
-            .additional_headers
-            .contains_key(&HeaderName::from_static("foo")));
+        assert!(
+            updated_deployment
+                .metadata
+                .delivery_options
+                .additional_headers
+                .contains_key(&HeaderName::from_static("foo"))
+        );
     }
 
     #[test]

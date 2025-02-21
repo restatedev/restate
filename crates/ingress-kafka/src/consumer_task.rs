@@ -24,12 +24,12 @@ use rdkafka::topic_partition_list::TopicPartitionListElem;
 use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::{ClientConfig, ClientContext, Message};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, info, info_span, warn, Instrument};
+use tracing::{Instrument, debug, info, info_span, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::dispatcher::{DispatchKafkaEvent, KafkaIngressDispatcher, KafkaIngressEvent};
 use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
-use restate_core::{task_center, TaskCenter, TaskHandle, TaskKind};
+use restate_core::{TaskCenter, TaskHandle, TaskKind, task_center};
 use restate_types::invocation::{Header, SpanRelation};
 use restate_types::message::MessageIndex;
 use restate_types::schema::subscriptions::{
@@ -52,7 +52,9 @@ pub enum Error {
     },
     #[error("ingress dispatcher channel is closed")]
     IngressDispatcherClosed,
-    #[error("received a message on the main partition queue for topic {0} partition {1} despite partitioned queues")]
+    #[error(
+        "received a message on the main partition queue for topic {0} partition {1} despite partitioned queues"
+    )]
     UnexpectedMainQueueMessage(String, i32),
 }
 
@@ -360,7 +362,9 @@ impl ConsumerContext for RebalanceContext {
                     if let Some(task_id) = topic_partition_tasks.remove(&partition) {
                         // This probably implies a problem in our assumptions, because librdkafka shouldn't be assigning us a partition again without having revoked it.
                         // However its fair to assume that the existing partitioned consumer is now invalid.
-                        warn!("Kafka informed us of an assigned partition {partition} which we already consider assigned, cancelling the existing partitioned consumer");
+                        warn!(
+                            "Kafka informed us of an assigned partition {partition} which we already consider assigned, cancelling the existing partitioned consumer"
+                        );
                         drop(task_id);
                     }
 
@@ -387,7 +391,9 @@ impl ConsumerContext for RebalanceContext {
                             }
                         }
                         None => {
-                            warn!("Invalid partition {partition} given to us in rebalance, ignoring it");
+                            warn!(
+                                "Invalid partition {partition} given to us in rebalance, ignoring it"
+                            );
                             continue;
                         }
                     }
@@ -396,16 +402,19 @@ impl ConsumerContext for RebalanceContext {
             Rebalance::Revoke(partitions) if partitions.count() > 0 => {
                 for partition in partitions.elements() {
                     let partition = partition.into();
-                    match topic_partition_tasks.remove(&partition)
-                {
-                    Some(task_id) => {
-                        debug!("Stopping partitioned consumer for partition {partition} due to rebalance");
-                        // The partitioned queue will not be polled again.
-                        // It might be mid-poll right now, but if so its result will not be sent anywhere.
-                        drop(task_id);
+                    match topic_partition_tasks.remove(&partition) {
+                        Some(task_id) => {
+                            debug!(
+                                "Stopping partitioned consumer for partition {partition} due to rebalance"
+                            );
+                            // The partitioned queue will not be polled again.
+                            // It might be mid-poll right now, but if so its result will not be sent anywhere.
+                            drop(task_id);
+                        }
+                        None => warn!(
+                            "Kafka informed us of a revoked partition {partition} which we had no consumer task for"
+                        ),
                     }
-                    None => warn!("Kafka informed us of a revoked partition {partition} which we had no consumer task for"),
-                }
                 }
 
                 match consumer.commit_consumer_state(CommitMode::Async) {

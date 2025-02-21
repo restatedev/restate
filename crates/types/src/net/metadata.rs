@@ -15,14 +15,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use strum::EnumIter;
 
+use crate::Version;
+use crate::Versioned;
 use crate::logs::metadata::Logs;
-use crate::net::define_message;
 use crate::net::TargetName;
+use crate::net::define_message;
 use crate::nodes_config::NodesConfiguration;
 use crate::partition_table::PartitionTable;
 use crate::schema::Schema;
-use crate::Version;
-use crate::Versioned;
 
 use super::RpcRequest;
 

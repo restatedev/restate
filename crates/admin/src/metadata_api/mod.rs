@@ -15,18 +15,18 @@ use std::{
 };
 
 use axum::{
+    Router,
     body::Bytes,
     extract::{Path, State},
     response::{AppendHeaders, IntoResponse, Response},
     routing::{delete, get, head, put},
-    Router,
 };
 use bytestring::ByteString;
-use http::{header::ToStrError, HeaderMap, StatusCode};
+use http::{HeaderMap, StatusCode, header::ToStrError};
 
 use restate_core::metadata_store::{MetadataStore, VersionedValue};
 use restate_metadata_server::{MetadataStoreClient, Precondition, ReadError, WriteError};
-use restate_types::{metadata_store::keys, Version};
+use restate_types::{Version, metadata_store::keys};
 
 /// ETag header.
 const HEADER_ETAG: &str = "ETag";

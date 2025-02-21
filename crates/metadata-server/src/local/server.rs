@@ -12,10 +12,10 @@ use crate::local::storage::RocksDbStorage;
 use crate::{MetadataServer, MetadataStoreRequest, RequestError, RequestReceiver, RequestSender};
 use bytestring::ByteString;
 use restate_core::metadata_store::{
-    serialize_value, MetadataStoreClient, Precondition, ProvisionedMetadataStore, ReadError,
-    VersionedValue, WriteError,
+    MetadataStoreClient, Precondition, ProvisionedMetadataStore, ReadError, VersionedValue,
+    WriteError, serialize_value,
 };
-use restate_core::{cancellation_watcher, MetadataWriter, ShutdownError};
+use restate_core::{MetadataWriter, ShutdownError, cancellation_watcher};
 use restate_rocksdb::RocksError;
 use restate_types::config::{Configuration, MetadataServerOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
@@ -204,7 +204,13 @@ pub async fn migrate_nodes_configuration(
             return Err(MigrationError::MultiNodeCluster);
         }
 
-        assert_eq!(node_config.name, Configuration::pinned().node_name(), "The only known node of this cluster is {} but my node name is {}. This indicates that my node name was changed after an initial provisioning of the node", node_config.name, Configuration::pinned().node_name());
+        assert_eq!(
+            node_config.name,
+            Configuration::pinned().node_name(),
+            "The only known node of this cluster is {} but my node name is {}. This indicates that my node name was changed after an initial provisioning of the node",
+            node_config.name,
+            Configuration::pinned().node_name()
+        );
 
         let plain_node_id_to_migrate_to =
             if let Some(force_node_id) = Configuration::pinned().common.force_node_id {

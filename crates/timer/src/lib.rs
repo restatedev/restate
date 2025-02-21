@@ -15,8 +15,8 @@ use std::future::Future;
 mod service;
 
 use restate_types::timer::Timer;
-pub use service::clock::{Clock, TokioClock};
 pub use service::TimerService;
+pub use service::clock::{Clock, TokioClock};
 
 pub trait TimerReader<T>
 where

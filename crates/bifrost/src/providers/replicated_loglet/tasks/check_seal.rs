@@ -10,10 +10,10 @@
 
 use std::collections::BTreeMap;
 
-use restate_types::retries::RetryPolicy;
 use restate_types::PlainNodeId;
+use restate_types::retries::RetryPolicy;
 use tokio::task::JoinSet;
-use tracing::{debug, instrument, trace, Instrument};
+use tracing::{Instrument, debug, instrument, trace};
 
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Incoming, Networking, TransportConnect};

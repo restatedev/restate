@@ -23,12 +23,12 @@ use restate_types::identifiers::DeploymentId;
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::AdminClientInterface;
+use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::console::c_println;
 use crate::ui::deployments::{
-    calculate_deployment_status, render_active_invocations, render_deployment_status,
-    render_deployment_type, render_deployment_url, DeploymentStatus,
+    DeploymentStatus, calculate_deployment_status, render_active_invocations,
+    render_deployment_status, render_deployment_type, render_deployment_url,
 };
 
 #[derive(Run, Parser, Collect, Clone)]

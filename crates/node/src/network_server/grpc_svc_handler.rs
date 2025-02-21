@@ -11,7 +11,7 @@
 use std::cmp::max_by_key;
 use std::num::NonZeroU16;
 
-use crate::{provision_cluster_metadata, ClusterConfiguration};
+use crate::{ClusterConfiguration, provision_cluster_metadata};
 use anyhow::Context;
 use bytes::BytesMut;
 use enumset::EnumSet;
@@ -26,8 +26,9 @@ use restate_core::protobuf::node_ctl_svc::{
     IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse,
 };
 use restate_core::task_center::TaskCenterMonitoring;
-use restate_core::{task_center, Metadata, MetadataKind, TargetVersion, TaskCenter};
+use restate_core::{Metadata, MetadataKind, TargetVersion, TaskCenter, task_center};
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
+use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::nodes_config::Role;
@@ -35,7 +36,6 @@ use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfig
 use restate_types::protobuf::node::Message;
 use restate_types::replication::ReplicationProperty;
 use restate_types::storage::StorageCodec;
-use restate_types::Version;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::debug;

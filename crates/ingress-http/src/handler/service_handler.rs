@@ -12,21 +12,21 @@ use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use http::{header, HeaderMap, HeaderName, Method, Request, Response, StatusCode};
+use http::{HeaderMap, HeaderName, Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full};
 use metrics::{counter, histogram};
 use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use tracing::{debug, trace, trace_span, Instrument};
+use tracing::{Instrument, debug, trace, trace_span};
 
+use super::HandlerError;
 use super::path_parsing::{InvokeType, ServiceRequestType, TargetType};
 use super::tracing::prepare_tracing_span;
-use super::HandlerError;
-use super::{Handler, APPLICATION_JSON};
-use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
-use crate::metric_definitions::{INGRESS_REQUESTS, INGRESS_REQUEST_DURATION, REQUEST_COMPLETED};
+use super::{APPLICATION_JSON, Handler};
 use crate::RequestDispatcher;
+use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
+use crate::metric_definitions::{INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED};
 use restate_types::identifiers::{InvocationId, WithInvocationId};
 use restate_types::invocation::{
     Header, InvocationRequest, InvocationRequestHeader, InvocationTarget, InvocationTargetType,
@@ -125,7 +125,9 @@ where
                     InvocationTarget::workflow(&*service_name, key, &*handler_name, handler_ty)
                 }
                 InvocationTargetType::Service => {
-                    panic!("Unexpected keyed target, this should have been checked before in the path parsing.")
+                    panic!(
+                        "Unexpected keyed target, this should have been checked before in the path parsing."
+                    )
                 }
             }
         } else {

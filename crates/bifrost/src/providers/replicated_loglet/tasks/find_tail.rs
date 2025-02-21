@@ -11,18 +11,18 @@
 use std::time::Duration;
 
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, instrument, trace, warn, Instrument, Span};
+use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
 
+use restate_core::TaskCenterFutureExt;
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{NetworkError, Networking, TransportConnect};
-use restate_core::TaskCenterFutureExt;
+use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, LogletId, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail};
 use restate_types::net::replicated_loglet::{CommonRequestHeader, GetSequencerState};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
-use restate_types::PlainNodeId;
 
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
 use crate::loglet::util::TailOffsetWatch;
@@ -313,7 +313,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                                 RepairTailResult::Completed => {
                                     return FindTailResult::Sealed {
                                         global_tail: max_local_tail,
-                                    }
+                                    };
                                 }
                                 RepairTailResult::DigestFailed
                                 | RepairTailResult::ReplicationFailed { .. } => {
@@ -340,7 +340,10 @@ impl<T: TransportConnect> FindTailTask<T> {
                     // Not f-majority sealed, but is there any node that's sealed?
                     // Run a `SealTask` to assist in sealing.
                     if nodeset_checker.any(NodeTailStatus::is_known_sealed) {
-                        debug!("Detected unsealed nodes. Running seal task to assist in sealing loglet_id={}", self.my_params.loglet_id);
+                        debug!(
+                            "Detected unsealed nodes. Running seal task to assist in sealing loglet_id={}",
+                            self.my_params.loglet_id
+                        );
                         // run seal task then retry the find-tail check.
                         // This returns when we have f-majority sealed.
                         if let Err(e) = SealTask::run(
@@ -475,8 +478,9 @@ impl<T: TransportConnect> FindTailTask<T> {
                             // Nothing left to wait on. The tail didn't reach expected
                             // target and no more nodes are expected to send us responses.
                             return FindTailResult::Error(format!(
-                                    "Could not determine a safe tail offset for loglet_id={}, perhaps too many nodes down? status={}",
-                                    self.my_params.loglet_id, nodeset_checker));
+                                "Could not determine a safe tail offset for loglet_id={}, perhaps too many nodes down? status={}",
+                                self.my_params.loglet_id, nodeset_checker
+                            ));
                         }
                     }
                 }
@@ -485,9 +489,9 @@ impl<T: TransportConnect> FindTailTask<T> {
             // We exhausted all retries on all nodes before finding the tail. We have no option but to
             // give up and return an error.
             return FindTailResult::Error(format!(
-            "Insufficient nodes responded to GetLogletInfo requests, we cannot determine tail status of loglet_id={}, status={}",
-            self.my_params.loglet_id, nodeset_checker,
-        ));
+                "Insufficient nodes responded to GetLogletInfo requests, we cannot determine tail status of loglet_id={}, status={}",
+                self.my_params.loglet_id, nodeset_checker,
+            ));
         }
     }
 }
@@ -560,9 +564,7 @@ impl<'a> FindTailOnNode<'a> {
             Err(err) => {
                 trace!(
                     "Failed to get loglet info from node_id={} for loglet_id={}: {}",
-                    self.node_id,
-                    self.loglet_id,
-                    err
+                    self.node_id, self.loglet_id, err
                 );
             }
         }
@@ -635,7 +637,12 @@ impl WaitForTailOnNode {
                         }
                         // unexpected statuses
                         Status::SequencerMismatch | Status::OutOfBounds | Status::Malformed => {
-                            error!("Unexpected status from log-server node_id={} when waiting for tail update for loglet_id={}: {:?}", self.node_id, self.loglet_id, msg.body().status);
+                            error!(
+                                "Unexpected status from log-server node_id={} when waiting for tail update for loglet_id={}: {:?}",
+                                self.node_id,
+                                self.loglet_id,
+                                msg.body().status
+                            );
                             return (self.node_id, NodeTailStatus::Unknown);
                         }
                     }
@@ -662,13 +669,14 @@ impl WaitForTailOnNode {
             if let Some(pause) = retry_iter.next() {
                 trace!(
                     "Retrying to watch loglet tail update from node_id={} and loglet_id={} after {:?}",
-                    self.node_id,
-                    self.loglet_id,
-                    pause
+                    self.node_id, self.loglet_id, pause
                 );
                 tokio::time::sleep(pause).await;
             } else {
-                trace!("Exhausted retries while attempting to watch loglet tail update from node_id={} and loglet_id={}", self.node_id, self.loglet_id);
+                trace!(
+                    "Exhausted retries while attempting to watch loglet tail update from node_id={} and loglet_id={}",
+                    self.node_id, self.loglet_id
+                );
                 return (self.node_id, NodeTailStatus::Unknown);
             }
         }

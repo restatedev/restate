@@ -12,8 +12,8 @@ use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
+use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -48,7 +48,9 @@ pub(crate) fn register_self(
         }
         (None, None) => None,
         _ => {
-            let err = anyhow!("Was expecting either both a status scanner and a local partition scanner OR none of them");
+            let err = anyhow!(
+                "Was expecting either both a status scanner and a local partition scanner OR none of them"
+            );
             return Err(DataFusionError::External(err.into()));
         }
     };

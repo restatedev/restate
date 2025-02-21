@@ -17,13 +17,13 @@ use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
-use restate_log_server::protobuf::log_server_svc_client::LogServerSvcClient;
 use restate_log_server::protobuf::GetLogletInfoRequest;
-use restate_types::logs::metadata::{LogletRef, Logs};
+use restate_log_server::protobuf::log_server_svc_client::LogServerSvcClient;
+use restate_types::PlainNodeId;
 use restate_types::logs::LogletId;
+use restate_types::logs::metadata::{LogletRef, Logs};
 use restate_types::nodes_config::{NodesConfigError, NodesConfiguration, Role};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
-use restate_types::PlainNodeId;
 
 use crate::connection::ConnectionInfo;
 use crate::util::grpc_channel;

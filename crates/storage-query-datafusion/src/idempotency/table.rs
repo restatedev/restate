@@ -15,8 +15,8 @@ use std::sync::Arc;
 use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::idempotency_table::{IdempotencyMetadata, ReadOnlyIdempotencyTable};
 use restate_storage_api::StorageError;
+use restate_storage_api::idempotency_table::{IdempotencyMetadata, ReadOnlyIdempotencyTable};
 use restate_types::identifiers::{IdempotencyId, PartitionKey};
 
 use super::row::append_idempotency_row;

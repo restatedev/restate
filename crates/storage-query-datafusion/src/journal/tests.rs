@@ -18,8 +18,8 @@ use googletest::all;
 use googletest::prelude::{assert_that, eq};
 use prost::Message;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::Transaction;
+use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::{
