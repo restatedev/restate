@@ -141,7 +141,7 @@ impl LocalMetadataServer {
 #[async_trait::async_trait]
 impl MetadataServer for LocalMetadataServer {
     async fn run(self, _metadata_writer: Option<MetadataWriter>) -> anyhow::Result<()> {
-        self.run().await.map_err(Into::into)
+        self.run().await
     }
 }
 

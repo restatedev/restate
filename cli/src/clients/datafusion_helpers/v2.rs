@@ -470,7 +470,7 @@ pub async fn get_invocation_journal(
             if row.version == 1 {
                 let entry_type = match row.entry_type.as_str() {
                     "Sleep" => JournalEntryTypeV1::Sleep {
-                        wakeup_at: row.sleep_wakeup_at.map(Into::into),
+                        wakeup_at: row.sleep_wakeup_at,
                     },
                     "Call" => JournalEntryTypeV1::Call(OutgoingInvoke {
                         invocation_id: row.invoked_id,
@@ -504,7 +504,7 @@ pub async fn get_invocation_journal(
                     entry_type: row.entry_type,
                     name: row.name,
                     entry: row.entry_json.and_then(|j| serde_json::from_str(&j).ok()),
-                    appended_at: row.appended_at.map(Into::into),
+                    appended_at: row.appended_at,
                 }))
             } else {
                 anyhow::bail!(
