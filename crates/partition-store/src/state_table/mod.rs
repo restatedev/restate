@@ -120,7 +120,7 @@ fn get_all_user_states_for_service<S: StorageAccess>(
 fn get_all_user_states<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send + '_> {
+) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send + use<'_, S>> {
     let _x = RocksDbPerfGuard::new("get-all-user-state");
     let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<StateKey>(range));
     Ok(stream::iter(OwnedIterator::new(iter?).map(

@@ -67,7 +67,7 @@ fn get_idempotency_metadata<S: StorageAccess>(
 fn all_idempotency_metadata<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + '_> {
+) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + use<'_, S>> {
     let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<IdempotencyKey>(
         range,
     ))?;
