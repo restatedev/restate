@@ -330,7 +330,7 @@ fn encode_value(
         DataType::LargeUtf8 => encoder.encode_field(&get_large_utf8_value(arr, idx))?,
         DataType::Binary => encoder.encode_field(&get_binary_value(arr, idx))?,
         DataType::LargeBinary => encoder.encode_field(&get_large_binary_value(arr, idx))?,
-        DataType::Timestamp(TimeUnit::Millisecond, None) => {
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
             encoder.encode_field(&get_timestamp_value(arr, idx))?
         }
         _ => {
