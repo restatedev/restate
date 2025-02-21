@@ -55,10 +55,12 @@ pub(crate) struct LocalLogletReadStream {
 unsafe fn ignore_iterator_lifetime<'a>(
     iter: DBRawIteratorWithThreadMode<'a, DB>,
 ) -> DBRawIteratorWithThreadMode<'static, DB> {
-    std::mem::transmute::<
-        DBRawIteratorWithThreadMode<'a, DB>,
-        DBRawIteratorWithThreadMode<'static, DB>,
-    >(iter)
+    unsafe {
+        std::mem::transmute::<
+            DBRawIteratorWithThreadMode<'a, DB>,
+            DBRawIteratorWithThreadMode<'static, DB>,
+        >(iter)
+    }
 }
 
 impl LocalLogletReadStream {

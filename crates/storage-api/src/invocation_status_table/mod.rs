@@ -570,8 +570,7 @@ impl CompletedInvocation {
     /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
     pub unsafe fn completion_expiry_time(&self) -> Option<MillisSinceEpoch> {
-        self.timestamps
-            .completed_transition_time()
+        unsafe { self.timestamps.completed_transition_time() }
             .map(|base| base + self.completion_retention_duration)
     }
 }
