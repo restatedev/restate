@@ -230,3 +230,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify the committed UI artifact matches the published one in restate-web-ui
         run: ./tools/scripts/verify-ui-artifact
+
+  restate-jepsen:
+    name: Run Jepsen tests
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    needs: docker
+    uses: restatedev/jepsen/.github/workflows/jepsen.yml@main
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
