@@ -16,8 +16,8 @@ use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use googletest::all;
 use googletest::prelude::{assert_that, eq};
-use restate_storage_api::idempotency_table::{IdempotencyMetadata, IdempotencyTable};
 use restate_storage_api::Transaction;
+use restate_storage_api::idempotency_table::{IdempotencyMetadata, IdempotencyTable};
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]

@@ -11,7 +11,7 @@
 use std::cmp::max;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use cling::prelude::*;
 use futures_util::StreamExt;
 use tracing::{debug, info};

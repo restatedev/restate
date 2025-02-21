@@ -14,7 +14,7 @@ use std::str::FromStr;
 
 use bytesize::ByteSize;
 use serde::de::Visitor;
-use serde::{de, de::Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserializer, Serialize, Serializer, de, de::Deserialize};
 use serde_with::{DeserializeAs, SerializeAs};
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Copy, Hash)]
@@ -31,8 +31,8 @@ impl schemars::JsonSchema for ByteCount<true> {
         std::borrow::Cow::Owned(std::concat!(std::module_path!(), "::", "HumanBytes").to_owned())
     }
 
-    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        let mut schema: schemars::schema::SchemaObject = gen.subschema_for::<String>().into();
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema: schemars::schema::SchemaObject = generator.subschema_for::<String>().into();
         schema.format = Some("human-bytes".to_owned());
         let validation = schema.string();
         validation.pattern = Some(r"^\d+(\.\d+)? ?[KMG]B$".to_string());
@@ -57,8 +57,8 @@ impl schemars::JsonSchema for ByteCount<false> {
         )
     }
 
-    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        let mut schema: schemars::schema::SchemaObject = gen.subschema_for::<String>().into();
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema: schemars::schema::SchemaObject = generator.subschema_for::<String>().into();
         schema.format = Some("non-zero human-bytes".to_owned());
         let validation = schema.string();
         validation.pattern = Some(r"^\d+(\.\d+)? ?[KMG]B$".to_string());

@@ -10,7 +10,7 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{describe_counter, describe_histogram, Unit};
+use metrics::{Unit, describe_counter, describe_histogram};
 
 pub(crate) const BIFROST_LOCAL_APPEND: &str = "restate.bifrost.localloglet.appends.total";
 

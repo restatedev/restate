@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics::{describe_counter, Unit};
+use metrics::{Unit, describe_counter};
 
 pub const KAFKA_INGRESS_REQUESTS: &str = "restate.kafka_ingress.requests.total";
 

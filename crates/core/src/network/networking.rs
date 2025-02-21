@@ -189,7 +189,7 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                         return Err(NetworkSendError::new(
                             msg,
                             NetworkError::Unavailable(e.to_string()),
-                        ))
+                        ));
                     }
                 }
             };
@@ -217,7 +217,7 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                     return Err(NetworkSendError::new(
                         e.original.forget_connection().set_peer(original_peer),
                         NetworkError::Unavailable(e.source.to_string()),
-                    ))
+                    ));
                 }
             }
         }

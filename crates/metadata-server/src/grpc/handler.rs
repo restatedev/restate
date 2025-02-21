@@ -16,7 +16,7 @@ use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 use tonic::{Request, Response, Status};
 
-use restate_core::metadata_store::{serialize_value, Precondition};
+use restate_core::metadata_store::{Precondition, serialize_value};
 use restate_types::config::Configuration;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
@@ -35,8 +35,8 @@ use crate::metric_definitions::{
     STATUS_COMPLETED, STATUS_FAILED,
 };
 use crate::{
-    prepare_initial_nodes_configuration, MetadataServerSummary, MetadataStoreRequest,
-    ProvisionError, ProvisionRequest, ProvisionSender, RequestError, RequestSender, StatusWatch,
+    MetadataServerSummary, MetadataStoreRequest, ProvisionError, ProvisionRequest, ProvisionSender,
+    RequestError, RequestSender, StatusWatch, prepare_initial_nodes_configuration,
 };
 
 /// Grpc svc handler for the metadata server.

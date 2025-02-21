@@ -60,13 +60,13 @@ where
 #[cfg(test)]
 mod tests {
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
-    use crate::partition::state_machine::tests::{fixtures, TestEnv};
+    use crate::partition::state_machine::tests::{TestEnv, fixtures};
     use bytes::Bytes;
     use futures::StreamExt;
     use googletest::matchers::empty;
     use googletest::prelude::assert_that;
-    use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
     use restate_storage_api::Transaction;
+    use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
     use restate_types::identifiers::ServiceId;
     use restate_types::journal_v2::ClearAllStateCommand;
 

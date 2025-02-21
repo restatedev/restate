@@ -15,8 +15,8 @@ use std::sync::Arc;
 use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::inbox_table::{ReadOnlyInboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::StorageError;
+use restate_storage_api::inbox_table::{ReadOnlyInboxTable, SequenceNumberInboxEntry};
 use restate_types::identifiers::PartitionKey;
 
 use crate::context::{QueryContext, SelectPartitions};

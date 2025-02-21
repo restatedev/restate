@@ -12,7 +12,7 @@
 //!
 //! We maintain a stream per message type for fine-grain per-message-type control over the queue
 //! depth, head-of-line blocking issues, and priority of consumption.
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap, hash_map};
 
 use anyhow::Context;
 use futures::stream::FuturesUnordered;

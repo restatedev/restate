@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::owned_iter::OwnedIterator;
 use crate::TableKind::State;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::owned_iter::OwnedIterator;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
@@ -120,7 +120,7 @@ fn get_all_user_states_for_service<S: StorageAccess>(
 fn get_all_user_states<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send + '_> {
+) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send + use<'_, S>> {
     let _x = RocksDbPerfGuard::new("get-all-user-state");
     let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<StateKey>(range));
     Ok(stream::iter(OwnedIterator::new(iter?).map(

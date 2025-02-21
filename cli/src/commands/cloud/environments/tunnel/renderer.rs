@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use std::hash::Hasher;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{io::Write, sync::Arc};
 
 use arc_swap::ArcSwapOption;
@@ -25,7 +25,7 @@ use crossterm::{
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::output::Console;
 use restate_cli_util::ui::stylesheet;
-use restate_cli_util::{c_indent_table, c_println, c_tip, c_warn, CliContext};
+use restate_cli_util::{CliContext, c_indent_table, c_println, c_tip, c_warn};
 
 use super::remote::RemotePort;
 

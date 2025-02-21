@@ -62,7 +62,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
-    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use bytes::Bytes;
     use googletest::prelude::{assert_that, contains, eq};
     use restate_types::identifiers::{AwakeableIdentifier, ExternalSignalIdentifier, InvocationId};

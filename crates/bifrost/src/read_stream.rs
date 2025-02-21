@@ -11,35 +11,35 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::ready;
 use std::task::Poll;
+use std::task::ready;
 
+use futures::Stream;
+use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::stream::FusedStream;
-use futures::Stream;
-use futures::StreamExt;
 use pin_project::pin_project;
 
 use restate_core::Metadata;
 use restate_core::MetadataKind;
 use restate_core::ShutdownError;
-use restate_types::logs::metadata::MaybeSegment;
+use restate_types::Version;
+use restate_types::Versioned;
 use restate_types::logs::KeyFilter;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::SequenceNumber;
 use restate_types::logs::TailState;
+use restate_types::logs::metadata::MaybeSegment;
 use restate_types::logs::{LogId, Lsn};
-use restate_types::Version;
-use restate_types::Versioned;
 
+use crate::Error;
+use crate::LogEntry;
+use crate::Result;
 use crate::bifrost::BifrostInner;
 use crate::bifrost::MaybeLoglet;
 use crate::loglet::OperationError;
 use crate::loglet_wrapper::LogletReadStreamWrapper;
-use crate::Error;
-use crate::LogEntry;
-use crate::Result;
 
 /// A read stream reads from the virtual log. The stream provides a unified view over
 /// the virtual log addressing space in the face of seals, reconfiguration, and trims.
@@ -447,12 +447,12 @@ mod tests {
 
     use restate_core::{MetadataKind, TargetVersion, TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
+    use restate_types::Versioned;
     use restate_types::config::{CommonOptions, Configuration};
     use restate_types::live::{Constant, Live};
-    use restate_types::logs::metadata::{new_single_node_loglet_params, ProviderKind};
+    use restate_types::logs::metadata::{ProviderKind, new_single_node_loglet_params};
     use restate_types::logs::{KeyFilter, SequenceNumber};
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-    use restate_types::Versioned;
 
     use crate::{BifrostService, ErrorRecoveryStrategy};
 

@@ -323,7 +323,7 @@ impl ProvisionedMetadataStore for EtcdMetadataStore {
 mod test {
     use bytes::Bytes;
     use bytestring::ByteString;
-    use restate_types::{config::MetadataClientOptions, Version};
+    use restate_types::{Version, config::MetadataClientOptions};
 
     use super::EtcdMetadataStore;
     use crate::metadata_store::{MetadataStore, Precondition, VersionedValue, WriteError};

@@ -14,11 +14,11 @@
 use std::num::NonZeroU16;
 use std::time::Duration;
 
-use futures_util::{future, TryFutureExt};
-use http::header::CONTENT_TYPE;
+use futures_util::{TryFutureExt, future};
 use http::Uri;
+use http::header::CONTENT_TYPE;
 use pprof::flamegraph::Options;
-use restate_core::{task_center, TaskCenter, TaskCenterBuilder, TaskKind};
+use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind, task_center};
 use restate_node::Node;
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
@@ -55,10 +55,12 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
             .await
     });
 
-    assert!(discovery_result
-        .expect("Discovery must be successful")
-        .status()
-        .is_success(),);
+    assert!(
+        discovery_result
+            .expect("Discovery must be successful")
+            .status()
+            .is_success(),
+    );
 
     // wait for ingress being available
     // todo replace with node get_ident/status once it signals that the node is fully up and running
@@ -80,10 +82,12 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
             .await
     });
 
-    assert!(health_response
-        .expect("health check must be successful")
-        .status()
-        .is_success(),);
+    assert!(
+        health_response
+            .expect("health check must be successful")
+            .status()
+            .is_success(),
+    );
 }
 
 pub fn spawn_restate(config: Configuration) -> task_center::Handle {

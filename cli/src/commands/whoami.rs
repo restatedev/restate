@@ -16,7 +16,7 @@ use strum::IntoEnumIterator;
 
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_cli_util::ui::duration_to_human_rough;
-use restate_cli_util::{c_eprintln, c_error, c_println, c_success, CliContext};
+use restate_cli_util::{CliContext, c_eprintln, c_error, c_println, c_success};
 use restate_types::art::render_restate_logo;
 
 use crate::build_info;

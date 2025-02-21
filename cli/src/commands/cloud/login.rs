@@ -10,14 +10,14 @@
 
 use std::net::SocketAddr;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use axum::{extract, response::Html};
 use cling::prelude::*;
 use indicatif::ProgressBar;
-use restate_cli_util::{c_println, c_success, c_tip, CliContext};
+use restate_cli_util::{CliContext, c_println, c_success, c_tip};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use toml_edit::{table, value, DocumentMut};
+use toml_edit::{DocumentMut, table, value};
 use url::Url;
 
 use crate::{
@@ -61,7 +61,9 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
 
     match accounts {
         Ok(accounts) if accounts.accounts.is_empty() => {
-            c_tip!("It looks like you don't have an account yet.\nLog in to the UI at https://cloud.restate.dev to create one.")
+            c_tip!(
+                "It looks like you don't have an account yet.\nLog in to the UI at https://cloud.restate.dev to create one."
+            )
         }
         // ignore error at this point; login was still a success
         _ => {}

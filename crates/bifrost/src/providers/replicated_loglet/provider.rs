@@ -13,13 +13,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use restate_types::PlainNodeId;
 use restate_types::nodes_config::{NodeConfig, Role, StorageState};
 use restate_types::replication::{NodeSet, NodeSetSelector, NodeSetSelectorOptions};
-use restate_types::PlainNodeId;
 use tracing::{debug, warn};
 
 use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
-use restate_core::{my_node_id, Metadata, TaskCenter, TaskKind};
+use restate_core::{Metadata, TaskCenter, TaskKind, my_node_id};
 use restate_metadata_server::MetadataStoreClient;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{
@@ -32,11 +32,11 @@ use super::loglet::ReplicatedLoglet;
 use super::metric_definitions;
 use super::network::RequestPump;
 use super::rpc_routers::{LogServersRpc, SequencersRpc};
+use crate::Error;
 use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
 use crate::providers::replicated_loglet::loglet::FindTailOptions;
 use crate::providers::replicated_loglet::tasks::PeriodicTailChecker;
-use crate::Error;
 
 pub struct Factory<T> {
     metadata_store_client: MetadataStoreClient,

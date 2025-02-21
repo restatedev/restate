@@ -19,7 +19,7 @@ use crate::metadata_store::providers::objstore::optimistic_store::OptimisticLock
 use crate::metadata_store::{
     Precondition, ProvisionedMetadataStore, ReadError, VersionedValue, WriteError,
 };
-use crate::{cancellation_watcher, ShutdownError};
+use crate::{ShutdownError, cancellation_watcher};
 
 #[derive(Debug)]
 pub(crate) enum Commands {

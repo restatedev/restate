@@ -24,10 +24,10 @@ mod prost {
     struct ProtobufDecodeMatcher<InnerMatcher, B>(InnerMatcher, PhantomData<B>);
 
     impl<
-            T: prost::Message + Default,
-            B: bytes::Buf + Clone + Debug,
-            InnerMatcher: Matcher<ActualT = T>,
-        > Matcher for ProtobufDecodeMatcher<InnerMatcher, B>
+        T: prost::Message + Default,
+        B: bytes::Buf + Clone + Debug,
+        InnerMatcher: Matcher<ActualT = T>,
+    > Matcher for ProtobufDecodeMatcher<InnerMatcher, B>
     {
         type ActualT = B;
 

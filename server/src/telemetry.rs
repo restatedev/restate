@@ -10,8 +10,8 @@
 
 use std::{str::FromStr, time::Duration};
 
-use http::{uri::PathAndQuery, HeaderMap, HeaderValue, Uri};
-use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
+use http::{HeaderMap, HeaderValue, Uri, uri::PathAndQuery};
+use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_service_client::HttpClient;
 use restate_types::config::CommonOptions;
 use tokio::time::Instant;

@@ -22,8 +22,8 @@ use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::StorageError;
+use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_types::identifiers::{JournalEntryId, PartitionKey};
 use restate_types::journal_v2::raw::RawEntry;
 

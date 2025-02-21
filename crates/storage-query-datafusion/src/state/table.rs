@@ -16,8 +16,8 @@ use std::sync::Arc;
 use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::state_table::ReadOnlyStateTable;
 use restate_storage_api::StorageError;
+use restate_storage_api::state_table::ReadOnlyStateTable;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::context::{QueryContext, SelectPartitions};

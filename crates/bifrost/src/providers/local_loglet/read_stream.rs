@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 
 use bytes::BytesMut;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
-use rocksdb::{DBRawIteratorWithThreadMode, DB};
+use rocksdb::{DB, DBRawIteratorWithThreadMode};
 use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
@@ -23,12 +23,12 @@ use restate_rocksdb::RocksDbPerfGuard;
 use restate_types::logs::{KeyFilter, LogletOffset, SequenceNumber, TailState};
 
 use crate::loglet::{Loglet, LogletReadStream, OperationError};
-use crate::providers::local_loglet::record_format::decode_and_filter_record;
 use crate::providers::local_loglet::LogStoreError;
+use crate::providers::local_loglet::record_format::decode_and_filter_record;
 use crate::{LogEntry, Result};
 
-use super::keys::RecordKey;
 use super::LocalLoglet;
+use super::keys::RecordKey;
 
 pub(crate) struct LocalLogletReadStream {
     loglet_id: u64,
@@ -55,10 +55,12 @@ pub(crate) struct LocalLogletReadStream {
 unsafe fn ignore_iterator_lifetime<'a>(
     iter: DBRawIteratorWithThreadMode<'a, DB>,
 ) -> DBRawIteratorWithThreadMode<'static, DB> {
-    std::mem::transmute::<
-        DBRawIteratorWithThreadMode<'a, DB>,
-        DBRawIteratorWithThreadMode<'static, DB>,
-    >(iter)
+    unsafe {
+        std::mem::transmute::<
+            DBRawIteratorWithThreadMode<'a, DB>,
+            DBRawIteratorWithThreadMode<'static, DB>,
+        >(iter)
+    }
 }
 
 impl LocalLogletReadStream {

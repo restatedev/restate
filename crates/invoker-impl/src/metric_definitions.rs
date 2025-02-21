@@ -10,7 +10,7 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
+use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
 pub const INVOKER_INVOCATION_TASK: &str = "restate.invoker.invocation_task.total";

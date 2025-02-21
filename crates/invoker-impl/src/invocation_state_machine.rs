@@ -348,10 +348,12 @@ impl InvocationStateMachine {
                 timer_fired,
             } => {
                 // TODO: https://github.com/restatedev/restate/issues/538
-                assert!(timer_fired,
-                        "Restate does not support multiple retry timers yet. This would require \
+                assert!(
+                    timer_fired,
+                    "Restate does not support multiple retry timers yet. This would require \
                         deduplicating timers by some mean (e.g. fencing them off, overwriting \
-                        old timers, not registering a new timer if an old timer has not fired yet, etc.)");
+                        old timers, not registering a new timer if an old timer has not fired yet, etc.)"
+                );
                 journal_tracker.clone()
             }
         };
@@ -408,17 +410,21 @@ mod tests {
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 
-        assert!(invocation_state_machine
-            .handle_task_error(None, true)
-            .is_some());
+        assert!(
+            invocation_state_machine
+                .handle_task_error(None, true)
+                .is_some()
+        );
         check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         invocation_state_machine.notify_retry_timer_fired();
 
         // We stay in `WaitingForRetry`
-        assert!(invocation_state_machine
-            .handle_task_error(None, true)
-            .is_some());
+        assert!(
+            invocation_state_machine
+                .handle_task_error(None, true)
+                .is_some()
+        );
         check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
     }
 
@@ -436,9 +442,11 @@ mod tests {
         );
 
         // Notify error
-        assert!(invocation_state_machine
-            .handle_task_error(None, true)
-            .is_some());
+        assert!(
+            invocation_state_machine
+                .handle_task_error(None, true)
+                .is_some()
+        );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
             1
@@ -451,9 +459,11 @@ mod tests {
         );
 
         // Get error again
-        assert!(invocation_state_machine
-            .handle_task_error(None, true)
-            .is_some());
+        assert!(
+            invocation_state_machine
+                .handle_task_error(None, true)
+                .is_some()
+        );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
             2

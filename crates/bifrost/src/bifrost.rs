@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use enum_map::EnumMap;
 use restate_types::config::Configuration;
@@ -611,8 +611,8 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::CommonOptions;
     use restate_types::live::Constant;
-    use restate_types::logs::metadata::{new_single_node_loglet_params, SegmentIndex};
     use restate_types::logs::SequenceNumber;
+    use restate_types::logs::metadata::{SegmentIndex, new_single_node_loglet_params};
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
     use restate_types::partition_table::PartitionTable;
     use restate_types::{Version, Versioned};

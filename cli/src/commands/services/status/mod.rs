@@ -24,10 +24,10 @@ use restate_cli_util::ui::{duration_to_human_precise, duration_to_human_rough};
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
+use crate::clients::AdminClient;
 use crate::clients::datafusion_helpers::{
     InvocationState, ServiceHandlerLockedKeysMap, ServiceStatus, ServiceStatusMap,
 };
-use crate::clients::AdminClient;
 use crate::ui::invocations::invocation_status;
 use crate::ui::service_handlers::icon_for_service_type;
 
@@ -84,7 +84,7 @@ async fn render_services_status(
         let flavor = icon_for_service_type(&svc.ty);
         let svc_title = format!("{} {}", svc.name, flavor);
         table.add_row(vec![
-            Cell::new(svc_title).add_attribute(comfy_table::Attribute::Bold)
+            Cell::new(svc_title).add_attribute(comfy_table::Attribute::Bold),
         ]);
 
         render_handlers_status(&mut table, svc, svc_status).await?;
@@ -218,7 +218,7 @@ async fn render_locked_keys(
 
         let svc_title = format!("{} ({} active keys)", svc_name, keys.len());
         table.add_row(vec![
-            Cell::new(svc_title).add_attribute(comfy_table::Attribute::Bold)
+            Cell::new(svc_title).add_attribute(comfy_table::Attribute::Bold),
         ]);
 
         // Truncate to fit the limit

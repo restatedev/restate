@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use chrono::Utc;
-use downcast_rs::{impl_downcast, DowncastSync};
+use downcast_rs::{DowncastSync, impl_downcast};
 use serde::de::{DeserializeOwned, Error as DeserializationError};
 use serde::ser::Error as SerializationError;
 use serde::{Deserialize, Serialize};
@@ -350,7 +350,11 @@ pub fn encode_as_flexbuffers<T: Serialize, B: BufMut>(
 
     let required_buffer_bytes = vec.len() + mem::size_of::<u32>();
     if buf.remaining_mut() < required_buffer_bytes {
-        return Err(flexbuffers::SerializationError::custom(format!("not enough buffer space to serialize value; required {} bytes but free capacity was {}", required_buffer_bytes, buf.remaining_mut())));
+        return Err(flexbuffers::SerializationError::custom(format!(
+            "not enough buffer space to serialize value; required {} bytes but free capacity was {}",
+            required_buffer_bytes,
+            buf.remaining_mut()
+        )));
     }
 
     // write the length

@@ -22,8 +22,8 @@ use restate_types::config::{LogServerOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
 
 use super::writer::LogStoreWriter;
-use super::{RocksDbLogStore, RocksDbLogStoreError};
 use super::{DATA_CF, DB_NAME, METADATA_CF};
+use super::{RocksDbLogStore, RocksDbLogStoreError};
 use crate::rocksdb_logstore::keys::KeyPrefix;
 use crate::rocksdb_logstore::metadata_merge::{metadata_full_merge, metadata_partial_merge};
 

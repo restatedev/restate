@@ -27,8 +27,8 @@ use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
 use restate_rocksdb::RocksDbManager;
 use restate_server::build_info;
-use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
+use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_types::art::render_restate_logo;
 use restate_types::config::CommonOptionCliOverride;
 use restate_types::config::{Configuration, PRODUCTION_PROFILE_DEFAULTS};
@@ -48,7 +48,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 // On linux, run jemalloc with profiling enabled, but inactive (so there is no performance impact)
 // If needed, profiling can be activated with :5122/debug/pprof/heap/activate, or by overriding this value with $MALLOC_CONF
 #[cfg(target_os = "linux")]
-#[export_name = "malloc_conf"]
+#[unsafe(export_name = "malloc_conf")]
 pub static MALLOC_CONF: &[u8] = b"prof:true,prof_active:false,lg_prof_sample:19\0";
 
 #[derive(Debug, clap::Parser)]

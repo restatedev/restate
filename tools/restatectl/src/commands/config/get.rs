@@ -13,7 +13,7 @@ use cling::{Collect, Run};
 use tonic::codec::CompressionEncoding;
 
 use restate_admin::cluster_controller::protobuf::{
-    cluster_ctrl_svc_client::ClusterCtrlSvcClient, GetClusterConfigurationRequest,
+    GetClusterConfigurationRequest, cluster_ctrl_svc_client::ClusterCtrlSvcClient,
 };
 use restate_cli_util::c_println;
 use restate_types::nodes_config::Role;

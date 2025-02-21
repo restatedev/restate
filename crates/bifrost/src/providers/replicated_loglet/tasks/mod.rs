@@ -26,8 +26,8 @@ pub use repair_tail::*;
 pub use seal::*;
 pub use trim::*;
 
-use restate_types::logs::LogletOffset;
 use restate_types::Merge;
+use restate_types::logs::LogletOffset;
 
 #[derive(Debug, Clone, Hash, Default, PartialEq, Eq, derive_more::Display)]
 enum NodeTailStatus {

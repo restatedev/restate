@@ -2,7 +2,7 @@
 //!
 //! [header]: https://spec.openapis.org/oas/latest.html#header-object
 
-use super::{builder, set_value, RefOr, Schema};
+use super::{RefOr, Schema, builder, set_value};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 

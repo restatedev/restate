@@ -7,10 +7,10 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use cling::prelude::*;
 
-use restate_cli_util::ui::console::{confirm_or_exit, Styled};
+use restate_cli_util::ui::console::{Styled, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_println, c_success};
 use restate_types::identifiers::InvocationId;
@@ -51,7 +51,9 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
             0 => format!("target LIKE '{q}/%'"),
             // If there's one slash, let's add the wildcard depending on the service type,
             // so we discriminate correctly with serviceName/handlerName with workflowName/workflowKey
-            1 => format!("(target = '{q}' AND target_service_ty = 'service') OR (target LIKE '{q}/%' AND target_service_ty != 'service'))"),
+            1 => format!(
+                "(target = '{q}' AND target_service_ty = 'service') OR (target LIKE '{q}/%' AND target_service_ty != 'service'))"
+            ),
             // Can only be exact match here
             _ => format!("target LIKE '{q}'"),
         }

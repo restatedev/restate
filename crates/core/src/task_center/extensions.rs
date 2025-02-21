@@ -15,12 +15,12 @@ use pin_project_lite::pin_project;
 use tokio::task::futures::TaskLocalFuture;
 use tokio_util::sync::CancellationToken;
 
-use crate::task_center::TaskContext;
 use crate::Metadata;
+use crate::task_center::TaskContext;
 
 use super::{
-    GlobalOverrides, Handle, TaskCenter, TaskId, TaskKind, CURRENT_TASK_CENTER, OVERRIDES,
-    TASK_CONTEXT,
+    CURRENT_TASK_CENTER, GlobalOverrides, Handle, OVERRIDES, TASK_CONTEXT, TaskCenter, TaskId,
+    TaskKind,
 };
 
 type TaskCenterFuture<F> =

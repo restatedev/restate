@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
-use super::{print_warning_deprecated_config_option, QueryEngineOptions};
+use super::{QueryEngineOptions, print_warning_deprecated_config_option};
 use crate::partition_table::PartitionReplication;
 
 /// # Admin server options

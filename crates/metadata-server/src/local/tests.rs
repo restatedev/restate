@@ -9,21 +9,21 @@
 // by the Apache License, Version 2.0.
 
 use bytestring::ByteString;
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use test_log::test;
 
 use restate_core::network::FailingConnector;
 use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    reset_base_temp_dir_and_retain, Configuration, MetadataServerOptions, RocksDbOptions,
+    Configuration, MetadataServerOptions, RocksDbOptions, reset_base_temp_dir_and_retain,
 };
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxedLiveLoad, Live};
 use restate_types::{Version, Versioned};
 
-use crate::local::{data_dir, LocalMetadataServer};
+use crate::local::{LocalMetadataServer, data_dir};
 use crate::tests::Value;
 use crate::{MetadataStoreClient, Precondition, WriteError};
 

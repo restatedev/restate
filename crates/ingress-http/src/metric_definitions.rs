@@ -10,7 +10,7 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{describe_counter, describe_histogram, Unit};
+use metrics::{Unit, describe_counter, describe_histogram};
 
 pub const INGRESS_REQUESTS: &str = "restate.ingress.requests.total";
 // values of label `status` in INGRESS_REQUEST

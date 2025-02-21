@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 
 use super::codec::{WireDecode, WireEncode};
 use super::{RpcRequest, TargetName};
+use crate::GenerationalNodeId;
 use crate::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
 use crate::time::MillisSinceEpoch;
-use crate::GenerationalNodeId;
 
 pub trait LogServerRequest: RpcRequest + WireEncode + Sync + Send + 'static {
     fn header(&self) -> &LogServerRequestHeader;

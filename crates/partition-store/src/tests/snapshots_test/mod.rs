@@ -14,8 +14,8 @@ use tempfile::tempdir;
 
 use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
 use crate::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_storage_api::Transaction;
+use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_types::config::WorkerOptions;
 use restate_types::identifiers::{PartitionKey, SnapshotId};
 use restate_types::live::Live;

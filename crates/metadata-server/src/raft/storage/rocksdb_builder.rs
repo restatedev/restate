@@ -13,7 +13,7 @@ use restate_rocksdb::{
     CfExactPattern, CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{data_dir, MetadataServerOptions, RocksDbOptions};
+use restate_types::config::{MetadataServerOptions, RocksDbOptions, data_dir};
 use restate_types::live::BoxedLiveLoad;
 use rocksdb::DBCompressionType;
 use static_assertions::const_assert;

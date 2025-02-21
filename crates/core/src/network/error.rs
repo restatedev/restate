@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use tonic::Code;
 
+use restate_types::GenerationalNodeId;
 use restate_types::net::{CodecError, MIN_SUPPORTED_PROTOCOL_VERSION};
 use restate_types::nodes_config::NodesConfigError;
-use restate_types::GenerationalNodeId;
 
 use crate::{ShutdownError, SyncError};
 

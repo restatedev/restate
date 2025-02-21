@@ -12,7 +12,7 @@ use restate_types::{
     invocation::ServiceType,
 };
 use serde::Deserialize;
-use serde_with::{serde_as, DeserializeAs};
+use serde_with::{DeserializeAs, serde_as};
 
 mod v1;
 mod v2;

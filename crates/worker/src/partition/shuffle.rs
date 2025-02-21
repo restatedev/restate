@@ -16,12 +16,12 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use restate_bifrost::Bifrost;
-use restate_core::{cancellation_watcher, Metadata};
+use restate_core::{Metadata, cancellation_watcher};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::message::MessageIndex;
-use restate_wal_protocol::{append_envelope_to_bifrost, Destination, Envelope, Header, Source};
+use restate_wal_protocol::{Destination, Envelope, Header, Source, append_envelope_to_bifrost};
 
 use crate::partition::shuffle::state_machine::StateMachine;
 use crate::partition::types::OutboxMessageExt;
@@ -269,7 +269,7 @@ mod state_machine {
 
     use crate::partition::shuffle;
     use crate::partition::shuffle::{
-        wrap_outbox_message_in_envelope, NewOutboxMessage, OutboxReaderError, ShuffleMetadata,
+        NewOutboxMessage, OutboxReaderError, ShuffleMetadata, wrap_outbox_message_in_envelope,
     };
 
     type ReadFuture<OutboxReader> = ReusableBoxFuture<
@@ -430,8 +430,8 @@ mod state_machine {
 #[cfg(test)]
 mod tests {
     use std::iter;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use anyhow::anyhow;
     use assert2::let_assert;
@@ -442,14 +442,14 @@ mod tests {
     use restate_bifrost::{Bifrost, LogEntry};
     use restate_core::network::FailingConnector;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
-    use restate_storage_api::outbox_table::OutboxMessage;
     use restate_storage_api::StorageError;
+    use restate_storage_api::outbox_table::OutboxMessage;
+    use restate_types::Version;
     use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
     use restate_types::invocation::ServiceInvocation;
     use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
     use restate_types::message::MessageIndex;
     use restate_types::partition_table::PartitionTable;
-    use restate_types::Version;
     use restate_wal_protocol::{Command, Envelope};
 
     use crate::partition::shuffle::{OutboxReader, OutboxReaderError, Shuffle, ShuffleMetadata};

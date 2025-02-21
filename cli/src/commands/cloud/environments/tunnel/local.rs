@@ -18,8 +18,8 @@ use std::time::Duration;
 use anyhow::Result;
 use http::{Request, StatusCode, Uri};
 use http_body_util::BodyExt;
-use hyper::body::Incoming;
 use hyper::Response;
+use hyper::body::Incoming;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use reqwest::Body;
@@ -469,7 +469,9 @@ async fn process_start(inner: Arc<HandlerInner>, body: Incoming) -> Result<(), S
 enum ProxyError {
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
-    #[error("Failed to validate request identity.\nCould a different environment be trying to use your tunnel?\n{0}")]
+    #[error(
+        "Failed to validate request identity.\nCould a different environment be trying to use your tunnel?\n{0}"
+    )]
     RequestIdentity(#[from] super::request_identity::Error),
 }
 

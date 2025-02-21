@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use googletest::prelude::*;
@@ -173,9 +173,11 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         assert!(!tail.is_sealed());
     }
 
-    assert!(tokio::time::timeout(Duration::from_secs(5), handle1)
-        .await??
-        .is_ok());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), handle1)
+            .await??
+            .is_ok()
+    );
 
     tokio::task::yield_now().await;
     // Only handle1 should have finished work.

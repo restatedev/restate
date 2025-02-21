@@ -10,10 +10,10 @@
 
 use std::sync::LazyLock;
 
+use restate_storage_api::Transaction;
 use restate_storage_api::inbox_table::{
     InboxEntry, InboxTable, ReadOnlyInboxTable, SequenceNumberInboxEntry,
 };
-use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, ServiceId};
 
 use super::{assert_stream_eq, mock_state_mutation};

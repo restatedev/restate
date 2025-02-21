@@ -13,7 +13,7 @@ use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface};
 use crate::ui::invocations::render_simple_invocation_list;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use cling::prelude::*;
 use restate_cli_util::ui::console::confirm_or_exit;
 use restate_cli_util::{c_println, c_success};
@@ -48,7 +48,9 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
             0 => format!("target LIKE '{q}/%'"),
             // If there's one slash, let's add the wildcard depending on the service type,
             // so we discriminate correctly with serviceName/handlerName with workflowName/workflowKey
-            1 => format!("(target = '{q}' AND target_service_ty = 'service') OR (target LIKE '{q}/%' AND target_service_ty != 'service'))"),
+            1 => format!(
+                "(target = '{q}' AND target_service_ty = 'service') OR (target LIKE '{q}/%' AND target_service_ty != 'service'))"
+            ),
             // Can only be exact match here
             _ => format!("target LIKE '{q}'"),
         }
@@ -58,7 +60,10 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
     if invocations.is_empty() {
-        bail!("No invocations found for query {}! Note that the purge command works only on completed invocations. If you need to cancel/kill an invocation, consider using the cancel command.", opts.query);
+        bail!(
+            "No invocations found for query {}! Note that the purge command works only on completed invocations. If you need to cancel/kill an invocation, consider using the cancel command.",
+            opts.query
+        );
     };
 
     render_simple_invocation_list(&invocations);

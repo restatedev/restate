@@ -643,7 +643,9 @@ fn assert_partition_key_or_err(
     if partition_key_range.contains(&partition_key) {
         return Ok(());
     }
-    Err(StorageError::Generic(anyhow!("Partition key '{partition_key}' is not part of PartitionStore's partition '{partition_key_range:?}'. This indicates a bug.")))
+    Err(StorageError::Generic(anyhow!(
+        "Partition key '{partition_key}' is not part of PartitionStore's partition '{partition_key_range:?}'. This indicates a bug."
+    )))
 }
 
 impl Transaction for PartitionStoreTransaction<'_> {

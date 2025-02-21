@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use http::StatusCode;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;

@@ -11,15 +11,15 @@
 //! This benchmark requires the [counter.Counter service](https://github.com/restatedev/e2e/blob/a500164a31d58c0ee65ae77a7f99a8a2ef1825cb/services/node-services/src/counter.ts)
 //! running on localhost:9080 in order to run.
 
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use http::header::CONTENT_TYPE;
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use http::Uri;
+use http::header::CONTENT_TYPE;
 use pprof::criterion::{Output, PProfProfiler};
 use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 fn throughput_benchmark(criterion: &mut Criterion) {
     tracing_subscriber::registry()

@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::KnownLeader;
 use crate::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
-use crate::KnownLeader;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use bytestring::ByteString;
@@ -20,11 +20,11 @@ use rand::prelude::IteratorRandom;
 use restate_core::metadata_store::{
     MetadataStore, Precondition, ProvisionError, ReadError, VersionedValue, WriteError,
 };
-use restate_core::network::net_util::{create_tonic_channel, CommonClientConnectionOptions};
-use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
+use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
+use restate_core::{Metadata, TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::config::Configuration;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
+use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
 use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};
@@ -89,10 +89,14 @@ impl GrpcMetadataServerClient {
                 )
                 .expect("to spawn new tasks");
             } else {
-                debug!("The GrpcMetadataServerClient has been started w/o access to the Metadata. Therefore, it will not update the metadata store endpoints automatically.");
+                debug!(
+                    "The GrpcMetadataServerClient has been started w/o access to the Metadata. Therefore, it will not update the metadata store endpoints automatically."
+                );
             }
         } else {
-            debug!("The GrpcMetadataServerClient has been started outside of the TaskCenter. Therefore, it will not update the metadata store endpoints automatically.");
+            debug!(
+                "The GrpcMetadataServerClient has been started outside of the TaskCenter. Therefore, it will not update the metadata store endpoints automatically."
+            );
         }
 
         Self {
@@ -282,7 +286,10 @@ impl MetadataStore for GrpcMetadataServerClient {
         let config = Configuration::pinned();
 
         if !config.common.roles.contains(Role::MetadataServer) {
-            return Err(ProvisionError::NotSupported(format!("Node '{}' does not run the metadata-server role. Try to provision a different node.", config.common.advertised_address)));
+            return Err(ProvisionError::NotSupported(format!(
+                "Node '{}' does not run the metadata-server role. Try to provision a different node.",
+                config.common.advertised_address
+            )));
         }
 
         let mut client = MetadataServerSvcClientWithAddress::new(ChannelWithAddress::new(

@@ -10,7 +10,7 @@
 
 use tokio::task::JoinSet;
 use tokio::time::Instant;
-use tracing::{debug, error, info, warn, Instrument};
+use tracing::{Instrument, debug, error, info, warn};
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{ShutdownError, TaskCenterFutureExt};

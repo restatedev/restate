@@ -10,7 +10,7 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{describe_counter, describe_histogram, Unit};
+use metrics::{Unit, describe_counter, describe_histogram};
 
 pub(crate) const BIFROST_REPLICATED_READ_CACHE_HIT: &str =
     "restate.bifrost.replicatedloglet.read_record_cache_hit.total";

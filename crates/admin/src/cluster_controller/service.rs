@@ -13,7 +13,7 @@ mod state;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use codederror::CodedError;
 use futures::never::Never;
 use restate_types::replication::{NodeSet, ReplicationProperty};
@@ -41,8 +41,8 @@ use restate_core::network::{
     MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking, TransportConnect,
 };
 use restate_core::{
-    cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
-    TaskKind,
+    Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter, TaskKind,
+    cancellation_watcher,
 };
 use restate_types::cluster::cluster_state::ClusterState;
 use restate_types::config::{AdminOptions, Configuration};
@@ -803,8 +803,8 @@ mod tests {
 
     use std::collections::BTreeSet;
     use std::num::NonZero;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
     use googletest::assert_that;
@@ -830,9 +830,9 @@ mod tests {
     use restate_types::locality::NodeLocation;
     use restate_types::logs::metadata::ProviderKind;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
+    use restate_types::net::AdvertisedAddress;
     use restate_types::net::node::{GetNodeState, NodeStateResponse};
     use restate_types::net::partition_processor_manager::ControlProcessors;
-    use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
     };
@@ -1219,16 +1219,20 @@ mod tests {
         );
 
         tokio::time::sleep(interval_duration * 2).await;
-        assert!(cluster_state
-            .current()
-            .nodes
-            .get(&PlainNodeId::new(1))
-            .is_some_and(|n| matches!(n, NodeState::Alive(_))));
-        assert!(cluster_state
-            .current()
-            .nodes
-            .get(&PlainNodeId::new(2))
-            .is_some_and(|n| matches!(n, NodeState::Alive(_))));
+        assert!(
+            cluster_state
+                .current()
+                .nodes
+                .get(&PlainNodeId::new(1))
+                .is_some_and(|n| matches!(n, NodeState::Alive(_)))
+        );
+        assert!(
+            cluster_state
+                .current()
+                .nodes
+                .get(&PlainNodeId::new(2))
+                .is_some_and(|n| matches!(n, NodeState::Alive(_)))
+        );
         // no trimming should have happened because no nodes report archived_lsn
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
@@ -1296,16 +1300,20 @@ mod tests {
             Ordering::Relaxed,
         );
         tokio::time::sleep(interval_duration * 2).await;
-        assert!(cluster_state
-            .current()
-            .nodes
-            .get(&PlainNodeId::new(1))
-            .is_some_and(|n| matches!(n, NodeState::Alive(_))));
-        assert!(cluster_state
-            .current()
-            .nodes
-            .get(&PlainNodeId::new(2))
-            .is_some_and(|n| matches!(n, NodeState::Dead(_))));
+        assert!(
+            cluster_state
+                .current()
+                .nodes
+                .get(&PlainNodeId::new(1))
+                .is_some_and(|n| matches!(n, NodeState::Alive(_)))
+        );
+        assert!(
+            cluster_state
+                .current()
+                .nodes
+                .get(&PlainNodeId::new(2))
+                .is_some_and(|n| matches!(n, NodeState::Dead(_)))
+        );
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
         archived_lsn.store(10, Ordering::Relaxed);

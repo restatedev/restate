@@ -24,6 +24,7 @@ use restate_core::{Metadata, MetadataWriter};
 use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
 use restate_types::metadata_store::keys::SCHEMA_INFORMATION_KEY;
+use restate_types::schema::Schema;
 use restate_types::schema::deployment::{
     DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver,
 };
@@ -31,7 +32,6 @@ use restate_types::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMe
 use restate_types::schema::subscriptions::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
 };
-use restate_types::schema::Schema;
 
 use crate::schema_registry::error::{SchemaError, SchemaRegistryError, ServiceError};
 use crate::schema_registry::updater::SchemaUpdater;

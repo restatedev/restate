@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
+use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::scan::TableScan;
@@ -67,7 +67,7 @@ fn get_idempotency_metadata<S: StorageAccess>(
 fn all_idempotency_metadata<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + '_> {
+) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + use<'_, S>> {
     let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<IdempotencyKey>(
         range,
     ))?;

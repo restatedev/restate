@@ -1,8 +1,8 @@
 //! Rust implementation of Openapi Spec V3.1.
 
 use serde::{
-    de::{Error, Expected, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
+    de::{Error, Expected, Visitor},
 };
 use std::fmt::Formatter;
 

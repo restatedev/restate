@@ -15,14 +15,14 @@ use clap::Parser;
 use cling::{Collect, Run};
 use restate_cli_util::ui::console::confirm_or_exit;
 use restate_cli_util::{c_error, c_println, c_warn};
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest;
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
 use restate_types::replication::ReplicationProperty;
 use std::cmp::Ordering;
 use std::num::NonZeroU16;
-use tonic::codec::CompressionEncoding;
 use tonic::Code;
+use tonic::codec::CompressionEncoding;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "provision_cluster")]
@@ -112,7 +112,9 @@ async fn provision_cluster(
 
         match default_provider {
             ProviderConfiguration::InMemory | ProviderConfiguration::Local => {
-                c_warn!("You are about to provision a cluster with a Bifrost provider that only supports a single node cluster.");
+                c_warn!(
+                    "You are about to provision a cluster with a Bifrost provider that only supports a single node cluster."
+                );
             }
             ProviderConfiguration::Replicated(_) => {
                 // nothing to do

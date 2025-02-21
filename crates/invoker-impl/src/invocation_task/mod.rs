@@ -17,7 +17,7 @@ use crate::error::InvokerError;
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::INVOKER_TASK_DURATION;
 use bytes::Bytes;
-use futures::{future, stream, FutureExt};
+use futures::{FutureExt, future, stream};
 use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
@@ -29,8 +29,8 @@ use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClient
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
-use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::EntryIndex;
+use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_v2;
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
@@ -44,7 +44,7 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::iter;
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -305,11 +305,13 @@ where
             if let Some(pinned_deployment) = &journal_metadata.pinned_deployment {
                 // We have a pinned deployment that we can't change even if newer
                 // deployments have been registered for the same service.
-                let deployment_metadata = shortcircuit!(schemas
-                    .get_deployment(&pinned_deployment.deployment_id)
-                    .ok_or_else(|| InvokerError::UnknownDeployment(
-                        pinned_deployment.deployment_id
-                    )));
+                let deployment_metadata = shortcircuit!(
+                    schemas
+                        .get_deployment(&pinned_deployment.deployment_id)
+                        .ok_or_else(|| InvokerError::UnknownDeployment(
+                            pinned_deployment.deployment_id
+                        ))
+                );
 
                 // todo: We should support resuming an invocation with a newer protocol version if
                 //  the endpoint supports it
@@ -327,12 +329,16 @@ where
             } else {
                 // We can choose the freshest deployment for the latest revision
                 // of the registered service.
-                let deployment = shortcircuit!(schemas
-                    .resolve_latest_deployment_for_service(self.invocation_target.service_name())
-                    .ok_or(InvokerError::NoDeploymentForService));
+                let deployment = shortcircuit!(
+                    schemas
+                        .resolve_latest_deployment_for_service(
+                            self.invocation_target.service_name()
+                        )
+                        .ok_or(InvokerError::NoDeploymentForService)
+                );
 
-                let chosen_service_protocol_version =
-                    shortcircuit!(ServiceProtocolVersion::choose_max_supported_version(
+                let chosen_service_protocol_version = shortcircuit!(
+                    ServiceProtocolVersion::choose_max_supported_version(
                         &deployment.metadata.supported_protocol_versions,
                     )
                     .ok_or_else(|| {
@@ -340,7 +346,8 @@ where
                             deployment.id,
                             deployment.metadata.supported_protocol_versions.clone(),
                         )
-                    }));
+                    })
+                );
 
                 (
                     deployment,
@@ -451,7 +458,7 @@ impl ResponseStreamState {
                     Ok(Ok(res)) => res,
                     Ok(Err(hyper_err)) => return Poll::Ready(Err(InvokerError::Client(hyper_err))),
                     Err(join_err) => {
-                        return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)))
+                        return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)));
                     }
                 };
 
@@ -481,10 +488,10 @@ impl ResponseStreamState {
                     let http_response = match ready!(join_handle.poll_unpin(cx)) {
                         Ok(Ok(res)) => res,
                         Ok(Err(hyper_err)) => {
-                            return Poll::Ready(Err(InvokerError::Client(hyper_err)))
+                            return Poll::Ready(Err(InvokerError::Client(hyper_err)));
                         }
                         Err(join_err) => {
-                            return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)))
+                            return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)));
                         }
                     };
 

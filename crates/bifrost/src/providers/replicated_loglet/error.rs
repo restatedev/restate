@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use restate_core::ShutdownError;
 use restate_types::errors::MaybeRetryableError;
-use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::LogId;
+use restate_types::logs::metadata::SegmentIndex;
 use restate_types::replication::DecoratedNodeSet;
 
 use crate::loglet::OperationError;

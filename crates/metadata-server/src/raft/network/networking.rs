@@ -9,21 +9,21 @@
 // by the Apache License, Version 2.0.
 
 use crate::raft::network::connection_manager::ConnectionManager;
-use crate::raft::network::{grpc_svc, PEER_METADATA_KEY};
+use crate::raft::network::{PEER_METADATA_KEY, grpc_svc};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::FutureExt;
 use restate_core::network::net_util;
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
+use restate_types::PlainNodeId;
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::net::AdvertisedAddress;
-use restate_types::PlainNodeId;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::IntoStreamingRequest;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::MetadataValue;
-use tonic::IntoStreamingRequest;
 use tracing::{debug, trace};
 
 #[derive(Debug, thiserror::Error)]
@@ -108,15 +108,19 @@ where
                     return Err(TrySendError::Connecting(message));
                 } else {
                     match task_handle.now_or_never().expect("should be finished") {
-                        Ok(result) => {
-                            match result {
-                                Ok(_) => trace!("Previous connection attempt to '{target}' succeeded but connection was closed in meantime."),
-                                Err(err) => trace!("Previous connection attempt to '{target}' failed: {}", err)
+                        Ok(result) => match result {
+                            Ok(_) => trace!(
+                                "Previous connection attempt to '{target}' succeeded but connection was closed in meantime."
+                            ),
+                            Err(err) => {
+                                trace!("Previous connection attempt to '{target}' failed: {}", err)
                             }
-
-                        }
+                        },
                         Err(err) => {
-                            trace!("Previous connection attempt to '{target}' panicked: {}", err)
+                            trace!(
+                                "Previous connection attempt to '{target}' panicked: {}",
+                                err
+                            )
                         }
                     }
                 }

@@ -12,8 +12,8 @@ use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpc
 use restate_core::network::rpc_router::ConnectionAwareRpcRouter;
 use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
-use restate_ingress_http::rpc_request_dispatcher::RpcRequestDispatcher;
 use restate_ingress_http::HyperServerIngress;
+use restate_ingress_http::rpc_request_dispatcher::RpcRequestDispatcher;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxedLiveLoad, Live};

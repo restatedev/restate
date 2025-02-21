@@ -35,12 +35,12 @@ use restate_types::identifiers::LambdaARN;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::schema::deployment::ProtocolType;
 use restate_types::service_discovery::{
-    ServiceDiscoveryProtocolVersion, MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION,
-    MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION,
+    MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION, MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION,
+    ServiceDiscoveryProtocolVersion,
 };
 use restate_types::service_protocol::{
-    ServiceProtocolVersion, MAX_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE,
-    MIN_SERVICE_PROTOCOL_VERSION,
+    MAX_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE, MIN_SERVICE_PROTOCOL_VERSION,
+    ServiceProtocolVersion,
 };
 
 // TODO(slinkydeveloper) move this code somewhere else!
@@ -153,9 +153,15 @@ pub enum DiscoveryError {
     Client(#[from] ServiceClientError),
     #[error("cannot read body: {0}")]
     BodyError(GenericError),
-    #[error("unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]", i32::from(MIN_SERVICE_PROTOCOL_VERSION), i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
+    #[error(
+        "unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]",
+        i32::from(MIN_SERVICE_PROTOCOL_VERSION),
+        i32::from(MAX_SERVICE_PROTOCOL_VERSION)
+    )]
     UnsupportedServiceProtocol { min_version: i32, max_version: i32 },
-    #[error("the SDK reports itself as being in bidirectional protocol mode, but we are not discovering over a transport that supports it. Discovering with Lambda or HTTP < 1.1 is not supported")]
+    #[error(
+        "the SDK reports itself as being in bidirectional protocol mode, but we are not discovering over a transport that supports it. Discovering with Lambda or HTTP < 1.1 is not supported"
+    )]
     BidirectionalNotSupported,
 }
 
@@ -369,7 +375,9 @@ impl ServiceDiscovery {
                     || x_restate_server.starts_with("restate-sdk-typescript/1.1.")
                     || x_restate_server.starts_with("restate-sdk-typescript/1.2.")
                 {
-                    debug!("Applying SDK-Typescript <= 1.2.1 workaround for endpoint.maxProtocolVersion");
+                    debug!(
+                        "Applying SDK-Typescript <= 1.2.1 workaround for endpoint.maxProtocolVersion"
+                    );
                     max_version = 1;
                 }
             }
@@ -467,8 +475,8 @@ impl ServiceDiscovery {
 mod tests {
     use crate::discovery::endpoint_manifest::ProtocolMode;
     use crate::discovery::{
-        parse_service_discovery_protocol_version_from_content_type, DiscoveryError,
-        ServiceDiscovery, SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE,
+        DiscoveryError, SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE, ServiceDiscovery,
+        parse_service_discovery_protocol_version_from_content_type,
     };
     use http::{Uri, Version};
     use restate_service_client::Endpoint;

@@ -182,16 +182,16 @@ mod test_util {
         GetStateKeysEntry, GetStateKeysResult, InputEntry, OutputEntry,
     };
     use restate_types::service_protocol::{
-        attach_invocation_entry_message, awakeable_entry_message, call_entry_message,
-        cancel_invocation_entry_message, complete_awakeable_entry_message,
-        get_call_invocation_id_entry_message, get_invocation_output_entry_message,
-        get_state_entry_message, get_state_keys_entry_message, output_entry_message,
         AttachInvocationEntryMessage, AwakeableEntryMessage, CallEntryMessage,
         CancelInvocationEntryMessage, ClearAllStateEntryMessage, ClearStateEntryMessage,
         CompleteAwakeableEntryMessage, Failure, GetCallInvocationIdEntryMessage,
         GetInvocationOutputEntryMessage, GetStateEntryMessage, GetStateKeysEntryMessage,
         IdempotentRequestTarget, InputEntryMessage, OneWayCallEntryMessage, OutputEntryMessage,
-        SetStateEntryMessage, WorkflowTarget,
+        SetStateEntryMessage, WorkflowTarget, attach_invocation_entry_message,
+        awakeable_entry_message, call_entry_message, cancel_invocation_entry_message,
+        complete_awakeable_entry_message, get_call_invocation_id_entry_message,
+        get_invocation_output_entry_message, get_state_entry_message, get_state_keys_entry_message,
+        output_entry_message,
     };
 
     impl ProtobufRawEntryCodec {

@@ -20,14 +20,16 @@ use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
 use restate_types::logs::{KeyFilter, LogletOffset, Lsn, SequenceNumber};
 use restate_types::logs::{Record, TailState};
 
-use crate::loglet::{AppendError, Loglet, OperationError, SendableLogletReadStream};
 use crate::Result;
+use crate::loglet::{AppendError, Loglet, OperationError, SendableLogletReadStream};
 use crate::{Commit, LogEntry, LsnExt};
 
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug, Clone, thiserror::Error)]
 enum LogletWrapperError {
-    #[error("attempted to read outside the tail boundary of the loglet, requested read LSN is {attempt_lsn}, tail is at {tail_lsn}")]
+    #[error(
+        "attempted to read outside the tail boundary of the loglet, requested read LSN is {attempt_lsn}, tail is at {tail_lsn}"
+    )]
     OutOfBoundsRead { attempt_lsn: Lsn, tail_lsn: Lsn },
 }
 
@@ -148,7 +150,7 @@ impl LogletWrapper {
         commit.await
     }
 
-    pub fn watch_tail(&self) -> impl Stream<Item = TailState<Lsn>> {
+    pub fn watch_tail(&self) -> impl Stream<Item = TailState<Lsn>> + use<> {
         let base_lsn = self.base_lsn;
         self.loglet.watch_tail().map(move |tail_state| {
             let offset = std::cmp::max(tail_state.offset(), LogletOffset::OLDEST);

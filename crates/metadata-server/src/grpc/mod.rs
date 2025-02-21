@@ -18,7 +18,7 @@ pub mod pb_conversions {
     use crate::grpc::{
         GetResponse, GetVersionResponse, PreconditionKind, Ulid, WriteRequest, WriteRequestKind,
     };
-    use crate::{grpc, MetadataServerSummary};
+    use crate::{MetadataServerSummary, grpc};
     use restate_core::metadata_store::{Precondition, VersionedValue};
     use restate_types::Version;
 
@@ -185,7 +185,7 @@ pub mod pb_conversions {
 
     impl From<Ulid> for ulid::Ulid {
         fn from(value: Ulid) -> Self {
-            Self::from((value.high as u128) << 64 | value.low as u128)
+            Self::from((u128::from(value.high) << 64) | value.low as u128)
         }
     }
 

@@ -17,7 +17,7 @@ use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
 
 use crate::commands::metadata::{
-    create_metadata_store_client, GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts,
+    GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts, create_metadata_store_client,
 };
 use crate::connection::ConnectionInfo;
 use crate::environment::metadata_store;

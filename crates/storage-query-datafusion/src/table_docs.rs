@@ -91,46 +91,110 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
 
     let columns = vec![
         sys_invocation_status.remove("id").expect("id should exist"),
-        sys_invocation_status.remove("target").expect("target should exist"),
-        sys_invocation_status.remove("target_service_name").expect("target_service_name should exist"),
-        sys_invocation_status.remove("target_service_key").expect("target_service_key should exist"),
-        sys_invocation_status.remove("target_handler_name").expect("target_handler_name should exist"),
-        sys_invocation_status.remove("target_service_ty").expect("target_service_ty should exist"),
-        sys_invocation_status.remove("idempotency_key").expect("idempotency_key should exist"),
-        sys_invocation_status.remove("invoked_by").expect("invoked_by should exist"),
-        sys_invocation_status.remove("invoked_by_service_name").expect("invoked_by_service_name should exist"),
-        sys_invocation_status.remove("invoked_by_id").expect("invoked_by_id should exist"),
-        sys_invocation_status.remove("invoked_by_subscription_id").expect("invoked_by_subscription_id should exist"),
-        sys_invocation_status.remove("invoked_by_target").expect("invoked_by_target should exist"),
-        sys_invocation_status.remove("pinned_deployment_id").expect("pinned_deployment_id should exist"),
-        sys_invocation_status.remove("pinned_service_protocol_version").expect("pinned_service_protocol_version should exist"),
-        sys_invocation_status.remove("trace_id").expect("trace_id should exist"),
-        sys_invocation_status.remove("journal_size").expect("journal_size should exist"),
-        sys_invocation_status.remove("created_at").expect("created_at should exist"),
-        sys_invocation_status.remove("modified_at").expect("modified_at should exist"),
-        sys_invocation_status.remove("inboxed_at").expect("inboxed_at should exist"),
-        sys_invocation_status.remove("scheduled_at").expect("scheduled_at should exist"),
-        sys_invocation_status.remove("running_at").expect("running_at should exist"),
-        sys_invocation_status.remove("completed_at").expect("completed_at should exist"),
-
-        sys_invocation_state.remove("retry_count").expect("retry_count should exist"),
-        sys_invocation_state.remove("last_start_at").expect("last_start_at should exist"),
-        sys_invocation_state.remove("next_retry_at").expect("next_retry_at should exist"),
-        sys_invocation_state.remove("last_attempt_deployment_id").expect("last_attempt_deployment_id should exist"),
-        sys_invocation_state.remove("last_attempt_server").expect("last_attempt_server should exist"),
-        sys_invocation_state.remove("last_failure").expect("last_failure should exist"),
-        sys_invocation_state.remove("last_failure_error_code").expect("last_failure_error_code should exist"),
-        sys_invocation_state.remove("last_failure_related_entry_index").expect("last_failure_related_entry_index should exist"),
-        sys_invocation_state.remove("last_failure_related_entry_name").expect("last_failure_related_entry_name should exist"),
-        sys_invocation_state.remove("last_failure_related_entry_type").expect("last_failure_related_entry_type should exist"),
-
+        sys_invocation_status
+            .remove("target")
+            .expect("target should exist"),
+        sys_invocation_status
+            .remove("target_service_name")
+            .expect("target_service_name should exist"),
+        sys_invocation_status
+            .remove("target_service_key")
+            .expect("target_service_key should exist"),
+        sys_invocation_status
+            .remove("target_handler_name")
+            .expect("target_handler_name should exist"),
+        sys_invocation_status
+            .remove("target_service_ty")
+            .expect("target_service_ty should exist"),
+        sys_invocation_status
+            .remove("idempotency_key")
+            .expect("idempotency_key should exist"),
+        sys_invocation_status
+            .remove("invoked_by")
+            .expect("invoked_by should exist"),
+        sys_invocation_status
+            .remove("invoked_by_service_name")
+            .expect("invoked_by_service_name should exist"),
+        sys_invocation_status
+            .remove("invoked_by_id")
+            .expect("invoked_by_id should exist"),
+        sys_invocation_status
+            .remove("invoked_by_subscription_id")
+            .expect("invoked_by_subscription_id should exist"),
+        sys_invocation_status
+            .remove("invoked_by_target")
+            .expect("invoked_by_target should exist"),
+        sys_invocation_status
+            .remove("pinned_deployment_id")
+            .expect("pinned_deployment_id should exist"),
+        sys_invocation_status
+            .remove("pinned_service_protocol_version")
+            .expect("pinned_service_protocol_version should exist"),
+        sys_invocation_status
+            .remove("trace_id")
+            .expect("trace_id should exist"),
+        sys_invocation_status
+            .remove("journal_size")
+            .expect("journal_size should exist"),
+        sys_invocation_status
+            .remove("created_at")
+            .expect("created_at should exist"),
+        sys_invocation_status
+            .remove("modified_at")
+            .expect("modified_at should exist"),
+        sys_invocation_status
+            .remove("inboxed_at")
+            .expect("inboxed_at should exist"),
+        sys_invocation_status
+            .remove("scheduled_at")
+            .expect("scheduled_at should exist"),
+        sys_invocation_status
+            .remove("running_at")
+            .expect("running_at should exist"),
+        sys_invocation_status
+            .remove("completed_at")
+            .expect("completed_at should exist"),
+        sys_invocation_state
+            .remove("retry_count")
+            .expect("retry_count should exist"),
+        sys_invocation_state
+            .remove("last_start_at")
+            .expect("last_start_at should exist"),
+        sys_invocation_state
+            .remove("next_retry_at")
+            .expect("next_retry_at should exist"),
+        sys_invocation_state
+            .remove("last_attempt_deployment_id")
+            .expect("last_attempt_deployment_id should exist"),
+        sys_invocation_state
+            .remove("last_attempt_server")
+            .expect("last_attempt_server should exist"),
+        sys_invocation_state
+            .remove("last_failure")
+            .expect("last_failure should exist"),
+        sys_invocation_state
+            .remove("last_failure_error_code")
+            .expect("last_failure_error_code should exist"),
+        sys_invocation_state
+            .remove("last_failure_related_entry_index")
+            .expect("last_failure_related_entry_index should exist"),
+        sys_invocation_state
+            .remove("last_failure_related_entry_name")
+            .expect("last_failure_related_entry_name should exist"),
+        sys_invocation_state
+            .remove("last_failure_related_entry_type")
+            .expect("last_failure_related_entry_type should exist"),
         TableColumn {
             name: "status",
             column_type: "Utf8",
             description: "Either `pending` or `scheduled` or `ready` or `running` or `backing-off` or `suspended` or `completed`.",
         },
-        sys_invocation_status.remove("completion_result").expect("completion_result should exist"),
-        sys_invocation_status.remove("completion_failure").expect("completion_failure should exist"),
+        sys_invocation_status
+            .remove("completion_result")
+            .expect("completion_result should exist"),
+        sys_invocation_status
+            .remove("completion_failure")
+            .expect("completion_failure should exist"),
     ];
 
     OwnedTableDocs {

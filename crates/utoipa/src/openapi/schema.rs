@@ -4,9 +4,9 @@
 //! [schema]: https://spec.openapis.org/oas/latest.html#schema-object
 use std::collections::BTreeMap;
 
-use super::extensions::Extensions;
 use super::RefOr;
-use super::{builder, security::SecurityScheme, set_value, Response};
+use super::extensions::Extensions;
+use super::{Response, builder, security::SecurityScheme, set_value};
 use crate::openapi::path::Parameter;
 use serde::{Deserialize, Serialize};
 

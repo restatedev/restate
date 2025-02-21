@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::promise_table::ReadOnlyPromiseTable;
 use crate::Result;
+use crate::promise_table::ReadOnlyPromiseTable;
 use futures_util::Stream;
 use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;

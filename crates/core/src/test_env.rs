@@ -16,13 +16,13 @@ use futures::Stream;
 
 use restate_types::config::NetworkingOptions;
 use restate_types::locality::NodeLocation;
-use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
+use restate_types::logs::metadata::{ProviderKind, bootstrap_logs_metadata};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
 };
+use restate_types::net::AdvertisedAddress;
 use restate_types::net::codec::{Targeted, WireDecode};
 use restate_types::net::metadata::MetadataKind;
-use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
 };
@@ -30,14 +30,14 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::node::Message;
 use restate_types::{GenerationalNodeId, Version};
 
+use crate::TaskCenter;
 use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
     ConnectionManager, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder,
     NetworkError, Networking, ProtocolError, TransportConnect,
 };
-use crate::TaskCenter;
-use crate::{spawn_metadata_manager, MetadataBuilder, TaskId};
 use crate::{Metadata, MetadataManager, MetadataWriter};
+use crate::{MetadataBuilder, TaskId, spawn_metadata_manager};
 
 pub struct TestCoreEnvBuilder<T> {
     pub my_node_id: GenerationalNodeId,

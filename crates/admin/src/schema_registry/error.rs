@@ -12,8 +12,8 @@ use std::ops::RangeInclusive;
 
 use http::Uri;
 
-use restate_core::metadata_store::ReadModifyWriteError;
 use restate_core::ShutdownError;
+use restate_core::metadata_store::ReadModifyWriteError;
 use restate_types::endpoint_manifest;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::DeploymentId;
@@ -80,7 +80,9 @@ pub enum ServiceError {
     #[error("cannot insert/modify service '{0}' as it contains a reserved name")]
     #[code(restate_errors::META0005)]
     ReservedName(String),
-    #[error("detected a new service '{0}' revision with a service type different from the previous revision. Service type cannot be changed across revisions")]
+    #[error(
+        "detected a new service '{0}' revision with a service type different from the previous revision. Service type cannot be changed across revisions"
+    )]
     #[code(restate_errors::META0006)]
     DifferentType(ServiceName),
     #[error("the service '{0}' already exists but the new revision removed the handlers {1:?}")]
@@ -116,14 +118,18 @@ pub enum SubscriptionError {
         "invalid source URI '{0}': must have a scheme segment, with supported schemes: [kafka]."
     )]
     InvalidSourceScheme(Uri),
-    #[error("invalid source URI '{0}': source URI of Kafka type must have a authority segment containing the cluster name.")]
+    #[error(
+        "invalid source URI '{0}': source URI of Kafka type must have a authority segment containing the cluster name."
+    )]
     InvalidKafkaSourceAuthority(Uri),
 
     #[error(
         "invalid sink URI '{0}': must have a scheme segment, with supported schemes: [service]."
     )]
     InvalidSinkScheme(Uri),
-    #[error("invalid sink URI '{0}': sink URI of service type must have a authority segment containing the service name.")]
+    #[error(
+        "invalid sink URI '{0}': sink URI of service type must have a authority segment containing the service name."
+    )]
     InvalidServiceSinkAuthority(Uri),
     #[error("invalid sink URI '{0}': cannot find service/handler specified in the sink URI.")]
     SinkServiceNotFound(Uri),
@@ -137,13 +143,19 @@ pub enum SubscriptionError {
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum DeploymentError {
-    #[error("an update deployment operation must provide an endpoint with the same services and handlers. The update tried to remove the services {0:?}")]
+    #[error(
+        "an update deployment operation must provide an endpoint with the same services and handlers. The update tried to remove the services {0:?}"
+    )]
     #[code(restate_errors::META0016)]
     RemovedServices(Vec<String>),
-    #[error("multiple deployments ({0:?}) were found that reference the discovered endpoint. A deployment can only be force updated when it uniquely owns its endpoint. First delete one or more of the deployments")]
+    #[error(
+        "multiple deployments ({0:?}) were found that reference the discovered endpoint. A deployment can only be force updated when it uniquely owns its endpoint. First delete one or more of the deployments"
+    )]
     #[code(restate_errors::META0017)]
     MultipleExistingDeployments(Vec<DeploymentId>),
-    #[error("an update deployment operation must provide an endpoint with the same services and handlers. The update tried to change the supported protocol versions from {0:?} to {1:?}")]
+    #[error(
+        "an update deployment operation must provide an endpoint with the same services and handlers. The update tried to change the supported protocol versions from {0:?} to {1:?}"
+    )]
     #[code(restate_errors::META0016)]
     DifferentSupportedProtocolVersions(RangeInclusive<i32>, RangeInclusive<i32>),
 }

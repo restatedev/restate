@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{hash_map, BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, hash_map};
 use std::num::NonZeroU8;
 use std::str::FromStr;
 
@@ -17,16 +17,16 @@ use bytestring::ByteString;
 use enum_map::Enum;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{DisplayFromStr, serde_as};
 use smallvec::SmallVec;
 
-use super::builder::LogsBuilder;
 use super::LogletId;
+use super::builder::LogsBuilder;
 use crate::config::Configuration;
 use crate::logs::{LogId, Lsn, SequenceNumber};
 use crate::replicated_loglet::ReplicatedLogletParams;
 use crate::replication::ReplicationProperty;
-use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
+use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
 
 // Starts with 0 being the oldest loglet in the chain.
 #[derive(
@@ -756,11 +756,13 @@ pub fn bootstrap_logs_metadata(
         let params = default_loglet_params
             .clone()
             .map(LogletParams::from)
-            .unwrap_or_else(|| loop {
-                let params = new_single_node_loglet_params(default_provider);
-                if !generated_params.contains(&params) {
-                    generated_params.insert(params.clone());
-                    break params;
+            .unwrap_or_else(|| {
+                loop {
+                    let params = new_single_node_loglet_params(default_provider);
+                    if !generated_params.contains(&params) {
+                        generated_params.insert(params.clone());
+                        break params;
+                    }
                 }
             });
         builder

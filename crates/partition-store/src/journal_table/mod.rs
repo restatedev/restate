@@ -8,19 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::TableKind::Journal;
 use crate::keys::TableKey;
-use crate::keys::{define_table_key, KeyKind};
+use crate::keys::{KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::scan::TableScan::FullScanPartitionKeyRange;
-use crate::TableKind::Journal;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
 use restate_storage_api::Result;
+use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
@@ -104,7 +104,7 @@ fn get_journal<S: StorageAccess>(
 fn all_journals<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send + '_> {
+) -> Result<impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send + use<'_, S>> {
     let iter = storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range))?;
     Ok(stream::iter(OwnedIterator::new(iter).map(
         |(mut key, mut value)| {

@@ -187,13 +187,13 @@ impl DecoderState {
 
                 if message_length >= message_size_warning {
                     warn!(
-                    "Message size warning for '{:?}': {} >= {}. \
+                        "Message size warning for '{:?}': {} >= {}. \
                     Generating very large messages can make the system unstable if configured with too little memory. \
                     You can increase the threshold to avoid this warning by changing the worker.invoker.message_size_warning config option",
-                    header.message_type(),
-                    Size::from_bytes(message_length),
-                    Size::from_bytes(message_size_warning),
-                );
+                        header.message_type(),
+                        Size::from_bytes(message_length),
+                        Size::from_bytes(message_size_warning),
+                    );
                 }
                 if message_length >= message_size_limit {
                     return Err(EncodingError::MessageSizeLimit(

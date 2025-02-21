@@ -21,7 +21,7 @@ pub use provider::{LogletProvider, LogletProviderFactory};
 use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{ready, Poll};
+use std::task::{Poll, ready};
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
