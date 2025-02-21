@@ -15,7 +15,7 @@ use std::{
     str::FromStr,
 };
 
-use cling::{prelude::Parser, Collect};
+use cling::{Collect, prelude::Parser};
 use tonic::transport::Channel;
 
 use restate_cli_util::CliContext;

@@ -21,14 +21,14 @@ use restate_types::invocation::{
 };
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::{flexbuffers_storage_encode_decode, logs, PlainNodeId, Version};
+use restate_types::{PlainNodeId, Version, flexbuffers_storage_encode_decode, logs};
 
 use crate::control::AnnounceLeader;
 use crate::timer::TimerKeyValue;
+use restate_types::GenerationalNodeId;
 use restate_types::logs::{HasRecordKeys, Keys, LogId, Lsn, MatchKeyQuery};
 use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
-use restate_types::GenerationalNodeId;
 
 pub mod control;
 pub mod timer;

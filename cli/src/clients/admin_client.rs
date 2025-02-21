@@ -13,8 +13,8 @@
 use anyhow::bail;
 use http::StatusCode;
 use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
-use restate_cli_util::{c_warn, CliContext};
-use serde::{de::DeserializeOwned, Serialize};
+use restate_cli_util::{CliContext, c_warn};
+use serde::{Serialize, de::DeserializeOwned};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info};
@@ -146,7 +146,7 @@ impl AdminClient {
         if let Ok(envelope) = client.version().await {
             match envelope.into_body().await {
                 Ok(version_information) => {
-                    return Self::choose_api_version(client, version_information)
+                    return Self::choose_api_version(client, version_information);
                 }
                 Err(err) => debug!("Failed parsing the version information: {err}"),
             }
@@ -162,10 +162,16 @@ impl AdminClient {
             .and_then(|r| r.success_or_error())
             .is_err()
         {
-            bail!("Unable to connect to the Restate server '{}'. Please make sure that it is running and reachable.", client.base_url);
+            bail!(
+                "Unable to connect to the Restate server '{}'. Please make sure that it is running and reachable.",
+                client.base_url
+            );
         }
 
-        c_warn!("Could not verify the admin API version. Please make sure that your CLI is compatible with the Restate server '{}'.", client.base_url);
+        c_warn!(
+            "Could not verify the admin API version. Please make sure that your CLI is compatible with the Restate server '{}'.",
+            client.base_url
+        );
         Ok(client)
     }
 
@@ -201,7 +207,11 @@ impl AdminClient {
                 version_information.ingress_endpoint.map(|u| u.to_string());
             Ok(client)
         } else {
-            bail!("The CLI is not compatible with the Restate server '{}'. Please update the CLI to match the Restate server version '{}'.", client.base_url, version_information.version);
+            bail!(
+                "The CLI is not compatible with the Restate server '{}'. Please update the CLI to match the Restate server version '{}'.",
+                client.base_url,
+                version_information.version
+            );
         }
     }
 

@@ -13,14 +13,14 @@ use super::proxy::ProxyConnector;
 use crate::utils::ErrorExt;
 
 use bytes::Bytes;
-use futures::future::Either;
 use futures::FutureExt;
-use http::uri::Scheme;
+use futures::future::Either;
 use http::Version;
+use http::uri::Scheme;
 use http_body_util::BodyExt;
 use hyper::body::Body;
-use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
+use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Method, Request, Response, Uri};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 use hyper_util::client::legacy::connect::HttpConnector;

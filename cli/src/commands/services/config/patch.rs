@@ -16,7 +16,7 @@ use comfy_table::Table;
 use const_format::concatcp;
 use restate_admin_rest_model::services::ModifyServiceRequest;
 use restate_cli_util::c_println;
-use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
+use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_serde_util::DurationString;
 
 pub(super) const DURATION_EDIT_DESCRIPTION: &str = "Can be configured using the humantime format (https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) or the ISO8601.";

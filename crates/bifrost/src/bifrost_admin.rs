@@ -14,11 +14,11 @@ use tracing::{debug, instrument, warn};
 
 use restate_core::metadata_store::retry_on_retryable_error;
 use restate_core::{Metadata, MetadataKind};
+use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Chain, LogletParams, Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-use restate_types::Version;
 
 use crate::bifrost::BifrostInner;
 use crate::error::AdminError;

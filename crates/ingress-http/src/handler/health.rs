@@ -9,13 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use http::{header, Method, Request, Response, StatusCode};
+use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::Full;
 use serde::Serialize;
 
 use restate_types::schema::service::ServiceMetadataResolver;
 
-use super::{Handler, APPLICATION_JSON};
+use super::{APPLICATION_JSON, Handler};
 use crate::handler::error::HandlerError;
 
 #[derive(Debug, Serialize)]

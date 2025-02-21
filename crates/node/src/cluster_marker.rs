@@ -67,17 +67,23 @@ pub enum ClusterValidationError {
     Decode(serde_json::Error),
     #[error("failed encoding cluster marker: {0}")]
     Encode(serde_json::Error),
-    #[error("trying to open data directory belonging to cluster '{persisted_cluster_name}' as cluster '{configured_cluster_name}'. Make sure that the right cluster accesses the data directory.")]
+    #[error(
+        "trying to open data directory belonging to cluster '{persisted_cluster_name}' as cluster '{configured_cluster_name}'. Make sure that the right cluster accesses the data directory."
+    )]
     IncorrectClusterName {
         configured_cluster_name: String,
         persisted_cluster_name: String,
     },
-    #[error("Restate version '{this_version}' is forward incompatible with data directory. Requiring Restate version >= '{min_version}'")]
+    #[error(
+        "Restate version '{this_version}' is forward incompatible with data directory. Requiring Restate version >= '{min_version}'"
+    )]
     ForwardIncompatibility {
         this_version: Version,
         min_version: Version,
     },
-    #[error("Restate version '{this_version}' is backward incompatible with data directory created by Restate version '{data_version}'")]
+    #[error(
+        "Restate version '{this_version}' is backward incompatible with data directory created by Restate version '{data_version}'"
+    )]
     BackwardIncompatibility {
         this_version: Version,
         data_version: Version,
@@ -286,9 +292,9 @@ fn mark_cluster_as_provisioned_inner(
 #[cfg(test)]
 mod tests {
     use crate::cluster_marker::{
-        mark_cluster_as_provisioned_inner, validate_and_update_cluster_marker_inner, ClusterMarker,
-        ClusterValidationError, CompatibilityInformation, CLUSTER_MARKER_FILE_NAME,
-        COMPATIBILITY_INFORMATION,
+        CLUSTER_MARKER_FILE_NAME, COMPATIBILITY_INFORMATION, ClusterMarker, ClusterValidationError,
+        CompatibilityInformation, mark_cluster_as_provisioned_inner,
+        validate_and_update_cluster_marker_inner,
     };
     use semver::Version;
     use std::fs;

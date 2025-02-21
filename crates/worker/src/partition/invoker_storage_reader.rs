@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream};
 use restate_invoker_api::{EagerState, JournalMetadata};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,

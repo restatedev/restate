@@ -14,8 +14,8 @@ mod handler;
 mod networking;
 
 pub use connection_manager::ConnectionManager;
-pub use grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvcServer;
 pub use grpc_svc::FILE_DESCRIPTOR_SET;
+pub use grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvcServer;
 pub use handler::MetadataServerNetworkHandler;
 pub use networking::{NetworkMessage, Networking};
 

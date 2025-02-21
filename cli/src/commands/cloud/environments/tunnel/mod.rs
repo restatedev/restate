@@ -62,9 +62,16 @@ enum Error {
 }
 
 pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> {
-    let environment_info = match (&env.config.environment_type, &env.config.cloud.environment_info) {
+    let environment_info = match (
+        &env.config.environment_type,
+        &env.config.cloud.environment_info,
+    ) {
         (EnvironmentType::Cloud, Some(environment_info)) => environment_info,
-        _ => return Err(anyhow::anyhow!("First switch to a Cloud environment using `restate config use-environment` or configure one with `restate cloud environment configure`"))
+        _ => {
+            return Err(anyhow::anyhow!(
+                "First switch to a Cloud environment using `restate config use-environment` or configure one with `restate cloud environment configure`"
+            ));
+        }
     };
 
     let bearer_token = if let Some(bearer_token) = &env.config.bearer_token {
@@ -178,7 +185,9 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
                         .join(" --remote-port ")
                 )
             };
-            eprintln!("To retry with the same endpoint:\nrestate cloud env tunnel --local-port {port} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}{remote_ports}");
+            eprintln!(
+                "To retry with the same endpoint:\nrestate cloud env tunnel --local-port {port} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}{remote_ports}"
+            );
         }
     };
 

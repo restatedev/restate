@@ -12,23 +12,23 @@ use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 use std::{cmp::Ordering, fmt::Display, future::Future, sync::Arc};
 
-use cling::{prelude::Parser, Collect};
+use cling::{Collect, prelude::Parser};
 use itertools::{Either, Itertools, Position};
 use rand::{rng, seq::SliceRandom};
 use tokio::sync::{Mutex, MutexGuard};
-use tonic::{codec::CompressionEncoding, transport::Channel, Code, Response, Status};
+use tonic::{Code, Response, Status, codec::CompressionEncoding, transport::Channel};
 use tracing::{debug, info};
 
 use restate_core::protobuf::node_ctl_svc::{
-    node_ctl_svc_client::NodeCtlSvcClient, GetMetadataRequest, IdentResponse,
+    GetMetadataRequest, IdentResponse, node_ctl_svc_client::NodeCtlSvcClient,
 };
 use restate_types::{
+    Version, Versioned,
     logs::metadata::Logs,
     net::AdvertisedAddress,
     nodes_config::{NodesConfiguration, Role},
     protobuf::common::{MetadataKind, NodeStatus},
     storage::{StorageCodec, StorageDecode, StorageDecodeError},
-    Version, Versioned,
 };
 
 use crate::util::grpc_channel;
@@ -195,7 +195,9 @@ impl ConnectionInfo {
 
             any_node_responded = true;
             if response.status != NodeStatus::Alive as i32 {
-                debug!("Node {address} responded to GetIdent but it is not reporting itself as alive, and will be skipped");
+                debug!(
+                    "Node {address} responded to GetIdent but it is not reporting itself as alive, and will be skipped"
+                );
                 continue;
             }
 
@@ -207,12 +209,16 @@ impl ConnectionInfo {
                     .unwrap_or(Version::INVALID),
             ) {
                 Ordering::Less => {
-                    debug!("Node {address} returned an older version {response_version} than we currently have");
+                    debug!(
+                        "Node {address} returned an older version {response_version} than we currently have"
+                    );
                     continue;
                 }
                 Ordering::Equal => continue,
                 Ordering::Greater => {
-                    debug!("Node {address} returned a newer version {response_version} than we currently have");
+                    debug!(
+                        "Node {address} returned a newer version {response_version} than we currently have"
+                    );
                 }
             }
 
@@ -378,9 +384,7 @@ pub enum ConnectionInfoError {
         contacted_nodes: HashMap<AdvertisedAddress, IdentResponse>,
     },
 
-    #[error(
-        "The cluster appears to not be provisioned. You can do so with `restatectl provision`"
-    )]
+    #[error("The cluster appears to not be provisioned. You can do so with `restatectl provision`")]
     ClusterNotProvisioned,
 
     #[error("Failed to decode metadata from node {0}: {1}")]

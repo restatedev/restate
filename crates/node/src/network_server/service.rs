@@ -10,7 +10,7 @@
 
 use std::pin::pin;
 
-use axum::routing::{get, on, MethodFilter};
+use axum::routing::{MethodFilter, get, on};
 use tokio::time::MissedTickBehavior;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, trace};
@@ -20,7 +20,7 @@ use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNo
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportConnect};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
-use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
+use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::config::CommonOptions;
 use restate_types::protobuf::common::NodeStatus;
 

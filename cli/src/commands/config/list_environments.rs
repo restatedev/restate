@@ -12,8 +12,8 @@ use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use figment::{
-    providers::{Format, Serialized, Toml},
     Figment, Profile,
+    providers::{Format, Serialized, Toml},
 };
 
 use restate_cli_util::c_println;

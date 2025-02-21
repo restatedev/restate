@@ -17,11 +17,11 @@ use tracing::debug;
 
 use restate_core::metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
-use restate_types::config::Configuration;
 use restate_types::Version;
+use restate_types::config::Configuration;
 
 use crate::commands::metadata::{
-    create_metadata_store_client, GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts,
+    GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts, create_metadata_store_client,
 };
 use crate::connection::ConnectionInfo;
 use crate::environment::metadata_store::start_metadata_server;

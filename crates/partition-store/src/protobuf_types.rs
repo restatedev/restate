@@ -124,6 +124,7 @@ pub mod v1 {
         use prost::Message;
         use restate_types::deployment::PinnedDeployment;
 
+        use crate::protobuf_types::ConversionError;
         use crate::protobuf_types::v1::dedup_sequence_number::Variant;
         use crate::protobuf_types::v1::enriched_entry_header::{
             AttachInvocation, Awakeable, BackgroundCall, CancelInvocation, ClearAllState,
@@ -137,7 +138,7 @@ pub mod v1 {
         use crate::protobuf_types::v1::journal_entry::completion_result::{
             Empty, Failure, Success,
         };
-        use crate::protobuf_types::v1::journal_entry::{completion_result, CompletionResult, Kind};
+        use crate::protobuf_types::v1::journal_entry::{CompletionResult, Kind, completion_result};
         use crate::protobuf_types::v1::outbox_message::{
             NotifySignal, OutboxCancel, OutboxKill, OutboxServiceInvocation,
             OutboxServiceInvocationResponse,
@@ -146,19 +147,18 @@ pub mod v1 {
             Ingress, PartitionProcessor, ResponseSink,
         };
         use crate::protobuf_types::v1::{
-            enriched_entry_header, entry, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status, invocation_status_v2, invocation_target, journal_entry,
-            outbox_message, promise, response_result, source, span_relation,
-            submit_notification_sink, timer, virtual_object_status, BackgroundCallResolutionResult,
-            DedupSequenceNumber, Duration, EnrichedEntryHeader, Entry, EntryResult,
-            EpochSequenceNumber, Header, IdempotencyId, IdempotencyMetadata, InboxEntry,
-            InvocationId, InvocationResolutionResult, InvocationStatus, InvocationStatusV2,
-            InvocationTarget, InvocationV2Lite, JournalEntry, JournalEntryId, JournalEntryIndex,
-            JournalMeta, KvPair, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
-            ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext, SpanRelation,
-            StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
+            BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
+            Entry, EntryResult, EpochSequenceNumber, Header, IdempotencyId, IdempotencyMetadata,
+            InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
+            InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalEntry, JournalEntryId,
+            JournalEntryIndex, JournalMeta, KvPair, OutboxMessage, Promise, ResponseResult,
+            SequenceNumber, ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source,
+            SpanContext, SpanRelation, StateMutation, SubmitNotificationSink, Timer,
+            VirtualObjectStatus, enriched_entry_header, entry, entry_result, inbox_entry,
+            invocation_resolution_result, invocation_status, invocation_status_v2,
+            invocation_target, journal_entry, outbox_message, promise, response_result, source,
+            span_relation, submit_notification_sink, timer, virtual_object_status,
         };
-        use crate::protobuf_types::ConversionError;
         use restate_storage_api::StorageError;
         use restate_types::errors::{IdDecodeError, InvocationError};
         use restate_types::identifiers::{
@@ -173,7 +173,7 @@ pub mod v1 {
             StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
         };
         use restate_types::time::MillisSinceEpoch;
-        use restate_types::{journal_v2, GenerationalNodeId};
+        use restate_types::{GenerationalNodeId, journal_v2};
 
         impl TryFrom<VirtualObjectStatus>
             for restate_storage_api::service_status_table::VirtualObjectStatus
@@ -1015,7 +1015,9 @@ pub mod v1 {
 
         impl From<crate::invocation_status_table::InvocationLite> for InvocationV2Lite {
             fn from(_: crate::invocation_status_table::InvocationLite) -> Self {
-                panic!("Unexpected usage of InvocationLite, this data structure can be used only for reading, and never for writing")
+                panic!(
+                    "Unexpected usage of InvocationLite, this data structure can be used only for reading, and never for writing"
+                )
             }
         }
 
@@ -1070,7 +1072,9 @@ pub mod v1 {
         #[cfg(not(test))]
         impl From<crate::invocation_status_table::InvocationStatusV1> for InvocationStatus {
             fn from(_: crate::invocation_status_table::InvocationStatusV1) -> Self {
-                panic!("Unexpected conversion to old InvocationStatus, this is not expected to happen.")
+                panic!(
+                    "Unexpected conversion to old InvocationStatus, this is not expected to happen."
+                )
             }
         }
 
@@ -1109,10 +1113,14 @@ pub mod v1 {
                     restate_storage_api::invocation_status_table::InvocationStatus::Scheduled(
                         _,
                     ) => {
-                        panic!("Unexpected conversion to old InvocationStatus when using Scheduled variant. This is a bug in the table implementation.")
+                        panic!(
+                            "Unexpected conversion to old InvocationStatus when using Scheduled variant. This is a bug in the table implementation."
+                        )
                     }
                     restate_storage_api::invocation_status_table::InvocationStatus::Killed(_) => {
-                        panic!("Unexpected conversion to old InvocationStatus when using Killed variant. This is a bug in the table implementation.")
+                        panic!(
+                            "Unexpected conversion to old InvocationStatus when using Killed variant. This is a bug in the table implementation."
+                        )
                     }
                 };
 
@@ -2833,7 +2841,7 @@ pub mod v1 {
                         return Err(ConversionError::unexpected_enum_variant(
                             "ty",
                             EntryType::Unknown,
-                        ))
+                        ));
                     }
                     EntryType::Event => journal_v2::EntryType::Event,
                     EntryType::InputCommand => {
@@ -3137,16 +3145,16 @@ pub mod v1 {
                             header,
                             journal_v2::raw::RawCommand::new(ct, value.content)
                                 .with_command_specific_metadata(
-                                    journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
-                                        journal_v2::raw::CallOrSendMetadata::try_from(
-                                            value
-                                                .call_or_send_command_metadata
-                                                .ok_or(ConversionError::missing_field(
+                                journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                                    journal_v2::raw::CallOrSendMetadata::try_from(
+                                        value.call_or_send_command_metadata.ok_or(
+                                            ConversionError::missing_field(
                                                 "call_command_journal_entry_additional_metadata",
-                                            ))?,
+                                            ),
                                         )?,
-                                    ),
+                                    )?,
                                 ),
+                            ),
                         ),
                         journal_v2::EntryType::Command(ct) => journal_v2::raw::RawEntry::new(
                             header,

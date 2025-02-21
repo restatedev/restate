@@ -19,7 +19,7 @@ use http::{HeaderName, HeaderValue, StatusCode, Uri};
 use indicatif::ProgressBar;
 
 use restate_admin_rest_model::deployments::{Deployment, RegisterDeploymentRequest};
-use restate_cli_util::ui::console::{confirm_or_exit, Styled, StyledTable};
+use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
 use restate_types::identifiers::LambdaARN;
@@ -138,10 +138,19 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     let deployment = match &discover_opts.deployment {
         #[cfg(feature = "cloud")]
         DeploymentEndpoint::Uri(uri) if uri.scheme_str() == Some("tunnel") => {
-            let environment_info = match (&env.config.environment_type, &env.config.cloud.environment_info) {
-                 (crate::cli_env::EnvironmentType::Cloud, Some(environment_info)) => environment_info,
-                 _ => return Err(anyhow::anyhow!("To register tunnel:// URLs, first switch to the Cloud environment you're tunnelling to using `restate config use-environment`"))
-             };
+            let environment_info = match (
+                &env.config.environment_type,
+                &env.config.cloud.environment_info,
+            ) {
+                (crate::cli_env::EnvironmentType::Cloud, Some(environment_info)) => {
+                    environment_info
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "To register tunnel:// URLs, first switch to the Cloud environment you're tunnelling to using `restate config use-environment`"
+                    ));
+                }
+            };
 
             let unprefixed_environment_id = environment_info
                 .environment_id

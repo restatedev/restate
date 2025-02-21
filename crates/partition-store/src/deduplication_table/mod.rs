@@ -21,9 +21,9 @@ use restate_storage_api::deduplication_table::{
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::TableKind::Deduplication;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::{
     PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision,

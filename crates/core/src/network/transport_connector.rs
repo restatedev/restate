@@ -13,10 +13,10 @@ use std::future::Future;
 use futures::{Stream, StreamExt};
 use tracing::trace;
 
+use restate_types::GenerationalNodeId;
 use restate_types::config::NetworkingOptions;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::node::Message;
-use restate_types::GenerationalNodeId;
 
 use super::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use super::{NetworkError, ProtocolError};
@@ -83,14 +83,14 @@ pub mod test_util {
     use tokio_stream::wrappers::ReceiverStream;
     use tracing::info;
 
-    use restate_types::nodes_config::NodesConfiguration;
-    use restate_types::protobuf::node::message::BinaryMessage;
-    use restate_types::protobuf::node::Message;
     use restate_types::GenerationalNodeId;
+    use restate_types::nodes_config::NodesConfiguration;
+    use restate_types::protobuf::node::Message;
+    use restate_types::protobuf::node::message::BinaryMessage;
 
     use super::{NetworkError, ProtocolError};
     use crate::network::{Incoming, MockPeerConnection, PartialPeerConnection, WeakConnection};
-    use crate::{my_node_id, TaskCenter, TaskHandle, TaskKind};
+    use crate::{TaskCenter, TaskHandle, TaskKind, my_node_id};
 
     #[derive(Clone)]
     pub struct MockConnector {

@@ -33,6 +33,7 @@ use restate_invoker_api::{EffectKind, InvokeInputJournal};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_storage_api::Transaction;
 use restate_storage_api::inbox_table::ReadOnlyInboxTable;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
@@ -44,10 +45,9 @@ use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
-use restate_storage_api::Transaction;
 use restate_test_util::matchers::*;
 use restate_types::config::{CommonOptions, WorkerOptions};
-use restate_types::errors::{codes, InvocationError, KILLED_INVOCATION_ERROR};
+use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
 use restate_types::identifiers::{
     AwakeableIdentifier, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
     ServiceId,

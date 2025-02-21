@@ -22,10 +22,10 @@ use restate_types::live::Live;
 use tower::ServiceExt;
 use tracing_test::traced_test;
 
+use restate_core::TestCoreEnv;
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
 };
-use restate_core::TestCoreEnv;
 use restate_test_util::{assert, assert_eq};
 use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId, WithInvocationId};
 use restate_types::invocation::{
@@ -40,13 +40,13 @@ use restate_types::schema::invocation_target::{
     OutputContentTypeRule, OutputRules,
 };
 
+use super::ConnectInfo;
+use super::Handler;
 use super::health::HealthResponse;
 use super::mocks::*;
 use super::service_handler::*;
-use super::ConnectInfo;
-use super::Handler;
-use crate::handler::responses::X_RESTATE_ID;
 use crate::MockRequestDispatcher;
+use crate::handler::responses::X_RESTATE_ID;
 
 #[restate_core::test]
 #[traced_test]

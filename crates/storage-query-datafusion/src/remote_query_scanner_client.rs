@@ -21,13 +21,13 @@ use tracing::warn;
 
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Incoming, MessageRouterBuilder, Networking, TransportConnect};
-use restate_core::{task_center, TaskCenter, TaskCenterFutureExt, TaskKind};
+use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, task_center};
+use restate_types::NodeId;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
     RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened,
 };
-use restate_types::NodeId;
 
 use crate::{decode_record_batch, encode_schema};
 

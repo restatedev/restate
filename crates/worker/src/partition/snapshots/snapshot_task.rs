@@ -14,10 +14,10 @@ use std::time::SystemTime;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::worker_api::SnapshotError;
+use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
 };
-use restate_partition_store::PartitionStoreManager;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 
 use crate::partition::snapshots::SnapshotRepository;

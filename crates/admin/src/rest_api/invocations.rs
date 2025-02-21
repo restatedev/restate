@@ -18,7 +18,7 @@ use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest};
-use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
+use restate_wal_protocol::{Command, Envelope, append_envelope_to_bifrost};
 use serde::Deserialize;
 use tracing::warn;
 

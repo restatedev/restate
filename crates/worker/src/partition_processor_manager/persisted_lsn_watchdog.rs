@@ -18,8 +18,8 @@ use tracing::{debug, info, warn};
 
 use restate_core::cancellation_watcher;
 use restate_partition_store::PartitionStoreManager;
-use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::StorageError;
+use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_types::config::{Configuration, StorageOptions};
 use restate_types::identifiers::PartitionId;
 use restate_types::live::LiveLoad;
@@ -160,8 +160,8 @@ mod tests {
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
-    use restate_storage_api::fsm_table::FsmTable;
     use restate_storage_api::Transaction;
+    use restate_storage_api::fsm_table::FsmTable;
     use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::Constant;

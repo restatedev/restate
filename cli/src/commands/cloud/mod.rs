@@ -71,7 +71,7 @@ impl Credentials {
             None => {
                 return Err(anyhow::anyhow!(
                     "Restate Cloud credentials are invalid; first run `restate cloud login`"
-                ))
+                ));
             }
         };
 

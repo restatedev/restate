@@ -13,7 +13,7 @@ use crate::state::AdminServiceState;
 
 use crate::schema_registry::{ApplyMode, Force};
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use http::uri::Scheme;

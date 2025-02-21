@@ -16,11 +16,11 @@ use futures::StreamExt as FutureStreamExt;
 use metrics::histogram;
 use rocksdb::{BoundColumnFamily, WriteBatch};
 use tokio::sync::{mpsc, oneshot};
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt as TokioStreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, trace, warn};
 
-use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::config::LocalLogletOptions;
 use restate_types::live::BoxedLiveLoad;
@@ -32,7 +32,7 @@ use super::log_store::{DATA_CF, METADATA_CF};
 use super::metric_definitions::{
     BIFROST_LOCAL_WRITE_BATCH_COUNT, BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES,
 };
-use super::record_format::{encode_record_and_split, FORMAT_FOR_NEW_APPENDS};
+use super::record_format::{FORMAT_FOR_NEW_APPENDS, encode_record_and_split};
 use crate::loglet::OperationError;
 
 type Ack = oneshot::Sender<Result<(), OperationError>>;

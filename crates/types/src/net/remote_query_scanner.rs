@@ -12,9 +12,9 @@ use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
 
 use super::TargetName;
+use crate::GenerationalNodeId;
 use crate::identifiers::{PartitionId, PartitionKey};
 use crate::net::define_rpc;
-use crate::GenerationalNodeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ScannerId(pub GenerationalNodeId, pub u64);

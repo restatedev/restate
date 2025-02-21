@@ -22,12 +22,12 @@ use restate_core::network::{
 use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind,
 };
+use restate_types::Version;
 use restate_types::cluster::cluster_state::{
     AliveNode, ClusterState, DeadNode, NodeState, SuspectNode,
 };
 use restate_types::net::node::GetNodeState;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::Version;
 
 pub struct ClusterStateRefresher<T> {
     network_sender: Networking<T>,

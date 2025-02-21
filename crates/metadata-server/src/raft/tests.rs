@@ -14,15 +14,15 @@ use crate::tests::Value;
 use bytestring::ByteString;
 use futures::TryFutureExt;
 use googletest::IntoTestResult;
-use rand::distr::{Alphanumeric, SampleString};
 use rand::RngCore;
-use restate_core::metadata_store::{serialize_value, Precondition};
+use rand::distr::{Alphanumeric, SampleString};
+use restate_core::metadata_store::{Precondition, serialize_value};
 use restate_core::network::NetworkServerBuilder;
-use restate_core::{cancellation_token, MetadataBuilder, TaskCenter, TaskKind};
+use restate_core::{MetadataBuilder, TaskCenter, TaskKind, cancellation_token};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    set_current_config, CommonOptions, Configuration, MetadataClientKind, MetadataClientOptions,
-    MetadataServerKind, MetadataServerOptions, RaftOptions, RocksDbOptions,
+    CommonOptions, Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
+    MetadataServerOptions, RaftOptions, RocksDbOptions, set_current_config,
 };
 use restate_types::health::Health;
 use restate_types::live::Constant;

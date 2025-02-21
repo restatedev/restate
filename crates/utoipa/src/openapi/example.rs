@@ -6,7 +6,7 @@
 //! [request_body]: request_body/struct.RequestBody.html
 use serde::{Deserialize, Serialize};
 
-use super::{builder, set_value, RefOr};
+use super::{RefOr, builder, set_value};
 
 builder! {
     ExampleBuilder;

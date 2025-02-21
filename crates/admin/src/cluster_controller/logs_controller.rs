@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
-use tracing::{debug, enabled, error, info, trace_span, Instrument, Level};
+use tracing::{Instrument, Level, debug, enabled, error, info, trace_span};
 
 use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_core::metadata_store::{Precondition, WriteError};
@@ -42,7 +42,7 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
 use restate_types::replication::{NodeSet, NodeSetSelector, NodeSetSelectorOptions};
 use restate_types::retries::{RetryIter, RetryPolicy};
-use restate_types::{logs, GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
+use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned, logs};
 
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler;
@@ -145,8 +145,7 @@ impl LogState {
                 } else {
                     debug!(
                         "Ignoring sealing because our state is at segment {} while the seal is for segment {}. Current state is LogState::Available, we are not transitioning to LogState::Sealed",
-                        segment_index,
-                        segment_index_to_seal,
+                        segment_index, segment_index_to_seal,
                     );
                 }
             }
@@ -166,8 +165,7 @@ impl LogState {
                 } else {
                     debug!(
                         "Ignoring sealing because our state is at segment {} while the seal is for segment {}. Current state is LogState::Sealing",
-                        segment_index,
-                        segment_index_to_seal,
+                        segment_index, segment_index_to_seal,
                     );
                 }
             }
@@ -254,7 +252,7 @@ impl LogState {
             }
             // nothing to do :-)
             LogState::Sealing { .. } | LogState::Sealed { .. } | LogState::Available { .. } => {
-                return Ok(())
+                return Ok(());
             }
         };
 
@@ -1352,7 +1350,7 @@ impl scheduler::PartitionProcessorPlacementHints for LogsBasedPartitionProcessor
 pub mod tests {
     use std::num::NonZeroU8;
 
-    use enumset::{enum_set, EnumSet};
+    use enumset::{EnumSet, enum_set};
     use googletest::prelude::*;
 
     use restate_types::locality::NodeLocation;
@@ -1368,7 +1366,7 @@ pub mod tests {
     use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
     use crate::cluster_controller::logs_controller::{
-        build_new_replicated_loglet_configuration, LogletConfiguration,
+        LogletConfiguration, build_new_replicated_loglet_configuration,
     };
     use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 

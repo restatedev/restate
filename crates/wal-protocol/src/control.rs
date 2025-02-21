@@ -10,8 +10,8 @@
 
 use std::ops::RangeInclusive;
 
-use restate_types::identifiers::{LeaderEpoch, PartitionKey};
 use restate_types::GenerationalNodeId;
+use restate_types::identifiers::{LeaderEpoch, PartitionKey};
 
 /// Announcing a new leader. This message can be written by any component to make the specified
 /// partition processor the leader.
@@ -33,7 +33,7 @@ mod tests {
     use bytes::BytesMut;
     use restate_types::identifiers::LeaderEpoch;
     use restate_types::storage::StorageCodec;
-    use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId};
+    use restate_types::{GenerationalNodeId, flexbuffers_storage_encode_decode};
 
     #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq)]
     struct OldAnnounceLeader {

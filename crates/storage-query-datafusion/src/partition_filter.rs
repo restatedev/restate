@@ -10,7 +10,7 @@
 
 use anyhow::Context;
 use datafusion::common::ScalarValue;
-use datafusion::logical_expr::{col, BinaryExpr, Expr, Operator};
+use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col};
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
 use std::fmt::{Debug, Formatter};
@@ -140,7 +140,7 @@ impl PartitionKeyExtractor for IdentityPartitionKeyExtractor {
 mod tests {
     use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
     use datafusion::common::ScalarValue;
-    use datafusion::logical_expr::{col, Expr};
+    use datafusion::logical_expr::{Expr, col};
     use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
 

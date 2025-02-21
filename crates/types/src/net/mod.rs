@@ -299,20 +299,24 @@ mod tests {
     fn test_parse_missing_scheme_with_path() {
         let result = AdvertisedAddress::from_str("localhost/data");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid URI format: 'localhost/data'"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid URI format: 'localhost/data'")
+        );
     }
 
     #[test]
     fn test_parse_unsupported_scheme() {
         let result = AdvertisedAddress::from_str("ftp://localhost");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unsupported URI scheme 'ftp'"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unsupported URI scheme 'ftp'")
+        );
     }
 
     #[test]

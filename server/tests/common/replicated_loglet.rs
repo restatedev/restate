@@ -11,32 +11,32 @@
 #![allow(dead_code)]
 use std::{sync::Arc, time::Duration};
 
-use enumset::{enum_set, EnumSet};
-use googletest::internal::test_outcome::TestAssertionFailure;
+use enumset::{EnumSet, enum_set};
 use googletest::IntoTestResult;
+use googletest::internal::test_outcome::TestAssertionFailure;
 
-use restate_bifrost::{loglet::Loglet, Bifrost};
-use restate_core::metadata_store::Precondition;
+use restate_bifrost::{Bifrost, loglet::Loglet};
 use restate_core::TaskCenter;
-use restate_core::{metadata_store::MetadataStoreClient, MetadataWriter};
+use restate_core::metadata_store::Precondition;
+use restate_core::{MetadataWriter, metadata_store::MetadataStoreClient};
 use restate_local_cluster_runner::{
     cluster::{Cluster, MaybeTempDir, StartedCluster},
     node::{BinarySource, Node},
 };
 use restate_rocksdb::RocksDbManager;
+use restate_types::logs::LogletId;
 use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{Chain, LogletParams, SegmentIndex};
-use restate_types::logs::LogletId;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::{
+    GenerationalNodeId, PlainNodeId,
     config::Configuration,
     live::Live,
-    logs::{metadata::ProviderKind, LogId},
+    logs::{LogId, metadata::ProviderKind},
     net::{AdvertisedAddress, BindAddress},
     nodes_config::Role,
     replicated_loglet::ReplicatedLogletParams,
     replication::ReplicationProperty,
-    GenerationalNodeId, PlainNodeId,
 };
 
 async fn replicated_loglet_client(

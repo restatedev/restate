@@ -14,18 +14,18 @@ use anyhow::{Context, Result};
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use itertools::Itertools;
-use toml_edit::{table, value, DocumentMut};
+use toml_edit::{DocumentMut, table, value};
 
 use restate_cli_util::{c_error, c_success};
 
 use crate::{
     cli_env::CliEnv,
     clients::cloud::{
+        CloudClient, CloudClientInterface,
         generated::{
             DescribeEnvironmentResponse, ListAccountsResponseAccountsItem,
             ListEnvironmentsResponseEnvironmentsItem,
         },
-        CloudClient, CloudClientInterface,
     },
     console::{choose, confirm_or_exit, input},
 };
@@ -126,13 +126,15 @@ pub async fn run_configure(State(env): State<CliEnv>, opts: &Configure) -> Resul
                 return Err(anyhow::anyhow!(
                     "Couldn't find environment {environment} in account {}",
                     accounts[account_i].name,
-                ))
+                ));
             }
         }
     } else {
         match environments.len() {
             0 => {
-                c_error!("No environments set up; use the Restate Cloud UI to create your first environment");
+                c_error!(
+                    "No environments set up; use the Restate Cloud UI to create your first environment"
+                );
                 return Ok(());
             }
             1 => 0,

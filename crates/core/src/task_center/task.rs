@@ -9,16 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use std::pin::Pin;
-use std::task::{ready, Poll};
+use std::task::{Poll, ready};
 
 use futures::FutureExt;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use restate_types::identifiers::PartitionId;
 use restate_types::SharedString;
+use restate_types::identifiers::PartitionId;
 
-use super::{TaskId, TaskKind, TASK_CONTEXT};
+use super::{TASK_CONTEXT, TaskId, TaskKind};
 use crate::ShutdownError;
 
 #[derive(Clone)]

@@ -11,12 +11,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use tokio::sync::watch;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::watch;
 
 use crate::logstore::LogStore;
-use restate_bifrost::loglet::util::TailOffsetWatch;
 use restate_bifrost::loglet::OperationError;
+use restate_bifrost::loglet::util::TailOffsetWatch;
 use restate_core::ShutdownError;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::storage::StorageMarker;

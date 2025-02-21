@@ -10,15 +10,15 @@
 
 use std::fmt::Debug;
 use std::future::Future;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tokio_util::sync::CancellationToken;
-use tracing::{instrument, Instrument};
+use tracing::{Instrument, instrument};
 
+use restate_types::SharedString;
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
-use restate_types::SharedString;
 
 use crate::{Metadata, ShutdownError};
 

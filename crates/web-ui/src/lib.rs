@@ -8,5 +8,5 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 pub static ASSETS: Dir<'_> = include_dir!("$OUT_DIR/assets");

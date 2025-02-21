@@ -16,17 +16,18 @@ mod utils;
 use crate::metric_definitions::PARTITION_APPLY_COMMAND;
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
-use ::tracing::{debug, trace, warn, Instrument, Span};
+use ::tracing::{Instrument, Span, debug, trace, warn};
 pub use actions::{Action, ActionCollector};
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 use enumset::EnumSet;
 use futures::{StreamExt, TryStreamExt};
-use metrics::{histogram, Histogram};
+use metrics::{Histogram, histogram};
 use restate_invoker_api::InvokeInputJournal;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::Result as StorageResult;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
@@ -47,11 +48,10 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, TimerTable};
-use restate_storage_api::Result as StorageResult;
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::errors::{
-    GenericError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
-    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
+    ALREADY_COMPLETED_INVOCATION_ERROR, ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
+    CANCELED_INVOCATION_ERROR, GenericError, InvocationErrorCode, KILLED_INVOCATION_ERROR,
     NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
     WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
@@ -69,14 +69,14 @@ use restate_types::invocation::{
     SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
+use restate_types::journal::Completion;
+use restate_types::journal::CompletionResult;
+use restate_types::journal::EntryType;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
-use restate_types::journal::Completion;
-use restate_types::journal::CompletionResult;
-use restate_types::journal::EntryType;
 use restate_types::journal::*;
 use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
@@ -92,9 +92,9 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::time::MillisSinceEpoch;
+use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::Command;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
@@ -153,11 +153,17 @@ pub enum Error {
     EntryEncoding(#[from] journal_v2::encoding::DecodingError),
     #[error("failed to deserialize entry: {0}")]
     EntryDecoding(#[from] journal_v2::raw::RawEntryError),
-    #[error("error when trying to apply invocation response with completion id {1}, the entry type {0} is not expected to be completed through InvocationResponse command")]
+    #[error(
+        "error when trying to apply invocation response with completion id {1}, the entry type {0} is not expected to be completed through InvocationResponse command"
+    )]
     BadCommandTypeForInvocationResponse(journal_v2::CommandType, CompletionId),
-    #[error("error when trying to apply invocation response with completion id {0}, because no command was found for given completion id")]
+    #[error(
+        "error when trying to apply invocation response with completion id {0}, because no command was found for given completion id"
+    )]
     MissingCommandForInvocationResponse(CompletionId),
-    #[error("error when trying to apply invocation response with completion id {1}, the entry type {0} doesn't expect variant {2}")]
+    #[error(
+        "error when trying to apply invocation response with completion id {1}, the entry type {0} doesn't expect variant {2}"
+    )]
     BadCompletionVariantForInvocationResponse(journal_v2::CommandType, CompletionId, &'static str),
 }
 
@@ -500,10 +506,12 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         let invocation_id = service_invocation.invocation_id;
         debug_assert!(
-            self.partition_key_range.contains(&service_invocation.partition_key()),
+            self.partition_key_range
+                .contains(&service_invocation.partition_key()),
             "Service invocation with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
             service_invocation.partition_key(),
-            self.partition_key_range);
+            self.partition_key_range
+        );
 
         Span::current().record_invocation_id(&invocation_id);
         Span::current().record_invocation_target(&service_invocation.invocation_target);
@@ -1078,12 +1086,16 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?
             }
             InvocationStatus::Killed(_) => {
-                trace!("Received kill command for an already killed invocation with id '{invocation_id}'.");
+                trace!(
+                    "Received kill command for an already killed invocation with id '{invocation_id}'."
+                );
                 // Nothing to do here really, let's send again the abort signal to the invoker just in case
                 self.do_send_abort_invocation_to_invoker(invocation_id, true);
             }
             InvocationStatus::Completed(_) => {
-                debug!("Received kill command for completed invocation '{invocation_id}'. To cleanup the invocation after it's been completed, use the purge invocation command.");
+                debug!(
+                    "Received kill command for completed invocation '{invocation_id}'. To cleanup the invocation after it's been completed, use the purge invocation command."
+                );
             }
             InvocationStatus::Free => {
                 trace!("Received kill command for unknown invocation with id '{invocation_id}'.");
@@ -1715,7 +1727,9 @@ impl<S> StateMachineApplyContext<'_, S> {
         let invocation_status = self.get_invocation_status(&invocation_id).await?;
 
         if let InvocationStatus::Free = &invocation_status {
-            warn!("Fired a timer for an unknown invocation. The invocation might have been deleted/purged previously.");
+            warn!(
+                "Fired a timer for an unknown invocation. The invocation might have been deleted/purged previously."
+            );
             return Ok(());
         }
 
@@ -1800,7 +1814,9 @@ impl<S> StateMachineApplyContext<'_, S> {
         let is_status_killed = matches!(invocation_status, InvocationStatus::Killed(_));
 
         if !is_status_invoked && !is_status_killed {
-            trace!("Received invoker effect for invocation not in invoked nor killed status. Ignoring the effect.");
+            trace!(
+                "Received invoker effect for invocation not in invoked nor killed status. Ignoring the effect."
+            );
             self.do_send_abort_invocation_to_invoker(invocation_id, false);
             return Ok(());
         }
@@ -2751,7 +2767,10 @@ impl<S> StateMachineApplyContext<'_, S> {
                     ))
                     .await?;
                 } else {
-                    warn!("Invalid awakeable identifier {}. The identifier doesn't start with `awk_1`, neither with `sign_1`", entry.id);
+                    warn!(
+                        "Invalid awakeable identifier {}. The identifier doesn't start with `awk_1`, neither with `sign_1`",
+                        entry.id
+                    );
                 };
             }
             EnrichedEntryHeader::Run { .. } => {
@@ -3004,9 +3023,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                         } => None,
                         _ => {
                             warn!(
-                            "The given journal entry index '{}' is not a Call/OneWayCall entry.",
-                            call_entry_index
-                        );
+                                "The given journal entry index '{}' is not a Call/OneWayCall entry.",
+                                call_entry_index
+                            );
                             None
                         }
                     }
@@ -3060,7 +3079,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 CommandType::GetPromise,
                                 completion.entry_index,
                                 "Empty",
-                            ))
+                            ));
                         }
                     },
                 }
@@ -3081,7 +3100,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 CommandType::Call,
                                 completion.entry_index,
                                 "Empty",
-                            ))
+                            ));
                         }
                     },
                 }
@@ -3098,7 +3117,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 CommandType::AttachInvocation,
                                 completion.entry_index,
                                 "Empty",
-                            ))
+                            ));
                         }
                     },
                 }
@@ -3357,10 +3376,12 @@ impl<S> StateMachineApplyContext<'_, S> {
             + FsmTable,
     {
         debug_assert!(
-            self.partition_key_range.contains(&attach_invocation_request.partition_key()),
+            self.partition_key_range
+                .contains(&attach_invocation_request.partition_key()),
             "Attach invocation request with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
             attach_invocation_request.partition_key(),
-            self.partition_key_range);
+            self.partition_key_range
+        );
 
         let invocation_id = match attach_invocation_request.invocation_query {
             InvocationQuery::Invocation(iid) => iid,
@@ -4227,7 +4248,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             let actual = StateMutationVersion::from_user_state(&all_user_states);
 
             if actual != expected {
-                debug!("Ignore state mutation for service id '{:?}' because the expected version '{}' is not matching the actual version '{}'", &service_id, expected, actual);
+                debug!(
+                    "Ignore state mutation for service id '{:?}' because the expected version '{}' is not matching the actual version '{}'",
+                    &service_id, expected, actual
+                );
                 return Ok(());
             }
         }

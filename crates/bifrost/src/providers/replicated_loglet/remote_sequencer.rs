@@ -11,34 +11,34 @@
 use std::{
     ops::Deref,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
-use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
 
 use restate_core::{
-    network::{
-        rpc_router::{RpcRouter, RpcToken},
-        NetworkError, NetworkSendError, Networking, Outgoing, TransportConnect, WeakConnection,
-    },
     ShutdownError, TaskCenter, TaskKind,
+    network::{
+        NetworkError, NetworkSendError, Networking, Outgoing, TransportConnect, WeakConnection,
+        rpc_router::{RpcRouter, RpcToken},
+    },
 };
 use restate_types::{
+    GenerationalNodeId,
     config::Configuration,
     errors::MaybeRetryableError,
-    logs::{metadata::SegmentIndex, LogId, Record},
+    logs::{LogId, Record, metadata::SegmentIndex},
     net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
     nodes_config::NodesConfigError,
     replicated_loglet::ReplicatedLogletParams,
-    GenerationalNodeId,
 };
 use tracing::instrument;
 
 use super::rpc_routers::SequencersRpc;
 use crate::loglet::{
-    util::TailOffsetWatch, AppendError, LogletCommit, LogletCommitResolver, OperationError,
+    AppendError, LogletCommit, LogletCommitResolver, OperationError, util::TailOffsetWatch,
 };
 
 pub struct RemoteSequencer<T> {
@@ -504,8 +504,8 @@ mod test {
     use std::{
         future::Future,
         sync::{
-            atomic::{AtomicU32, Ordering},
             Arc,
+            atomic::{AtomicU32, Ordering},
         },
         time::Duration,
     };
@@ -513,20 +513,20 @@ mod test {
     use rand::Rng;
 
     use restate_core::{
-        network::{Incoming, MessageHandler, MockConnector},
         TestCoreEnvBuilder,
+        network::{Incoming, MessageHandler, MockConnector},
     };
     use restate_types::{
+        GenerationalNodeId,
         logs::{LogId, LogletOffset, Record, SequenceNumber, TailState},
         net::replicated_loglet::{Append, Appended, CommonResponseHeader, SequencerStatus},
         replicated_loglet::ReplicatedLogletParams,
         replication::{NodeSet, ReplicationProperty},
-        GenerationalNodeId,
     };
 
     use super::RemoteSequencer;
     use crate::{
-        loglet::{util::TailOffsetWatch, AppendError},
+        loglet::{AppendError, util::TailOffsetWatch},
         providers::replicated_loglet::rpc_routers::SequencersRpc,
     };
 

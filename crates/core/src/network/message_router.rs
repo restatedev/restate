@@ -18,10 +18,10 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{trace, warn};
 
-use restate_types::net::codec::{Targeted, WireDecode};
 use restate_types::net::CodecError;
 use restate_types::net::ProtocolVersion;
 use restate_types::net::TargetName;
+use restate_types::net::codec::{Targeted, WireDecode};
 use restate_types::protobuf::node::message::BinaryMessage;
 
 use super::{Incoming, RouterError};

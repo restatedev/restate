@@ -10,7 +10,7 @@
 
 use std::num::NonZeroU32;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 use tracing::error;
@@ -18,8 +18,8 @@ use tracing::error;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{ChainExtension, SealAndExtendChainRequest};
 use restate_cli_util::{c_eprintln, c_println};
-use restate_types::logs::metadata::{Logs, ProviderKind, Segment};
 use restate_types::logs::LogId;
+use restate_types::logs::metadata::{Logs, ProviderKind, Segment};
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::Version;
 use restate_types::replicated_loglet::ReplicatedLogletParams;

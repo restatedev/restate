@@ -35,15 +35,15 @@ use restate_core::worker_api::{
     SnapshotResult,
 };
 use restate_core::{
-    cancellation_watcher, my_node_id, Metadata, ShutdownError, TaskCenterFutureExt, TaskHandle,
-    TaskKind,
+    Metadata, ShutdownError, TaskCenterFutureExt, TaskHandle, TaskKind, cancellation_watcher,
+    my_node_id,
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
-use restate_partition_store::snapshots::PartitionSnapshotMetadata;
 use restate_partition_store::PartitionStoreManager;
+use restate_partition_store::snapshots::PartitionSnapshotMetadata;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
@@ -72,8 +72,8 @@ use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
 use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
-use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
 use crate::partition::ProcessorError;
+use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
 use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
 use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
 use crate::partition_processor_manager::processor_state::{
@@ -392,12 +392,19 @@ impl PartitionProcessorManager {
                                     self.await_runtime_task_result(partition_id, runtime_handle);
                                 }
                                 ProcessorState::Started { .. } => {
-                                    panic!("Started two processors for the same partition '{partition_id}'");
+                                    panic!(
+                                        "Started two processors for the same partition '{partition_id}'"
+                                    );
                                 }
                                 ProcessorState::Stopping { processor, .. } => {
-                                    assert!(processor.is_none(), "Started two processor for the same partition '{partition_id}'");
+                                    assert!(
+                                        processor.is_none(),
+                                        "Started two processor for the same partition '{partition_id}'"
+                                    );
 
-                                    debug!("Started partition processor is no longer needed. Stopping it.");
+                                    debug!(
+                                        "Started partition processor is no longer needed. Stopping it."
+                                    );
                                     *processor = Some(started_processor);
 
                                     runtime_handle.cancel();
@@ -510,7 +517,9 @@ impl PartitionProcessorManager {
                         }
                     }
                 } else {
-                    debug!("Partition processor is no longer running. Ignoring new leader epoch result.");
+                    debug!(
+                        "Partition processor is no longer running. Ignoring new leader epoch result."
+                    );
                 }
             }
         }
@@ -1002,8 +1011,8 @@ impl PendingControlProcessors {
 mod tests {
     use crate::partition_processor_manager::PartitionProcessorManager;
     use googletest::IntoTestResult;
-    use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::BifrostService;
+    use restate_bifrost::providers::memory_loglet;
     use restate_core::network::MockPeerConnection;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
@@ -1013,10 +1022,10 @@ mod tests {
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::{Constant, Live};
     use restate_types::locality::NodeLocation;
+    use restate_types::net::AdvertisedAddress;
     use restate_types::net::partition_processor_manager::{
         ControlProcessor, ControlProcessors, ProcessorCommand,
     };
-    use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
     };

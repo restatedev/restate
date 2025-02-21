@@ -10,11 +10,11 @@
 
 use tokio::sync::watch;
 
+use crate::Merge;
 pub use crate::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
     WorkerStatus,
 };
-use crate::Merge;
 
 /// All clones will share the same underlying channel
 #[derive(Clone, Debug)]

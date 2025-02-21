@@ -449,7 +449,7 @@ mod tests {
     use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{set_current_config, Configuration};
+    use restate_types::config::{Configuration, set_current_config};
     use restate_types::health::HealthStatus;
     use restate_types::live::Live;
     use restate_types::logs::{Keys, LogletId};

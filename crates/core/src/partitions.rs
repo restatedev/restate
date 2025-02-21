@@ -24,8 +24,8 @@ use restate_types::identifiers::PartitionId;
 use restate_types::{NodeId, Version};
 
 use crate::{
-    cancellation_watcher, Metadata, ShutdownError, TargetVersion, TaskCenter, TaskHandle, TaskId,
-    TaskKind,
+    Metadata, ShutdownError, TargetVersion, TaskCenter, TaskHandle, TaskId, TaskKind,
+    cancellation_watcher,
 };
 
 pub type CommandSender = mpsc::Sender<Command>;

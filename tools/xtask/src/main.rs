@@ -14,7 +14,7 @@ use std::{env, io};
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
-use schemars::gen::SchemaSettings;
+use schemars::r#gen::SchemaSettings;
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;

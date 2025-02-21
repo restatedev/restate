@@ -28,7 +28,7 @@ use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, StorageEncodeError};
-use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
+use restate_types::{Version, Versioned, flexbuffers_storage_encode_decode};
 
 #[cfg(any(test, feature = "test-util"))]
 use crate::metadata_store::test_util::InMemoryMetadataStore;

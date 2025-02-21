@@ -11,12 +11,13 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use rocksdb::{BoundColumnFamily, ReadOptions, WriteBatch, WriteOptions, DB};
+use rocksdb::{BoundColumnFamily, DB, ReadOptions, WriteBatch, WriteOptions};
 use tokio::time::Instant;
 use tracing::trace;
 
 use restate_bifrost::loglet::OperationError;
 use restate_rocksdb::{IoMode, Priority, RocksDb};
+use restate_types::GenerationalNodeId;
 use restate_types::config::LogServerOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
@@ -26,12 +27,11 @@ use restate_types::net::log_server::{
     RecordStatus, Records, Seal, Store, Trim,
 };
 use restate_types::protobuf::common::LogServerStatus;
-use restate_types::GenerationalNodeId;
 
-use super::keys::{KeyPrefixKind, MetadataKey, MARKER_KEY};
+use super::keys::{KeyPrefixKind, MARKER_KEY, MetadataKey};
 use super::record_format::DataRecordDecoder;
 use super::writer::RocksDbLogWriterHandle;
-use super::{RocksDbLogStoreError, DATA_CF, METADATA_CF};
+use super::{DATA_CF, METADATA_CF, RocksDbLogStoreError};
 use crate::logstore::{AsyncToken, LogStore};
 use crate::metadata::{LogStoreMarker, LogletState};
 use crate::rocksdb_logstore::keys::DataRecordKey;

@@ -13,10 +13,10 @@ use clap::Parser;
 use cling::{Collect, Run};
 use restate_admin::cluster_controller::protobuf::SetClusterConfigurationRequest;
 use restate_admin::cluster_controller::protobuf::{
-    cluster_ctrl_svc_client::ClusterCtrlSvcClient, GetClusterConfigurationRequest,
+    GetClusterConfigurationRequest, cluster_ctrl_svc_client::ClusterCtrlSvcClient,
 };
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
-use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
+use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_println, c_warn};
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::nodes_config::Role;
@@ -84,7 +84,9 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
     });
 
     let Some(bifrost_provider) = current.bifrost_provider.as_mut() else {
-        anyhow::bail!("The cluster has no Bifrost provider configured. This indicates a problem with the cluster.");
+        anyhow::bail!(
+            "The cluster has no Bifrost provider configured. This indicates a problem with the cluster."
+        );
     };
 
     if let Some(provider) = set_opts.log_provider {

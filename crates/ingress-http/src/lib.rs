@@ -105,7 +105,7 @@ mod mocks {
     use restate_types::net::partition_processor::InvocationOutput;
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_types::schema::invocation_target::{
-        InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
+        DEFAULT_IDEMPOTENCY_RETENTION, InvocationTargetMetadata, InvocationTargetResolver,
     };
     use restate_types::schema::service::test_util::MockServiceMetadataResolver;
     use restate_types::schema::service::{

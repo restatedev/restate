@@ -336,8 +336,8 @@ impl ExactSizeIterator for RetryIter<'_> {}
 mod tests {
     use super::*;
     use std::future;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn no_retry_policy() {

@@ -10,14 +10,14 @@
 
 use std::ops::RangeInclusive;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use restate_core::TaskCenterBuilder;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
+use restate_storage_api::Transaction;
 use restate_storage_api::deduplication_table::{
     DedupSequenceNumber, DeduplicationTable, ProducerId,
 };
-use restate_storage_api::Transaction;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Constant;

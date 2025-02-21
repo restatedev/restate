@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::builder;
 use super::example::Example;
 use super::extensions::Extensions;
-use super::{encoding::Encoding, set_value, RefOr, Schema};
+use super::{RefOr, Schema, encoding::Encoding, set_value};
 
 builder! {
     ContentBuilder;

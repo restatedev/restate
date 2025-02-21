@@ -12,8 +12,8 @@ use std::num::NonZeroU32;
 
 use cling::prelude::*;
 
-use restate_types::partition_table::PartitionTable;
 use restate_types::Version;
+use restate_types::partition_table::PartitionTable;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]

@@ -17,7 +17,7 @@ use tonic::body::boxed;
 use tonic::service::Routes;
 use tower::ServiceExt;
 use tower_http::trace::{DefaultOnFailure, TraceLayer};
-use tracing::{debug, Level};
+use tracing::{Level, debug};
 
 use restate_types::health::HealthStatus;
 use restate_types::net::BindAddress;

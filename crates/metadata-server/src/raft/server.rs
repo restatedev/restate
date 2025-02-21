@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::grpc::MetadataServerSnapshot;
 use crate::grpc::handler::MetadataServerHandler;
 use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 use crate::grpc::pb_conversions::ConversionError;
-use crate::grpc::MetadataServerSnapshot;
 use crate::local::migrate_nodes_configuration;
 use crate::metric_definitions::{
     METADATA_SERVER_REPLICATED_APPLIED_LSN, METADATA_SERVER_REPLICATED_COMMITTED_LSN,
@@ -25,36 +25,36 @@ use crate::raft::network::{
     ConnectionManager, MetadataServerNetworkHandler, MetadataServerNetworkSvcServer, Networking,
 };
 use crate::raft::storage::RocksDbStorage;
-use crate::raft::{network, storage, to_plain_node_id, to_raft_id, RaftServerState, StorageMarker};
+use crate::raft::{RaftServerState, StorageMarker, network, storage, to_plain_node_id, to_raft_id};
 use crate::{
-    grpc, local, prepare_initial_nodes_configuration, JoinClusterError, JoinClusterHandle,
-    JoinClusterReceiver, JoinClusterRequest, JoinError, KnownLeader, MemberId, MetadataServer,
-    MetadataServerConfiguration, MetadataServerSummary, MetadataStoreRequest, ProvisionError,
-    ProvisionReceiver, RaftSummary, Request, RequestError, RequestReceiver, SnapshotSummary,
-    StatusSender, WriteRequest,
+    JoinClusterError, JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinError,
+    KnownLeader, MemberId, MetadataServer, MetadataServerConfiguration, MetadataServerSummary,
+    MetadataStoreRequest, ProvisionError, ProvisionReceiver, RaftSummary, Request, RequestError,
+    RequestReceiver, SnapshotSummary, StatusSender, WriteRequest, grpc, local,
+    prepare_initial_nodes_configuration,
 };
 use arc_swap::ArcSwapOption;
 use assert2::let_assert;
 use bytes::BytesMut;
+use futures::FutureExt;
 use futures::future::{FusedFuture, OptionFuture};
 use futures::never::Never;
-use futures::FutureExt;
 use metrics::gauge;
 use prost::{DecodeError, EncodeError, Message as ProstMessage};
 use protobuf::{Message as ProtobufMessage, ProtobufError};
 use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
 use raft::{
-    Config, Error as RaftError, RawNode, ReadOnlyOption, SnapshotStatus, Storage, INVALID_ID,
+    Config, Error as RaftError, INVALID_ID, RawNode, ReadOnlyOption, SnapshotStatus, Storage,
 };
-use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
 use raft_proto::ConfChangeI;
+use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
 use rand::prelude::IteratorRandom;
 use rand::rng;
-use restate_core::metadata_store::{serialize_value, Precondition};
-use restate_core::network::net_util::create_tonic_channel;
+use restate_core::metadata_store::{Precondition, serialize_value};
 use restate_core::network::NetworkServerBuilder;
+use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{
-    cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind,
+    Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind, cancellation_watcher,
 };
 use restate_types::config::{
     Configuration, MetadataServerKind, MetadataServerOptions, RocksDbOptions,
@@ -77,7 +77,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::{Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
-use tracing::{debug, error, info, instrument, trace, warn, Span};
+use tracing::{Span, debug, error, info, instrument, trace, warn};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
 
@@ -183,7 +183,11 @@ impl RaftMetadataServer {
             .map_err(|err| BuildError::InitStorage(err.to_string()))?
         {
             if storage_marker.id() != Configuration::pinned().common.node_name() {
-                return Err(BuildError::InitStorage(format!("metadata-server storage marker was found but it was created by another node. Found node name '{}' while this node name is '{}'", storage_marker.id(), Configuration::pinned().common.node_name())));
+                return Err(BuildError::InitStorage(format!(
+                    "metadata-server storage marker was found but it was created by another node. Found node name '{}' while this node name is '{}'",
+                    storage_marker.id(),
+                    Configuration::pinned().common.node_name()
+                )));
             } else {
                 debug!(
                     "Found matching metadata-server storage marker in raft-storage, written at '{}'",
@@ -325,7 +329,9 @@ impl RaftMetadataServer {
         let mut nodes_config_watcher =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
         if !Configuration::pinned().common.auto_provision {
-            info!("Cluster has not been provisioned, yet. Awaiting provisioning via `restatectl provision`");
+            info!(
+                "Cluster has not been provisioned, yet. Awaiting provisioning via `restatectl provision`"
+            );
         }
         loop {
             tokio::select! {
@@ -435,7 +441,10 @@ impl RaftMetadataServer {
 
         for kv_pair in iter {
             let (key, value) = kv_pair?;
-            debug!("Migrate key-value pair '{key}' with version '{}' from local to replicated metadata server", value.version);
+            debug!(
+                "Migrate key-value pair '{key}' with version '{}' from local to replicated metadata server",
+                value.version
+            );
             kv_memory_storage
                 .put(key, value, Precondition::DoesNotExist)
                 .expect("initial values should not exist");
@@ -816,7 +825,10 @@ impl Member {
         }
 
         if self.is_member_plain_node_id(joining_member_id.node_id) {
-            let warning = format!("Node '{}' has registered before with a different storage id. This indicates that this node has lost its disk. Rejecting the join attempt.", joining_member_id);
+            let warning = format!(
+                "Node '{}' has registered before with a different storage id. This indicates that this node has lost its disk. Rejecting the join attempt.",
+                joining_member_id
+            );
             warn!(warning);
             let _ = response_tx.send(Err(JoinClusterError::Internal(warning)));
             return;

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics::{counter, describe_counter, describe_histogram, Counter, Unit};
+use metrics::{Counter, Unit, counter, describe_counter, describe_histogram};
 use std::sync::LazyLock;
 
 pub(crate) const NETWORK_CONNECTION_CREATED: &str = "restate.network.connection_created.total";

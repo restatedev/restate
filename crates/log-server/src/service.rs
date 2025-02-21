@@ -14,10 +14,11 @@ use anyhow::Context;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, instrument, warn};
 
-use restate_core::metadata_store::{retry_on_retryable_error, ReadWriteError, RetryError};
+use restate_core::metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
+use restate_types::GenerationalNodeId;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
@@ -25,7 +26,6 @@ use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::protobuf::common::LogServerStatus;
-use restate_types::GenerationalNodeId;
 
 use crate::error::LogServerBuildError;
 use crate::grpc_svc_handler::LogServerSvcHandler;
@@ -189,7 +189,9 @@ impl LogServerService {
                     StorageState::ReadWrite,
                 )
                 .await?;
-                debug!("Log-store self-provisioning is complete, the node's log-store is now in read-write state");
+                debug!(
+                    "Log-store self-provisioning is complete, the node's log-store is now in read-write state"
+                );
             }
             StorageState::DataLoss => {
                 // Reject start. In the future we should be able to start with log-store being in
@@ -209,7 +211,8 @@ impl LogServerService {
             }
             StorageState::ReadWrite | StorageState::ReadOnly if maybe_marker.is_none() => {
                 // Mark as data loss
-                warn!("Detected data loss for log-server of my node {}. The log-server marker is missing, storage-state was {}, will transition into `data-loss`",
+                warn!(
+                    "Detected data loss for log-server of my node {}. The log-server marker is missing, storage-state was {}, will transition into `data-loss`",
                     my_node_id.as_plain(),
                     my_storage_state
                 );
@@ -319,7 +322,9 @@ enum StorageStateUpdateError {
         "another instance of the same node might have started, updating storage-state will fail"
     )]
     NewerGenerationDetected,
-    #[error("log-server found an unexpected storage-state '{0}' in metadata store, this could mean that another node has updated it")]
+    #[error(
+        "log-server found an unexpected storage-state '{0}' in metadata store, this could mean that another node has updated it"
+    )]
     NotInExpectedState(StorageState),
     #[error("succeeded updating NodesConfiguration in a previous attempt")]
     PreviousAttemptSucceeded(NodesConfiguration),

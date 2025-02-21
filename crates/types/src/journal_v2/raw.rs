@@ -20,7 +20,9 @@ use enum_dispatch::enum_dispatch;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
-#[error("Unexpected mapping, expecting entry {expected:?} but was {actual:?}. This might be a symptom of data corruption.")]
+#[error(
+    "Unexpected mapping, expecting entry {expected:?} but was {actual:?}. This might be a symptom of data corruption."
+)]
 pub struct TryFromEntryError {
     pub(crate) expected: EntryType,
     pub(crate) actual: EntryType,

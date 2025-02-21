@@ -18,8 +18,8 @@ use aws_config::{BehaviorVersion, Region};
 use aws_smithy_runtime_api::client::identity::ResolveCachedIdentity;
 use aws_smithy_runtime_api::client::runtime_components::RuntimeComponentsBuilder;
 use futures::FutureExt;
-use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::ObjectStore;
+use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use tracing::debug;
 use url::Url;
 

@@ -21,13 +21,13 @@ use tracing::warn;
 use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::{duration_to_human_rough, Tense};
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_cli_util::ui::{Tense, duration_to_human_rough};
 use restate_core::protobuf::node_ctl_svc::IdentResponse;
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_types::PlainNodeId;
 use restate_types::health::MetadataServerStatus;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::PlainNodeId;
 
 use crate::connection::{ConnectionInfo, ConnectionInfoError};
 use crate::util::grpc_channel;
@@ -51,7 +51,9 @@ pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> an
         Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes })
             if !contacted_nodes.is_empty() =>
         {
-            warn!("Could not read nodes configuration from cluster, using GetIdent responses to render basic list");
+            warn!(
+                "Could not read nodes configuration from cluster, using GetIdent responses to render basic list"
+            );
             list_nodes_lite(&contacted_nodes, opts);
 
             // short-circuit if called as part of `restatectl status`
@@ -150,7 +152,7 @@ pub fn list_nodes_lite(
                 ident
                     .node_id
                     .and_then(|id| id.generation)
-                    .map(|gen| format!("{}", gen))
+                    .map(|generation| format!("{}", generation))
                     .unwrap_or("".to_owned()),
             ),
             Cell::new("-"),

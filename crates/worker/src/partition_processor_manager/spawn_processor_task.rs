@@ -21,20 +21,20 @@ use restate_invoker_impl::Service as InvokerService;
 use restate_partition_store::snapshots::LocalPartitionSnapshot;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_types::SharedString;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::config::{Configuration, WorkerOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::Lsn;
 use restate_types::schema::Schema;
-use restate_types::SharedString;
 
+use crate::PartitionProcessorBuilder;
 use crate::invoker_integration::EntryEnricher;
+use crate::partition::ProcessorError;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::snapshots::SnapshotRepository;
-use crate::partition::ProcessorError;
 use crate::partition_processor_manager::processor_state::StartedProcessor;
-use crate::PartitionProcessorBuilder;
 
 pub struct SpawnPartitionProcessorTask {
     task_name: SharedString,

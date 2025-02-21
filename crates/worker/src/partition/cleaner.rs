@@ -18,7 +18,7 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::{cancellation_watcher, Metadata};
+use restate_core::{Metadata, cancellation_watcher};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
@@ -26,7 +26,7 @@ use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::invocation::PurgeInvocationRequest;
 use restate_wal_protocol::{
-    append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
+    Command, Destination, Envelope, Header, Source, append_envelope_to_bifrost,
 };
 
 pub(super) struct Cleaner<Storage> {
@@ -166,17 +166,17 @@ where
 mod tests {
     use super::*;
 
-    use futures::{stream, Stream};
+    use futures::{Stream, stream};
     use googletest::prelude::*;
     use restate_core::{Metadata, TaskCenter, TaskKind, TestCoreEnvBuilder};
+    use restate_storage_api::StorageError;
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
         InvokedOrKilledInvocationStatusLite,
     };
-    use restate_storage_api::StorageError;
+    use restate_types::Version;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
     use restate_types::partition_table::{FindPartition, PartitionTable};
-    use restate_types::Version;
     use std::future::Future;
     use test_log::test;
 

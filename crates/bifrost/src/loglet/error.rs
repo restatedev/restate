@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use restate_core::{network::NetworkError, ShutdownError};
+use restate_core::{ShutdownError, network::NetworkError};
 use restate_types::errors::{IntoMaybeRetryable, MaybeRetryableError};
 
 #[derive(Debug, Clone, thiserror::Error)]

@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::errors::GenericError;
-use crate::journal_v2::raw::RawEntry;
 use crate::journal_v2::Entry;
+use crate::journal_v2::raw::RawEntry;
 
 #[derive(Debug, thiserror::Error)]
 #[error("decoding error: {0:?}")]

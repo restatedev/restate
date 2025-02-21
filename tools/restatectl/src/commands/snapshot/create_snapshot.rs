@@ -12,11 +12,11 @@ use anyhow::Context;
 use cling::prelude::*;
 use tracing::error;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::CreatePartitionSnapshotRequest;
+use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_cli_util::c_println;
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::GetMetadataRequest;
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
 use restate_types::partition_table::PartitionTable;

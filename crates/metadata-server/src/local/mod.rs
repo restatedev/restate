@@ -12,7 +12,7 @@ mod server;
 
 use crate::local::storage::RocksDbStorage;
 use std::path::PathBuf;
-pub use {server::migrate_nodes_configuration, server::LocalMetadataServer};
+pub use {server::LocalMetadataServer, server::migrate_nodes_configuration};
 
 pub mod storage;
 #[cfg(test)]

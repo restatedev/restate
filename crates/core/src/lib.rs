@@ -42,13 +42,13 @@ pub use error::*;
 pub use restate_core_derive::test;
 
 pub use metadata::{
-    spawn_metadata_manager, Metadata, MetadataBuilder, MetadataKind, MetadataManager,
-    MetadataWriter, SyncError, TargetVersion,
+    Metadata, MetadataBuilder, MetadataKind, MetadataManager, MetadataWriter, SyncError,
+    TargetVersion, spawn_metadata_manager,
 };
 pub use task_center::{
-    cancellation_token, cancellation_watcher, is_cancellation_requested, my_node_id, AsyncRuntime,
-    MetadataFutureExt, RuntimeError, RuntimeTaskHandle, TaskCenter, TaskCenterBuildError,
-    TaskCenterBuilder, TaskCenterFutureExt, TaskContext, TaskHandle, TaskId, TaskKind,
+    AsyncRuntime, MetadataFutureExt, RuntimeError, RuntimeTaskHandle, TaskCenter,
+    TaskCenterBuildError, TaskCenterBuilder, TaskCenterFutureExt, TaskContext, TaskHandle, TaskId,
+    TaskKind, cancellation_token, cancellation_watcher, is_cancellation_requested, my_node_id,
 };
 
 #[cfg(any(test, feature = "test-util"))]

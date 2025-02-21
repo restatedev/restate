@@ -12,15 +12,15 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use dashmap::mapref::entry::Entry;
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use restate_types::NodeId;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::{error, warn};
 
-use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
 use restate_types::net::RpcRequest;
+use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
 
 type DashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
 
@@ -28,7 +28,7 @@ use super::{
     HasConnection, Incoming, MessageHandler, MessageRouterBuilder, NetworkError, NetworkSendError,
     NetworkSender, Networking, Outgoing, TransportConnect,
 };
-use crate::{cancellation_watcher, ShutdownError};
+use crate::{ShutdownError, cancellation_watcher};
 
 /// A router for sending and receiving RPC messages through Networking
 ///
@@ -453,9 +453,9 @@ mod test {
     use super::*;
     use bytes::Bytes;
     use futures::future::join_all;
+    use restate_types::GenerationalNodeId;
     use restate_types::net::{CodecError, TargetName};
     use restate_types::protobuf::node::message;
-    use restate_types::GenerationalNodeId;
     use serde::{Deserialize, Serialize};
     use tokio::sync::Barrier;
 

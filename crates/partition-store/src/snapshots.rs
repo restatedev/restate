@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use rocksdb::LiveFile;
 use serde::{Deserialize, Serialize};
 use serde_with::hex::Hex;
-use serde_with::{serde_as, DeserializeAs, SerializeAs};
+use serde_with::{DeserializeAs, SerializeAs, serde_as};
 
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::logs::{LogId, Lsn};

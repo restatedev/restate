@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_with::{serde_as, DeserializeAs};
+use serde_with::{DeserializeAs, serde_as};
 
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;

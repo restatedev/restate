@@ -32,6 +32,8 @@ use restate_types::{Version, Versioned};
 
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
 use super::{MetadataBuilder, VersionInformation};
+use crate::TaskCenter;
+use crate::TaskKind;
 use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
@@ -40,8 +42,6 @@ use crate::network::Outgoing;
 use crate::network::Reciprocal;
 use crate::network::WeakConnection;
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError};
-use crate::TaskCenter;
-use crate::TaskKind;
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
@@ -304,7 +304,9 @@ impl MetadataManager {
                 let result = self.sync_metadata(kind, target_version).await;
                 if let Some(callback) = callback {
                     if callback.send(result).is_err() {
-                        trace!("Couldn't send sync metadata reply back. System is probably shutting down.");
+                        trace!(
+                            "Couldn't send sync metadata reply back. System is probably shutting down."
+                        );
                     }
                 }
             }
@@ -583,8 +585,8 @@ mod tests {
     use restate_types::nodes_config::{LogServerConfig, MetadataServerConfig, NodeConfig, Role};
     use restate_types::{GenerationalNodeId, Version};
 
-    use crate::metadata::spawn_metadata_manager;
     use crate::TaskCenterBuilder;
+    use crate::metadata::spawn_metadata_manager;
 
     #[test]
     fn test_nodes_config_updates() -> Result<()> {

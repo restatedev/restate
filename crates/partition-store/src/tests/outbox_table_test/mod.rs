@@ -11,8 +11,8 @@
 use super::mock_random_service_invocation;
 
 use crate::PartitionStore;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::Transaction;
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 
 fn mock_outbox_message() -> OutboxMessage {
     OutboxMessage::ServiceInvocation(mock_random_service_invocation())

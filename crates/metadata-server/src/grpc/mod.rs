@@ -18,7 +18,7 @@ pub mod pb_conversions {
     use crate::grpc::{
         GetResponse, GetVersionResponse, PreconditionKind, Ulid, WriteRequest, WriteRequestKind,
     };
-    use crate::{grpc, MetadataServerSummary};
+    use crate::{MetadataServerSummary, grpc};
     use restate_core::metadata_store::{Precondition, VersionedValue};
     use restate_types::Version;
 

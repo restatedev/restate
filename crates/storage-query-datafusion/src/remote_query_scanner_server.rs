@@ -176,7 +176,10 @@ impl RemoteQueryScannerServer {
     ) -> RemoteQueryScannerNextResult {
         let scanner_id = req.scanner_id;
         let Some(scanner) = scanners.get_mut(&scanner_id) else {
-            tracing::info!( "No such scanner {}. This could be an expired scanner due to a slow scan with no activity.", scanner_id);
+            tracing::info!(
+                "No such scanner {}. This could be an expired scanner due to a slow scan with no activity.",
+                scanner_id
+            );
             return RemoteQueryScannerNextResult::NoSuchScanner(scanner_id);
         };
         match scanner.next_batch().await {

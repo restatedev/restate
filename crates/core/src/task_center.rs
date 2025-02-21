@@ -40,10 +40,10 @@ use tokio::task_local;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
-use restate_types::health::{Health, NodeStatus};
-use restate_types::identifiers::PartitionId;
 use restate_types::GenerationalNodeId;
 use restate_types::SharedString;
+use restate_types::health::{Health, NodeStatus};
+use restate_types::identifiers::PartitionId;
 
 use crate::metric_definitions::{self, STATUS_COMPLETED, STATUS_FAILED, TC_FINISHED, TC_SPAWN};
 use crate::{Metadata, ShutdownError, ShutdownSourceErr};

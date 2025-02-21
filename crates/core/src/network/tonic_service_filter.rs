@@ -13,10 +13,10 @@ use http::Request;
 use restate_types::health::HealthStatus;
 use std::convert::Infallible;
 use std::task::{Context, Poll};
+use tonic::Status;
 use tonic::body::BoxBody;
 use tonic::codegen::Service;
 use tonic::server::NamedService;
-use tonic::Status;
 
 /// A tonic service wrapper that filters requests based on a predicate. This can be used to
 /// dynamically disable a service based on some condition.

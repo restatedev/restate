@@ -12,7 +12,7 @@ mod convert;
 mod error;
 mod query;
 
-use axum::{routing::post, Router};
+use axum::{Router, routing::post};
 use std::sync::Arc;
 
 use restate_storage_query_datafusion::context::QueryContext;

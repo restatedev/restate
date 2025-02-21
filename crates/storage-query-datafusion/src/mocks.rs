@@ -25,10 +25,11 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
-use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::StatusHandle;
+use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
+use restate_types::NodeId;
 use restate_types::config::{CommonOptions, QueryEngineOptions, WorkerOptions};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
@@ -43,7 +44,6 @@ use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
-use restate_types::NodeId;
 use serde_json::Value;
 
 #[derive(Default, Clone, Debug)]
@@ -155,12 +155,12 @@ impl MockQueryEngine {
     pub async fn create_with(
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
         schemas: impl DeploymentResolver
-            + ServiceMetadataResolver
-            + Send
-            + Sync
-            + Debug
-            + Clone
-            + 'static,
+        + ServiceMetadataResolver
+        + Send
+        + Sync
+        + Debug
+        + Clone
+        + 'static,
     ) -> Self {
         // Prepare Rocksdb
         RocksDbManager::init(Constant::new(CommonOptions::default()));

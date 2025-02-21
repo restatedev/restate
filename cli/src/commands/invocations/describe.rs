@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use cling::prelude::*;
 use comfy_table::Table;
 use dialoguer::console::style;
@@ -20,7 +20,7 @@ use restate_cli_util::ui::watcher::Watch;
 use restate_cli_util::{c_println, c_tip, c_title};
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::{get_invocation, get_invocation_journal, InvocationState};
+use crate::clients::datafusion_helpers::{InvocationState, get_invocation, get_invocation_journal};
 use crate::clients::{self};
 use crate::ui::invocations::{add_invocation_to_kv_table, format_journal_entry, invocation_status};
 

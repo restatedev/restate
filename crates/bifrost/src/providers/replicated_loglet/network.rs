@@ -19,7 +19,7 @@ use restate_core::network::{
     TransportConnect,
 };
 use restate_core::{
-    cancellation_watcher, Metadata, MetadataKind, SyncError, TargetVersion, TaskCenter, TaskKind,
+    Metadata, MetadataKind, SyncError, TargetVersion, TaskCenter, TaskKind, cancellation_watcher,
 };
 use restate_types::config::ReplicatedLogletOptions;
 use restate_types::errors::MaybeRetryableError;

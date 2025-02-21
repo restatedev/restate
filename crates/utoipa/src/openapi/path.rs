@@ -5,12 +5,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    builder,
+    Deprecated, ExternalDocs, Ref, RefOr, Required, Schema, Server, builder,
     extensions::Extensions,
     request_body::RequestBody,
     response::{Response, Responses},
     security::SecurityRequirement,
-    set_value, Deprecated, ExternalDocs, Ref, RefOr, Required, Schema, Server,
+    set_value,
 };
 
 #[allow(missing_docs)]

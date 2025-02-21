@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::Notification;
 use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
 use crate::invocation_task::{
-    invocation_id_to_header_value, service_protocol_version_to_header_value, InvocationTask,
-    InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender, ResponseChunk,
-    ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
+    InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
+    ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
+    invocation_id_to_header_value, service_protocol_version_to_header_value,
 };
-use crate::Notification;
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{FutureExt, Stream, StreamExt};
@@ -34,8 +34,8 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
-use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::EntryType;
+use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal_v2;
 use restate_types::journal_v2::EntryMetadata;
 use restate_types::schema::deployment::{
@@ -497,7 +497,7 @@ where
                 return Err(InvokerError::UnexpectedContentType(
                     None,
                     expected_content_type,
-                ))
+                ));
             }
         }
 
@@ -580,19 +580,20 @@ where
             ProtocolMessage::End(_) => TerminalLoopState::Closed,
             ProtocolMessage::UnparsedEntry(entry) => {
                 let entry_type = entry.header().as_entry_type();
-                let enriched_entry = crate::shortcircuit!(self
-                    .invocation_task
-                    .entry_enricher
-                    .enrich_entry(
-                        entry,
-                        &self.invocation_task.invocation_target,
-                        parent_span_context
-                    )
-                    .map_err(|e| InvokerError::EntryEnrichment(
-                        self.next_journal_index,
-                        entry_type,
-                        e
-                    )));
+                let enriched_entry = crate::shortcircuit!(
+                    self.invocation_task
+                        .entry_enricher
+                        .enrich_entry(
+                            entry,
+                            &self.invocation_task.invocation_target,
+                            parent_span_context
+                        )
+                        .map_err(|e| InvokerError::EntryEnrichment(
+                            self.next_journal_index,
+                            entry_type,
+                            e
+                        ))
+                );
                 self.invocation_task
                     .send_invoker_tx(InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,

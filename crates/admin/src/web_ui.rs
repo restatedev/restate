@@ -10,7 +10,7 @@
 
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
-use http::{header, HeaderValue, StatusCode, Uri};
+use http::{HeaderValue, StatusCode, Uri, header};
 use http_body_util::Full;
 
 async fn serve_web_ui(uri: Uri) -> impl IntoResponse {

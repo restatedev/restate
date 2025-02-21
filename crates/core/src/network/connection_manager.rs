@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info, instrument, trace, warn, Instrument, Span};
+use tracing::{Instrument, Span, debug, info, instrument, trace, warn};
 
 use restate_types::config::NetworkingOptions;
 use restate_types::net::codec::MessageBodyExt;
@@ -460,12 +460,21 @@ impl<T: TransportConnect> ConnectionManager<T> {
                         None,
                         Urgency::High,
                     );
-                    debug!("Remote node '{}' with newer nodes configuration '{}' tried to connect. Trying to fetch newer version before accepting connection.", peer_node_id, other_nodes_config_version);
+                    debug!(
+                        "Remote node '{}' with newer nodes configuration '{}' tried to connect. Trying to fetch newer version before accepting connection.",
+                        peer_node_id, other_nodes_config_version
+                    );
                 } else {
-                    info!("Unknown remote node '{}' tried to connect to cluster. Rejecting connection.", peer_node_id);
+                    info!(
+                        "Unknown remote node '{}' tried to connect to cluster. Rejecting connection.",
+                        peer_node_id
+                    );
                 }
             } else {
-                info!("Unknown remote node '{}' w/o specifying its node configuration tried to connect to cluster. Rejecting connection.", peer_node_id);
+                info!(
+                    "Unknown remote node '{}' w/o specifying its node configuration tried to connect to cluster. Rejecting connection.",
+                    peer_node_id
+                );
             }
 
             return Err(NetworkError::UnknownNode(e));
@@ -884,12 +893,13 @@ mod tests {
     use tokio::sync::mpsc;
 
     use restate_test_util::{assert_eq, let_assert};
+    use restate_types::Version;
     use restate_types::net::codec::WireDecode;
     use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage};
     use restate_types::net::node::GetNodeState;
     use restate_types::net::{
-        AdvertisedAddress, ProtocolVersion, CURRENT_PROTOCOL_VERSION,
-        MIN_SUPPORTED_PROTOCOL_VERSION,
+        AdvertisedAddress, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
+        ProtocolVersion,
     };
     use restate_types::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfigError, NodesConfiguration,
@@ -897,7 +907,6 @@ mod tests {
     };
     use restate_types::protobuf::node::message::Body;
     use restate_types::protobuf::node::{Header, Hello};
-    use restate_types::Version;
 
     use crate::network::MockPeerConnection;
     use crate::{self as restate_core, TestCoreEnv, TestCoreEnvBuilder};

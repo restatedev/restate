@@ -21,23 +21,23 @@ mod tests {
 
     use futures_util::StreamExt;
     use googletest::prelude::*;
-    use restate_bifrost::{loglet::AppendError, ErrorRecoveryStrategy};
+    use restate_bifrost::{ErrorRecoveryStrategy, loglet::AppendError};
     use test_log::test;
     use tokio::task::{JoinHandle, JoinSet};
     use tokio_util::sync::CancellationToken;
 
     use restate_core::{Metadata, TaskCenterFutureExt};
     use restate_types::{
+        GenerationalNodeId, Version,
         config::Configuration,
         logs::{
-            metadata::{LogletParams, ProviderKind},
             KeyFilter, Keys, LogId, LogletOffset, Lsn, Record, SequenceNumber, TailState,
+            metadata::{LogletParams, ProviderKind},
         },
         replicated_loglet::ReplicatedLogletParams,
         replication::ReplicationProperty,
         storage::PolyBytes,
         time::NanosSinceEpoch,
-        GenerationalNodeId, Version,
     };
 
     use super::common::replicated_loglet::run_in_test_env;

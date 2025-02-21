@@ -10,7 +10,7 @@
 
 use restate_core::TaskCenterFutureExt;
 use tokio::task::JoinSet;
-use tracing::{debug, instrument, trace, warn, Instrument, Span};
+use tracing::{Instrument, Span, debug, instrument, trace, warn};
 
 use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_types::config::Configuration;
@@ -19,8 +19,8 @@ use restate_types::net::log_server::{LogServerRequestHeader, Status, Trim, Trimm
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::NodeSet;
 
-use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::OperationError;
+use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
 use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;

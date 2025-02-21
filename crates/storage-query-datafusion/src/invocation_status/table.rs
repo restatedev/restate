@@ -15,10 +15,10 @@ use std::sync::Arc;
 use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
-use restate_storage_api::StorageError;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};

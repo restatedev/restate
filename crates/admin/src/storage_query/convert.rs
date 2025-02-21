@@ -10,7 +10,7 @@
 
 use std::{
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 
 use datafusion::{

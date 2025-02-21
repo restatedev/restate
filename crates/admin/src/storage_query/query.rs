@@ -15,7 +15,7 @@ use std::task::{Context, Poll};
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use axum::{http, Extension, Json};
+use axum::{Extension, Json, http};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::StreamWriter;
@@ -23,7 +23,7 @@ use datafusion::arrow::json::writer::JsonArray;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
-use futures::{ready, Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt, ready};
 use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
@@ -34,9 +34,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
 
+use super::QueryServiceState;
 use super::convert::{ConvertRecordBatchStream, V1_CONVERTER};
 use super::error::StorageQueryError;
-use super::QueryServiceState;
 
 #[serde_as]
 #[derive(Debug, Deserialize, JsonSchema)]

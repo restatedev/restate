@@ -12,13 +12,13 @@ use std::io::Cursor;
 use std::ops::RangeInclusive;
 
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
 use restate_storage_api::Result;
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
 use restate_types::identifiers::PartitionId;
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::TableKind::Outbox;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::{
     PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
 };

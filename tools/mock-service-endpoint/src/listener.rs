@@ -14,9 +14,9 @@ use std::net::SocketAddr;
 
 use bytes::Bytes;
 use http_body_util::{Either, Full};
+use hyper::Response;
 use hyper::server::conn::http2;
 use hyper::service::service_fn;
-use hyper::Response;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use tokio::net::TcpListener;
 use tracing::error;

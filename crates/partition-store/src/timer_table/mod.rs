@@ -16,10 +16,10 @@ use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationUuid, PartitionId};
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::{PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 

@@ -17,7 +17,7 @@ use std::fmt::Display;
 
 use exporter::RuntimeModifierSpanExporter;
 use opentelemetry::trace::{TraceError, TracerProvider};
-use opentelemetry::{global, InstrumentationScope, KeyValue};
+use opentelemetry::{InstrumentationScope, KeyValue, global};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
 use opentelemetry_otlp::{SpanExporter, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
@@ -26,7 +26,7 @@ use pretty::Pretty;
 use tonic::codegen::http::HeaderMap;
 use tonic::metadata::MetadataMap;
 use tonic::transport::ClientTlsConfig;
-use tracing::{warn, Level};
+use tracing::{Level, warn};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::filter::{Filtered, ParseError};
 use tracing_subscriber::fmt::time::SystemTime;
@@ -53,7 +53,9 @@ const RESTATE_INVOCATION_ERROR_STACKTRACE: &str = "restate.invocation.error.stac
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
 pub enum Error {
-    #[error("could not initialize tracing: you must specify at least `tracing_endpoint` or `tracing_json_path`")]
+    #[error(
+        "could not initialize tracing: you must specify at least `tracing_endpoint` or `tracing_json_path`"
+    )]
     InvalidTracingConfiguration,
     #[error("could not initialize tracing: {0}")]
     Tracing(#[from] TraceError),

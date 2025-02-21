@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::pgwire_server::{spawn_connection, HandlerFactory};
+use crate::pgwire_server::{HandlerFactory, spawn_connection};
 use codederror::CodedError;
 use restate_core::cancellation_watcher;
 use restate_storage_query_datafusion::context::QueryContext;

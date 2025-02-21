@@ -15,11 +15,11 @@ use log::render_loglet_params;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_types::logs::metadata::{Logs, ProviderKind, Segment, SegmentIndex};
+use restate_types::Versioned;
 use restate_types::logs::LogId;
+use restate_types::logs::metadata::{Logs, ProviderKind, Segment, SegmentIndex};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
-use restate_types::Versioned;
 
 use crate::commands::log;
 use crate::connection::ConnectionInfo;

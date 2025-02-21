@@ -21,7 +21,7 @@ use std::fmt;
 use std::time::Duration;
 
 use aws_smithy_async::future::timeout::TimedOutError;
-use aws_smithy_async::rt::sleep::{default_async_sleep, SharedAsyncSleep};
+use aws_smithy_async::rt::sleep::{SharedAsyncSleep, default_async_sleep};
 use aws_smithy_runtime_api::box_error::BoxError;
 use aws_smithy_runtime_api::client::connector_metadata::ConnectorMetadata;
 use aws_smithy_runtime_api::client::http::{

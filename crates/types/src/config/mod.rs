@@ -53,10 +53,10 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use super::live::{LiveLoad, Pinned};
+use crate::PlainNodeId;
 use crate::errors::GenericError;
 use crate::live::Live;
 use crate::nodes_config::Role;
-use crate::PlainNodeId;
 
 /// Overrides production profile
 pub static PRODUCTION_PROFILE_DEFAULTS: LazyLock<Configuration> = LazyLock::new(|| {
@@ -265,7 +265,9 @@ impl Configuration {
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum InvalidConfigurationError {
-    #[error("force-node-id can not be 0 since it is a reserved value. Please choose a non-zero value or unset this option. Existing clusters will be auto-migrated")]
+    #[error(
+        "force-node-id can not be 0 since it is a reserved value. Please choose a non-zero value or unset this option. Existing clusters will be auto-migrated"
+    )]
     ForceNodeIdZero,
 }
 
@@ -315,7 +317,9 @@ impl From<ConfigurationShadow> for Configuration {
 fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<&str>) {
     // we can't use tracing since config loading happens before tracing is initialized
     if let Some(replacement) = replacement {
-        eprintln!("Using the deprecated config option '{deprecated}' instead of '{replacement}'. Please update the config to use '{replacement}' instead.");
+        eprintln!(
+            "Using the deprecated config option '{deprecated}' instead of '{replacement}'. Please update the config to use '{replacement}' instead."
+        );
     } else {
         eprintln!("Using the deprecated config option '{deprecated}'.");
     }

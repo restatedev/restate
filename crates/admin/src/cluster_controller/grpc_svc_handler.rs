@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Bytes, BytesMut};
-use tonic::{async_trait, Request, Response, Status};
+use tonic::{Request, Response, Status, async_trait};
 use tracing::info;
 
 use restate_bifrost::{Bifrost, Error as BiforstError};
@@ -32,12 +32,12 @@ use crate::cluster_controller::protobuf::{
     SealAndExtendChainResponse, SealedSegment, TailState, TrimLogRequest,
 };
 
+use super::ClusterControllerHandle;
 use super::protobuf::{
     GetClusterConfigurationRequest, GetClusterConfigurationResponse,
     SetClusterConfigurationRequest, SetClusterConfigurationResponse,
 };
 use super::service::ChainExtension;
-use super::ClusterControllerHandle;
 
 pub(crate) struct ClusterCtrlSvcHandler {
     controller_handle: ClusterControllerHandle,
@@ -204,8 +204,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                     // `params`` is no longer supported. It's better to fail loudly
                     // than act unexpectedly on invalid request version
                     return Err(Status::invalid_argument(
-                            "Detected a deprecated argument. Please upgrade to the latest version of restatectl tool to ensure compatibility.",
-                        ));
+                        "Detected a deprecated argument. Please upgrade to the latest version of restatectl tool to ensure compatibility.",
+                    ));
                 }
 
                 Some(ChainExtension {

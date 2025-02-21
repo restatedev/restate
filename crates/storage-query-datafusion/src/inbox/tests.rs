@@ -15,8 +15,8 @@ use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use googletest::all;
 use googletest::prelude::{assert_that, eq};
-use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::Transaction;
+use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTarget;
 

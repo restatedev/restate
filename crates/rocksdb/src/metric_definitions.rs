@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
+use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub const STORAGE_BG_TASK_IN_FLIGHT: &str = "restate.rocksdb_manager.bg_task_in_flight.total";
 pub const STORAGE_IO_OP: &str = "restate.rocksdb_manager.io_operation.total";

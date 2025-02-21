@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
 use object_store::path::Path as ObjectPath;
 use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
@@ -376,10 +376,10 @@ impl SnapshotRepository {
 
         if snapshot_metadata.cluster_name != self.cluster_name {
             // todo(pavel): revisit whether we shouldn't just panic at this point - this is a bad sign!
-            warn!("Snapshot does not match the cluster name of latest snapshot at destination in snapshot id {}! Expected: cluster name=\"{}\", found: \"{}\"",
-                   snapshot_metadata.snapshot_id,
-                   self.cluster_name,
-                   snapshot_metadata.cluster_name);
+            warn!(
+                "Snapshot does not match the cluster name of latest snapshot at destination in snapshot id {}! Expected: cluster name=\"{}\", found: \"{}\"",
+                snapshot_metadata.snapshot_id, self.cluster_name, snapshot_metadata.cluster_name
+            );
             return Ok(None); // perhaps this needs to be a configuration error
         }
 
@@ -515,7 +515,9 @@ impl SnapshotRepository {
                     .map_err(|e| anyhow!("Failed to parse latest snapshot metadata: {}", e))?;
                 if snapshot.cluster_name != latest.cluster_name {
                     // This indicates a serious misconfiguration and we should complain loudly
-                    bail!("Snapshot does not match the cluster name of latest snapshot at destination!");
+                    bail!(
+                        "Snapshot does not match the cluster name of latest snapshot at destination!"
+                    );
                 }
                 Ok(Some((latest, version)))
             }
@@ -663,7 +665,6 @@ async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use object_store::path::Path as ObjectPath;
     use object_store::ObjectStore;
     use restate_object_store_util::create_object_store_client;
     use std::time::SystemTime;
@@ -672,7 +673,7 @@ mod tests {
     use tracing::info;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
     use url::Url;
 
     use super::{LatestSnapshot, SnapshotRepository, UniqueSnapshotKey};
@@ -680,6 +681,8 @@ mod tests {
     use restate_types::config::{ObjectStoreOptions, SnapshotsOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
+
+    use crate::partition::snapshots::repository::ObjectPath;
 
     #[tokio::test]
     async fn test_overwrite_unparsable_latest() -> anyhow::Result<()> {

@@ -15,13 +15,13 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_types::identifiers::{JournalEntryId, WithInvocationId, WithPartitionKey};
-use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal::Entry;
+use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal::{CompletePromiseEntry, GetPromiseEntry, PeekPromiseEntry};
 use restate_types::journal_v2;
-use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::CommandMetadata;
 use restate_types::journal_v2::EntryMetadata;
+use restate_types::journal_v2::raw::RawEntry;
 
 #[inline]
 pub(crate) fn append_journal_row(
@@ -87,24 +87,24 @@ pub(crate) fn append_journal_row(
                 | EnrichedEntryHeader::PeekPromise { .. }
                 | EnrichedEntryHeader::CompletePromise { .. } => {
                     if row.is_promise_name_defined() {
-                        match entry
-                            .deserialize_entry_ref::<ProtobufRawEntryCodec>() {
-                            Ok(Entry::GetPromise(GetPromiseEntry { key, .. })) |
-                            Ok(Entry::PeekPromise(PeekPromiseEntry { key, ..})) |
-                            Ok(Entry::CompletePromise(CompletePromiseEntry { key, .. })) =>
-                                row.promise_name(key),
+                        match entry.deserialize_entry_ref::<ProtobufRawEntryCodec>() {
+                            Ok(Entry::GetPromise(GetPromiseEntry { key, .. }))
+                            | Ok(Entry::PeekPromise(PeekPromiseEntry { key, .. }))
+                            | Ok(Entry::CompletePromise(CompletePromiseEntry { key, .. })) => {
+                                row.promise_name(key)
+                            }
                             Ok(_) => log_data_corruption_error!(
-                                    "sys_journal",
-                                    &journal_entry_id.invocation_id(),
-                                    "promise_name",
-                                    "The entry should be a GetPromise, PeekPromise or CompletePromise entry"
-                                ),
+                                "sys_journal",
+                                &journal_entry_id.invocation_id(),
+                                "promise_name",
+                                "The entry should be a GetPromise, PeekPromise or CompletePromise entry"
+                            ),
                             Err(e) => log_data_corruption_error!(
-                                    "sys_journal",
-                                    &journal_entry_id.invocation_id(),
-                                    "promise_name",
-                                    e
-                                )
+                                "sys_journal",
+                                &journal_entry_id.invocation_id(),
+                                "promise_name",
+                                e
+                            ),
                         };
                     }
                 }

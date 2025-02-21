@@ -21,7 +21,7 @@ mod prop;
 mod valid;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{DeriveInput, parse_macro_input};
 
 #[proc_macro_derive(CodedError, attributes(error, from, source, code))]
 pub fn derive_codederror(input: TokenStream) -> TokenStream {

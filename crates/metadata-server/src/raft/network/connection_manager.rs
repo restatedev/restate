@@ -12,10 +12,10 @@ use crate::metric_definitions::{
     METADATA_SERVER_REPLICATED_RECV_MESSAGE_BYTES, METADATA_SERVER_REPLICATED_RECV_MESSAGE_TOTAL,
     METADATA_SERVER_REPLICATED_SENT_MESSAGE_BYTES, METADATA_SERVER_REPLICATED_SENT_MESSAGE_TOTAL,
 };
-use crate::raft::network::{grpc_svc, NetworkMessage};
+use crate::raft::network::{NetworkMessage, grpc_svc};
 use futures::StreamExt;
 use metrics::counter;
-use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::PlainNodeId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

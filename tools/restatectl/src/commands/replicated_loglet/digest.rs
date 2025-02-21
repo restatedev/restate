@@ -21,11 +21,11 @@ use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_log_server::protobuf::log_server_svc_client::LogServerSvcClient;
 use restate_log_server::protobuf::{GetDigestRequest, GetLogletInfoRequest};
+use restate_types::PlainNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::log_server::RecordStatus;
 use restate_types::nodes_config::Role;
 use restate_types::replicated_loglet::LogNodeSetExt;
-use restate_types::PlainNodeId;
 
 use crate::commands::replicated_loglet::digest_util::DigestsHelper;
 use crate::commands::replicated_loglet::info::gen_loglet_info_table;

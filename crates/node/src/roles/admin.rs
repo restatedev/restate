@@ -26,7 +26,7 @@ use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFr
 use restate_storage_query_datafusion::empty_invoker_status_handle::EmptyInvokerStatusHandle;
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
 use restate_storage_query_datafusion::remote_query_scanner_manager::{
-    create_partition_locator, RemoteScannerManager,
+    RemoteScannerManager, create_partition_locator,
 };
 use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;

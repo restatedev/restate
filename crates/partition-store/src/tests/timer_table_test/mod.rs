@@ -14,8 +14,8 @@ use crate::PartitionStore;
 use futures_util::StreamExt;
 use googletest::matchers::eq;
 use googletest::{assert_that, pat};
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
 use restate_storage_api::Transaction;
+use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
 use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use std::pin::pin;
@@ -101,9 +101,10 @@ async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
         },
         timestamp: 0,
     };
-    let mut stream = pin!(txn
-        .next_timers_greater_than(Some(timer_key), usize::MAX)
-        .unwrap());
+    let mut stream = pin!(
+        txn.next_timers_greater_than(Some(timer_key), usize::MAX)
+            .unwrap()
+    );
 
     if let Some(Ok((key, _))) = stream.next().await {
         // make sure that we skip the first timer that has a journal_index of 0
@@ -146,9 +147,10 @@ async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
         },
         timestamp: 0,
     };
-    let mut stream = pin!(txn
-        .next_timers_greater_than(Some(timer_key), usize::MAX,)
-        .unwrap());
+    let mut stream = pin!(
+        txn.next_timers_greater_than(Some(timer_key), usize::MAX,)
+            .unwrap()
+    );
 
     if let Some(Ok((key, _))) = stream.next().await {
         assert_that!(

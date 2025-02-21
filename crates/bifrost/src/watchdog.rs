@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use enum_map::Enum;
-use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
+use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::logs::metadata::ProviderKind;
 use tokio::task::JoinSet;
 use tracing::{debug, trace, warn};

@@ -231,7 +231,9 @@ impl InvocationError {
     pub fn service_not_found(service: impl fmt::Display) -> Self {
         Self {
             code: codes::NOT_FOUND,
-            message: Cow::Owned(format!("Service '{service}' not found. Check whether the deployment containing the service is registered.")),
+            message: Cow::Owned(format!(
+                "Service '{service}' not found. Check whether the deployment containing the service is registered."
+            )),
             stacktrace: None,
         }
     }
@@ -242,7 +244,9 @@ impl InvocationError {
     ) -> Self {
         Self {
             code: codes::NOT_FOUND,
-            message: Cow::Owned(format!("Service handler '{service}/{handler}' not found. Check whether you've registered the correct version of your service.")),
+            message: Cow::Owned(format!(
+                "Service handler '{service}/{handler}' not found. Check whether you've registered the correct version of your service."
+            )),
             stacktrace: None,
         }
     }
@@ -296,8 +300,10 @@ pub const GONE_INVOCATION_ERROR: InvocationError = InvocationError::new_static(c
 pub const NOT_FOUND_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::NOT_FOUND, "not found");
 
-pub const ATTACH_NOT_SUPPORTED_INVOCATION_ERROR: InvocationError =
-    InvocationError::new_static(codes::BAD_REQUEST, "attach not supported for this invocation. You can attach only to invocations created with an idempotency key, or for workflow methods.");
+pub const ATTACH_NOT_SUPPORTED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
+    codes::BAD_REQUEST,
+    "attach not supported for this invocation. You can attach only to invocations created with an idempotency key, or for workflow methods.",
+);
 
 pub const ALREADY_COMPLETED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::CONFLICT, "promise was already completed");

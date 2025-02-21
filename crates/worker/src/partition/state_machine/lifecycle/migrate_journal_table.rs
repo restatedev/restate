@@ -80,7 +80,8 @@ where
                     self.invocation_id,
                     0,
                 )
-                    .await?.is_some(),
+                .await?
+                .is_some(),
                 "We expect the JournalTable is V2, but it's currently V1 instead. This is a bug, please contact the developers."
             )
         }

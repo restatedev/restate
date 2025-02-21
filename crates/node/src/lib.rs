@@ -26,14 +26,14 @@ use crate::roles::{AdminRole, BaseRole, IngressRole, WorkerRole};
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{
-    retry_on_retryable_error, Precondition, ReadWriteError, WriteError,
+    Precondition, ReadWriteError, WriteError, retry_on_retryable_error,
 };
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
-use restate_core::partitions::{spawn_partition_routing_refresher, PartitionRoutingRefresher};
-use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataManager, TaskCenter};
+use restate_core::partitions::{PartitionRoutingRefresher, spawn_partition_routing_refresher};
 use restate_core::{Metadata, TaskKind};
+use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_manager};
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
 use restate_metadata_server::{
@@ -41,9 +41,9 @@ use restate_metadata_server::{
 };
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::live::Live;
-use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
+use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
@@ -451,7 +451,9 @@ impl Node {
                     "announce-node-at-admin-node",
                     async move {
                         if let Err(err) = networking.node_connection(admin_node_id).await {
-                            debug!("Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}");
+                            debug!(
+                                "Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}"
+                            );
                         }
                     },
                 )?;
@@ -716,8 +718,11 @@ struct AlreadyInitialized;
 #[cfg(not(feature = "replicated-loglet"))]
 fn warn_if_log_store_left_artifacts(config: &Configuration) {
     if config.log_server.data_dir().exists() {
-        tracing::warn!("Log server data directory '{}' exists, \
+        tracing::warn!(
+            "Log server data directory '{}' exists, \
             but log-server is not implemented in this version of restate-server. \
-            This may indicate that the log-server role was previously enabled and the data directory was not cleaned up. If this was created by v1.1.1 of restate-server, please remove this directory to avoid potential future conflicts.", config.log_server.data_dir().display());
+            This may indicate that the log-server role was previously enabled and the data directory was not cleaned up. If this was created by v1.1.1 of restate-server, please remove this directory to avoid potential future conflicts.",
+            config.log_server.data_dir().display()
+        );
     }
 }

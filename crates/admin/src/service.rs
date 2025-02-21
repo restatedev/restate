@@ -16,8 +16,8 @@ use restate_types::config::AdminOptions;
 use restate_types::live::LiveLoad;
 use tower::ServiceBuilder;
 
-use restate_core::network::net_util;
 use restate_core::MetadataWriter;
+use restate_core::network::net_util;
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::net::BindAddress;
 use restate_types::schema::subscriptions::SubscriptionValidator;

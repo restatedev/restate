@@ -10,12 +10,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::Version;
 use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, SnapshotId};
 use crate::logs::{LogId, Lsn};
 use crate::net::define_rpc;
-use crate::net::{define_message, TargetName};
-use crate::Version;
+use crate::net::{TargetName, define_message};
 
 define_message! {
     @message = ControlProcessors,

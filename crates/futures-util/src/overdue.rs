@@ -11,12 +11,12 @@
 use std::fmt::Display;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use pin_project_lite::pin_project;
 use tokio::time::{Instant, Sleep};
-use tracing::{debug, error, info, trace, warn, Level};
+use tracing::{Level, debug, error, info, trace, warn};
 
 const MAX_REPEAT_DURATION: Duration = const { Duration::from_secs(30) };
 

@@ -10,12 +10,12 @@
 
 use bytes::Bytes;
 use chrono::DateTime;
-use http::{header, HeaderName, Response};
+use http::{HeaderName, Response, header};
 use http_body_util::Full;
 use tracing::{info, trace};
 
-use crate::handler::error::HandlerError;
 use crate::handler::Handler;
+use crate::handler::error::HandlerError;
 use restate_types::invocation::InvocationTarget;
 use restate_types::net::partition_processor::{IngressResponseResult, InvocationOutput};
 use restate_types::schema::invocation_target::InvocationTargetMetadata;

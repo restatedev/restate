@@ -14,10 +14,10 @@
 
 use super::storage_test_environment;
 
+use restate_storage_api::Transaction;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
-use restate_storage_api::Transaction;
 use restate_types::identifiers::{IdempotencyId, InvocationId, InvocationUuid};
 
 const FIXTURE_INVOCATION_1: InvocationUuid = InvocationUuid::from_u128(12345678900001);

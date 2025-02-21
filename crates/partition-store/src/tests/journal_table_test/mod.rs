@@ -16,8 +16,8 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
 
-use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::Transaction;
+use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{

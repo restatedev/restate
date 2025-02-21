@@ -22,7 +22,7 @@ use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::{find_active_invocations, InvocationState};
+use crate::clients::datafusion_helpers::{InvocationState, find_active_invocations};
 use crate::ui::invocations::render_invocation_compact;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]

@@ -21,8 +21,8 @@ use tonic::codec::CompressionEncoding;
 use tonic::{Code, IntoRequest};
 use tracing::{error, warn};
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::ClusterStateRequest;
+use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_cli_util::_comfy_table::{Cell, Color, Row, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
@@ -32,10 +32,10 @@ use restate_types::protobuf::cluster::node_state::State;
 use restate_types::protobuf::cluster::{AliveNode, RunMode};
 use restate_types::{GenerationalNodeId, NodeId};
 
-use crate::commands::log::list_logs::{list_logs, ListLogsOpts};
+use crate::commands::log::list_logs::{ListLogsOpts, list_logs};
 use crate::commands::metadata_server::status::list_metadata_servers;
-use crate::commands::node::list_nodes::{list_nodes, list_nodes_lite, ListNodesOpts};
-use crate::commands::partition::list::{list_partitions, ListPartitionsOpts};
+use crate::commands::node::list_nodes::{ListNodesOpts, list_nodes, list_nodes_lite};
+use crate::commands::partition::list::{ListPartitionsOpts, list_partitions};
 use crate::connection::{ConnectionInfo, ConnectionInfoError};
 use crate::util::grpc_channel;
 
@@ -58,7 +58,9 @@ async fn cluster_status(
         return match connection.get_nodes_configuration().await {
             Ok(nodes_config) => compact_cluster_status(nodes_config, connection).await,
             Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes }) => {
-                warn!("Could not read nodes configuration from cluster, using GetIdent responses to render basic list");
+                warn!(
+                    "Could not read nodes configuration from cluster, using GetIdent responses to render basic list"
+                );
 
                 list_nodes_lite(&contacted_nodes, &ListNodesOpts { extra: false });
 

@@ -17,14 +17,14 @@ use std::mem;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::Reciprocal;
-use restate_core::{my_node_id, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
@@ -43,9 +43,9 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
 use restate_types::storage::StorageEncodeError;
+use restate_wal_protocol::Command;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::Command;
 
 use crate::partition::cleaner::Cleaner;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -207,7 +207,9 @@ where
             self.announce_leadership(leader_epoch).await?;
             debug!("Running for leadership.");
         } else {
-            debug!("Asked to run for leadership with an outdated leader epoch. Ignoring, since futile.")
+            debug!(
+                "Asked to run for leadership with an outdated leader epoch. Ignoring, since futile."
+            )
         }
 
         Ok(())
@@ -278,7 +280,9 @@ where
                         self.become_leader(partition_store).await?
                     }
                     Ordering::Greater => {
-                        debug!("Observed an intermittent leader. Still believing to win the leadership campaign.");
+                        debug!(
+                            "Observed an intermittent leader. Still believing to win the leadership campaign."
+                        );
                     }
                 }
             }
@@ -293,10 +297,14 @@ where
                         self.become_follower().await;
                     }
                     Ordering::Equal => {
-                        warn!("Observed another leadership announcement for my own leadership. This should never happen and indicates a bug!");
+                        warn!(
+                            "Observed another leadership announcement for my own leadership. This should never happen and indicates a bug!"
+                        );
                     }
                     Ordering::Greater => {
-                        warn!("Observed a leadership announcement for an outdated epoch. This should never happen and indicates a bug!");
+                        warn!(
+                            "Observed a leadership announcement for an outdated epoch. This should never happen and indicates a bug!"
+                        );
                     }
                 }
             }
@@ -620,11 +628,11 @@ mod tests {
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
+    use restate_types::GenerationalNodeId;
     use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
     use restate_types::live::Constant;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
-    use restate_types::GenerationalNodeId;
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
     use std::ops::RangeInclusive;

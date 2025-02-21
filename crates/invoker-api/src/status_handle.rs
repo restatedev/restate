@@ -65,11 +65,11 @@ impl InvocationStatusReport {
     }
 
     pub fn partition_id(&self) -> PartitionId {
-        self.1 .0
+        self.1.0
     }
 
     pub fn leader_epoch(&self) -> LeaderEpoch {
-        self.1 .1
+        self.1.1
     }
 
     pub fn in_flight(&self) -> bool {

@@ -13,8 +13,8 @@ use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyCo
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
 use restate_types::identifiers::InvocationId;
-use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::NotificationId;
+use restate_types::journal_v2::raw::RawNotification;
 
 pub(super) struct ApplyNotificationCommand<'e> {
     pub(super) invocation_id: InvocationId,
@@ -31,7 +31,10 @@ where
         if cfg!(debug_assertions) {
             if let NotificationId::CompletionId(completion_id) = self.entry.id() {
                 assert!(
-                    ctx.storage.get_command_by_completion_id(self.invocation_id, completion_id).await?.is_some(),
+                    ctx.storage
+                        .get_command_by_completion_id(self.invocation_id, completion_id)
+                        .await?
+                        .is_some(),
                     "For given completion id {completion_id}, the corresponding command must be present already in the journal"
                 )
             }
@@ -64,7 +67,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::{assert_that, contains};
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;

@@ -9,17 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use tokio::task::JoinSet;
-use tracing::{instrument, trace, Instrument, Span};
+use tracing::{Instrument, Span, instrument, trace};
 
-use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_core::TaskCenterFutureExt;
+use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, LogletInfo, Status};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
-use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::OperationError;
+use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::replication::{FMajorityResult, NodeSetChecker};
 use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 use crate::providers::replicated_loglet::tasks::util::{Disposition, RunOnSingleNode};

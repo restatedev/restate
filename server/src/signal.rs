@@ -11,7 +11,7 @@
 use std::io::Write;
 
 use restate_rocksdb::RocksDbManager;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 use tracing::{info, warn};
 
 use restate_types::config::Configuration;

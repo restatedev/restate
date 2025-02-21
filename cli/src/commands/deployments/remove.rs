@@ -10,13 +10,13 @@
 
 use std::collections::HashMap;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use cling::prelude::*;
 use comfy_table::Table;
 use indoc::indoc;
 
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
-use restate_cli_util::ui::console::{confirm_or_exit, Styled, StyledTable};
+use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_indentln, c_success};
 use restate_types::schema::service::ServiceMetadata;

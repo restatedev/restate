@@ -12,12 +12,12 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::ops::RangeInclusive;
 
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{DisplayFromStr, serde_as};
 
 use crate::identifiers::{PartitionId, PartitionKey};
 use crate::logs::LogId;
 use crate::replication::{NodeSet, ReplicationProperty};
-use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version, Versioned};
+use crate::{PlainNodeId, Version, Versioned, flexbuffers_storage_encode_decode};
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -590,7 +590,7 @@ mod tests {
         PartitionTableBuilder,
     };
     use crate::storage::StorageCodec;
-    use crate::{flexbuffers_storage_encode_decode, PlainNodeId, Version};
+    use crate::{PlainNodeId, Version, flexbuffers_storage_encode_decode};
 
     #[test]
     fn partitioner_produces_consecutive_ranges() {

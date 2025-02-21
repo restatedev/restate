@@ -12,7 +12,7 @@ use super::APPLICATION_JSON;
 
 use crate::RequestDispatcherError;
 use bytes::Bytes;
-use http::{header, Response, StatusCode};
+use http::{Response, StatusCode, header};
 use restate_types::errors::{IdDecodeError, InvocationError};
 use restate_types::schema::invocation_target::InputValidationError;
 use serde::Serialize;
@@ -24,7 +24,9 @@ pub(crate) enum HandlerError {
     NotFound,
     #[error("service '{0}' not found, make sure to register the service before calling it.")]
     ServiceNotFound(String),
-    #[error("the service '{0}' exists, but the handler '{1}' was not found, check that the handler exists in the latest registered service version.")]
+    #[error(
+        "the service '{0}' exists, but the handler '{1}' was not found, check that the handler exists in the latest registered service version."
+    )]
     ServiceHandlerNotFound(String, String),
     #[error("invocation not found")]
     InvocationNotFound,
@@ -41,7 +43,7 @@ pub(crate) enum HandlerError {
     )]
     BadInvocationPath,
     #[error(
-    "bad path, expected either /restate/workflow/:workflow_name/:workflow_key/output or /restate/workflow/:workflow_name/:workflow_key/attach"
+        "bad path, expected either /restate/workflow/:workflow_name/:workflow_key/output or /restate/workflow/:workflow_name/:workflow_key/attach"
     )]
     BadWorkflowPath,
     #[error("not implemented")]
@@ -75,7 +77,7 @@ pub(crate) enum HandlerError {
     )]
     UnsupportedDelay,
     #[error(
-    "cannot use the idempotency key with workflow handlers. The handler invocation will already be idempotent by the workflow key itself."
+        "cannot use the idempotency key with workflow handlers. The handler invocation will already be idempotent by the workflow key itself."
     )]
     UnsupportedIdempotencyKey,
     #[error("bad awakeable id '{0}': {1}")]

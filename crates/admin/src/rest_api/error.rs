@@ -9,14 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use crate::schema_registry::error::{SchemaError, SchemaRegistryError, ServiceError};
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use codederror::{Code, CodedError};
 use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
-use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
+use okapi_operation::{Components, ToMediaTypes, ToResponses, okapi};
 use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::ServiceType;

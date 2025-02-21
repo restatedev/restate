@@ -9,16 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use std::marker::PhantomData;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use opentelemetry::Context;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::net::RpcRequest;
+use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::protobuf::node::Header;
 use restate_types::{GenerationalNodeId, NodeId, Version};
 

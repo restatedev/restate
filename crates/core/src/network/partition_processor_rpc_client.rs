@@ -24,10 +24,10 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
 
+use crate::ShutdownError;
 use crate::network::rpc_router::{ConnectionAwareRpcError, ConnectionAwareRpcRouter, RpcError};
 use crate::network::{HasConnection, Networking, Outgoing, TransportConnect};
 use crate::partitions::PartitionRouting;
-use crate::ShutdownError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PartitionProcessorRpcClientError {
@@ -267,7 +267,9 @@ where
                 AttachInvocationResponse::Ready(output)
             }
             _ => {
-                panic!("Expecting either PartitionProcessorRpcResponse::Output or PartitionProcessorRpcResponse::NotFound or PartitionProcessorRpcResponse::NotSupported")
+                panic!(
+                    "Expecting either PartitionProcessorRpcResponse::Output or PartitionProcessorRpcResponse::NotFound or PartitionProcessorRpcResponse::NotSupported"
+                )
             }
         })
     }
@@ -297,7 +299,9 @@ where
                 GetInvocationOutputResponse::Ready(output)
             }
             _ => {
-                panic!("Expecting either PartitionProcessorRpcResponse::Output or PartitionProcessorRpcResponse::NotFound or PartitionProcessorRpcResponse::NotSupported or PartitionProcessorRpcResponse::NotReady")
+                panic!(
+                    "Expecting either PartitionProcessorRpcResponse::Output or PartitionProcessorRpcResponse::NotFound or PartitionProcessorRpcResponse::NotSupported or PartitionProcessorRpcResponse::NotReady"
+                )
             }
         })
     }

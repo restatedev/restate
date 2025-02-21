@@ -15,17 +15,17 @@ mod storage;
 #[cfg(test)]
 mod tests;
 
-use crate::grpc::client::GrpcMetadataServerClient;
 use crate::MemberId;
+use crate::grpc::client::GrpcMetadataServerClient;
 use anyhow::Context;
 use bytes::{Buf, BufMut};
 use network::NetworkMessage;
 use protobuf::Message as ProtobufMessage;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util::CommonClientConnectionOptions;
+use restate_types::PlainNodeId;
 use restate_types::net::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
-use restate_types::PlainNodeId;
 pub use server::RaftMetadataServer;
 use std::sync::Arc;
 

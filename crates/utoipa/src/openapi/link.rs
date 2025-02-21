@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::extensions::Extensions;
-use super::{builder, Server};
+use super::{Server, builder};
 
 builder! {
     LinkBuilder;

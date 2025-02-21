@@ -13,13 +13,13 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tracing::{instrument, trace};
 
+use restate_core::ShutdownError;
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Incoming, NetworkError, Networking, TransportConnect};
-use restate_core::ShutdownError;
+use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::net::log_server::{LogServerRequest, LogServerResponse};
 use restate_types::retries::RetryPolicy;
-use restate_types::PlainNodeId;
 
 use crate::loglet::util::TailOffsetWatch;
 

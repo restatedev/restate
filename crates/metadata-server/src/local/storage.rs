@@ -18,10 +18,10 @@ use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{data_dir, MetadataServerOptions, RocksDbOptions};
+use restate_types::Version;
+use restate_types::config::{MetadataServerOptions, RocksDbOptions, data_dir};
 use restate_types::live::BoxedLiveLoad;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-use restate_types::Version;
 use rocksdb::{
     BoundColumnFamily, DBCompressionType, Error, IteratorMode, ReadOptions, WriteBatch,
     WriteOptions,

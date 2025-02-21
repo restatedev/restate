@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::io;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::mem;
@@ -229,15 +229,19 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> Segment<T> {
     fn enqueue(&mut self, element: T) {
         match self {
             Mutable { buffer } => buffer.push_back(element),
-            _ => panic!("This is a bug, it is only possible to enqueue into a mutable segment. Please contact the restate developers."),
+            _ => panic!(
+                "This is a bug, it is only possible to enqueue into a mutable segment. Please contact the restate developers."
+            ),
         }
     }
 
     fn dequeue(&mut self) -> Option<T> {
         match self {
             Mutable { buffer } => buffer.pop_front(),
-            LoadedFromDisk {  buffer } => buffer.pop_front(),
-            _ => panic!("This is a bug, it is only possible to dequeue from a mutable or in memory segment. Please contact the restate developers."),
+            LoadedFromDisk { buffer } => buffer.pop_front(),
+            _ => panic!(
+                "This is a bug, it is only possible to dequeue from a mutable or in memory segment. Please contact the restate developers."
+            ),
         }
     }
 
@@ -261,10 +265,12 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> Segment<T> {
                     *self = StoringToDisk { id, len, handle };
                 } else {
                     handle.await.expect("Unable to store a segment.");
-                    *self = OnDisk {id, len};
+                    *self = OnDisk { id, len };
                 }
             }
-            _ => panic!("We can only store a mutable segment. This is a bug, please contact the restate developers."),
+            _ => panic!(
+                "We can only store a mutable segment. This is a bug, please contact the restate developers."
+            ),
         }
     }
 

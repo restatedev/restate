@@ -23,13 +23,13 @@ use tokio::io;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio_util::net::Listener;
 use tonic::transport::{Channel, Endpoint};
-use tracing::{debug, error_span, info, instrument, trace, Instrument, Span};
+use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
 
 use restate_types::config::{Configuration, MetadataClientOptions, NetworkingOptions};
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 
-use crate::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
+use crate::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 
 pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
     address: AdvertisedAddress,

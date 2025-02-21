@@ -69,7 +69,7 @@ pub(crate) trait VersionRepository: Sync + Send + 'static {
     ) -> Result<Tag, VersionRepositoryError>;
 
     async fn put(&self, key: ByteString, new_content: Bytes)
-        -> Result<Tag, VersionRepositoryError>;
+    -> Result<Tag, VersionRepositoryError>;
 
     async fn delete(&self, key: ByteString) -> Result<(), VersionRepositoryError>;
 

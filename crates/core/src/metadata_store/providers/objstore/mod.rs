@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::metadata_store::MetadataStore;
 use crate::metadata_store::providers::objstore::object_store_version_repository::ObjectStoreVersionRepository;
 use crate::metadata_store::providers::objstore::optimistic_store::OptimisticLockingMetadataStoreBuilder;
 use crate::metadata_store::providers::objstore::version_repository::VersionRepository;
-use crate::metadata_store::MetadataStore;
 use crate::{TaskCenter, TaskKind};
 use restate_types::config::MetadataClientKind;
 

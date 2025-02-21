@@ -14,8 +14,8 @@ use crate::identifiers::{
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget};
 use crate::journal_v2::Signal;
-use crate::net::define_rpc;
 use crate::net::TargetName;
+use crate::net::define_rpc;
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};

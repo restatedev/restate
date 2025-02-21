@@ -15,10 +15,10 @@ use humantime::Duration;
 use serde::Serialize;
 use serde_with::{serde_as, skip_serializing_none};
 
+use crate::PlainNodeId;
 use crate::locality::NodeLocation;
 use crate::net::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
-use crate::PlainNodeId;
 
 use super::LogFormat;
 

@@ -20,7 +20,7 @@ use restate_core::metadata_store::MetadataStoreClient;
 use restate_metadata_server::create_client;
 use restate_types::config::MetadataClientOptions;
 use restate_types::nodes_config::Role;
-use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
+use restate_types::{Version, Versioned, flexbuffers_storage_encode_decode};
 
 use crate::connection::ConnectionInfo;
 

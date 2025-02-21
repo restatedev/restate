@@ -16,12 +16,12 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, bail};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
-use restate_core::partitions::PartitionRouting;
 use restate_core::Metadata;
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
+use restate_types::identifiers::{PartitionId, PartitionKey};
 
-use crate::remote_query_scanner_client::{remote_scan_as_datafusion_stream, RemoteScannerService};
+use crate::remote_query_scanner_client::{RemoteScannerService, remote_scan_as_datafusion_stream};
 use crate::table_providers::ScanPartition;
 
 /// LocalPartitionScannerRegistry is a mapping between a datafusion registered table name

@@ -12,7 +12,7 @@
 //! License Apache-2.0 or MIT
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote, quote_spanned, ToTokens};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Member, Result, Visibility};
 

@@ -19,8 +19,9 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Write;
 use tracing::{
+    Event, Level, Subscriber,
     field::{self, Field},
-    span, Event, Level, Subscriber,
+    span,
 };
 use tracing_subscriber::field::{MakeVisitor, RecordFields, VisitFmt, VisitOutput};
 use tracing_subscriber::fmt::format::Writer;

@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyKind, TableKey};
+use crate::TableScan::FullScanPartitionKeyRange;
+use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::TableScan::FullScanPartitionKeyRange;
 use crate::{PartitionStore, TableKind, TableScanIterationDecision};
 use crate::{PartitionStoreTransaction, StorageAccess};
 use futures::Stream;

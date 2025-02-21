@@ -12,8 +12,8 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/common_descriptor.bin"));
 
 pub mod common {
-    use crate::net::{CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION};
     use crate::Merge;
+    use crate::net::{CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION};
 
     include!(concat!(env!("OUT_DIR"), "/restate.common.rs"));
 
@@ -166,7 +166,7 @@ pub mod node {
 
     use crate::GenerationalNodeId;
 
-    use crate::net::{ProtocolVersion, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION};
+    use crate::net::{CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, ProtocolVersion};
 
     use self::message::{BinaryMessage, ConnectionControl, Signal};
 

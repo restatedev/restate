@@ -24,8 +24,8 @@ use std::convert::Infallible;
 use std::task::{Context, Poll};
 
 use error::HandlerError;
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use http_body_util::Full;
 use hyper::http::HeaderValue;
 use hyper::{Request, Response};

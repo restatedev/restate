@@ -13,8 +13,8 @@
 
 use bytes::Bytes;
 use prost::Message;
-use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::CompletionResult;
+use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::{Completion, EntryIndex};
 use restate_types::service_protocol;
 use std::time::Duration;

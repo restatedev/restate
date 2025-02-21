@@ -21,13 +21,13 @@ use serde_with::serde_as;
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 
 use super::{
-    print_warning_deprecated_config_option, AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions,
+    AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions, print_warning_deprecated_config_option,
 };
+use crate::PlainNodeId;
 use crate::locality::NodeLocation;
 use crate::net::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
 use crate::retries::RetryPolicy;
-use crate::PlainNodeId;
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
 const DEFAULT_ADVERTISED_ADDRESS: &str = "http://127.0.0.1:5122/";
@@ -540,9 +540,11 @@ impl Default for MetadataClientOptions {
     fn default() -> Self {
         Self {
             kind: MetadataClientKind::Replicated {
-                addresses: vec![DEFAULT_ADVERTISED_ADDRESS
-                    .parse()
-                    .expect("valid metadata store address")],
+                addresses: vec![
+                    DEFAULT_ADVERTISED_ADDRESS
+                        .parse()
+                        .expect("valid metadata store address"),
+                ],
             },
             connect_timeout: Duration::from_secs(3).into(),
             keep_alive_interval: Duration::from_secs(5).into(),
@@ -664,7 +666,9 @@ impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
                             vec![address]
                         }
                         Some(_) => {
-                            return Err("Conflicting configuration, embedded metadata-client cannot have both `address` and `addresses`");
+                            return Err(
+                                "Conflicting configuration, embedded metadata-client cannot have both `address` and `addresses`",
+                            );
                         }
                         None => addresses,
                     },

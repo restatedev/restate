@@ -14,9 +14,9 @@ use ahash::HashMap;
 use metrics::Histogram;
 
 use restate_types::{
+    PlainNodeId,
     logs::{LogletOffset, SequenceNumber, TailState},
     replication::NodeSet,
-    PlainNodeId,
 };
 
 use super::metric_definitions::BIFROST_SEQ_STORE_DURATION;

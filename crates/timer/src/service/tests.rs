@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::service::clock::tests::ManualClock;
 use crate::service::clock::TokioClock;
+use crate::service::clock::tests::ManualClock;
 use crate::{Timer, TimerReader, TimerService};
 use futures_util::FutureExt;
 use restate_test_util::let_assert;
@@ -331,12 +331,14 @@ async fn yield_to_timer_service<
 >(
     timer_service: &mut Pin<&mut TimerService<Timer, Clock, TimerReader>>,
 ) {
-    assert!(tokio::time::timeout(
-        Duration::from_millis(10),
-        timer_service.as_mut().next_timer()
-    )
-    .await
-    .is_err());
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(10),
+            timer_service.as_mut().next_timer()
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[test(tokio::test)]

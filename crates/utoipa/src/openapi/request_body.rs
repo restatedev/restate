@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::extensions::Extensions;
-use super::{builder, set_value, Content, Required};
+use super::{Content, Required, builder, set_value};
 
 builder! {
     RequestBodyBuilder;

@@ -10,28 +10,28 @@
 
 use std::time::Duration;
 
-use metrics::{counter, Counter};
+use metrics::{Counter, counter};
 use tokio::sync::mpsc;
 use tracing::{info, trace};
 
 use restate_core::network::{NetworkError, Networking, TransportConnect};
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
+use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetRecords, LogServerRequestHeader, MaybeRecord};
 use restate_types::replicated_loglet::{EffectiveNodeSet, LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::NodeSet;
-use restate_types::PlainNodeId;
 
-use crate::loglet::util::TailOffsetWatch;
+use crate::LogEntry;
 use crate::loglet::OperationError;
+use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::metric_definitions::{
     BIFROST_REPLICATED_READ_CACHE_FILTERED, BIFROST_REPLICATED_READ_CACHE_HIT,
     BIFROST_REPLICATED_READ_TOTAL,
 };
 use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 use crate::providers::replicated_loglet::tasks::GetTrimPointTask;
-use crate::LogEntry;
 
 #[derive(Debug, thiserror::Error)]
 #[error("Impossible to read from nodeset {0:?}, all nodes are disabled")]

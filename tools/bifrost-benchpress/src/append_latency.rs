@@ -17,8 +17,8 @@ use tracing::info;
 use restate_bifrost::{Bifrost, ErrorRecoveryStrategy};
 use restate_types::logs::{LogId, WithKeys};
 
-use crate::util::{print_latencies, DummyPayload};
 use crate::Arguments;
+use crate::util::{DummyPayload, print_latencies};
 
 const LOG_ID: LogId = LogId::new(0);
 

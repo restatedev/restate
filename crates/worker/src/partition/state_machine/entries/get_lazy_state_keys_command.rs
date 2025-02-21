@@ -63,11 +63,11 @@ where
 #[cfg(test)]
 mod tests {
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
-    use crate::partition::state_machine::tests::{fixtures, matchers, TestEnv};
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::matchers::contains;
     use googletest::prelude::assert_that;
-    use restate_storage_api::state_table::StateTable;
     use restate_storage_api::Transaction;
+    use restate_storage_api::state_table::StateTable;
     use restate_types::identifiers::ServiceId;
     use restate_types::journal_v2::{GetLazyStateKeysCommand, GetLazyStateKeysCompletion};
 

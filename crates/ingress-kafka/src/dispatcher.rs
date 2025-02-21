@@ -11,10 +11,11 @@
 use crate::consumer_task::KafkaDeduplicationId;
 use bytes::Bytes;
 use restate_bifrost::Bifrost;
-use restate_core::{my_node_id, Metadata};
+use restate_core::{Metadata, my_node_id};
 use restate_storage_api::deduplication_table::DedupInformation;
+use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{
-    partitioner, InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
+    InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey, partitioner,
 };
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, SpanRelation, VirtualObjectHandlerType,
@@ -25,9 +26,8 @@ use restate_types::partition_table::PartitionTableError;
 use restate_types::schema::subscriptions::{
     EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Subscription,
 };
-use restate_types::GenerationalNodeId;
 use restate_wal_protocol::{
-    append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
+    Command, Destination, Envelope, Header, Source, append_envelope_to_bifrost,
 };
 use std::sync::Arc;
 use tracing::debug;

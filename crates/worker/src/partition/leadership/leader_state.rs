@@ -17,8 +17,8 @@ use crate::partition::state_machine::Action;
 use crate::partition::{respond_to_rpc, shuffle};
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
-use futures::{stream, FutureExt, StreamExt};
-use metrics::{counter, Counter};
+use futures::{FutureExt, StreamExt, stream};
+use metrics::{Counter, counter};
 use restate_bifrost::CommitToken;
 use restate_core::network::Reciprocal;
 use restate_core::{TaskCenter, TaskHandle, TaskId};
@@ -32,14 +32,14 @@ use restate_types::net::partition_processor::{
     SubmittedInvocationNotification,
 };
 use restate_types::time::MillisSinceEpoch;
-use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::Command;
+use restate_wal_protocol::timer::TimerKeyValue;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::future;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 use std::time::{Duration, SystemTime};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace};

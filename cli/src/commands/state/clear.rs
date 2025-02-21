@@ -10,12 +10,12 @@
 
 use std::collections::HashMap;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use crossterm::style::Stylize;
 use itertools::Itertools;
-use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
+use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_indent_table, c_println};
 
 use crate::cli_env::CliEnv;
@@ -72,7 +72,9 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
         "remove".bold().red()
     );
     c_println!("About to submit the new state mutation to the system for processing.");
-    c_println!("If there are currently active invocations, then this mutation will be enqueued to be processed after them.");
+    c_println!(
+        "If there are currently active invocations, then this mutation will be enqueued to be processed after them."
+    );
     c_println!();
     confirm_or_exit("Are you sure?")?;
 

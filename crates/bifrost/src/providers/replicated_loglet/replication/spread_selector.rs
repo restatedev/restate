@@ -191,8 +191,8 @@ mod tests {
 
     use googletest::prelude::*;
 
-    use restate_types::nodes_config::StorageState;
     use restate_types::PlainNodeId;
+    use restate_types::nodes_config::StorageState;
 
     use crate::providers::replicated_loglet::test_util::generate_logserver_nodes_config;
 

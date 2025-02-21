@@ -20,9 +20,9 @@ use restate_types::identifiers::ServiceId;
 use restate_types::invocation::InvocationQuery;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 
-use super::path_parsing::WorkflowRequestType;
 use super::Handler;
 use super::HandlerError;
+use super::path_parsing::WorkflowRequestType;
 use crate::RequestDispatcher;
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
@@ -114,11 +114,11 @@ where
         {
             Ok(GetInvocationOutputResponse::Ready(out)) => out,
             Ok(GetInvocationOutputResponse::NotFound) => {
-                return Err(HandlerError::InvocationNotFound)
+                return Err(HandlerError::InvocationNotFound);
             }
             Ok(GetInvocationOutputResponse::NotReady) => return Err(HandlerError::NotReady),
             Ok(GetInvocationOutputResponse::NotSupported) => {
-                return Err(HandlerError::UnsupportedGetOutput)
+                return Err(HandlerError::UnsupportedGetOutput);
             }
             Err(e) => {
                 warn!(

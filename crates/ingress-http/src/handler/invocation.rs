@@ -13,9 +13,9 @@ use http::{Method, Request, Response};
 use http_body_util::Full;
 use tracing::warn;
 
-use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
 use super::Handler;
 use super::HandlerError;
+use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
 use crate::RequestDispatcher;
 use restate_core::network::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
@@ -139,11 +139,11 @@ where
         {
             Ok(GetInvocationOutputResponse::Ready(out)) => out,
             Ok(GetInvocationOutputResponse::NotFound) => {
-                return Err(HandlerError::InvocationNotFound)
+                return Err(HandlerError::InvocationNotFound);
             }
             Ok(GetInvocationOutputResponse::NotReady) => return Err(HandlerError::NotReady),
             Ok(GetInvocationOutputResponse::NotSupported) => {
-                return Err(HandlerError::UnsupportedGetOutput)
+                return Err(HandlerError::UnsupportedGetOutput);
             }
             Err(e) => {
                 warn!(

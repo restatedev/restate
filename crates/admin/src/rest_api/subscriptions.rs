@@ -17,7 +17,7 @@ use restate_types::schema::subscriptions::{ListSubscriptionFilter, SubscriptionV
 use axum::extract::Query;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::{http, Json};
+use axum::{Json, http};
 use okapi_operation::*;
 use restate_errors::warn_it;
 use restate_types::identifiers::SubscriptionId;

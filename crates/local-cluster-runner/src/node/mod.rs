@@ -11,12 +11,12 @@
 use crate::random_socket_address;
 use arc_swap::ArcSwapOption;
 use enumset::EnumSet;
-use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
+use futures::{FutureExt, Stream, StreamExt, TryStreamExt, stream};
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
 use restate_core::network::net_util::create_tonic_channel;
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest as ProtoProvisionClusterRequest;
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::config::{MetadataServerKind, RaftOptions};
 use restate_types::logs::metadata::ProviderConfiguration;
@@ -24,12 +24,12 @@ use restate_types::partition_table::PartitionReplication;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::retries::RetryPolicy;
 use restate_types::{
+    PlainNodeId,
     config::{Configuration, MetadataClientKind},
     errors::GenericError,
     metadata_store::keys::NODES_CONFIG_KEY,
     net::{AdvertisedAddress, BindAddress},
     nodes_config::{NodesConfiguration, Role},
-    PlainNodeId,
 };
 use rev_lines::RevLines;
 use serde::{Deserialize, Serialize};
@@ -221,11 +221,13 @@ impl Node {
             nodes.push(node);
         }
 
-        let node_addresses = vec![nodes
-            .first()
-            .expect("to have at least one node")
-            .advertised_address()
-            .clone()];
+        let node_addresses = vec![
+            nodes
+                .first()
+                .expect("to have at least one node")
+                .advertised_address()
+                .clone(),
+        ];
 
         // update nodes with the addresses of the other nodes
         for node in &mut nodes {

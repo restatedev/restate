@@ -8,20 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
-const ENCODE_ERR_MSG: &str =
-    "Failure during encoding a (transient) queue segment to disk. This is an unrecoverable failure at this point.";
+const ENCODE_ERR_MSG: &str = "Failure during encoding a (transient) queue segment to disk. This is an unrecoverable failure at this point.";
 
-const READ_ERR_MSG: &str =
-"Failure during reading a (transient) queue segment from disk. This is an unrecoverable failure at this point.";
+const READ_ERR_MSG: &str = "Failure during reading a (transient) queue segment from disk. This is an unrecoverable failure at this point.";
 
-const DELETE_ERR_MSG: &str =
-    "Failure during the removal of a segment queue file. This is an unrecoverable failure at this point.";
+const DELETE_ERR_MSG: &str = "Failure during the removal of a segment queue file. This is an unrecoverable failure at this point.";
 
 pub(crate) async fn consume_segment_infallible<T: DeserializeOwned + Send + 'static>(
     mut base_bath: PathBuf,

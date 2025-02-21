@@ -13,14 +13,14 @@ use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
 
 use bytestring::ByteString;
-use http::header::{HeaderName, HeaderValue};
 use http::Uri;
+use http::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
-use crate::schema::service::ServiceMetadata;
 use crate::schema::Schema;
+use crate::schema::service::ServiceMetadata;
 use crate::time::MillisSinceEpoch;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]

@@ -24,7 +24,7 @@ use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::Cluste
 use restate_admin::cluster_controller::protobuf::{
     ClusterStateRequest, CreatePartitionSnapshotRequest, DescribeLogRequest, TrimLogRequest,
 };
-use restate_core::network::net_util::{create_tonic_channel, CommonClientConnectionOptions};
+use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
@@ -33,8 +33,8 @@ use restate_types::config::{LogFormat, MetadataClientKind};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
 use restate_types::logs::{LogId, Lsn};
-use restate_types::protobuf::cluster::node_state::State;
 use restate_types::protobuf::cluster::RunMode;
+use restate_types::protobuf::cluster::node_state::State;
 use restate_types::retries::RetryPolicy;
 use restate_types::{config::Configuration, nodes_config::Role};
 
@@ -205,12 +205,14 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
 
     // todo(pavel): promote node 3 to be the leader for partition 0 and invoke the service again
     // right now, all we are asserting is that the new node is applying newly appended log records
-    assert!(http_client
-        .post(ingress_url)
-        .send()
-        .await?
-        .status()
-        .is_success());
+    assert!(
+        http_client
+            .post(ingress_url)
+            .send()
+            .await?
+            .status()
+            .is_success()
+    );
     tokio::time::timeout(
         Duration::from_secs(5),
         applied_lsn_converged(&mut client, 3, PartitionId::from(0)),

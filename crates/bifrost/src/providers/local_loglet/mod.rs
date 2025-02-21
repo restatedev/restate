@@ -19,12 +19,12 @@ mod record_format;
 
 pub use self::provider::Factory;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use metrics::{counter, histogram, Histogram};
+use metrics::{Histogram, counter, histogram};
 use restate_types::logs::metadata::ProviderKind;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
@@ -37,12 +37,12 @@ use self::log_store::RocksDbLogStore;
 use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
+use crate::Result;
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
-use crate::Result;
 
 #[derive(derive_more::Debug)]
 struct LocalLoglet {
@@ -287,7 +287,7 @@ impl Loglet for LocalLoglet {
 mod tests {
     use futures::TryStreamExt;
     use googletest::prelude::eq;
-    use googletest::{assert_that, elements_are, IntoTestResult};
+    use googletest::{IntoTestResult, assert_that, elements_are};
     use test_log::test;
 
     use crate::loglet::Loglet;
@@ -295,8 +295,8 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
-    use restate_types::logs::metadata::{LogletParams, ProviderKind};
     use restate_types::logs::Keys;
+    use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
     use super::*;
 

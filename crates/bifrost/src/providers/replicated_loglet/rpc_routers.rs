@@ -11,8 +11,8 @@
 // todo(asoli): remove once this is used
 #![allow(dead_code)]
 
-use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::MessageRouterBuilder;
+use restate_core::network::rpc_router::RpcRouter;
 use restate_types::net::log_server::{
     GetDigest, GetLogletInfo, GetRecords, Release, Seal, Store, Trim, WaitForTail,
 };

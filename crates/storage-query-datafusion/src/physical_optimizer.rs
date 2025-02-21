@@ -10,13 +10,13 @@
 
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::config::ConfigOptions;
-use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExprRef;
+use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::joins::{
     HashJoinExec, StreamJoinPartitionMode, SymmetricHashJoinExec,
 };
-use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
 #[derive(Debug)]

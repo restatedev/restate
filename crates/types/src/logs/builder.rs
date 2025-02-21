@@ -16,8 +16,8 @@ use super::metadata::{
     ProviderKind, SegmentIndex,
 };
 use super::{LogId, Lsn};
-use crate::replicated_loglet::ReplicatedLogletParams;
 use crate::Version;
+use crate::replicated_loglet::ReplicatedLogletParams;
 
 #[derive(Debug, Default, Clone)]
 pub struct LogsBuilder {
@@ -242,8 +242,8 @@ impl Deref for ChainBuilder<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::logs::metadata::{LogletParams, MaybeSegment, ProviderKind, Segment};
     use crate::logs::SequenceNumber;
+    use crate::logs::metadata::{LogletParams, MaybeSegment, ProviderKind, Segment};
     use crate::{Version, Versioned};
     use googletest::prelude::*;
 

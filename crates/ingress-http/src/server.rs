@@ -17,7 +17,7 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
-use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
+use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
