@@ -240,6 +240,6 @@ jobs:
       pull-requests: write
       actions: read
     needs: docker
-    uses: restatedev/jepsen/.github/workflows/jepsen.yml@main
+    uses: restatedev/jepsen/.github/workflows/jepsen.yml@chore/workflow-call
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
