@@ -248,6 +248,6 @@ jobs:
     #     # Co-locate the cluster with WarpBuild:
     #     aws-region: us-east-1
     #     role-to-assume: arn:aws:iam::339713187748:role/github-restatedev-jepsen-actions-role
-    - uses: restatedev/jepsen@b78acfac89664f3a5c7c2922247f4a497b806e82
+    - uses: restatedev/jepsen@action
       with:
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
