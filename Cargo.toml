@@ -87,6 +87,9 @@ async-trait = "0.1.73"
 axum = { version = "0.7.9", default-features = false }
 aws-config = "1.5.10"
 aws-credential-types = "1.2.1"
+aws-smithy-async = {version = "1.2.1", default-features = false}
+aws-smithy-runtime-api = "1.7.3"
+aws-smithy-types = "1.2.9"
 base64 = "0.22"
 bitflags = { version = "2.6.0" }
 bytes = { version = "1.7", features = ["serde"] }
