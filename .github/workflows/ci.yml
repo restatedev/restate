@@ -241,13 +241,14 @@ jobs:
       pull-requests: write
       actions: read
       id-token: write
-    needs: docker
+    # needs: docker
     steps:
     # - uses: aws-actions/configure-aws-credentials@v4
     #   with:
     #     # Co-locate the cluster with WarpBuild:
     #     aws-region: us-east-1
     #     role-to-assume: arn:aws:iam::339713187748:role/github-restatedev-jepsen-actions-role
-    - uses: restatedev/jepsen@action
+    - uses: restatedev/jepsen/.github/actions/run-tests@action
       with:
-        restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+        #restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+        restatePr: 2770
