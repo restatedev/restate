@@ -863,7 +863,7 @@ impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
                     // detailed underlying cause at WARN level so we don't need to do it again here
                     object_store::Error::Unauthenticated {
                         path: "<n/a>".to_string(),
-                        source: e.into(),
+                        source: e,
                     }
                 })?;
 
