@@ -243,10 +243,19 @@ jobs:
       id-token: write
     # needs: docker
     steps:
+    - name: Print environment variables
+      run: env
     - name: Debug OIDC token
       run: |
         echo "GitHub Actions OIDC token claims:"
-        curl -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq .
+        if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ] || [ -z "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          echo "Error: OIDC token request URL or token is missing"
+          env | grep ACTIONS_ID_TOKEN
+          exit 1
+        fi
+        curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq .
+      env:
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Optional, but typically not needed for OIDC
     - uses: aws-actions/configure-aws-credentials@v4
       with:
         # Co-locate the cluster with WarpBuild:
