@@ -13,6 +13,9 @@ on:
     branches:
       - main
 
+permissions:
+  id-token: write
+
 jobs:
   workspace-hack-check:
     name: Check workspace-hack
