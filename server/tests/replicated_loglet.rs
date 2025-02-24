@@ -25,11 +25,13 @@ mod tests {
     use tokio::task::{JoinHandle, JoinSet};
     use tokio_util::sync::CancellationToken;
 
+    use super::common::replicated_loglet::run_in_test_env;
     use restate_bifrost::{
         ErrorRecoveryStrategy,
         loglet::{AppendError, FindTailOptions},
     };
     use restate_core::{Metadata, TaskCenterFutureExt};
+    use restate_types::live::{LiveLoad, LiveLoadExt};
     use restate_types::{
         GenerationalNodeId, Version,
         config::Configuration,
@@ -42,8 +44,6 @@ mod tests {
         storage::PolyBytes,
         time::NanosSinceEpoch,
     };
-
-    use super::common::replicated_loglet::run_in_test_env;
 
     fn record_from_keys(data: &str, keys: Keys) -> Record {
         Record::from_parts(

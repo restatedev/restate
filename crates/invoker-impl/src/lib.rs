@@ -270,7 +270,7 @@ where
 
     pub async fn run(
         self,
-        mut updateable_options: impl LiveLoad<InvokerOptions> + Send + 'static,
+        mut updateable_options: impl LiveLoad<Live = InvokerOptions>,
     ) -> anyhow::Result<()> {
         debug!("Starting the invoker");
         let Service {

@@ -12,22 +12,21 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use enum_map::EnumMap;
-use restate_types::config::Configuration;
-use tokio::time::Instant;
-use tracing::{info, instrument, warn};
-
-use restate_core::{Metadata, MetadataKind, MetadataWriter, TargetVersion};
-use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
-use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
-use restate_types::storage::StorageEncode;
-
 use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
 use crate::loglet::{FindTailOptions, LogletProvider, OperationError};
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
 use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
+use enum_map::EnumMap;
+use restate_core::{Metadata, MetadataKind, MetadataWriter, TargetVersion};
+use restate_types::config::Configuration;
+use restate_types::live::LiveLoadExt;
+use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
+use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
+use restate_types::storage::StorageEncode;
+use tokio::time::Instant;
+use tracing::{info, instrument, warn};
 
 /// The strategy to use when bifrost fails to append or when it observes
 /// a sealed loglet while it's tailing a log.
@@ -93,8 +92,9 @@ impl Bifrost {
 
         use crate::BifrostService;
 
-        let config = Configuration::updateable();
-        let bifrost_svc = BifrostService::new(metadata_writer).enable_local_loglet(&config);
+        let config = Configuration::live();
+        let bifrost_svc = BifrostService::new(metadata_writer)
+            .enable_local_loglet(config.map(|config| &config.bifrost.local).boxed());
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background

@@ -38,7 +38,8 @@ use restate_types::config::{
 };
 use restate_types::errors::{GenericError, MaybeRetryableError};
 use restate_types::health::HealthStatus;
-use restate_types::live::Live;
+use restate_types::live::LiveLoadExt;
+use restate_types::live::{Live, LiveLoad};
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
@@ -202,19 +203,15 @@ pub struct ProvisionRequest {
 }
 
 pub async fn create_metadata_server_and_client(
-    config: Live<Configuration>,
+    mut config: Live<Configuration>,
     health_status: HealthStatus<MetadataServerStatus>,
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<(BoxedMetadataServer, MetadataStoreClient)> {
     metric_definitions::describe_metrics();
-    let rocksdb_options = config
-        .clone()
-        .map(|config| &config.metadata_server.rocksdb)
-        .boxed();
-    let config = config.pinned();
-    match config.metadata_server.kind() {
+    let mut metadata_server_options = config.clone().map(|config| &config.metadata_server);
+    match metadata_server_options.live_load().kind() {
         MetadataServerKind::Local => {
-            LocalMetadataServer::create(&config.metadata_server, rocksdb_options, health_status)
+            LocalMetadataServer::create(metadata_server_options, health_status)
                 .await
                 .map_err(anyhow::Error::from)
                 .map(|server| {
@@ -223,10 +220,11 @@ pub async fn create_metadata_server_and_client(
                 })
         }
         MetadataServerKind::Raft { .. } => {
-            RaftMetadataServer::create(rocksdb_options, health_status, server_builder)
+            RaftMetadataServer::create(metadata_server_options, health_status, server_builder)
                 .await
                 .map_err(anyhow::Error::from)
                 .and_then(|server| {
+                    let config = config.live_load();
                     let metadata_client_options = config.common.metadata_client.clone();
                     let backoff_policy = metadata_client_options.backoff_policy.clone();
 

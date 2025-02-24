@@ -56,6 +56,7 @@ use super::live::LiveLoad;
 use crate::PlainNodeId;
 use crate::errors::GenericError;
 use crate::live::Live;
+use crate::live::LiveLoadExt;
 use crate::nodes_config::Role;
 
 /// Overrides production profile
@@ -198,6 +199,13 @@ impl Configuration {
         f(&CONFIGURATION.load())
     }
 
+    pub async fn with_current_async<F, R>(f: F) -> R
+    where
+        F: AsyncFnOnce(&Configuration) -> R,
+    {
+        f(&CONFIGURATION.load()).await
+    }
+
     /// The best way to access live when holding a mutable [`LiveLoad`] is
     /// viable.
     ///
@@ -206,37 +214,17 @@ impl Configuration {
     /// exclusive reference. This should be the preferred method for accessing the live value.
     /// Avoid using [`Self::with_current`] or [`Self::current`] in tight loops. Instead, get a new live value,
     /// and pass it down to the loop by value for very efficient access.
-    pub fn live() -> impl LiveLoad<Self> {
+    pub fn live() -> Live<Self> {
         Live::from(CONFIGURATION.clone())
-    }
-
-    /// The best way to access an updateable when holding a mutable Updateable is
-    /// viable.
-    ///
-    /// ~10% slower than `snapshot()` to create (YMMV), load() is as fast as accessing local objects,
-    /// and will always load the latest configuration reference. The downside is that `load()` requires
-    /// exclusive reference. This should be the preferred method for accessing the updateable, but
-    /// avoid using `to_updateable()` or `snapshot()` in tight loops. Instead, get a new updateable,
-    /// and pass it down to the loop by value for very efficient access.
-    pub fn updateable() -> Live<Self> {
-        Live::from(CONFIGURATION.clone())
-    }
-
-    pub fn updateable_common() -> impl LiveLoad<CommonOptions> {
-        Self::updateable().map(|c| &c.common)
-    }
-
-    pub fn updateable_worker() -> impl LiveLoad<WorkerOptions> {
-        Self::updateable().map(|c| &c.worker)
     }
 
     /// Create an updateable that projects a part of the config
-    pub fn mapped_updateable<F, U>(f: F) -> impl LiveLoad<U>
+    pub fn map_live<F, U>(f: F) -> impl LiveLoad<Live = U>
     where
-        F: FnMut(&Configuration) -> &U + 'static + Clone,
+        F: FnMut(&Configuration) -> &U + Send + Sync + 'static + Clone,
         U: Clone,
     {
-        Configuration::updateable().map(f)
+        Configuration::live().map(f)
     }
 
     pub fn watcher() -> ConfigWatch {

@@ -46,7 +46,7 @@ use restate_storage_api::service_status_table::{
 };
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_test_util::matchers::*;
-use restate_types::config::{CommonOptions, WorkerOptions};
+use restate_types::config::{CommonOptions, StorageOptions};
 use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
 use restate_types::identifiers::{
     AwakeableIdentifier, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
@@ -61,7 +61,7 @@ use restate_types::journal::{
     CompleteAwakeableEntry, Completion, CompletionResult, EntryResult, InvokeRequest,
 };
 use restate_types::journal::{Entry, EntryType};
-use restate_types::live::{Constant, Live};
+use restate_types::live::Constant;
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::{HashMap, HashSet};
 use test_log::test;
@@ -121,24 +121,20 @@ impl TestEnv {
             }).with_test_writer().try_init();
 
         RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let worker_options = Live::from_value(WorkerOptions::default());
+        let storage_options = StorageOptions::default();
         info!(
             "Using RocksDB temp directory {}",
-            worker_options.pinned().storage.data_dir().display()
+            storage_options.data_dir().display()
         );
-        let manager = PartitionStoreManager::create(
-            worker_options.clone().map(|c| &c.storage),
-            worker_options.clone().map(|c| &c.storage.rocksdb).boxed(),
-            &[],
-        )
-        .await
-        .unwrap();
+        let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()), &[])
+            .await
+            .unwrap();
         let rocksdb_storage = manager
             .open_partition_store(
                 PartitionId::MIN,
                 RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
                 OpenMode::CreateIfMissing,
-                &worker_options.pinned().storage.rocksdb,
+                &storage_options.rocksdb,
             )
             .await
             .unwrap();

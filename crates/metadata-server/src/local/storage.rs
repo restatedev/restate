@@ -20,7 +20,7 @@ use restate_rocksdb::{
 };
 use restate_types::Version;
 use restate_types::config::{MetadataServerOptions, RocksDbOptions, data_dir};
-use restate_types::live::BoxedLiveLoad;
+use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use rocksdb::{
     BoundColumnFamily, DBCompressionType, Error, IteratorMode, ReadOptions, WriteBatch,
@@ -31,29 +31,31 @@ use std::sync::Arc;
 
 pub struct RocksDbStorage {
     rocksdb: Arc<RocksDb>,
-    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    rocksdb_options: BoxLiveLoad<RocksDbOptions>,
     buffer: BytesMut,
 }
 
 impl RocksDbStorage {
     pub async fn create(
-        options: &MetadataServerOptions,
-        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        mut options: impl LiveLoad<Live = MetadataServerOptions> + 'static,
     ) -> Result<Self, RocksError> {
         let data_dir = RocksDbStorage::data_dir();
         let db_name = DbName::new(DB_NAME);
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(KV_PAIRS)];
-        let db_spec = DbSpecBuilder::new(db_name.clone(), data_dir, db_options(options))
+        let live_options = options.live_load();
+
+        let db_spec = DbSpecBuilder::new(db_name.clone(), data_dir, db_options(live_options))
             .add_cf_pattern(
                 CfPrefixPattern::ANY,
-                cf_options(options.rocksdb_memory_budget()),
+                cf_options(live_options.rocksdb_memory_budget()),
             )
             .ensure_column_families(cfs)
             .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
             .build()
             .expect("valid spec");
 
+        let rocksdb_options = options.map(|config| &config.rocksdb);
         let _db = db_manager.open_db(rocksdb_options.clone(), db_spec).await?;
         let rocksdb = db_manager
             .get_db(db_name)
@@ -61,7 +63,7 @@ impl RocksDbStorage {
 
         Ok(Self {
             rocksdb,
-            rocksdb_options,
+            rocksdb_options: rocksdb_options.boxed(),
             buffer: BytesMut::default(),
         })
     }

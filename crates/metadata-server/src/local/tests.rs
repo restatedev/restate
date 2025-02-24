@@ -16,11 +16,9 @@ use test_log::test;
 use restate_core::network::FailingConnector;
 use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
-use restate_types::config::{
-    Configuration, MetadataServerOptions, RocksDbOptions, reset_base_temp_dir_and_retain,
-};
+use restate_types::config::{Configuration, MetadataServerOptions, reset_base_temp_dir_and_retain};
 use restate_types::health::HealthStatus;
-use restate_types::live::{BoxedLiveLoad, Live};
+use restate_types::live::{Constant, LiveLoad, LiveLoadExt};
 use restate_types::{Version, Versioned};
 
 use crate::local::{LocalMetadataServer, data_dir};
@@ -205,13 +203,8 @@ async fn durable_storage() -> anyhow::Result<()> {
     // reset RocksDbManager to allow restarting the metadata store
     RocksDbManager::get().reset().await?;
 
-    let metadata_store_opts = opts.clone();
-    let metadata_store_opts = Live::from_value(metadata_store_opts);
-    let client = start_metadata_server(
-        &metadata_store_opts.pinned(),
-        metadata_store_opts.map(|c| &c.rocksdb).boxed(),
-    )
-    .await?;
+    let metadata_store_opts = Constant::new(opts.clone());
+    let client = start_metadata_server(metadata_store_opts).await?;
 
     // validate data
     for key in 1u32..=10 {
@@ -244,29 +237,22 @@ async fn create_test_environment(
     };
 
     restate_types::config::set_current_config(config.clone());
-    let config = Live::from_value(config);
+    let config = Constant::new(config);
     let env = TestCoreEnvBuilder::with_incoming_only_connector()
         .build()
         .await;
 
     RocksDbManager::init(config.clone().map(|c| &c.common));
 
-    let client = start_metadata_server(
-        &config.pinned().metadata_server,
-        config.clone().map(|c| &c.metadata_server.rocksdb).boxed(),
-    )
-    .await?;
+    let client = start_metadata_server(config.map(|config| &config.metadata_server)).await?;
 
     Ok((client, env))
 }
 
 async fn start_metadata_server(
-    opts: &MetadataServerOptions,
-    updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    opts: impl LiveLoad<Live = MetadataServerOptions> + 'static,
 ) -> anyhow::Result<MetadataStoreClient> {
-    let server =
-        LocalMetadataServer::create(opts, updateables_rocksdb_options, HealthStatus::default())
-            .await?;
+    let server = LocalMetadataServer::create(opts, HealthStatus::default()).await?;
 
     let client = server.client();
 

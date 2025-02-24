@@ -113,7 +113,7 @@ where
     // this will still respect LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true
     let base_dir: MaybeTempDir = tempfile::tempdir()?.into();
 
-    RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+    RocksDbManager::init(Configuration::map_live(|c| &c.common));
 
     let mut cluster = Cluster::builder()
         .base_dir(base_dir.as_path().to_owned())

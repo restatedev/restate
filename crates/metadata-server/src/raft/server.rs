@@ -56,12 +56,10 @@ use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{
     Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind, cancellation_watcher,
 };
-use restate_types::config::{
-    Configuration, MetadataServerKind, MetadataServerOptions, RocksDbOptions,
-};
+use restate_types::config::{Configuration, MetadataServerKind, MetadataServerOptions};
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
-use restate_types::live::{BoxedLiveLoad, Constant};
+use restate_types::live::{Constant, LiveLoad};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
@@ -161,7 +159,7 @@ pub struct RaftMetadataServer {
 
 impl RaftMetadataServer {
     pub async fn create(
-        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        options: impl LiveLoad<Live = MetadataServerOptions> + 'static,
         health_status: HealthStatus<MetadataServerStatus>,
         server_builder: &mut NetworkServerBuilder,
     ) -> Result<Self, BuildError> {
@@ -172,10 +170,7 @@ impl RaftMetadataServer {
         let (join_cluster_tx, join_cluster_rx) = mpsc::channel(1);
         let (status_tx, status_rx) = watch::channel(MetadataServerSummary::default());
 
-        let mut metadata_server_options =
-            Configuration::updateable().map(|configuration| &configuration.metadata_server);
-        let storage =
-            RocksDbStorage::create(metadata_server_options.live_load(), rocksdb_options).await?;
+        let storage = RocksDbStorage::create(options).await?;
 
         // make sure that the storage is initialized with a storage id to be able to detect disk losses
         if let Some(storage_marker) = storage
@@ -429,13 +424,9 @@ impl RaftMetadataServer {
     async fn load_initial_state_from_local_metadata_server(
         &mut self,
     ) -> anyhow::Result<KvMemoryStorage> {
-        let local_metadata_server_options = MetadataServerOptions::default();
-
-        let mut local_storage = local::storage::RocksDbStorage::create(
-            &local_metadata_server_options,
-            Constant::new(RocksDbOptions::default()).boxed(),
-        )
-        .await?;
+        let mut local_storage =
+            local::storage::RocksDbStorage::create(Constant::new(MetadataServerOptions::default()))
+                .await?;
 
         // Try to migrate older nodes configuration versions
         migrate_nodes_configuration(&mut local_storage).await?;

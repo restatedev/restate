@@ -27,7 +27,7 @@ use restate_rocksdb::{
 };
 use restate_types::config::{RocksDbOptions, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
-use restate_types::live::{BoxedLiveLoad, LiveLoad};
+use restate_types::live::{LiveLoad, LiveLoadExt};
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -53,8 +53,7 @@ struct PartitionLookup {
 
 impl PartitionStoreManager {
     pub async fn create(
-        mut storage_opts: impl LiveLoad<StorageOptions> + Send + 'static,
-        updateable_opts: BoxedLiveLoad<RocksDbOptions>,
+        mut storage_opts: impl LiveLoad<Live = StorageOptions> + 'static,
         initial_partition_set: &[(PartitionId, RangeInclusive<PartitionKey>)],
     ) -> Result<Self, RocksError> {
         let options = storage_opts.live_load();
@@ -75,7 +74,9 @@ impl PartitionStoreManager {
             .expect("valid spec");
 
         let manager = RocksDbManager::get();
-        let raw_db = manager.open_db(updateable_opts, db_spec).await?;
+        let raw_db = manager
+            .open_db(storage_opts.map(|opts| &opts.rocksdb), db_spec)
+            .await?;
 
         let rocksdb = manager.get_db(DbName::new(DB_NAME)).unwrap();
 

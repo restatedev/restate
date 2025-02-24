@@ -22,7 +22,7 @@ use restate_core::{MetadataBuilder, TaskCenter, TaskKind, cancellation_token};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
     CommonOptions, Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
-    MetadataServerOptions, RaftOptions, RocksDbOptions, set_current_config,
+    MetadataServerOptions, RaftOptions, set_current_config,
 };
 use restate_types::health::Health;
 use restate_types::live::Constant;
@@ -53,10 +53,9 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     RocksDbManager::init(Constant::new(CommonOptions::default()));
 
     // initialize the local storage with some data that we can migrate
-    let mut local_storage = crate::local::storage::RocksDbStorage::create(
-        &MetadataServerOptions::default(),
-        Constant::new(RocksDbOptions::default()).boxed(),
-    )
+    let mut local_storage = crate::local::storage::RocksDbStorage::create(Constant::new(
+        MetadataServerOptions::default(),
+    ))
     .await?;
 
     let my_generation = 1;
@@ -116,7 +115,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     let health = Health::default();
 
     let metadata_server = RaftMetadataServer::create(
-        Constant::new(RocksDbOptions::default()).boxed(),
+        Constant::new(MetadataServerOptions::default()),
         health.metadata_server_status(),
         &mut server_builder,
     )

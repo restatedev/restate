@@ -17,9 +17,9 @@ use restate_core::metadata_store::{
 };
 use restate_core::{MetadataWriter, ShutdownError, cancellation_watcher};
 use restate_rocksdb::RocksError;
-use restate_types::config::{Configuration, MetadataServerOptions, RocksDbOptions};
+use restate_types::config::{Configuration, MetadataServerOptions};
 use restate_types::health::HealthStatus;
-use restate_types::live::BoxedLiveLoad;
+use restate_types::live::LiveLoad;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration};
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -41,14 +41,13 @@ pub struct LocalMetadataServer {
 
 impl LocalMetadataServer {
     pub async fn create(
-        options: &MetadataServerOptions,
-        updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        mut options: impl LiveLoad<Live = MetadataServerOptions> + 'static,
         health_status: HealthStatus<MetadataServerStatus>,
     ) -> Result<Self, RocksError> {
         health_status.update(MetadataServerStatus::StartingUp);
-        let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
+        let (request_tx, request_rx) = mpsc::channel(options.live_load().request_queue_length());
 
-        let storage = RocksDbStorage::create(options, updateable_rocksdb_options).await?;
+        let storage = RocksDbStorage::create(options).await?;
 
         Ok(Self {
             storage,

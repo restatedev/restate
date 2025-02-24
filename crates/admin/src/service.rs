@@ -78,7 +78,7 @@ where
 
     pub async fn run(
         self,
-        mut updateable_config: impl LiveLoad<AdminOptions> + Send + 'static,
+        mut updateable_config: impl LiveLoad<Live = AdminOptions>,
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
 

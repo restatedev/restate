@@ -52,6 +52,7 @@ use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
+use restate_types::live::LiveLoadExt;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::metadata::MetadataKind;
@@ -231,7 +232,8 @@ impl PartitionProcessorManager {
         let watchdog = PersistedLogLsnWatchdog::new(
             self.updateable_config
                 .clone()
-                .map(|config| &config.worker.storage),
+                .map(|config| &config.worker.storage)
+                .boxed(),
             self.partition_store_manager.clone(),
             persisted_lsns_tx,
         );
@@ -1093,7 +1095,7 @@ mod tests {
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StorageOptions};
+    use restate_types::config::{CommonOptions, Configuration, StorageOptions};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::{Constant, Live};
@@ -1140,7 +1142,6 @@ mod tests {
 
         let partition_store_manager = PartitionStoreManager::create(
             Constant::new(StorageOptions::default()),
-            Constant::new(RocksDbOptions::default()).boxed(),
             &[(PartitionId::MIN, 0..=PartitionKey::MAX)],
         )
         .await?;

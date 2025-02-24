@@ -186,7 +186,7 @@ where
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let mut configuration = Configuration::updateable();
+    let mut configuration = Configuration::live();
     let mut shutdown = std::pin::pin!(cancellation_watcher());
     let graceful_shutdown = GracefulShutdown::new();
     loop {

@@ -18,8 +18,8 @@ use static_assertions::const_assert;
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
-use restate_types::config::{LogServerOptions, RocksDbOptions};
-use restate_types::live::BoxedLiveLoad;
+use restate_types::config::LogServerOptions;
+use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
 
 use super::writer::LogStoreWriter;
 use super::{DATA_CF, DB_NAME, METADATA_CF};
@@ -33,14 +33,13 @@ const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
 #[derive(Clone)]
 pub struct RocksDbLogStoreBuilder {
     rocksdb: Arc<RocksDb>,
-    updateable_options: BoxedLiveLoad<LogServerOptions>,
+    updateable_options: BoxLiveLoad<LogServerOptions>,
     record_cache: RecordCache,
 }
 
 impl RocksDbLogStoreBuilder {
     pub async fn create(
-        mut updateable_options: BoxedLiveLoad<LogServerOptions>,
-        updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        mut updateable_options: impl LiveLoad<Live = LogServerOptions> + Clone + 'static,
         record_cache: RecordCache,
     ) -> Result<Self, RocksDbLogStoreError> {
         let options = updateable_options.live_load();
@@ -68,13 +67,16 @@ impl RocksDbLogStoreBuilder {
         let db_name = db_spec.name().clone();
         // todo: use the returned rocksdb object when open_db returns Arc<RocksDb>
         let _ = db_manager
-            .open_db(updateable_rocksdb_options, db_spec)
+            .open_db(
+                updateable_options.clone().map(|config| &config.rocksdb),
+                db_spec,
+            )
             .await?;
         let rocksdb = db_manager.get_db(db_name).unwrap();
 
         Ok(Self {
             rocksdb,
-            updateable_options,
+            updateable_options: updateable_options.boxed(),
             record_cache,
         })
     }

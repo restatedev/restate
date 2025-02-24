@@ -103,14 +103,14 @@ pub fn spawn_restate(config: Configuration) -> task_center::Handle {
         .into_handle();
     let mut prometheus = Prometheus::install(&config.common);
     restate_types::config::set_current_config(config.clone());
-    let updateable_config = Configuration::updateable();
+    let live_config = Configuration::live();
 
     tc.block_on(async {
         RocksDbManager::init(Constant::new(config.common));
         prometheus.start_upkeep_task();
 
         TaskCenter::spawn(TaskKind::SystemBoot, "restate", async move {
-            let node = Node::create(updateable_config, prometheus)
+            let node = Node::create(live_config, prometheus)
                 .await
                 .expect("Restate node must build");
             node.start().await

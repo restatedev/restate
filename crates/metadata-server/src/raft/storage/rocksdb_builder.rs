@@ -13,8 +13,8 @@ use restate_rocksdb::{
     CfExactPattern, CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{MetadataServerOptions, RocksDbOptions, data_dir};
-use restate_types::live::BoxedLiveLoad;
+use restate_types::config::{MetadataServerOptions, data_dir};
+use restate_types::live::{LiveLoad, LiveLoadExt};
 use rocksdb::DBCompressionType;
 use static_assertions::const_assert;
 use std::sync::Arc;
@@ -23,22 +23,22 @@ const DATA_CF_BUDGET_RATIO: f64 = 0.85;
 const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
 
 pub async fn build_rocksdb(
-    options: &MetadataServerOptions,
-    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    mut options: impl LiveLoad<Live = MetadataServerOptions> + 'static,
 ) -> Result<Arc<RocksDb>, RocksError> {
     let data_dir = data_dir(DATA_DIR);
     let db_name = DbName::new(DB_NAME);
     let db_manager = RocksDbManager::get();
     let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
+    let live_options = options.live_load();
 
-    let db_spec = DbSpecBuilder::new(db_name, data_dir, db_options(options))
+    let db_spec = DbSpecBuilder::new(db_name, data_dir, db_options(live_options))
         .add_cf_pattern(
             CfPrefixPattern::new(DATA_CF),
-            cf_data_options(options.rocksdb_memory_budget()),
+            cf_data_options(live_options.rocksdb_memory_budget()),
         )
         .add_cf_pattern(
             CfPrefixPattern::new(METADATA_CF),
-            cf_metadata_options(options.rocksdb_memory_budget()),
+            cf_metadata_options(live_options.rocksdb_memory_budget()),
         )
         // not very important but it's to reduce the number of merges by flushing.
         // it's also a small cf so it should be quick.
@@ -49,7 +49,9 @@ pub async fn build_rocksdb(
         .expect("valid spec");
 
     let db_name = db_spec.name().clone();
-    let _ = db_manager.open_db(rocksdb_options, db_spec).await?;
+    let _ = db_manager
+        .open_db(options.map(|options| &options.rocksdb), db_spec)
+        .await?;
     Ok(db_manager
         .get_db(db_name)
         .expect("raft metadata store db is open"))

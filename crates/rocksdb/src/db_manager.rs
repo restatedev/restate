@@ -23,7 +23,7 @@ use restate_serde_util::ByteCount;
 use restate_types::config::{
     CommonOptions, Configuration, RocksDbLogLevel, RocksDbOptions, StatisticsLevel,
 };
-use restate_types::live::{BoxedLiveLoad, LiveLoad};
+use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
 
 use crate::background::ReadyStorageTask;
 use crate::{DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError, metric_definitions};
@@ -66,7 +66,7 @@ impl RocksDbManager {
     /// only run it once on program startup.
     ///
     /// Must run in task_center scope.
-    pub fn init(mut base_opts: impl LiveLoad<CommonOptions> + Send + 'static) -> &'static Self {
+    pub fn init(mut base_opts: impl LiveLoad<Live = CommonOptions> + 'static) -> &'static Self {
         // best-effort, it doesn't make concurrent access safe, but it's better than nothing.
         if let Some(manager) = DB_MANAGER.get() {
             return manager;
@@ -124,7 +124,7 @@ impl RocksDbManager {
         TaskCenter::spawn(
             TaskKind::SystemService,
             "db-manager",
-            DbWatchdog::run(Self::get(), watchdog_rx, base_opts),
+            DbWatchdog::run(Self::get(), watchdog_rx, base_opts.boxed()),
         )
         .expect("run db watchdog");
 
@@ -137,7 +137,7 @@ impl RocksDbManager {
 
     pub async fn open_db(
         &'static self,
-        mut updateable_opts: BoxedLiveLoad<RocksDbOptions>,
+        mut updateable_opts: impl LiveLoad<Live = RocksDbOptions> + 'static,
         mut db_spec: DbSpec,
     ) -> Result<Arc<rocksdb::DB>, RocksError> {
         if self
@@ -168,7 +168,7 @@ impl RocksDbManager {
             .watchdog_tx
             .send(WatchdogCommand::Register(ConfigSubscription {
                 name: name.clone(),
-                updateable_rocksdb_opts: updateable_opts,
+                updateable_rocksdb_opts: updateable_opts.boxed(),
                 last_applied_opts: options,
             }))
         {
@@ -424,7 +424,7 @@ impl RocksDbManager {
 #[allow(dead_code)]
 struct ConfigSubscription {
     name: DbName,
-    updateable_rocksdb_opts: BoxedLiveLoad<RocksDbOptions>,
+    updateable_rocksdb_opts: BoxLiveLoad<RocksDbOptions>,
     last_applied_opts: RocksDbOptions,
 }
 
@@ -432,7 +432,7 @@ struct DbWatchdog {
     manager: &'static RocksDbManager,
     cache: Cache,
     watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
-    updateable_common_opts: Box<dyn LiveLoad<CommonOptions> + Send>,
+    updateable_common_opts: BoxLiveLoad<CommonOptions>,
     current_common_opts: CommonOptions,
     subscriptions: Vec<ConfigSubscription>,
 }
@@ -441,14 +441,14 @@ impl DbWatchdog {
     pub async fn run(
         manager: &'static RocksDbManager,
         watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
-        mut updateable_common_opts: impl LiveLoad<CommonOptions> + Send + 'static,
+        mut updateable_common_opts: BoxLiveLoad<CommonOptions>,
     ) -> anyhow::Result<()> {
         let prev_opts = updateable_common_opts.live_load().clone();
         let mut watchdog = Self {
             manager,
             cache: manager.cache.clone(),
             watchdog_rx,
-            updateable_common_opts: Box::new(updateable_common_opts),
+            updateable_common_opts,
             current_common_opts: prev_opts,
             subscriptions: Vec::new(),
         };

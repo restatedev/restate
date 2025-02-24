@@ -17,8 +17,8 @@ use static_assertions::const_assert;
 use restate_rocksdb::{
     CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
-use restate_types::config::{LocalLogletOptions, RocksDbOptions};
-use restate_types::live::BoxedLiveLoad;
+use restate_types::config::LocalLogletOptions;
+use restate_types::live::{LiveLoad, LiveLoadExt};
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 
 use super::keys::{DATA_KEY_PREFIX_LENGTH, MetadataKey, MetadataKind};
@@ -65,23 +65,23 @@ pub struct RocksDbLogStore {
 
 impl RocksDbLogStore {
     pub async fn create(
-        options: &LocalLogletOptions,
-        updateable_options: BoxedLiveLoad<RocksDbOptions>,
+        mut options: impl LiveLoad<Live = LocalLogletOptions> + 'static,
     ) -> Result<Self, LogStoreError> {
         let db_manager = RocksDbManager::get();
 
         let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
 
-        let data_dir = options.data_dir();
+        let opts = options.live_load();
+        let data_dir = opts.data_dir();
 
         let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), data_dir, db_options())
             .add_cf_pattern(
                 CfExactPattern::new(DATA_CF),
-                cf_data_options(options.rocksdb_memory_budget()),
+                cf_data_options(opts.rocksdb_memory_budget()),
             )
             .add_cf_pattern(
                 CfExactPattern::new(METADATA_CF),
-                cf_metadata_options(options.rocksdb_memory_budget()),
+                cf_metadata_options(opts.rocksdb_memory_budget()),
             )
             // not very important but it's to reduce the number of merges by flushing.
             // it's also a small cf so it should be quick.
@@ -91,7 +91,9 @@ impl RocksDbLogStore {
             .expect("valid spec");
         let db_name = db_spec.name().clone();
         // todo: use the returned rocksdb object when open_db returns Arc<RocksDb>
-        let _ = db_manager.open_db(updateable_options, db_spec).await?;
+        let _ = db_manager
+            .open_db(options.map(|options| &options.rocksdb).boxed(), db_spec)
+            .await?;
         let rocksdb = db_manager.get_db(db_name).unwrap();
         Ok(Self { rocksdb })
     }

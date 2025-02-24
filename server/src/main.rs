@@ -212,7 +212,7 @@ fn main() {
 
             // Initialize rocksdb manager
             let rocksdb_manager =
-                RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+                RocksDbManager::init(Configuration::map_live(|c| &c.common));
 
             // start config watcher
             config_loader.start();
@@ -221,7 +221,7 @@ fn main() {
             let telemetry = Configuration::with_current(|config| telemetry::Telemetry::create(&config.common));
             telemetry.start();
 
-            let node = Node::create(Configuration::updateable(), prometheus).await;
+            let node = Node::create(Configuration::live(), prometheus).await;
             if let Err(err) = node {
                 handle_error(err);
             }
