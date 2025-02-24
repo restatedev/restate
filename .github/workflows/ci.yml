@@ -232,36 +232,19 @@ jobs:
         run: ./tools/scripts/verify-ui-artifact
 
   restate-jepsen:
+    if: github.event.repository.fork == false
     runs-on: warp-ubuntu-latest-arm64-4x
-    name: Run Jepsen tests
+    name: Run Restate Jepsen tests
     permissions:
       contents: read
       issues: read
       checks: write
       pull-requests: write
       actions: read
-      id-token: write
+      id-token: write # NB: can obtain OIDC tokens on behalf of the repository!
     # needs: docker
     steps:
-    - name: Print environment variables
-      run: env
-    - name: Debug OIDC token
-      run: |
-        echo "GitHub Actions OIDC token claims:"
-        if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ] || [ -z "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
-          echo "Error: OIDC token request URL or token is missing"
-          env | grep ACTIONS_ID_TOKEN
-          exit 1
-        fi
-        curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq .
-      env:
-        ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Optional, but typically not needed for OIDC
-    - uses: aws-actions/configure-aws-credentials@v4
-      with:
-        # Co-locate the cluster with WarpBuild:
-        aws-region: us-east-1
-        role-to-assume: arn:aws:iam::339713187748:role/github-restatedev-jepsen-actions-role
-    - uses: restatedev/jepsen/.github/actions/run-tests@action
+    - uses: restatedev/jepsen/.github/actions/run-tests@reusable
       with:
         #restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-        restatePr: 2770
+        restatePr: 2774
