@@ -235,7 +235,7 @@ jobs:
     # id tokens are not available on forks
     if: github.event.repository.fork == false
     runs-on: warp-ubuntu-latest-arm64-4x
-    name: Run Restate Jepsen tests
+    name: Run Jepsen tests
     concurrency:
       group: singleton
     permissions:
@@ -251,4 +251,5 @@ jobs:
       with:
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
         clusterName: restatedev_restate
+        roleArn: 'arn:aws:iam::339713187748:role/github-restatedev-jepsen-actions-role'
         testConfig: '{ "workloads": "set-vo", "nemeses": "partition-random-node", "duration": "120", "rate": "10", "concurrency": "5n", "testCount": "3" }'
