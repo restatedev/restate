@@ -242,9 +242,8 @@ jobs:
       pull-requests: write
       actions: read
       id-token: write # NB: can obtain OIDC tokens on behalf of the repository!
-    # needs: docker
+    needs: docker
     steps:
     - uses: restatedev/jepsen/.github/actions/run-tests@reusable
       with:
-        #restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-        restatePr: 2774
+        restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
