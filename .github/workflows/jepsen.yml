@@ -1,0 +1,21 @@
+name: Jepsen tests
+on:
+  pull_request:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  jepsen-tests:
+    runs-on: warp-ubuntu-latest-x64-4x
+    concurrency:
+      group: singleton
+
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::339713187748:role/github-restatedev-jepsen-actions-role
+
+      - run: aws sts get-caller-identity
