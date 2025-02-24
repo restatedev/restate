@@ -132,6 +132,16 @@ This section explains how to generate the configuration documentation and REST a
 Due to <https://github.com/intellij-rust/intellij-rust/issues/10847>, disable Rust macro expansion feature of the Rust IntelliJ plugin,
 as described here <https://plugins.jetbrains.com/plugin/8182-rust/docs/rust-project-settings.html#general-settings>.
 
+### Lua Feature Configuration in RustRover
+
+When opening the project in RustRover, the IDE automatically enables all Lua features, which causes compilation errors since these features are mutually exclusive. To fix this:
+
+1. Open [tools/service-protocol-wireshark-dissector/Cargo.toml](../../tools/service-protocol-wireshark-dissector/Cargo.toml)
+2. In RustRover's Cargo Features panel, disable all Lua features except `lua54` (the default)
+3. This ensures only one Lua version is enabled during compilation
+
+Note: Only one Lua feature (`lua51`, `lua52`, `lua53`, `lua54`, `luajit`) can be enabled at a time.
+
 ### Build the configuration documentation
 
 Requirements:
