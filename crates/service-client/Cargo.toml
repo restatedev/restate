@@ -49,10 +49,10 @@ tower-service = { version = "0.3" }
 tracing = { workspace = true }
 
 # dependencies for aws_hyper_client.rs until the aws hyper 1.0 connector supports setting nodelay...
-aws-smithy-async = {version = "1.2.1", default-features = false}
+aws-smithy-async = { workspace = true }
 aws-smithy-runtime = {version = "1.6.2", default-features = false}
-aws-smithy-runtime-api = {version = "1.7.1", default-features = false}
-aws-smithy-types = { version = "1.2.0", default-features = false}
+aws-smithy-runtime-api = { workspace = true }
+aws-smithy-types = { workspace = true }
 pin-project-lite = { workspace = true }
 
 [dev-dependencies]

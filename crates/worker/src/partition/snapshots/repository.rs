@@ -10,16 +10,17 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
-use async_trait::async_trait;
-use aws_config::default_provider::credentials::DefaultCredentialsChain;
 use aws_config::default_provider::region::DefaultRegionChain;
 use aws_config::{BehaviorVersion, Region};
-use aws_credential_types::provider::ProvideCredentials;
+use aws_smithy_runtime_api::client::identity::ResolveCachedIdentity;
+use aws_smithy_runtime_api::client::runtime_components::RuntimeComponentsBuilder;
 use bytes::BytesMut;
+use futures::FutureExt;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::path::Path as ObjectPath;
 use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
@@ -579,36 +580,24 @@ async fn create_object_store_client(
         let builder = match &options.aws_profile {
             Some(profile) => {
                 debug!(profile, "Using AWS profile for snapshot repository access");
-                let default_region = DefaultRegionChain::builder()
+
+                let sdk_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
                     .profile_name(profile)
-                    .build()
-                    .region()
+                    .load()
                     .await;
 
                 let region = options
                     .aws_region
                     .clone()
                     .map(Region::new)
-                    .or(default_region)
+                    .or_else(|| sdk_config.region().cloned())
                     .context("Unable to determine AWS region")?;
 
                 debug!(?region, ?profile, "Using AWS SDK credentials provider");
-                let credentials_provider = DefaultCredentialsChain::builder()
-                    .profile_name(profile)
-                    .region(region.clone())
-                    .build()
-                    .await;
 
                 let builder = AmazonS3Builder::new()
                     .with_region(region.to_string())
-                    .with_credentials(Arc::new(AwsSdkCredentialsProvider {
-                        credentials_provider,
-                    }));
-
-                let sdk_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
-                    .profile_name(profile)
-                    .load()
-                    .await;
+                    .with_credentials(Arc::new(AwsSdkCredentialsProvider::new(&sdk_config)?));
 
                 if let Some(endpoint_url) = sdk_config.endpoint_url() {
                     debug!(endpoint_url, "Using custom AWS endpoint override");
@@ -620,23 +609,33 @@ async fn create_object_store_client(
             }
 
             None => {
-                let default_region = DefaultRegionChain::builder().build().region().await;
-                let region = options
-                    .aws_region
-                    .clone()
-                    .map(Region::new)
-                    .or(default_region)
-                    .context("Unable to determine AWS region")?;
-
-                let builder = AmazonS3Builder::new().with_region(region.to_string());
                 if options.aws_access_key_id.is_none() {
+                    let sdk_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
+                        .load()
+                        .await;
+
+                    let region = options
+                        .aws_region
+                        .clone()
+                        .map(Region::new)
+                        .or_else(|| sdk_config.region().cloned())
+                        .context("Unable to determine AWS region")?;
+
                     debug!(?region, "Using AWS SDK credentials provider");
-                    let credentials_provider = DefaultCredentialsChain::builder().build().await;
-                    builder.with_credentials(Arc::new(AwsSdkCredentialsProvider {
-                        credentials_provider,
-                    }))
+
+                    AmazonS3Builder::new()
+                        .with_region(region.to_string())
+                        .with_credentials(Arc::new(AwsSdkCredentialsProvider::new(&sdk_config)?))
                 } else {
-                    builder
+                    let default_region = DefaultRegionChain::builder().build().region().await;
+                    let region = options
+                        .aws_region
+                        .clone()
+                        .map(Region::new)
+                        .or(default_region)
+                        .context("Unable to determine AWS region")?;
+
+                    AmazonS3Builder::new().with_region(region.to_string())
                 }
             }
         };
@@ -794,36 +793,94 @@ async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
 }
 
 #[derive(Debug)]
-struct AwsSdkCredentialsProvider<T: ProvideCredentials> {
-    credentials_provider: T,
+struct AwsSdkCredentialsProvider {
+    identity_cache: aws_smithy_runtime_api::client::identity::SharedIdentityCache,
+    identity_resolver: aws_smithy_runtime_api::client::identity::SharedIdentityResolver,
+    runtime_components: aws_smithy_runtime_api::client::runtime_components::RuntimeComponents,
+    config_bag: aws_smithy_types::config_bag::ConfigBag,
 }
 
-#[async_trait]
-impl<T> object_store::CredentialProvider for AwsSdkCredentialsProvider<T>
-where
-    T: ProvideCredentials,
-{
+impl AwsSdkCredentialsProvider {
+    fn new(config: &aws_config::SdkConfig) -> anyhow::Result<Self> {
+        let identity_cache = config
+            .identity_cache()
+            .context("Could not find AWS credentials provider")?;
+
+        let credentials_provider = config
+            .credentials_provider()
+            .context("Could not find AWS credentials provider")?;
+
+        let identity_resolver =
+            aws_smithy_runtime_api::client::identity::SharedIdentityResolver::new(
+                credentials_provider,
+            );
+
+        // runtime_components will be ignored by the credentials provider
+        // but, we still need to create one, which is really not easy.
+        // https://github.com/awslabs/aws-sdk-rust/discussions/923#discussioncomment-7471550
+        let runtime_components = RuntimeComponentsBuilder::for_tests()
+            .with_time_source(Some(aws_smithy_async::time::SystemTimeSource::new()))
+            .with_sleep_impl(Some(aws_smithy_async::rt::sleep::TokioSleep::new()))
+            .build()
+            .context("Could not build AWS runtime components")?;
+
+        Ok(Self {
+            identity_cache,
+            identity_resolver,
+            runtime_components,
+            config_bag: aws_smithy_types::config_bag::ConfigBag::base(),
+        })
+    }
+}
+
+impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
     type Credential = object_store::aws::AwsCredential;
 
-    async fn get_credential(&self) -> object_store::Result<Arc<Self::Credential>> {
-        let creds = self
-            .credentials_provider
-            .provide_credentials()
-            .await
-            .map_err(|e| {
-                // object_store's error detail rendering is not great but aws_config logs the
-                // detailed underlying cause at WARN level so we don't need to do it again here
-                object_store::Error::Unauthenticated {
-                    path: "<n/a>".to_string(),
-                    source: e.into(),
-                }
-            })?;
+    fn get_credential<'a, 'async_trait>(
+        &'a self,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = object_store::Result<Arc<Self::Credential>>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        Self: 'async_trait,
+        'a: 'async_trait,
+    {
+        async {
+            let identity = self
+                .identity_cache
+                .resolve_cached_identity(
+                    self.identity_resolver.clone(),
+                    &self.runtime_components,
+                    &self.config_bag,
+                )
+                .await
+                .map_err(|e| {
+                    // object_store's error detail rendering is not great but aws_config logs the
+                    // detailed underlying cause at WARN level so we don't need to do it again here
+                    object_store::Error::Unauthenticated {
+                        path: "<n/a>".to_string(),
+                        source: e,
+                    }
+                })?;
 
-        Ok(Arc::new(object_store::aws::AwsCredential {
-            key_id: creds.access_key_id().to_string(),
-            secret_key: creds.secret_access_key().to_string(),
-            token: creds.session_token().map(|t| t.to_string()),
-        }))
+            let creds = identity.data::<aws_credential_types::Credentials>().ok_or_else(
+                || object_store::Error::Unauthenticated {
+                    path: "<n/a>".to_string(),
+                    source: anyhow::anyhow!("wrong identity type for SigV4. Expected AWS credentials but got `{identity:?}").into(),
+                }
+            )?;
+
+            Ok(Arc::new(object_store::aws::AwsCredential {
+                key_id: creds.access_key_id().to_string(),
+                secret_key: creds.secret_access_key().to_string(),
+                token: creds.session_token().map(|t| t.to_string()),
+            }))
+        }
+        .boxed()
     }
 }
 
