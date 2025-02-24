@@ -248,3 +248,4 @@ jobs:
     - uses: restatedev/jepsen/.github/actions/run-tests@reusable
       with:
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+        testConfig: '{ "workloads": "set-vo", "nemeses": "partition-random-node", "duration": "120", "rate": "10", "concurrency": "5n", "testCount": "3" }'
