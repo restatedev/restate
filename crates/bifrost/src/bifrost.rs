@@ -18,6 +18,7 @@ use tracing::{info, instrument, warn};
 
 use restate_core::{Metadata, MetadataWriter};
 use restate_types::config::Configuration;
+use restate_types::live::LiveLoadExt;
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
 use restate_types::storage::StorageEncode;
@@ -93,8 +94,9 @@ impl Bifrost {
 
         use crate::BifrostService;
 
-        let config = Configuration::updateable();
-        let bifrost_svc = BifrostService::new(metadata_writer).enable_local_loglet(&config);
+        let config = Configuration::live();
+        let bifrost_svc = BifrostService::new(metadata_writer)
+            .enable_local_loglet(config.map(|config| &config.bifrost.local).boxed());
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background

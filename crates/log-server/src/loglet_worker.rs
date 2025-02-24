@@ -632,7 +632,7 @@ mod tests {
     use restate_core::{MetadataBuilder, TaskCenter};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
-    use restate_types::live::Live;
+    use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::{KeyFilter, Keys, Record, RecordCache};
     use restate_types::net::CURRENT_PROTOCOL_VERSION;
     use restate_types::net::ProtocolVersion;
@@ -644,7 +644,7 @@ mod tests {
     use super::LogletWorker;
 
     async fn setup() -> Result<RocksDbLogStore> {
-        let config = Live::from_value(Configuration::default());
+        let config = Constant::new(Configuration::default());
         let common_rocks_opts = config.clone().map(|c| &c.common);
         RocksDbManager::init(common_rocks_opts);
         let metadata_builder = MetadataBuilder::default();
@@ -653,8 +653,7 @@ mod tests {
         ));
         // create logstore.
         let builder = RocksDbLogStoreBuilder::create(
-            config.clone().map(|c| &c.log_server).boxed(),
-            config.map(|c| &c.log_server.rocksdb).boxed(),
+            config.map(|config| &config.log_server),
             RecordCache::new(1_000_000),
         )
         .await?;

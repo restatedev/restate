@@ -22,7 +22,7 @@ use restate_storage_api::StorageError;
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_types::config::{Configuration, StorageOptions};
 use restate_types::identifiers::PartitionId;
-use restate_types::live::LiveLoad;
+use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
 use restate_types::logs::{Lsn, SequenceNumber};
 
 /// Monitors the persisted log lsns and notifies the partition processor manager about it. The
@@ -31,7 +31,7 @@ use restate_types::logs::{Lsn, SequenceNumber};
 /// table properties to retrieve the flushed log lsn. However, this requires that we update our
 /// RocksDB binding to expose event listeners and table properties :-(
 pub struct PersistedLogLsnWatchdog {
-    configuration: Box<dyn LiveLoad<StorageOptions> + Send + Sync + 'static>,
+    configuration: BoxLiveLoad<StorageOptions>,
     partition_store_manager: PartitionStoreManager,
     watch_tx: watch::Sender<BTreeMap<PartitionId, Lsn>>,
     persisted_lsns: BTreeMap<PartitionId, Lsn>,
@@ -41,7 +41,7 @@ pub struct PersistedLogLsnWatchdog {
 
 impl PersistedLogLsnWatchdog {
     pub fn new(
-        mut configuration: impl LiveLoad<StorageOptions> + Send + Sync + 'static,
+        mut configuration: impl LiveLoad<Live = StorageOptions> + 'static,
         partition_store_manager: PartitionStoreManager,
         watch_tx: watch::Sender<BTreeMap<PartitionId, Lsn>>,
     ) -> Self {
@@ -50,7 +50,7 @@ impl PersistedLogLsnWatchdog {
         let (persist_lsn_interval, persist_lsn_threshold) = Self::create_persist_lsn(options);
 
         PersistedLogLsnWatchdog {
-            configuration: Box::new(configuration),
+            configuration: configuration.boxed(),
             partition_store_manager,
             watch_tx,
             persisted_lsns: BTreeMap::default(),
@@ -164,7 +164,7 @@ mod tests {
     use restate_storage_api::fsm_table::FsmTable;
     use restate_types::config::{CommonOptions, StorageOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey};
-    use restate_types::live::Constant;
+    use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::{Lsn, SequenceNumber};
     use std::collections::BTreeMap;
     use std::ops::RangeInclusive;
@@ -183,7 +183,6 @@ mod tests {
         let all_partition_keys = RangeInclusive::new(0, PartitionKey::MAX);
         let partition_store_manager = PartitionStoreManager::create(
             Constant::new(storage_options.clone()).boxed(),
-            Constant::new(storage_options.rocksdb.clone()).boxed(),
             &[(PartitionId::MIN, all_partition_keys.clone())],
         )
         .await?;

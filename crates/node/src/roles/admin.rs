@@ -32,6 +32,7 @@ use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::live::LiveLoadExt;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::retries::RetryPolicy;
 

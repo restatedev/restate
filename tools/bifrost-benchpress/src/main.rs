@@ -32,7 +32,7 @@ use restate_types::config::{
     Configuration, reset_base_temp_dir, reset_base_temp_dir_and_retain, set_base_temp_dir,
 };
 use restate_types::config_loader::ConfigLoaderBuilder;
-use restate_types::live::Live;
+use restate_types::live::{Live, LiveLoadExt};
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
     restate_types::config::set_current_config(config.clone());
 
     let recorder = PrometheusBuilder::new().install_recorder().unwrap();
-    let (tc, bifrost) = spawn_environment(Configuration::updateable(), 1);
+    let (tc, bifrost) = spawn_environment(Configuration::live(), 1);
     let task_center = tc.clone();
     let args = cli_args.clone();
     tc.block_on(async move {
@@ -179,7 +179,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (task_center
 
         let bifrost_svc = BifrostService::new(metadata_writer)
             .enable_in_memory_loglet()
-            .enable_local_loglet(&config);
+            .enable_local_loglet(config.map(|config| &config.bifrost.local).boxed());
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background

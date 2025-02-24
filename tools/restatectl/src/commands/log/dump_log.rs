@@ -22,6 +22,7 @@ use restate_core::network::MessageRouterBuilder;
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, TaskKind};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::Configuration;
+use restate_types::live::LiveLoadExt;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_wal_protocol::Envelope;
 
@@ -67,7 +68,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
             );
         }
 
-        let rocksdb_manager = RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+        let rocksdb_manager = RocksDbManager::init(Configuration::map_live(|c| &c.common));
         debug!("RocksDB Initialized");
 
         let metadata_builder = MetadataBuilder::default();
@@ -89,8 +90,11 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
             metadata_manager.run(),
         )?;
 
-        let bifrost_svc =
-            BifrostService::new(metadata_writer).enable_local_loglet(&Configuration::updateable());
+        let bifrost_svc = BifrostService::new(metadata_writer).enable_local_loglet(
+            Configuration::live()
+                .map(|config| &config.bifrost.local)
+                .boxed(),
+        );
 
         let bifrost = bifrost_svc.handle();
         // Ensures bifrost has initial metadata synced up before starting the worker.

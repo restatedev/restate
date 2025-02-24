@@ -19,12 +19,12 @@ use tokio_stream::StreamExt;
 use crate::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
-use restate_types::config::{CommonOptions, WorkerOptions};
+use restate_types::config::{CommonOptions, StorageOptions};
 use restate_types::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
-use restate_types::live::{Constant, Live};
+use restate_types::live::Constant;
 use restate_types::state_mut::ExternalStateMutation;
 
 mod idempotency_table_test;
@@ -48,21 +48,17 @@ async fn storage_test_environment_with_manager() -> (PartitionStoreManager, Part
     // create a rocksdb storage from options
     //
     RocksDbManager::init(Constant::new(CommonOptions::default()));
-    let worker_options = Live::from_value(WorkerOptions::default());
-    let manager = PartitionStoreManager::create(
-        worker_options.clone().map(|c| &c.storage),
-        worker_options.clone().map(|c| &c.storage.rocksdb).boxed(),
-        &[],
-    )
-    .await
-    .expect("DB storage creation succeeds");
+    let storage_options = StorageOptions::default();
+    let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()), &[])
+        .await
+        .expect("DB storage creation succeeds");
     // A single partition store that spans all keys.
     let store = manager
         .open_partition_store(
             PartitionId::MIN,
             RangeInclusive::new(0, PartitionKey::MAX - 1),
             OpenMode::CreateIfMissing,
-            &worker_options.pinned().storage.rocksdb,
+            &storage_options.rocksdb,
         )
         .await
         .expect("DB storage creation succeeds");

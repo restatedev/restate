@@ -1405,7 +1405,7 @@ mod tests {
         let mut server_builder = NetworkServerBuilder::default();
 
         let svc = Service::create(
-            Configuration::updateable(),
+            Configuration::live(),
             HealthStatus::default(),
             bifrost.clone(),
             builder.networking.clone(),

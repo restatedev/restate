@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tracing::debug;
 
-use restate_types::config::{LocalLogletOptions, RocksDbOptions};
-use restate_types::live::BoxedLiveLoad;
+use restate_types::config::LocalLogletOptions;
+use restate_types::live::BoxLiveLoad;
 use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
@@ -29,19 +29,12 @@ use crate::Error;
 use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 
 pub struct Factory {
-    options: BoxedLiveLoad<LocalLogletOptions>,
-    rocksdb_opts: BoxedLiveLoad<RocksDbOptions>,
+    options: BoxLiveLoad<LocalLogletOptions>,
 }
 
 impl Factory {
-    pub fn new(
-        options: BoxedLiveLoad<LocalLogletOptions>,
-        rocksdb_opts: BoxedLiveLoad<RocksDbOptions>,
-    ) -> Self {
-        Self {
-            options,
-            rocksdb_opts,
-        }
+    pub fn new(options: BoxLiveLoad<LocalLogletOptions>) -> Self {
+        Self { options }
     }
 }
 
@@ -53,13 +46,8 @@ impl LogletProviderFactory for Factory {
 
     async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
         metric_definitions::describe_metrics();
-        let Factory {
-            mut options,
-            rocksdb_opts,
-            // updateable_rocksdb_options,
-        } = *self;
-        let opts = options.live_load();
-        let log_store = RocksDbLogStore::create(opts, rocksdb_opts)
+        let Factory { options } = *self;
+        let log_store = RocksDbLogStore::create(options.clone())
             .await
             .map_err(OperationError::other)?;
         let log_writer = log_store.create_writer().start(options)?;

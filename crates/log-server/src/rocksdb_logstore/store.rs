@@ -20,7 +20,7 @@ use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::GenerationalNodeId;
 use restate_types::config::LogServerOptions;
 use restate_types::health::HealthStatus;
-use restate_types::live::BoxedLiveLoad;
+use restate_types::live::BoxLiveLoad;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
     Digest, DigestEntry, Gap, GetDigest, GetRecords, LogServerResponseHeader, MaybeRecord,
@@ -39,7 +39,7 @@ use crate::rocksdb_logstore::keys::DataRecordKey;
 #[derive(Clone)]
 pub struct RocksDbLogStore {
     pub(super) health_status: HealthStatus<LogServerStatus>,
-    pub(super) _updateable_options: BoxedLiveLoad<LogServerOptions>,
+    pub(super) _updateable_options: BoxLiveLoad<LogServerOptions>,
     pub(super) rocksdb: Arc<RocksDb>,
     pub(super) writer_handle: RocksDbLogWriterHandle,
 }
@@ -499,7 +499,7 @@ mod tests {
     use restate_core::TaskCenter;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
-    use restate_types::live::Live;
+    use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber};
     use restate_types::net::log_server::{
         DigestEntry, GetDigest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
@@ -512,13 +512,12 @@ mod tests {
     use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
 
     async fn setup() -> Result<RocksDbLogStore> {
-        let config = Live::from_value(Configuration::default());
+        let config = Constant::new(Configuration::default());
         let common_rocks_opts = config.clone().map(|c| &c.common);
         RocksDbManager::init(common_rocks_opts);
         // create logstore.
         let builder = RocksDbLogStoreBuilder::create(
-            config.clone().map(|c| &c.log_server).boxed(),
-            config.map(|c| &c.log_server.rocksdb).boxed(),
+            config.map(|c| &c.log_server),
             RecordCache::new(1_000_000),
         )
         .await?;

@@ -299,7 +299,7 @@ mod tests {
     use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
-    use restate_types::live::Live;
+    use restate_types::live::{Live, LiveLoadExt};
     use restate_types::logs::Keys;
     use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
@@ -330,15 +330,10 @@ mod tests {
         RocksDbManager::init(config.clone().map(|c| &c.common));
         let params = LogletParams::from("42".to_string());
 
-        let log_store = RocksDbLogStore::create(
-            &config.pinned().bifrost.local,
-            config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
-        )
-        .await?;
+        let local_loglet_config = config.map(|config| &config.bifrost.local);
+        let log_store = RocksDbLogStore::create(local_loglet_config.clone()).await?;
 
-        let log_writer = log_store
-            .create_writer()
-            .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+        let log_writer = log_store.create_writer().start(local_loglet_config)?;
 
         let loglet = Arc::new(LocalLoglet::create(
             params
@@ -367,15 +362,10 @@ mod tests {
         let config = Live::from_value(Configuration::default());
         RocksDbManager::init(config.clone().map(|c| &c.common));
 
-        let log_store = RocksDbLogStore::create(
-            &config.pinned().bifrost.local,
-            config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
-        )
-        .await?;
+        let local_loglet_config = config.map(|config| &config.bifrost.local);
+        let log_store = RocksDbLogStore::create(local_loglet_config.clone()).await?;
 
-        let log_writer = log_store
-            .create_writer()
-            .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+        let log_writer = log_store.create_writer().start(local_loglet_config)?;
 
         // Run the test 10 times
         for i in 1..=10 {

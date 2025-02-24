@@ -32,11 +32,13 @@ pub use restate_core::metadata_store::{
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
 use restate_types::config::{
-    Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind, RocksDbOptions,
+    Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
+    MetadataServerOptions,
 };
 use restate_types::errors::{ConversionError, GenericError, MaybeRetryableError};
 use restate_types::health::HealthStatus;
-use restate_types::live::{BoxedLiveLoad, Live, Pinned};
+use restate_types::live::LiveLoadExt;
+use restate_types::live::{Live, LiveLoad};
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{
@@ -201,21 +203,17 @@ pub struct ProvisionRequest {
 }
 
 pub async fn create_metadata_server_and_client(
-    config: Live<Configuration>,
+    mut config: Live<Configuration>,
     health_status: HealthStatus<MetadataServerStatus>,
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<(BoxedMetadataServer, MetadataStoreClient)> {
     metric_definitions::describe_metrics();
-    let rocksdb_options = config
-        .clone()
-        .map(|config| &config.metadata_server.rocksdb)
-        .boxed();
-    let config = config.pinned();
-    match config.metadata_server.kind() {
+    let mut metadata_server_options = config.clone().map(|config| &config.metadata_server);
+    let config = config.live_load();
+    match metadata_server_options.live_load().kind() {
         MetadataServerKind::Local => {
             match LocalMetadataServer::create(
-                &config.metadata_server,
-                rocksdb_options.clone(),
+                metadata_server_options.clone(),
                 health_status.clone(),
             )
             .await
@@ -232,7 +230,7 @@ pub async fn create_metadata_server_and_client(
                     create_raft_metadata_server_and_client(
                         health_status,
                         server_builder,
-                        rocksdb_options,
+                        metadata_server_options,
                         config,
                     )
                     .await
@@ -244,7 +242,7 @@ pub async fn create_metadata_server_and_client(
             create_raft_metadata_server_and_client(
                 health_status,
                 server_builder,
-                rocksdb_options,
+                metadata_server_options,
                 config,
             )
             .await
@@ -255,10 +253,10 @@ pub async fn create_metadata_server_and_client(
 async fn create_raft_metadata_server_and_client(
     health_status: HealthStatus<MetadataServerStatus>,
     server_builder: &mut NetworkServerBuilder,
-    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    config: Pinned<Configuration>,
+    metadata_server_options: impl LiveLoad<Live = MetadataServerOptions> + 'static,
+    config: &Configuration,
 ) -> anyhow::Result<(BoxedMetadataServer, MetadataStoreClient)> {
-    RaftMetadataServer::create(rocksdb_options, health_status, server_builder)
+    RaftMetadataServer::create(metadata_server_options, health_status, server_builder)
         .await
         .map_err(anyhow::Error::from)
         .map(|server| {
