@@ -236,6 +236,8 @@ jobs:
     if: github.event.repository.fork == false
     runs-on: warp-ubuntu-latest-arm64-4x
     name: Run Restate Jepsen tests
+    concurrency:
+      group: singleton
     permissions:
       contents: read
       issues: read
@@ -248,4 +250,5 @@ jobs:
     - uses: restatedev/jepsen/.github/actions/run-tests@reusable
       with:
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+        clusterName: restatedev_restate
         testConfig: '{ "workloads": "set-vo", "nemeses": "partition-random-node", "duration": "120", "rate": "10", "concurrency": "5n", "testCount": "3" }'
