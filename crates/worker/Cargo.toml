@@ -31,6 +31,7 @@ restate-ingress-kafka = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
 restate-metadata-server = { workspace = true }
+restate-object-store-util = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true, features = ["proto"] }
@@ -48,11 +49,6 @@ restate-wal-protocol = { workspace = true }
 anyhow = { workspace = true }
 assert2 = { workspace = true }
 async-channel = { workspace = true }
-aws-config = { workspace = true }
-aws-credential-types = { workspace = true }
-aws-smithy-runtime-api = { workspace = true }
-aws-smithy-types = { workspace = true }
-aws-smithy-async = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }

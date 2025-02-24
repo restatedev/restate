@@ -20,6 +20,14 @@ arrayvec = { version = "0.7", default-features = false, features = ["std"] }
 arrow-array = { version = "53", default-features = false, features = ["chrono-tz"] }
 arrow-cast = { version = "53", default-features = false, features = ["prettyprint"] }
 arrow-ipc = { version = "53", features = ["lz4"] }
+aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
+aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
+aws-sdk-sts = { version = "1", default-features = false, features = ["rt-tokio"] }
+aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
+aws-smithy-http = { version = "0.60", default-features = false, features = ["event-stream"] }
+aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "rt-tokio", "tls-rustls"] }
+aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "http-auth", "test-util"] }
+aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.7", features = ["http2"] }
 axum-core = { version = "0.4", default-features = false, features = ["tracing"] }
 bytes = { version = "1", features = ["serde"] }
@@ -122,6 +130,14 @@ arrayvec = { version = "0.7", default-features = false, features = ["std"] }
 arrow-array = { version = "53", default-features = false, features = ["chrono-tz"] }
 arrow-cast = { version = "53", default-features = false, features = ["prettyprint"] }
 arrow-ipc = { version = "53", features = ["lz4"] }
+aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
+aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
+aws-sdk-sts = { version = "1", default-features = false, features = ["rt-tokio"] }
+aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
+aws-smithy-http = { version = "0.60", default-features = false, features = ["event-stream"] }
+aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "rt-tokio", "tls-rustls"] }
+aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "http-auth", "test-util"] }
+aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.7", features = ["http2"] }
 axum-core = { version = "0.4", default-features = false, features = ["tracing"] }
 bytes = { version = "1", features = ["serde"] }

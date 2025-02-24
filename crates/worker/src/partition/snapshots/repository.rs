@@ -10,18 +10,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
-use aws_config::default_provider::region::DefaultRegionChain;
-use aws_config::{BehaviorVersion, Region};
-use aws_smithy_runtime_api::client::identity::ResolveCachedIdentity;
-use aws_smithy_runtime_api::client::runtime_components::RuntimeComponentsBuilder;
 use bytes::BytesMut;
-use futures::FutureExt;
-use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::path::Path as ObjectPath;
 use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
@@ -35,6 +27,7 @@ use tokio_util::io::StreamReader;
 use tracing::{debug, info, instrument, warn};
 use url::Url;
 
+use restate_object_store_util::create_object_store_client;
 use restate_partition_store::snapshots::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
 };
@@ -161,7 +154,8 @@ impl SnapshotRepository {
 
         let prefix = destination.path().to_string();
         let object_store =
-            create_object_store_client(destination.clone(), snapshots_options).await?;
+            create_object_store_client(destination.clone(), &snapshots_options.object_store)
+                .await?;
 
         Ok(Some(SnapshotRepository {
             object_store,
@@ -566,132 +560,6 @@ impl SnapshotRepository {
     }
 }
 
-async fn create_object_store_client(
-    destination: Url,
-    options: &SnapshotsOptions,
-) -> anyhow::Result<Arc<dyn ObjectStore>> {
-    // We use the AWS SDK configuration and credentials provider so that the conventional AWS
-    // environment variables and config files work as expected. The object_store crate has its
-    // own configuration mechanism which doesn't support many of the AWS conventions. This
-    // differs quite a lot from the Lambda invoker which uses the AWS SDK, and that would be a
-    // very surprising inconsistency for customers. This mechanism allows us to infer the region
-    // and securely obtain session credentials without any hard-coded configuration.
-    let object_store: Arc<dyn ObjectStore> = if destination.scheme() == "s3" {
-        let builder = match &options.aws_profile {
-            Some(profile) => {
-                debug!(profile, "Using AWS profile for snapshot repository access");
-
-                let sdk_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
-                    .profile_name(profile)
-                    .load()
-                    .await;
-
-                let region = options
-                    .aws_region
-                    .clone()
-                    .map(Region::new)
-                    .or_else(|| sdk_config.region().cloned())
-                    .context("Unable to determine AWS region")?;
-
-                debug!(?region, ?profile, "Using AWS SDK credentials provider");
-
-                let builder = AmazonS3Builder::new()
-                    .with_region(region.to_string())
-                    .with_credentials(Arc::new(AwsSdkCredentialsProvider::new(&sdk_config)?));
-
-                if let Some(endpoint_url) = sdk_config.endpoint_url() {
-                    debug!(endpoint_url, "Using custom AWS endpoint override");
-                    // we'll override this with the explicit endpoint URL from Restate config, if any, later on
-                    builder.with_endpoint(endpoint_url)
-                } else {
-                    builder
-                }
-            }
-
-            None => {
-                if options.aws_access_key_id.is_none() {
-                    let sdk_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
-                        .load()
-                        .await;
-
-                    let region = options
-                        .aws_region
-                        .clone()
-                        .map(Region::new)
-                        .or_else(|| sdk_config.region().cloned())
-                        .context("Unable to determine AWS region")?;
-
-                    debug!(?region, "Using AWS SDK credentials provider");
-
-                    AmazonS3Builder::new()
-                        .with_region(region.to_string())
-                        .with_credentials(Arc::new(AwsSdkCredentialsProvider::new(&sdk_config)?))
-                } else {
-                    let default_region = DefaultRegionChain::builder().build().region().await;
-                    let region = options
-                        .aws_region
-                        .clone()
-                        .map(Region::new)
-                        .or(default_region)
-                        .context("Unable to determine AWS region")?;
-
-                    AmazonS3Builder::new().with_region(region.to_string())
-                }
-            }
-        };
-
-        let builder = if let Some(region) = &options.aws_region {
-            builder.with_region(region)
-        } else {
-            builder
-        };
-        let builder = if let Some(endpoint_url) = &options.aws_endpoint_url {
-            builder.with_endpoint(endpoint_url)
-        } else {
-            builder
-        };
-        let builder = if let Some(allow_http) = &options.aws_allow_http {
-            builder.with_allow_http(*allow_http)
-        } else {
-            builder
-        };
-        let builder = if let Some(access_key_id) = &options.aws_access_key_id {
-            builder.with_access_key_id(access_key_id)
-        } else {
-            builder
-        };
-        let builder = if let Some(secret_access_key) = &options.aws_secret_access_key {
-            builder.with_secret_access_key(secret_access_key)
-        } else {
-            builder
-        };
-        let builder = if let Some(token) = &options.aws_session_token {
-            builder.with_token(token)
-        } else {
-            builder
-        };
-
-        let builder = builder
-            .with_url(destination)
-            .with_conditional_put(S3ConditionalPut::ETagMatch)
-            .with_retry(object_store::RetryConfig {
-                max_retries: 8,
-                retry_timeout: Duration::from_secs(60),
-                backoff: object_store::BackoffConfig {
-                    init_backoff: Duration::from_millis(100),
-                    max_backoff: Duration::from_secs(5),
-                    base: 2.,
-                },
-            });
-
-        Arc::new(builder.build()?)
-    } else {
-        // Since we only compile object_store with AWS support, the only other possibility is a file:// URL
-        object_store::parse_url(&destination)?.0.into()
-    };
-    Ok(object_store)
-}
-
 #[derive(Clone, Debug)]
 struct SnapshotUploadProgress {
     pub snapshot_complete_path: ObjectPath,
@@ -792,103 +660,12 @@ async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
     while join_set.join_next().await.is_some() {}
 }
 
-#[derive(Debug)]
-struct AwsSdkCredentialsProvider {
-    identity_cache: aws_smithy_runtime_api::client::identity::SharedIdentityCache,
-    identity_resolver: aws_smithy_runtime_api::client::identity::SharedIdentityResolver,
-    runtime_components: aws_smithy_runtime_api::client::runtime_components::RuntimeComponents,
-    config_bag: aws_smithy_types::config_bag::ConfigBag,
-}
-
-impl AwsSdkCredentialsProvider {
-    fn new(config: &aws_config::SdkConfig) -> anyhow::Result<Self> {
-        let identity_cache = config
-            .identity_cache()
-            .context("Could not find AWS credentials provider")?;
-
-        let credentials_provider = config
-            .credentials_provider()
-            .context("Could not find AWS credentials provider")?;
-
-        let identity_resolver =
-            aws_smithy_runtime_api::client::identity::SharedIdentityResolver::new(
-                credentials_provider,
-            );
-
-        // runtime_components will be ignored by the credentials provider
-        // but, we still need to create one, which is really not easy.
-        // https://github.com/awslabs/aws-sdk-rust/discussions/923#discussioncomment-7471550
-        let runtime_components = RuntimeComponentsBuilder::for_tests()
-            .with_time_source(Some(aws_smithy_async::time::SystemTimeSource::new()))
-            .with_sleep_impl(Some(aws_smithy_async::rt::sleep::TokioSleep::new()))
-            .build()
-            .context("Could not build AWS runtime components")?;
-
-        Ok(Self {
-            identity_cache,
-            identity_resolver,
-            runtime_components,
-            config_bag: aws_smithy_types::config_bag::ConfigBag::base(),
-        })
-    }
-}
-
-impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
-    type Credential = object_store::aws::AwsCredential;
-
-    fn get_credential<'a, 'async_trait>(
-        &'a self,
-    ) -> Pin<
-        Box<
-            dyn std::future::Future<Output = object_store::Result<Arc<Self::Credential>>>
-                + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        Self: 'async_trait,
-        'a: 'async_trait,
-    {
-        async {
-            let identity = self
-                .identity_cache
-                .resolve_cached_identity(
-                    self.identity_resolver.clone(),
-                    &self.runtime_components,
-                    &self.config_bag,
-                )
-                .await
-                .map_err(|e| {
-                    // object_store's error detail rendering is not great but aws_config logs the
-                    // detailed underlying cause at WARN level so we don't need to do it again here
-                    object_store::Error::Unauthenticated {
-                        path: "<n/a>".to_string(),
-                        source: e,
-                    }
-                })?;
-
-            let creds = identity.data::<aws_credential_types::Credentials>().ok_or_else(
-                || object_store::Error::Unauthenticated {
-                    path: "<n/a>".to_string(),
-                    source: anyhow::anyhow!("wrong identity type for SigV4. Expected AWS credentials but got `{identity:?}").into(),
-                }
-            )?;
-
-            Ok(Arc::new(object_store::aws::AwsCredential {
-                key_id: creds.access_key_id().to_string(),
-                secret_key: creds.secret_access_key().to_string(),
-                token: creds.session_token().map(|t| t.to_string()),
-            }))
-        }
-        .boxed()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
     use object_store::path::Path as ObjectPath;
     use object_store::ObjectStore;
+    use restate_object_store_util::create_object_store_client;
     use std::time::SystemTime;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
@@ -900,7 +677,7 @@ mod tests {
 
     use super::{LatestSnapshot, SnapshotRepository, UniqueSnapshotKey};
     use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
-    use restate_types::config::SnapshotsOptions;
+    use restate_types::config::{ObjectStoreOptions, SnapshotsOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
 
@@ -991,11 +768,9 @@ mod tests {
         let latest_path = ObjectPath::from(destination_url.path().to_string())
             .child(PartitionId::MIN.to_string())
             .child("latest.json");
-        let object_store = super::create_object_store_client(
-            destination_url.clone(),
-            &SnapshotsOptions::default(),
-        )
-        .await?;
+        let object_store =
+            create_object_store_client(destination_url.clone(), &ObjectStoreOptions::default())
+                .await?;
 
         let latest = object_store.get(&latest_path).await;
         assert!(matches!(latest, Err(object_store::Error::NotFound { .. })));

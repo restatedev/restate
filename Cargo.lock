@@ -6980,6 +6980,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-object-store-util"
+version = "1.2.1"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-credential-types",
+ "aws-smithy-async",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "futures",
+ "object_store",
+ "restate-types",
+ "tracing",
+ "url",
+ "workspace-hack",
+]
+
+[[package]]
 name = "restate-partition-store"
 version = "1.2.1"
 dependencies = [
@@ -7549,11 +7567,6 @@ dependencies = [
  "anyhow",
  "assert2",
  "async-channel",
- "aws-config",
- "aws-credential-types",
- "aws-smithy-async",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
  "bytes",
  "bytestring",
  "codederror",
@@ -7579,6 +7592,7 @@ dependencies = [
  "restate-invoker-api",
  "restate-invoker-impl",
  "restate-metadata-server",
+ "restate-object-store-util",
  "restate-partition-store",
  "restate-rocksdb",
  "restate-serde-util",
@@ -10125,6 +10139,14 @@ dependencies = [
  "arrow-array",
  "arrow-cast",
  "arrow-ipc",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-sdk-sts",
+ "aws-sigv4",
+ "aws-smithy-http",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "axum",
  "axum-core",
  "bitflags 2.8.0",
