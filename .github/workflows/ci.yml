@@ -232,6 +232,7 @@ jobs:
         run: ./tools/scripts/verify-ui-artifact
 
   restate-jepsen:
+    # id tokens are not available on forks
     if: github.event.repository.fork == false
     runs-on: warp-ubuntu-latest-arm64-4x
     name: Run Restate Jepsen tests
@@ -241,7 +242,7 @@ jobs:
       checks: write
       pull-requests: write
       actions: read
-      id-token: write # NB: can obtain OIDC tokens on behalf of the repository!
+      id-token: write # NB: can obtain OIDC tokens on behalf of this repository!
     needs: docker
     steps:
     - uses: restatedev/jepsen/.github/actions/run-tests@reusable
