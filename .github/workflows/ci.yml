@@ -249,7 +249,8 @@ jobs:
     steps:
     - uses: restatedev/jepsen/.github/actions/run-tests@reusable
       with:
+        ref: reusable
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+        roleArn: 'arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role'
         clusterName: jepsen-cluster-restatedev-restate
-        roleArn: 'arn:aws:iam::339713187748:role/github-restatedev-jepsen-actions-role'
         testConfig: '{ "workloads": "set-vo", "nemeses": "partition-random-node", "duration": "120", "rate": "10", "concurrency": "5n", "testCount": "3" }'
