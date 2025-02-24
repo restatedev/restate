@@ -15,60 +15,82 @@ use arc_swap::ArcSwap;
 use dyn_clone::DynClone;
 use serde::Serialize;
 
-pub type BoxedLiveLoad<T> = Box<dyn LiveLoad<T> + Send + Sync + 'static>;
-/// A trait to use in cases where a projection is applied on an updateable since it's impossible to
-/// spell out the closure type in Live<T, ...>.
-pub trait LiveLoad<T>: DynClone {
-    /// Instead of loading the updateable on every request from the shared storage, this keeps
-    /// another copy inside itself. Upon request it only cheaply revalidates it is up to
-    /// date. If it is, access is significantly faster. If it is stale, a full load is performed and the
-    /// cache value is replaced. Under a read-heavy loads, the measured speedup are 10-25 times,
-    /// depending on the architecture.
-    fn live_load(&mut self) -> &T;
+/// A trait to load a live value. It allows to hide closure types that originate from projections
+/// into a live value.
+pub trait LiveLoad: DynClone + Send + Sync {
+    /// Type to live load
+    type Live;
+
+    /// Loads the current value of self.
+    fn live_load(&mut self) -> &Self::Live;
 }
 
-// Implements Clone over BoxedLiveLoad.
-dyn_clone::clone_trait_object!(<T> LiveLoad<T>);
+pub type BoxLiveLoad<T> = Box<dyn LiveLoad<Live = T>>;
+
+// Implements Clone over BoxLiveLoad.
+dyn_clone::clone_trait_object!(<T> LiveLoad<Live = T>);
+
+impl<T> LiveLoad for BoxLiveLoad<T>
+where
+    T: 'static,
+{
+    type Live = T;
+
+    fn live_load(&mut self) -> &Self::Live {
+        self.as_mut().live_load()
+    }
+}
+
+/// Extension trait for the [`LiveLoad`] trait.
+pub trait LiveLoadExt: LiveLoad {
+    /// Projects into the live loadable value.
+    fn map<F, T>(self, projection: F) -> MapLiveLoad<Self, F>
+    where
+        F: FnMut(&Self::Live) -> &T,
+        Self: Sized,
+    {
+        MapLiveLoad {
+            inner: self,
+            projection,
+        }
+    }
+
+    /// Boxes the live loadable value. This can be useful to hide projection closure types if one
+    /// needs to own the value.
+    fn boxed(self) -> BoxLiveLoad<Self::Live>
+    where
+        Self: Sized + 'static,
+    {
+        Box::new(self)
+    }
+}
+
+impl<T> LiveLoadExt for T where T: LiveLoad {}
 
 /// A live view into a shared object
 ///
 /// This is optimized for high read contention scenarios, where the object is updated infrequently.
-/// Use () for F when not projecting into the updateable.
-///
-/// Note that projections cannot be nested. A projected updateable will not provide access to `map()`
 #[derive(Clone)]
-pub struct Live<T, F = ()> {
+pub struct Live<T> {
     inner: arc_swap::cache::Cache<Arc<ArcSwap<T>>, Arc<T>>,
-    projection: F,
 }
 
-impl<U, T, F> LiveLoad<U> for Live<T, F>
+impl<T> LiveLoad for Live<T>
 where
-    F: FnMut(&T) -> &U + 'static + Clone,
-    T: Clone + 'static,
-    U: Clone,
+    T: Send + Sync + Clone + 'static,
 {
-    fn live_load(&mut self) -> &U {
-        self.live_load()
-    }
-}
+    type Live = T;
 
-impl<T: Clone> LiveLoad<T> for Live<T, ()> {
     fn live_load(&mut self) -> &T {
         self.live_load()
     }
 }
 
-impl<T: 'static + Send + Sync + Clone> Live<T, ()> {
-    pub fn boxed(self) -> BoxedLiveLoad<T> {
-        Box::new(self)
-    }
-}
-
-impl<T> Live<T, ()> {
+impl<T> Live<T> {
     pub fn from_value(value: T) -> Self {
         Self::from(Arc::new(ArcSwap::from_pointee(value)))
     }
+
     /// Potentially fast access to a snapshot, should be used if using live_load()
     /// isn't possible (requires mutability to call load()).
     ///
@@ -84,7 +106,7 @@ impl<T> Live<T, ()> {
         Pinned::new(self.inner.arc_swap())
     }
 
-    /// Instead of loading the updateable on every request from the shared storage, this keeps
+    /// Instead of loading the live value on every request from the shared storage, this keeps
     /// another copy inside itself. Upon request it only cheaply revalidates it is up to
     /// date. If it is, access is significantly faster. If it is stale, a full load is performed and the
     /// cache value is replaced. Under a read-heavy loads, the measured speedup are 10-25 times,
@@ -102,53 +124,12 @@ impl<T> Live<T, ()> {
     pub fn snapshot(&self) -> Arc<T> {
         self.inner.arc_swap().load_full()
     }
-
-    /// Creates an updateable projection into the original updateable.
-    pub fn map<F, U>(self, f: F) -> Live<T, F>
-    where
-        F: FnMut(&T) -> &U + Clone,
-    {
-        Live {
-            inner: self.inner,
-            projection: f,
-        }
-    }
 }
 
-impl<T> From<Arc<ArcSwap<T>>> for Live<T, ()> {
+impl<T> From<Arc<ArcSwap<T>>> for Live<T> {
     fn from(owner: Arc<ArcSwap<T>>) -> Self {
         let inner = arc_swap::Cache::new(owner);
-        Self {
-            inner,
-            projection: (),
-        }
-    }
-}
-
-impl<T, F, U> Live<T, F>
-where
-    F: FnMut(&T) -> &U,
-{
-    /// Instead of loading the updateable on every request from the shared storage, this keeps
-    /// another copy inside itself. Upon request it only cheaply revalidates it is up to
-    /// date. If it is, access is significantly faster. If it is stale, a full load is performed and the
-    /// cache value is replaced. Under a read-heavy loads, the measured speedup are 10-25 times,
-    /// depending on the architecture.
-    pub fn live_load(&mut self) -> &U {
-        let loaded = arc_swap::cache::Access::load(&mut self.inner);
-        (self.projection)(loaded)
-    }
-}
-
-impl<T, F, U> Live<T, F>
-where
-    F: FnMut(&T) -> &U + 'static + Send + Sync + Clone,
-    T: Clone + Send + Sync + 'static,
-    U: Clone + Send,
-{
-    // Can be used for type-erasing a projection
-    pub fn boxed(self) -> BoxedLiveLoad<U> {
-        Box::new(self)
+        Self { inner }
     }
 }
 
@@ -194,19 +175,47 @@ impl<T> Constant<T> {
     pub fn new(value: T) -> Self {
         Self(Arc::new(value))
     }
-    pub fn boxed(self) -> Box<Self> {
-        Box::new(self)
-    }
-}
 
-impl<T: Clone> LiveLoad<T> for Constant<T> {
-    fn live_load(&mut self) -> &T {
+    pub fn live_load(&mut self) -> &T {
         &self.0
     }
 }
 
-impl<T: Clone> LiveLoad<T> for Box<Constant<T>> {
+impl<T: Send + Sync + Clone + 'static> LiveLoad for Constant<T> {
+    type Live = T;
+
     fn live_load(&mut self) -> &T {
-        &self.0
+        self.live_load()
+    }
+}
+
+/// Projection into a live load value.
+pub struct MapLiveLoad<I, F> {
+    inner: I,
+    projection: F,
+}
+
+impl<I, F, T> LiveLoad for MapLiveLoad<I, F>
+where
+    I: LiveLoad,
+    F: FnMut(&I::Live) -> &T + Send + Sync + Clone,
+{
+    type Live = T;
+
+    fn live_load(&mut self) -> &T {
+        (self.projection)(self.inner.live_load())
+    }
+}
+
+impl<I, F> Clone for MapLiveLoad<I, F>
+where
+    I: LiveLoad,
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        MapLiveLoad {
+            inner: dyn_clone::clone(&self.inner),
+            projection: self.projection.clone(),
+        }
     }
 }

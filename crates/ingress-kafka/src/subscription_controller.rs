@@ -70,7 +70,7 @@ impl Service {
 
     pub async fn run(
         mut self,
-        mut updateable_config: impl LiveLoad<IngressOptions> + Send + 'static,
+        mut updateable_config: impl LiveLoad<Live = IngressOptions>,
     ) -> anyhow::Result<()> {
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);

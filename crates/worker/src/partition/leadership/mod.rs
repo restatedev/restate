@@ -613,7 +613,7 @@ mod tests {
     use restate_types::GenerationalNodeId;
     use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
-    use restate_types::live::Constant;
+    use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
@@ -639,7 +639,6 @@ mod tests {
 
         let partition_store_manager = PartitionStoreManager::create(
             Constant::new(storage_options.clone()).boxed(),
-            Constant::new(rocksdb_options.clone()).boxed(),
             &[(PARTITION_ID, PARTITION_KEY_RANGE)],
         )
         .await?;

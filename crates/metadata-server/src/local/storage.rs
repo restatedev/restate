@@ -19,7 +19,7 @@ use restate_rocksdb::{
 };
 use restate_types::Version;
 use restate_types::config::{MetadataServerOptions, RocksDbOptions, data_dir};
-use restate_types::live::BoxedLiveLoad;
+use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use rocksdb::{
@@ -31,64 +31,71 @@ use std::sync::Arc;
 
 pub struct RocksDbStorage {
     rocksdb: Arc<RocksDb>,
-    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    rocksdb_options: BoxLiveLoad<RocksDbOptions>,
     buffer: BytesMut,
     is_sealed: bool,
 }
 
 impl RocksDbStorage {
     pub async fn open_or_create(
-        options: &MetadataServerOptions,
-        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        mut options: impl LiveLoad<Live = MetadataServerOptions> + Clone + 'static,
     ) -> Result<Self, RocksError> {
         let db_manager = RocksDbManager::get();
 
         let rocksdb = if let Some(rocksdb) = db_manager.get_db(DbName::new(DB_NAME)) {
             rocksdb
         } else {
-            Self::create_db(options, rocksdb_options.clone()).await?
+            let rocksdb_options = options.clone().map(|options| &options.rocksdb);
+            let metadata_server_options = options.live_load();
+            Self::create_db(metadata_server_options, rocksdb_options).await?
         };
 
         let is_sealed = Self::read_sealed_flag(&rocksdb)?;
         Ok(Self {
             rocksdb,
-            rocksdb_options,
+            rocksdb_options: options.map(|options| &options.rocksdb).boxed(),
             buffer: BytesMut::default(),
             is_sealed,
         })
     }
 
     async fn create_db(
-        options: &MetadataServerOptions,
-        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        metadata_server_options: &MetadataServerOptions,
+        rocksdb_options: impl LiveLoad<Live = RocksDbOptions> + 'static,
     ) -> Result<Arc<RocksDb>, RocksError> {
         let data_dir = RocksDbStorage::data_dir();
         let db_name = DbName::new(DB_NAME);
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(KV_PAIRS)];
-        let db_spec = DbSpecBuilder::new(db_name.clone(), data_dir, db_options(options))
-            .add_cf_pattern(
-                CfPrefixPattern::ANY,
-                cf_options(options.rocksdb_memory_budget()),
-            )
-            .ensure_column_families(cfs)
-            .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
-            .build()
-            .expect("valid spec");
+
+        let db_spec = DbSpecBuilder::new(
+            db_name.clone(),
+            data_dir,
+            db_options(metadata_server_options),
+        )
+        .add_cf_pattern(
+            CfPrefixPattern::ANY,
+            cf_options(metadata_server_options.rocksdb_memory_budget()),
+        )
+        .ensure_column_families(cfs)
+        .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
+        .build()
+        .expect("valid spec");
 
         db_manager.open_db(rocksdb_options, db_spec).await
     }
 
     pub async fn create(
-        options: &MetadataServerOptions,
-        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        mut options: impl LiveLoad<Live = MetadataServerOptions> + Clone + 'static,
     ) -> Result<Self, RocksError> {
-        let rocksdb = Self::create_db(options, rocksdb_options.clone()).await?;
+        let rocksdb_options = options.clone().map(|options| &options.rocksdb);
+        let metadata_server_options = options.live_load();
+        let rocksdb = Self::create_db(metadata_server_options, rocksdb_options).await?;
         let is_sealed = Self::read_sealed_flag(&rocksdb)?;
 
         Ok(Self {
             rocksdb,
-            rocksdb_options,
+            rocksdb_options: options.map(|config| &config.rocksdb).boxed(),
             buffer: BytesMut::default(),
             is_sealed,
         })

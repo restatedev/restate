@@ -21,9 +21,9 @@ use protobuf::{Message, ProtobufError};
 use raft::{GetEntriesContext, RaftState, Storage, StorageError};
 use raft_proto::eraftpb::{ConfState, Entry, HardState, Snapshot};
 use restate_rocksdb::{IoMode, Priority, RocksDb, RocksError};
-use restate_types::config::{MetadataServerOptions, RocksDbOptions};
+use restate_types::config::MetadataServerOptions;
 use restate_types::errors::GenericError;
-use restate_types::live::BoxedLiveLoad;
+use restate_types::live::LiveLoad;
 use restate_types::nodes_config::NodesConfiguration;
 use rocksdb::{BoundColumnFamily, DB, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions};
 use std::cell::RefCell;
@@ -86,10 +86,9 @@ pub struct RocksDbStorage {
 
 impl RocksDbStorage {
     pub async fn create(
-        options: &MetadataServerOptions,
-        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+        options: impl LiveLoad<Live = MetadataServerOptions> + 'static,
     ) -> Result<Self, BuildError> {
-        let rocksdb = build_rocksdb(options, rocksdb_options).await?;
+        let rocksdb = build_rocksdb(options).await?;
         let (first_index, last_index) = Self::find_indices(rocksdb.inner().as_raw_db());
 
         Ok(Self {
@@ -739,17 +738,14 @@ mod tests {
     use raft::{Error as RaftError, GetEntriesContext, Storage, StorageError};
     use raft_proto::eraftpb::{ConfState, Entry, Snapshot};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{CommonOptions, MetadataServerOptions, RocksDbOptions};
+    use restate_types::config::{CommonOptions, MetadataServerOptions};
     use restate_types::live::Constant;
 
     #[test_log::test(restate_core::test)]
     async fn initial_values() -> googletest::Result<()> {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let storage = RocksDbStorage::create(
-            &MetadataServerOptions::default(),
-            Constant::new(RocksDbOptions::default()).boxed(),
-        )
-        .await?;
+        let storage =
+            RocksDbStorage::create(Constant::new(MetadataServerOptions::default())).await?;
 
         assert_eq!(storage.get_last_index(), 0);
         assert_eq!(storage.get_first_index(), 1);
@@ -762,11 +758,8 @@ mod tests {
     #[test_log::test(restate_core::test)]
     async fn append_entries() -> googletest::Result<()> {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let mut storage = RocksDbStorage::create(
-            &MetadataServerOptions::default(),
-            Constant::new(RocksDbOptions::default()).boxed(),
-        )
-        .await?;
+        let mut storage =
+            RocksDbStorage::create(Constant::new(MetadataServerOptions::default())).await?;
 
         let last_index = 10;
         let entries = (1..=last_index)
@@ -798,11 +791,8 @@ mod tests {
     #[test_log::test(restate_core::test)]
     async fn apply_snapshot() -> googletest::Result<()> {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let mut storage = RocksDbStorage::create(
-            &MetadataServerOptions::default(),
-            Constant::new(RocksDbOptions::default()).boxed(),
-        )
-        .await?;
+        let mut storage =
+            RocksDbStorage::create(Constant::new(MetadataServerOptions::default())).await?;
 
         let last_index = 10;
         let snapshot_index = 5;
@@ -849,11 +839,8 @@ mod tests {
         RocksDbManager::get().reset().await.into_test_result()?;
 
         // re-create storage to check that the information is persisted
-        let storage = RocksDbStorage::create(
-            &MetadataServerOptions::default(),
-            Constant::new(RocksDbOptions::default()).boxed(),
-        )
-        .await?;
+        let storage =
+            RocksDbStorage::create(Constant::new(MetadataServerOptions::default())).await?;
 
         assert_eq!(storage.get_last_index(), last_index);
         assert_eq!(storage.get_first_index(), snapshot_index + 1);
@@ -887,11 +874,8 @@ mod tests {
     #[test_log::test(restate_core::test)]
     async fn trim() -> googletest::Result<()> {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let mut storage = RocksDbStorage::create(
-            &MetadataServerOptions::default(),
-            Constant::new(RocksDbOptions::default()).boxed(),
-        )
-        .await?;
+        let mut storage =
+            RocksDbStorage::create(Constant::new(MetadataServerOptions::default())).await?;
 
         let last_index = 10;
         let entries = (1..=last_index)
@@ -952,11 +936,8 @@ mod tests {
     #[test_log::test(restate_core::test)]
     async fn overwrite_entries() -> googletest::Result<()> {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let mut storage = RocksDbStorage::create(
-            &MetadataServerOptions::default(),
-            Constant::new(RocksDbOptions::default()).boxed(),
-        )
-        .await?;
+        let mut storage =
+            RocksDbStorage::create(Constant::new(MetadataServerOptions::default())).await?;
 
         let last_index = 10;
         let entries = (1..=last_index)

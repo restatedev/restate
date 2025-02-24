@@ -43,7 +43,7 @@ impl Appender {
         error_recovery_strategy: ErrorRecoveryStrategy,
         bifrost_inner: Arc<BifrostInner>,
     ) -> Self {
-        let config = Configuration::updateable();
+        let config = Configuration::live();
         Self {
             log_id,
             config,

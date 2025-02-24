@@ -35,6 +35,7 @@ use restate_metadata_server::{
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::live::Live;
+use restate_types::live::LiveLoadExt;
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
@@ -220,7 +221,12 @@ impl Node {
         let bifrost_svc = BifrostService::new(metadata_manager.writer());
 
         #[cfg(feature = "local-loglet")]
-        let bifrost_svc = bifrost_svc.enable_local_loglet(&updateable_config);
+        let bifrost_svc = bifrost_svc.enable_local_loglet(
+            updateable_config
+                .clone()
+                .map(|config| &config.bifrost.local)
+                .boxed(),
+        );
 
         #[cfg(feature = "replicated-loglet")]
         let bifrost_svc = bifrost_svc.with_factory(replicated_loglet_factory);
