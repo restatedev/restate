@@ -96,6 +96,8 @@ jobs:
     with:
       uploadImageAsTarball: "restate.tar"
       platforms: linux/amd64
+      # additional features added for CI validation builds only
+      features: metadata-api
 
   sdk-java:
     name: Run SDK-Java integration tests
@@ -253,4 +255,4 @@ jobs:
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
         roleArn: 'arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role'
         clusterName: jepsen-cluster-restatedev-restate
-        testConfig: '{ "workloads": "set-vo", "nemeses": "partition-random-node", "duration": "120", "rate": "10", "concurrency": "5n", "testCount": "3" }'
+        testConfig: '{ "workloads": "set-vo set-mds", "nemeses": "partition-random-node", "duration": "120", "rate": "10", "concurrency": "5n", "testCount": "3" }'
