@@ -17,10 +17,11 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use restate_core::cancellation_watcher;
+use restate_core::config::Configuration;
 use restate_partition_store::PartitionStoreManager;
 use restate_storage_api::StorageError;
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_types::config::{Configuration, StorageOptions};
+use restate_types::config::StorageOptions;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
 use restate_types::logs::{Lsn, SequenceNumber};

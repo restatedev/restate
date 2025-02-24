@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::num::{NonZeroU8, NonZeroUsize};
-use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -191,10 +190,6 @@ impl LocalLogletOptions {
                 NonZeroUsize::new(1024 * 1024).unwrap()
             })
             .get()
-    }
-
-    pub fn data_dir(&self) -> PathBuf {
-        super::data_dir("local-loglet")
     }
 }
 

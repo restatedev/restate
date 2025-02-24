@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::partition::snapshots::snapshot_staging_dir;
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
 use object_store::path::Path as ObjectPath;
@@ -138,7 +139,6 @@ impl SnapshotRepository {
     /// Creates an instance of the repository if a snapshots destination is configured.
     pub async fn create_if_configured(
         snapshots_options: &SnapshotsOptions,
-        staging_dir: PathBuf,
         cluster_name: String,
     ) -> anyhow::Result<Option<SnapshotRepository>> {
         let mut destination = if let Some(ref destination) = snapshots_options.destination {
@@ -161,7 +161,7 @@ impl SnapshotRepository {
             object_store,
             destination,
             prefix: ObjectPath::from(prefix),
-            staging_dir,
+            staging_dir: snapshot_staging_dir(),
             cluster_name,
         }))
     }
@@ -715,13 +715,9 @@ mod tests {
             ),
             ..SnapshotsOptions::default()
         };
-        let repository = SnapshotRepository::create_if_configured(
-            &opts,
-            TempDir::new().unwrap().into_path(),
-            "cluster".to_owned(),
-        )
-        .await?
-        .unwrap();
+        let repository = SnapshotRepository::create_if_configured(&opts, "cluster".to_owned())
+            .await?
+            .unwrap();
 
         // Write invalid JSON to latest.json
         let latest_path = destination_dir
@@ -799,13 +795,9 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::create_if_configured(
-            &opts,
-            TempDir::new().unwrap().into_path(),
-            "cluster".to_owned(),
-        )
-        .await?
-        .unwrap();
+        let repository = SnapshotRepository::create_if_configured(&opts, "cluster".to_owned())
+            .await?
+            .unwrap();
 
         repository.put(&snapshot1, source_dir.clone()).await?;
 

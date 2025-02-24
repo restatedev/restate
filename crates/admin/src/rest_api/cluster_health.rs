@@ -13,10 +13,10 @@ use http::StatusCode;
 use okapi_operation::openapi;
 
 use crate::rest_api::error::GenericRestError;
+use restate_core::config::Configuration;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::{Metadata, my_node_id};
-use restate_types::config::Configuration;
 use restate_types::{NodeId, PlainNodeId};
 
 /// Cluster state endpoint

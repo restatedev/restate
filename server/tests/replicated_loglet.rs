@@ -30,11 +30,11 @@ mod tests {
         ErrorRecoveryStrategy,
         loglet::{AppendError, FindTailOptions},
     };
+    use restate_core::config::Configuration;
     use restate_core::{Metadata, TaskCenterFutureExt};
     use restate_types::live::{LiveLoad, LiveLoadExt};
     use restate_types::{
         GenerationalNodeId, Version,
-        config::Configuration,
         logs::{
             KeyFilter, Keys, LogId, LogletOffset, Lsn, Record, SequenceNumber, TailState,
             metadata::{LogletParams, ProviderKind},

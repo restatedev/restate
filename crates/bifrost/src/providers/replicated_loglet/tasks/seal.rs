@@ -12,10 +12,10 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tracing::{Instrument, debug, instrument, trace, warn};
 
+use restate_core::config::Configuration;
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenterFutureExt};
-use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};

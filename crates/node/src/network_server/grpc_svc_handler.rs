@@ -17,6 +17,7 @@ use enumset::EnumSet;
 use tonic::{Request, Response, Status};
 use tracing::debug;
 
+use restate_core::config::Configuration;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
@@ -28,7 +29,6 @@ use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{Metadata, MetadataKind, TargetVersion, TaskCenter, task_center};
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::Version;
-use restate_types::config::Configuration;
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;

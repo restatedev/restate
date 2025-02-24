@@ -14,6 +14,7 @@ use codederror::CodedError;
 use restate_admin::cluster_controller;
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
+use restate_core::config::Configuration;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
@@ -28,7 +29,6 @@ use restate_storage_query_datafusion::remote_query_scanner_client::create_remote
 use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
 };
-use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;

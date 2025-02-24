@@ -618,10 +618,10 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
+    use restate_core::config::Configuration;
     use restate_core::network::OwnedConnection;
     use restate_core::{MetadataBuilder, TaskCenter};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
     use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::{KeyFilter, Keys, Record, RecordCache};
     use restate_types::net::CURRENT_PROTOCOL_VERSION;

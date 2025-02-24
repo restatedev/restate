@@ -23,7 +23,6 @@ use crate::partition::state_machine::tests::fixtures::{
 use crate::partition::state_machine::tests::matchers::storage::is_entry;
 use crate::partition::state_machine::tests::matchers::success_completion;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind};
-use ::tracing::info;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
@@ -122,10 +121,6 @@ impl TestEnv {
 
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let storage_options = StorageOptions::default();
-        info!(
-            "Using RocksDB temp directory {}",
-            storage_options.data_dir().display()
-        );
         let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()), &[])
             .await
             .unwrap();

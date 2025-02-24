@@ -9,11 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use crate::raft::storage::{DATA_CF, DATA_DIR, DB_NAME, METADATA_CF};
+use restate_core::config::data_dir;
 use restate_rocksdb::{
     CfExactPattern, CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{MetadataServerOptions, data_dir};
+use restate_types::config::MetadataServerOptions;
 use restate_types::live::{LiveLoad, LiveLoadExt};
 use rocksdb::DBCompressionType;
 use static_assertions::const_assert;

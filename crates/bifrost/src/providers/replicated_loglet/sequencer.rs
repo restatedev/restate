@@ -21,13 +21,13 @@ use tokio::sync::Semaphore;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, info, instrument, trace};
 
+use restate_core::config::Configuration;
 use restate_core::{
     ShutdownError, TaskCenter, TaskKind,
     network::{Networking, TransportConnect, rpc_router::RpcRouter},
 };
 use restate_types::{
     GenerationalNodeId,
-    config::Configuration,
     logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber},
     net::log_server::Store,
     replicated_loglet::ReplicatedLogletParams,

@@ -14,10 +14,10 @@ use metrics::{Counter, counter};
 use tokio::sync::mpsc;
 use tracing::{info, trace};
 
+use restate_core::config::Configuration;
 use restate_core::network::{NetworkError, Networking, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, my_node_id};
 use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
 use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetRecords, LogServerRequestHeader, MaybeRecord};
 use restate_types::replicated_loglet::{EffectiveNodeSet, LogNodeSetExt, ReplicatedLogletParams};

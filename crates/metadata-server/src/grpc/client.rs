@@ -17,12 +17,12 @@ use bytes::BytesMut;
 use bytestring::ByteString;
 use parking_lot::Mutex;
 use rand::prelude::IteratorRandom;
+use restate_core::config::Configuration;
 use restate_core::metadata_store::{
     MetadataStore, Precondition, ProvisionError, ReadError, VersionedValue, WriteError,
 };
 use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
 use restate_core::{Metadata, TaskCenter, TaskKind, cancellation_watcher};
-use restate_types::config::Configuration;
 use restate_types::net::AdvertisedAddress;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};

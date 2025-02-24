@@ -25,10 +25,11 @@ use tokio_util::net::Listener;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
 
-use restate_types::config::{Configuration, MetadataClientOptions, NetworkingOptions};
+use restate_types::config::{MetadataClientOptions, NetworkingOptions};
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 
+use crate::config::Configuration;
 use crate::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 
 pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(

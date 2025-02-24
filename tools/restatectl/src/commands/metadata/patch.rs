@@ -8,23 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytestring::ByteString;
-use clap::Parser;
-use cling::{Collect, Run};
-use json_patch::Patch;
-use serde_json::Value;
-use tracing::debug;
-
 use crate::commands::metadata::{
     GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts, create_metadata_store_client,
 };
 use crate::connection::ConnectionInfo;
 use crate::environment::metadata_store::start_metadata_server;
 use crate::environment::task_center::run_in_task_center;
+use bytestring::ByteString;
+use clap::Parser;
+use cling::{Collect, Run};
+use json_patch::Patch;
+use restate_core::config::Configuration;
 use restate_core::metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
 use restate_types::Version;
-use restate_types::config::Configuration;
+use serde_json::Value;
+use tracing::debug;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]

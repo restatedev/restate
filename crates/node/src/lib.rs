@@ -21,6 +21,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
+use restate_core::config::Configuration;
 use restate_core::metadata_store::{
     Precondition, ReadWriteError, WriteError, retry_on_retryable_error,
 };
@@ -36,7 +37,7 @@ use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
 };
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::config::CommonOptions;
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
 #[cfg(feature = "replicated-loglet")]
@@ -581,7 +582,7 @@ impl ClusterConfiguration {
         ClusterConfiguration {
             num_partitions: configuration.common.default_num_partitions,
             partition_replication: configuration.admin.default_partition_replication.clone(),
-            bifrost_provider: ProviderConfiguration::from_configuration(configuration),
+            bifrost_provider: ProviderConfiguration::from_bifrost_options(&configuration.bifrost),
         }
     }
 }

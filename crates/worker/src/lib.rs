@@ -24,6 +24,7 @@ use restate_core::TaskCenter;
 use std::time::Duration;
 
 use restate_bifrost::Bifrost;
+use restate_core::config::Configuration;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
@@ -41,7 +42,6 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::{
 };
 use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 use restate_storage_query_postgres::service::PostgresQueryService;
-use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
@@ -154,7 +154,6 @@ impl Worker {
             bifrost,
             SnapshotRepository::create_if_configured(
                 snapshots_options,
-                config.worker.storage.snapshots_staging_dir(),
                 config.common.cluster_name().to_owned(),
             )
             .await

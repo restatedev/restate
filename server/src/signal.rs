@@ -10,11 +10,10 @@
 
 use std::io::Write;
 
+use restate_core::config::Configuration;
 use restate_rocksdb::RocksDbManager;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::{info, warn};
-
-use restate_types::config::Configuration;
 
 pub(super) async fn shutdown() -> &'static str {
     let signal = tokio::select! {

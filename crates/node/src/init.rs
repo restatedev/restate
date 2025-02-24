@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use crate::cluster_marker::mark_cluster_as_provisioned;
+use restate_core::config::Configuration;
 use restate_core::metadata_store::{MetadataStoreClient, ReadWriteError};
 use restate_core::{
     Metadata, MetadataWriter, ShutdownError, SyncError, TargetVersion, cancellation_token,
 };
 use restate_types::PlainNodeId;
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::config::CommonOptions;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
@@ -357,7 +358,7 @@ mod tests {
     use googletest::assert_that;
     use googletest::matchers::{contains_substring, displays_as, err};
     use restate_core::TestCoreEnvBuilder;
-    use restate_types::config::{Configuration, set_current_config};
+    use restate_core::config::{Configuration, set_current_config};
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 

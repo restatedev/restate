@@ -24,6 +24,7 @@ use grpc::pb_conversions::ConversionError;
 use itertools::Itertools;
 use prost::Message;
 use raft_proto::eraftpb::Snapshot;
+use restate_core::config::Configuration;
 use restate_core::metadata_store::VersionedValue;
 use restate_core::metadata_store::providers::{
     EtcdMetadataStore, create_object_store_based_meta_store,
@@ -33,9 +34,7 @@ pub use restate_core::metadata_store::{
 };
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
-use restate_types::config::{
-    Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
-};
+use restate_types::config::{MetadataClientKind, MetadataClientOptions, MetadataServerKind};
 use restate_types::errors::{GenericError, MaybeRetryableError};
 use restate_types::health::HealthStatus;
 use restate_types::live::LiveLoadExt;

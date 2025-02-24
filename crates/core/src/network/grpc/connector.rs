@@ -11,16 +11,15 @@
 use futures::Stream;
 use tokio_stream::StreamExt;
 
-use restate_types::GenerationalNodeId;
-use restate_types::config::Configuration;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::protobuf::node::Message;
-use tracing::trace;
-
 use super::MAX_MESSAGE_SIZE;
+use crate::config::Configuration;
 use crate::network::net_util::create_tonic_channel;
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::{NetworkError, ProtocolError, TransportConnect};
+use restate_types::GenerationalNodeId;
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::protobuf::node::Message;
+use tracing::trace;
 
 #[derive(Clone)]
 pub struct GrpcConnector;

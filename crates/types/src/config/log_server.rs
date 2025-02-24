@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -94,10 +93,6 @@ impl LogServerOptions {
                 NonZeroUsize::new(1024 * 1024).unwrap()
             })
             .get()
-    }
-
-    pub fn data_dir(&self) -> PathBuf {
-        super::data_dir("log-store")
     }
 }
 

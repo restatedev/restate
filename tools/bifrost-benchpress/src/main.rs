@@ -28,14 +28,14 @@ use restate_errors::fmt::RestateCode;
 use restate_metadata_server::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::init_tracing_and_logging;
-use restate_types::config::{
-    Configuration, reset_base_temp_dir, reset_base_temp_dir_and_retain, set_base_temp_dir,
-};
-use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::{Live, LiveLoadExt};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
 // Configure jemalloc similar to mimic restate server
+use restate_core::config::{
+    ConfigLoaderBuilder, Configuration, reset_base_temp_dir, reset_base_temp_dir_and_retain,
+    set_base_temp_dir,
+};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 
@@ -88,7 +88,7 @@ fn main() -> anyhow::Result<()> {
     // reason.
     config.common.set_base_dir(base_dir.clone());
 
-    restate_types::config::set_current_config(config.clone());
+    restate_core::config::set_current_config(config.clone());
 
     let recorder = PrometheusBuilder::new().install_recorder().unwrap();
     let (tc, bifrost) = spawn_environment(Configuration::live(), 1);

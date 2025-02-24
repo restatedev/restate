@@ -20,12 +20,13 @@ use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, info, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
+use restate_core::config::Configuration;
 use restate_core::network::TransportConnect;
 use restate_core::{Metadata, my_node_id};
 use restate_types::cluster::cluster_state::{
     AliveNode, ClusterState, NodeState, PartitionProcessorStatus,
 };
-use restate_types::config::{AdminOptions, Configuration};
+use restate_types::config::AdminOptions;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;

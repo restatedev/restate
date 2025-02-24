@@ -18,11 +18,10 @@ use rocksdb::{BlockBasedOptions, Cache, LogLevel, WriteBufferManager};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use restate_core::config::Configuration;
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_serde_util::ByteCount;
-use restate_types::config::{
-    CommonOptions, Configuration, RocksDbLogLevel, RocksDbOptions, StatisticsLevel,
-};
+use restate_types::config::{CommonOptions, RocksDbLogLevel, RocksDbOptions, StatisticsLevel};
 use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
 
 use crate::background::ReadyStorageTask;

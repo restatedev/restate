@@ -12,16 +12,15 @@ use std::num::NonZeroUsize;
 
 use tracing::{debug, instrument, trace};
 
-use restate_types::NodeId;
-use restate_types::config::Configuration;
-use restate_types::net::codec::{Targeted, WireEncode};
-
 use super::{
     ConnectionManager, HasConnection, NetworkError, NetworkSendError, NetworkSender, NoConnection,
     Outgoing, WeakConnection,
 };
 use super::{GrpcConnector, TransportConnect};
 use crate::Metadata;
+use crate::config::Configuration;
+use restate_types::NodeId;
+use restate_types::net::codec::{Targeted, WireEncode};
 
 /// Access to node-to-node networking infrastructure.
 pub struct Networking<T> {

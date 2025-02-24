@@ -11,11 +11,10 @@
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
+use super::KafkaClusterOptions;
 use http::Uri;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
-
-use super::KafkaClusterOptions;
 
 /// # Ingress options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]

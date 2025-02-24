@@ -18,10 +18,10 @@ use tracing::{debug, info};
 
 use restate_bifrost::BifrostService;
 use restate_bifrost::loglet::FindTailOptions;
+use restate_core::config::Configuration;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, TaskKind};
 use restate_rocksdb::RocksDbManager;
-use restate_types::config::Configuration;
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_wal_protocol::Envelope;
@@ -61,10 +61,10 @@ struct DecodedLogRecord {
 
 async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
     run_in_task_center(opts.config_file.as_ref(), async |config| {
-        if !config.bifrost.local.data_dir().exists() {
+        if !restate_bifrost::providers::local_loglet::local_loglet_data_dir().exists() {
             bail!(
                 "The specified path '{}' does not contain a local-loglet directory.",
-                config.bifrost.local.data_dir().display()
+                restate_bifrost::providers::local_loglet::local_loglet_data_dir().display()
             );
         }
 

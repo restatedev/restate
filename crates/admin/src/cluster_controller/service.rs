@@ -35,6 +35,7 @@ use restate_types::partition_table::{
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use restate_bifrost::{Bifrost, SealedSegment};
+use restate_core::config::Configuration;
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
@@ -45,7 +46,7 @@ use restate_core::{
     cancellation_watcher,
 };
 use restate_types::cluster::cluster_state::ClusterState;
-use restate_types::config::{AdminOptions, Configuration};
+use restate_types::config::AdminOptions;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Live;
@@ -813,15 +814,14 @@ mod tests {
     use restate_bifrost::loglet::FindTailOptions;
     use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::{Bifrost, BifrostService, ErrorRecoveryStrategy};
+    use restate_core::config::Configuration;
     use restate_core::network::{
         FailingConnector, Incoming, MessageHandler, MockPeerConnection, NetworkServerBuilder,
     };
     use restate_core::test_env::NoOpMessageHandler;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{NodeState, PartitionProcessorStatus};
-    use restate_types::config::{
-        AdminOptionsBuilder, BifrostOptions, Configuration, NetworkingOptions,
-    };
+    use restate_types::config::{AdminOptionsBuilder, BifrostOptions, NetworkingOptions};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
@@ -1439,7 +1439,7 @@ mod tests {
     where
         F: FnMut(TestCoreEnvBuilder<FailingConnector>) -> TestCoreEnvBuilder<FailingConnector>,
     {
-        restate_types::config::set_current_config(config);
+        restate_core::config::set_current_config(config);
         let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let bifrost_svc = BifrostService::new(builder.metadata_writer.clone())
             .with_factory(memory_loglet::Factory::default());

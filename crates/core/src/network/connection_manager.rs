@@ -21,7 +21,6 @@ use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{Instrument, Span, debug, info, instrument, trace, warn};
 
-use restate_types::config::Configuration;
 use restate_types::net::codec::MessageBodyExt;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
@@ -37,6 +36,7 @@ use super::metric_definitions::{
 };
 use super::transport_connector::TransportConnect;
 use super::{Handler, MessageRouter};
+use crate::config::Configuration;
 use crate::metadata::Urgency;
 use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
 use crate::network::metric_definitions::{

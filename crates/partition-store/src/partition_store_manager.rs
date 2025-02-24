@@ -13,14 +13,11 @@ use std::ops::RangeInclusive;
 use std::path::Path;
 use std::sync::Arc;
 
-use rocksdb::ExportImportFilesMetaData;
-use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
-
 use crate::DB;
 use crate::PartitionStore;
 use crate::cf_options;
 use crate::snapshots::LocalPartitionSnapshot;
+use restate_core::config::data_dir;
 use restate_core::worker_api::SnapshotError;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
@@ -28,9 +25,13 @@ use restate_rocksdb::{
 use restate_types::config::{RocksDbOptions, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::{LiveLoad, LiveLoadExt};
+use rocksdb::ExportImportFilesMetaData;
+use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
+const PARTITION_STORE_DIR: &str = "db";
 
 /// Controls how a partition store is opened
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,17 +62,21 @@ impl PartitionStoreManager {
         let per_partition_memory_budget = options.rocksdb_memory_budget()
             / options.num_partitions_to_share_memory_budget() as usize;
 
-        let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), options.data_dir(), db_options())
-            .add_cf_pattern(
-                CfPrefixPattern::new(PARTITION_CF_PREFIX),
-                cf_options(per_partition_memory_budget),
-            )
-            .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
-            // This is added as an experiment. We might make this configurable to let users decide
-            // on the trade-off between shutdown time and startup catchup time.
-            .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
-            .build()
-            .expect("valid spec");
+        let db_spec = DbSpecBuilder::new(
+            DbName::new(DB_NAME),
+            data_dir(PARTITION_STORE_DIR),
+            db_options(),
+        )
+        .add_cf_pattern(
+            CfPrefixPattern::new(PARTITION_CF_PREFIX),
+            cf_options(per_partition_memory_budget),
+        )
+        .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
+        // This is added as an experiment. We might make this configurable to let users decide
+        // on the trade-off between shutdown time and startup catchup time.
+        .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
+        .build()
+        .expect("valid spec");
 
         let manager = RocksDbManager::get();
         let raw_db = manager

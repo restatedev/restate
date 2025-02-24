@@ -50,13 +50,14 @@ use raft_proto::ConfChangeI;
 use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
 use rand::prelude::IteratorRandom;
 use rand::rng;
+use restate_core::config::Configuration;
 use restate_core::metadata_store::{Precondition, serialize_value};
 use restate_core::network::NetworkServerBuilder;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{
     Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind, cancellation_watcher,
 };
-use restate_types::config::{Configuration, MetadataServerKind, MetadataServerOptions};
+use restate_types::config::{MetadataServerKind, MetadataServerOptions};
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
 use restate_types::live::{Constant, LiveLoad};

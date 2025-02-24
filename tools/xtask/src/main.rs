@@ -18,12 +18,12 @@ use schemars::r#gen::SchemaSettings;
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
+use restate_core::config::Configuration;
 use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
 use restate_core::{TaskCenterFutureExt, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::table_docs;
-use restate_types::config::Configuration;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
 use restate_types::live::Constant;

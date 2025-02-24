@@ -15,6 +15,7 @@ use tokio::{sync::OwnedSemaphorePermit, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, trace, warn};
 
+use restate_core::config::Configuration;
 use restate_core::{
     Metadata, TaskCenterFutureExt,
     network::{Incoming, NetworkError, Networking, TransportConnect, rpc_router::RpcRouter},
@@ -23,7 +24,6 @@ use restate_types::replicated_loglet::Spread;
 use restate_types::retries::with_jitter;
 use restate_types::{
     Merge, PlainNodeId,
-    config::Configuration,
     live::Live,
     logs::{LogletOffset, Record, SequenceNumber, TailState},
     net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},

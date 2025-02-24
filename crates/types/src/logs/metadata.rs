@@ -22,7 +22,7 @@ use smallvec::SmallVec;
 
 use super::LogletId;
 use super::builder::LogsBuilder;
-use crate::config::Configuration;
+use crate::config::BifrostOptions;
 use crate::logs::{LogId, Lsn, SequenceNumber};
 use crate::replicated_loglet::ReplicatedLogletParams;
 use crate::replication::ReplicationProperty;
@@ -139,15 +139,14 @@ impl ProviderConfiguration {
         }
     }
 
-    pub fn from_configuration(configuration: &Configuration) -> Self {
+    pub fn from_bifrost_options(bifrost_options: &BifrostOptions) -> Self {
         ProviderConfiguration::from((
-            configuration.bifrost.default_provider,
-            configuration
-                .bifrost
+            bifrost_options.default_provider,
+            bifrost_options
                 .replicated_loglet
                 .default_log_replication
                 .clone(),
-            configuration.bifrost.replicated_loglet.default_nodeset_size,
+            bifrost_options.replicated_loglet.default_nodeset_size,
         ))
     }
 
@@ -544,9 +543,9 @@ impl LogletConfig {
 }
 
 impl Logs {
-    pub fn from_configuration(config: &Configuration) -> Self {
+    pub fn from_bifrost_options(bifrost_options: &BifrostOptions) -> Self {
         Self::with_logs_configuration(LogsConfiguration {
-            default_provider: ProviderConfiguration::from_configuration(config),
+            default_provider: ProviderConfiguration::from_bifrost_options(bifrost_options),
         })
     }
 

@@ -13,10 +13,11 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use test_log::test;
 
+use restate_core::config::{Configuration, reset_base_temp_dir_and_retain};
 use restate_core::network::FailingConnector;
 use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
-use restate_types::config::{Configuration, MetadataServerOptions, reset_base_temp_dir_and_retain};
+use restate_types::config::MetadataServerOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::{Constant, LiveLoad, LiveLoadExt};
 use restate_types::{Version, Versioned};
@@ -236,7 +237,7 @@ async fn create_test_environment(
         ..Default::default()
     };
 
-    restate_types::config::set_current_config(config.clone());
+    restate_core::config::set_current_config(config.clone());
     let config = Constant::new(config);
     let env = TestCoreEnvBuilder::with_incoming_only_connector()
         .build()

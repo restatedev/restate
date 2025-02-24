@@ -10,16 +10,16 @@
 
 use std::sync::Arc;
 
+use restate_core::ShutdownError;
+use restate_core::config::data_dir;
+use restate_rocksdb::{CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
+use restate_types::config::LogServerOptions;
 use restate_types::health::HealthStatus;
+use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
 use restate_types::logs::RecordCache;
 use restate_types::protobuf::common::LogServerStatus;
 use rocksdb::{DBCompressionType, SliceTransform};
 use static_assertions::const_assert;
-
-use restate_core::ShutdownError;
-use restate_rocksdb::{CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
-use restate_types::config::LogServerOptions;
-use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
 
 use super::writer::LogStoreWriter;
 use super::{DATA_CF, DB_NAME, METADATA_CF};
@@ -27,6 +27,7 @@ use super::{RocksDbLogStore, RocksDbLogStoreError};
 use crate::rocksdb_logstore::keys::KeyPrefix;
 use crate::rocksdb_logstore::metadata_merge::{metadata_full_merge, metadata_partial_merge};
 
+const LOG_STORE_DIR: &str = "log-store";
 const DATA_CF_BUDGET_RATIO: f64 = 0.85;
 const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
 
@@ -43,7 +44,7 @@ impl RocksDbLogStoreBuilder {
         record_cache: RecordCache,
     ) -> Result<Self, RocksDbLogStoreError> {
         let options = updateable_options.live_load();
-        let data_dir = options.data_dir();
+        let data_dir = data_dir(LOG_STORE_DIR);
         let db_name = DbName::new(DB_NAME);
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];

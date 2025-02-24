@@ -14,8 +14,7 @@ use std::time::Duration;
 
 use enumset::enum_set;
 use futures::never::Never;
-use tracing::{error, info};
-
+use restate_core::config::Configuration;
 use restate_local_cluster_runner::cluster::StartedCluster;
 use restate_local_cluster_runner::{
     cluster::Cluster,
@@ -23,10 +22,8 @@ use restate_local_cluster_runner::{
     shutdown,
 };
 use restate_types::logs::metadata::ProviderKind::Replicated;
-use restate_types::{
-    config::{Configuration, LogFormat},
-    nodes_config::Role,
-};
+use restate_types::{config::LogFormat, nodes_config::Role};
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

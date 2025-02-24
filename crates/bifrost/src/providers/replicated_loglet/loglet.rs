@@ -453,11 +453,11 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
+    use restate_core::config::{Configuration, set_current_config};
     use restate_core::network::NetworkServerBuilder;
     use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{Configuration, set_current_config};
     use restate_types::health::HealthStatus;
     use restate_types::live::{Live, LiveLoadExt};
     use restate_types::logs::{Keys, LogletId};

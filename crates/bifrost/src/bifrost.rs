@@ -19,9 +19,8 @@ use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
 use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
 use enum_map::EnumMap;
+use restate_core::config::Configuration;
 use restate_core::{Metadata, MetadataKind, MetadataWriter, TargetVersion};
-use restate_types::config::Configuration;
-use restate_types::live::LiveLoadExt;
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
 use restate_types::storage::StorageEncode;
@@ -88,7 +87,8 @@ impl Bifrost {
 
     #[cfg(any(test, feature = "test-util"))]
     pub async fn init_local(metadata_writer: MetadataWriter) -> Self {
-        use restate_types::config::Configuration;
+        use restate_core::config::Configuration;
+        use restate_types::live::LiveLoadExt;
 
         use crate::BifrostService;
 

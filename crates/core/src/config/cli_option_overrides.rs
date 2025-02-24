@@ -12,15 +12,13 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use humantime::Duration;
+use restate_types::PlainNodeId;
+use restate_types::config::LogFormat;
+use restate_types::locality::NodeLocation;
+use restate_types::net::{AdvertisedAddress, BindAddress};
+use restate_types::nodes_config::Role;
 use serde::Serialize;
 use serde_with::{serde_as, skip_serializing_none};
-
-use crate::PlainNodeId;
-use crate::locality::NodeLocation;
-use crate::net::{AdvertisedAddress, BindAddress};
-use crate::nodes_config::Role;
-
-use super::LogFormat;
 
 #[serde_as]
 #[skip_serializing_none]

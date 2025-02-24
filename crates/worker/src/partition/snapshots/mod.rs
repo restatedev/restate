@@ -11,5 +11,18 @@
 mod repository;
 mod snapshot_task;
 
+const SNAPSHOT_STAGING_DIR: &str = "pp-snapshots";
+const SNAPSHOT_DIR: &str = "db-snapshots";
+
+fn snapshot_staging_dir() -> PathBuf {
+    data_dir(SNAPSHOT_STAGING_DIR)
+}
+
+fn snapshots_base_dir() -> PathBuf {
+    data_dir(SNAPSHOT_DIR)
+}
+
 pub use repository::SnapshotRepository;
+use restate_core::config::data_dir;
 pub use snapshot_task::*;
+use std::path::PathBuf;

@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, instrument, trace, warn};
 
+use restate_core::config::Configuration;
 use restate_core::{Metadata, TargetVersion, TaskCenter};
 use restate_futures_util::overdue::OverdueLoggingExt;
-use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn, Record};

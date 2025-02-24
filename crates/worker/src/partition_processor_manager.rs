@@ -30,6 +30,7 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, info_span, instrument, warn};
 
 use restate_bifrost::Bifrost;
+use restate_core::config::Configuration;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
 use restate_core::worker_api::{
     ProcessorsManagerCommand, ProcessorsManagerHandle, SnapshotCreated, SnapshotError,
@@ -47,7 +48,6 @@ use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::PartitionSnapshotMetadata;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
@@ -929,13 +929,11 @@ impl PartitionProcessorManager {
             Entry::Vacant(entry) => {
                 let config = self.updateable_config.live_load();
 
-                let snapshot_base_path = config.worker.snapshots.snapshots_dir(partition_id);
                 let snapshot_id = SnapshotId::new();
 
                 let create_snapshot_task = SnapshotPartitionTask {
                     snapshot_id,
                     partition_id,
-                    snapshot_base_path,
                     partition_store_manager: self.partition_store_manager.clone(),
                     cluster_name: config.common.cluster_name().into(),
                     node_name: config.common.node_name().into(),
@@ -1091,11 +1089,12 @@ mod tests {
     use googletest::IntoTestResult;
     use restate_bifrost::BifrostService;
     use restate_bifrost::providers::memory_loglet;
+    use restate_core::config::Configuration;
     use restate_core::network::MockPeerConnection;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{CommonOptions, Configuration, StorageOptions};
+    use restate_types::config::{CommonOptions, StorageOptions};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::{Constant, Live};

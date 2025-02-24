@@ -9,12 +9,14 @@ publish = false
 
 [features]
 default = []
-test-util = ["restate-core-derive", "restate-types/test-util", "tokio/test-util"]
+test-util = ["restate-core-derive", "restate-types/test-util", "tokio/test-util", "dep:tempfile"]
 options_schema = ["dep:schemars"]
+clap = ["dep:clap", "restate-types/clap"]
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
+restate-errors = { workspace = true }
 restate-types = { workspace = true }
 restate-core-derive = { workspace = true, optional = true }
 
@@ -27,12 +29,15 @@ axum = { workspace = true, default-features = false }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 ciborium = { workspace = true}
+clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
+codederror = { workspace = true }
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
 etcd-client = { workspace = true }
+figment = { version = "0.10.8", features = ["env", "toml"] }
 futures = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
@@ -42,6 +47,8 @@ humantime = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["server-graceful", "server"] }
 metrics = { workspace = true }
+notify = { version = "7.0.0" }
+notify-debouncer-full = { version = "0.4" }
 opentelemetry = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
 parking_lot = { workspace = true }
@@ -54,10 +61,12 @@ serde = { workspace = true }
 serde_with = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
+tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["tracing"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true, features = ["net"] }
+toml = { workspace = true }
 tonic = { workspace = true, features = [ "transport", "codegen", "prost", "gzip", ] }
 tonic-reflection = { workspace = true }
 tower = { workspace = true }
@@ -75,6 +84,7 @@ restate-types = { workspace = true, features = ["test-util"] }
 restate-core-derive = { workspace = true }
 
 googletest = { workspace = true }
+tempfile = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }

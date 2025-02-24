@@ -37,7 +37,7 @@ metadata-api = ["restate-admin/metadata-api"]
 [dependencies]
 restate-admin = { workspace = true }
 restate-bifrost = { workspace = true }
-restate-core = { workspace = true }
+restate-core = { workspace = true, features = ["clap"] }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-metadata-server = { workspace = true }
@@ -45,7 +45,7 @@ restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio", "prometheus"] }
-restate-types = { workspace = true, features = ["clap"] }
+restate-types = { workspace = true }
 restate-worker = { workspace = true }
 
 arc-swap = { workspace = true }

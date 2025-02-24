@@ -8,18 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use restate_types::errors::MaybeRetryableError;
-use rocksdb::{BoundColumnFamily, DB, DBCompressionType, SliceTransform};
-use static_assertions::const_assert;
-
+use restate_core::config::data_dir;
 use restate_rocksdb::{
     CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
 use restate_types::config::LocalLogletOptions;
+use restate_types::errors::MaybeRetryableError;
 use restate_types::live::{LiveLoad, LiveLoadExt};
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
+use rocksdb::{BoundColumnFamily, DB, DBCompressionType, SliceTransform};
+use static_assertions::const_assert;
 
 use super::keys::{DATA_KEY_PREFIX_LENGTH, MetadataKey, MetadataKind};
 use super::log_state::{LogState, log_state_full_merge, log_state_partial_merge};
@@ -30,10 +31,15 @@ pub(crate) const DB_NAME: &str = "local-loglet";
 
 pub(crate) const DATA_CF: &str = "logstore_data";
 pub(crate) const METADATA_CF: &str = "logstore_metadata";
+const LOCAL_LOGLET_DIR: &str = "local-loglet";
 
 const DATA_CF_BUDGET_RATIO: f64 = 0.85;
 
 const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
+
+pub fn local_loglet_data_dir() -> PathBuf {
+    data_dir(LOCAL_LOGLET_DIR)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum LogStoreError {
@@ -72,23 +78,23 @@ impl RocksDbLogStore {
         let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
 
         let opts = options.live_load();
-        let data_dir = opts.data_dir();
 
-        let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), data_dir, db_options())
-            .add_cf_pattern(
-                CfExactPattern::new(DATA_CF),
-                cf_data_options(opts.rocksdb_memory_budget()),
-            )
-            .add_cf_pattern(
-                CfExactPattern::new(METADATA_CF),
-                cf_metadata_options(opts.rocksdb_memory_budget()),
-            )
-            // not very important but it's to reduce the number of merges by flushing.
-            // it's also a small cf so it should be quick.
-            .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
-            .ensure_column_families(cfs)
-            .build()
-            .expect("valid spec");
+        let db_spec =
+            DbSpecBuilder::new(DbName::new(DB_NAME), local_loglet_data_dir(), db_options())
+                .add_cf_pattern(
+                    CfExactPattern::new(DATA_CF),
+                    cf_data_options(opts.rocksdb_memory_budget()),
+                )
+                .add_cf_pattern(
+                    CfExactPattern::new(METADATA_CF),
+                    cf_metadata_options(opts.rocksdb_memory_budget()),
+                )
+                // not very important but it's to reduce the number of merges by flushing.
+                // it's also a small cf so it should be quick.
+                .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
+                .ensure_column_families(cfs)
+                .build()
+                .expect("valid spec");
         let db_name = db_spec.name().clone();
         // todo: use the returned rocksdb object when open_db returns Arc<RocksDb>
         let _ = db_manager

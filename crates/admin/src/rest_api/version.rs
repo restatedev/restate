@@ -11,7 +11,7 @@
 use axum::Json;
 use okapi_operation::*;
 use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
-use restate_types::config::Configuration;
+use restate_core::config::Configuration;
 
 /// Min/max supported admin api versions by the server
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;

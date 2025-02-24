@@ -16,13 +16,14 @@ use futures::TryFutureExt;
 use googletest::IntoTestResult;
 use rand::RngCore;
 use rand::distr::{Alphanumeric, SampleString};
+use restate_core::config::{Configuration, set_current_config};
 use restate_core::metadata_store::{Precondition, serialize_value};
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataBuilder, TaskCenter, TaskKind, cancellation_token};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    CommonOptions, Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
-    MetadataServerOptions, RaftOptions, set_current_config,
+    CommonOptions, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
+    MetadataServerOptions, RaftOptions,
 };
 use restate_types::health::Health;
 use restate_types::live::Constant;

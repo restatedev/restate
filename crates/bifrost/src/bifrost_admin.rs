@@ -12,10 +12,10 @@ use std::sync::Arc;
 
 use tracing::{debug, instrument, warn};
 
+use restate_core::config::Configuration;
 use restate_core::metadata_store::retry_on_retryable_error;
 use restate_core::{Metadata, MetadataKind};
 use restate_types::Version;
-use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Chain, LogletParams, Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, TailState};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
@@ -301,7 +301,9 @@ impl<'a> BifrostAdmin<'a> {
                 .metadata_store_client()
                 .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
                     debug!("Attempting to initialize logs metadata in metadata store");
-                    Configuration::with_current(Logs::from_configuration)
+                    Configuration::with_current(|config| {
+                        Logs::from_bifrost_options(&config.bifrost)
+                    })
                 })
         })
         .await

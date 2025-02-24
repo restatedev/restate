@@ -11,15 +11,14 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde::Deserialize;
-use serde::Serialize;
-use tracing::warn;
-
 use super::Schema;
 use crate::config::IngressOptions;
 use crate::errors::GenericError;
 use crate::identifiers::SubscriptionId;
 use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
+use serde::Deserialize;
+use serde::Serialize;
+use tracing::warn;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

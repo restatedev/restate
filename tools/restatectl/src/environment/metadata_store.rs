@@ -10,12 +10,12 @@
 
 use tracing::info;
 
+use restate_core::config::Configuration;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{TaskCenter, TaskKind};
 use restate_metadata_server::MetadataServer;
 use restate_types::config;
-use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::net::{AdvertisedAddress, BindAddress};

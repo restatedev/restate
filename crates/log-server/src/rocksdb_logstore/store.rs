@@ -494,17 +494,16 @@ impl LogStore for RocksDbLogStore {
 #[cfg(test)]
 mod tests {
     use googletest::prelude::*;
-    use test_log::test;
-
     use restate_core::TaskCenter;
+    use restate_core::config::Configuration;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
     use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber};
     use restate_types::net::log_server::{
         DigestEntry, GetDigest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
     };
     use restate_types::{GenerationalNodeId, PlainNodeId};
+    use test_log::test;
 
     use super::RocksDbLogStore;
     use crate::logstore::LogStore;

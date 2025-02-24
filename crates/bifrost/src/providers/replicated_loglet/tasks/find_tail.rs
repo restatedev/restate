@@ -13,11 +13,11 @@ use std::time::Duration;
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
 
+use restate_core::config::Configuration;
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{NetworkError, Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenterFutureExt};
 use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, LogletId, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail};

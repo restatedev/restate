@@ -19,7 +19,6 @@ use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, trace, warn};
 
-use restate_types::config::Configuration;
 use restate_types::logs::metadata::Logs;
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
@@ -35,6 +34,7 @@ use super::{MetadataBuilder, VersionInformation};
 use crate::TaskCenter;
 use crate::TaskKind;
 use crate::cancellation_watcher;
+use crate::config::Configuration;
 use crate::is_cancellation_requested;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
 use crate::network::Incoming;

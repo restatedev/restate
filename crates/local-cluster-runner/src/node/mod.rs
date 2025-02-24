@@ -14,6 +14,7 @@ use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt, stream};
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
+use restate_core::config::Configuration;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest as ProtoProvisionClusterRequest;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
@@ -25,7 +26,7 @@ use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::retries::RetryPolicy;
 use restate_types::{
     PlainNodeId,
-    config::{Configuration, MetadataClientKind},
+    config::MetadataClientKind,
     errors::GenericError,
     metadata_store::keys::NODES_CONFIG_KEY,
     net::{AdvertisedAddress, BindAddress},

@@ -8,12 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_core::TaskCenterBuilder;
+use restate_core::config::{ConfigLoaderBuilder, Configuration};
 use std::path::PathBuf;
 use tracing::warn;
-
-use restate_core::TaskCenterBuilder;
-use restate_types::config::Configuration;
-use restate_types::config_loader::ConfigLoaderBuilder;
 
 /// Loads configuration, creates a task center, executes the supplied function body in scope of TC, and shuts down.
 pub async fn run_in_task_center<F, O>(config_file: Option<&PathBuf>, fn_body: F) -> O
@@ -39,7 +37,7 @@ where
         }
     };
 
-    restate_types::config::set_current_config(config);
+    restate_core::config::set_current_config(config);
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {
         warn!("Failed to increase the number of open file descriptors limit.");
     }

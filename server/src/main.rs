@@ -30,14 +30,14 @@ use restate_tracing_instrumentation::TracingGuard;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::art::render_restate_logo;
-use restate_types::config::CommonOptionCliOverride;
-use restate_types::config::{Configuration, PRODUCTION_PROFILE_DEFAULTS};
-use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::nodes_config::Role;
 
 mod signal;
 mod telemetry;
 
+use restate_core::config::{
+    CommonOptionCliOverride, ConfigLoaderBuilder, Configuration, PRODUCTION_PROFILE_DEFAULTS,
+};
 use restate_node::Node;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -170,7 +170,7 @@ fn main() {
     }
 
     // Setting initial configuration as global current
-    restate_types::config::set_current_config(config);
+    restate_core::config::set_current_config(config);
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {
         warn!("Failed to increase the number of open file descriptors limit.");
     }
@@ -205,7 +205,7 @@ fn main() {
                                             info!(
                 node_name = config.node_name(),
                 config_source = %config_source,
-                base_dir = %restate_types::config::node_filepath("").display(),
+                base_dir = %restate_core::config::node_filepath("").display(),
                 "Starting Restate Server {}",
                 build_info::build_info()
             ); });

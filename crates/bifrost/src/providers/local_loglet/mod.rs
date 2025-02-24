@@ -34,6 +34,7 @@ use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNum
 
 use self::log_store::LogStoreError;
 use self::log_store::RocksDbLogStore;
+pub use self::log_store::local_loglet_data_dir;
 use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
@@ -296,9 +297,9 @@ mod tests {
     use test_log::test;
 
     use crate::loglet::Loglet;
+    use restate_core::config::Configuration;
     use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
     use restate_types::live::{Live, LiveLoadExt};
     use restate_types::logs::Keys;
     use restate_types::logs::metadata::{LogletParams, ProviderKind};

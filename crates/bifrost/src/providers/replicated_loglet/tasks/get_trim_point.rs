@@ -11,9 +11,9 @@
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, instrument, trace};
 
+use restate_core::config::Configuration;
 use restate_core::network::{Incoming, Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenterFutureExt};
-use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, LogletInfo, Status};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
