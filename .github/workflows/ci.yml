@@ -233,9 +233,31 @@ jobs:
       - name: Verify the committed UI artifact matches the published one in restate-web-ui
         run: ./tools/scripts/verify-ui-artifact
 
-  restate-jepsen:
+  check-jepsen-label:
+      runs-on: ubuntu-latest
+      outputs:
+        jepsen_tests_label: ${{ steps.check-label.outputs.has_jepsen_tests_label }}
+      steps:
+        - id: check-label
+          run: |
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}")
+
+              if echo "$PR_DATA" | jq -e '.labels[] | select(.name == "jepsen-tests")' > /dev/null; then
+                echo "has_jepsen_tests_label=true" >> $GITHUB_OUTPUT
+              else
+                echo "has_jepsen_tests_label=false" >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "has_jepsen_tests_label=false" >> $GITHUB_OUTPUT
+            fi
+
+  jepsen:
+    # Only run if the check-labels job indicates the label is present
+    needs: [check-labels, docker]
     # id tokens are not available on forks
-    if: contains(github.event.pull_request.labels.*.name, 'jepsen-tests') && github.event.repository.fork == false
+    if: needs.check-labels.outputs.jepsen_tests_label == 'true' && github.event.repository.fork == false
     runs-on: warp-ubuntu-latest-arm64-4x
     name: Run Jepsen tests
     concurrency:
@@ -247,7 +269,6 @@ jobs:
       pull-requests: write
       actions: read
       id-token: write # NB: can obtain OIDC tokens on behalf of this repository!
-    needs: docker
     steps:
     - uses: restatedev/jepsen/.github/actions/run-tests@reusable
       with:
