@@ -256,7 +256,7 @@ jobs:
     # Only run if the check-labels job indicates the label is present
     needs: [check-jepsen-label, docker]
     # id tokens are not available on forks
-    if: needs.check-labels.outputs.jepsen_tests_label == 'true' && github.event.repository.fork == false
+    if: needs.check-jepsen-label.outputs.jepsen_tests_label == 'true' && github.event.repository.fork == false
     runs-on: warp-ubuntu-latest-arm64-4x
     name: Run Jepsen tests
     concurrency:
