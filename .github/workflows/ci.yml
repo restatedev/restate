@@ -238,8 +238,7 @@ jobs:
       outputs:
         jepsen_tests_label: ${{ steps.check-label.outputs.has_jepsen_tests_label }}
       steps:
-        - id: check-label
-          run: |
+        - run: |
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
                 "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}")
@@ -255,7 +254,7 @@ jobs:
 
   jepsen:
     # Only run if the check-labels job indicates the label is present
-    needs: [check-labels, docker]
+    needs: [check-jepsen-label, docker]
     # id tokens are not available on forks
     if: needs.check-labels.outputs.jepsen_tests_label == 'true' && github.event.repository.fork == false
     runs-on: warp-ubuntu-latest-arm64-4x
