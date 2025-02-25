@@ -88,11 +88,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install cargo-hakari
+        if: ${{ hashFiles('.config/hakari.toml') != '' }}
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-hakari
 
       - name: Disable hakari
+        if: ${{ hashFiles('.config/hakari.toml') != '' }}
         run: cargo hakari disable
 
       # this is needed to be able to load and push a multiplatform image in one step
