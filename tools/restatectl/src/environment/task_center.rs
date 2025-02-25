@@ -37,7 +37,7 @@ where
         }
     };
 
-    restate_core::config::set_current_config(config);
+    restate_core::config::set_global_config(config);
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {
         warn!("Failed to increase the number of open file descriptors limit.");
     }

@@ -48,6 +48,7 @@ use restate_types::live::LiveLoadExt;
 use restate_types::protobuf::common::WorkerStatus;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
+use crate::partition::snapshots;
 use crate::partition::snapshots::SnapshotRepository;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
@@ -154,6 +155,7 @@ impl Worker {
             bifrost,
             SnapshotRepository::create_if_configured(
                 snapshots_options,
+                snapshots::snapshot_staging_dir(),
                 config.common.cluster_name().to_owned(),
             )
             .await

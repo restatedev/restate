@@ -25,7 +25,7 @@ use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use itertools::Itertools;
 use metric_definitions::{INVOKER_PENDING_TASKS, INVOKER_TASKS_IN_FLIGHT};
 use metrics::{counter, gauge};
-use restate_core::cancellation_watcher;
+use restate_core::{TaskCenterFutureExt, TaskKind, cancellation_watcher};
 use restate_errors::warn_it;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
@@ -150,7 +150,8 @@ where
                 invoker_tx,
                 invoker_rx,
             )
-            .run(input_journal),
+            .run(input_journal)
+            .in_current_tc_as_task(TaskKind::Invoker, "invocation-task"),
         )
     }
 }
@@ -1384,15 +1385,18 @@ mod tests {
             input_journal: InvokeInputJournal,
             task_pool: &mut JoinSet<()>,
         ) -> AbortHandle {
-            task_pool.spawn((*self)(
-                partition,
-                invocation_id,
-                invocation_target,
-                storage_reader,
-                invoker_tx,
-                invoker_rx,
-                input_journal,
-            ))
+            task_pool.spawn(
+                (*self)(
+                    partition,
+                    invocation_id,
+                    invocation_target,
+                    storage_reader,
+                    invoker_tx,
+                    invoker_rx,
+                    input_journal,
+                )
+                .in_current_tc_as_task(TaskKind::Invoker, "invocation-task-runner"),
+            )
         }
     }
 

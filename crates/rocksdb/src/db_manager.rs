@@ -19,7 +19,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use restate_core::config::Configuration;
-use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
+use restate_core::{
+    ShutdownError, TaskCenter, TaskCenterFutureExt, TaskKind, cancellation_watcher,
+};
 use restate_serde_util::ByteCount;
 use restate_types::config::{CommonOptions, RocksDbLogLevel, RocksDbOptions, StatisticsLevel};
 use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
@@ -238,10 +240,13 @@ impl RocksDbManager {
         let start = Instant::now();
         let mut tasks = tokio::task::JoinSet::new();
         for (name, db) in self.dbs.write().drain() {
-            tasks.spawn(async move {
-                db.shutdown().await;
-                name.clone()
-            });
+            tasks.spawn(
+                async move {
+                    db.shutdown().await;
+                    name.clone()
+                }
+                .in_current_tc_as_task(TaskKind::Background, "rocksdb-manager-shutdown"),
+            );
         }
         // wait for all tasks to complete
         while let Some(res) = tasks.join_next().await {
@@ -386,10 +391,15 @@ impl RocksDbManager {
         R: Send + 'static,
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let tc = TaskCenter::current();
         let priority = task.priority;
         match priority {
-            Priority::High => self.high_pri_pool.execute(task.into_async_runner(tx)),
-            Priority::Low => self.low_pri_pool.execute(task.into_async_runner(tx)),
+            Priority::High => self
+                .high_pri_pool
+                .execute(move || tc.run_sync(task.into_async_runner(tx))),
+            Priority::Low => self
+                .low_pri_pool
+                .execute(move || tc.run_sync(task.into_async_runner(tx))),
         }
         rx.await.map_err(|_| ShutdownError)
     }
@@ -413,9 +423,14 @@ impl RocksDbManager {
     where
         OP: FnOnce() + Send + 'static,
     {
+        let tc = TaskCenter::current();
         match task.priority {
-            Priority::High => self.high_pri_pool.execute(task.into_runner()),
-            Priority::Low => self.low_pri_pool.execute(task.into_runner()),
+            Priority::High => self
+                .high_pri_pool
+                .execute(move || tc.run_sync(task.into_runner())),
+            Priority::Low => self
+                .low_pri_pool
+                .execute(move || tc.run_sync(task.into_runner())),
         }
     }
 }

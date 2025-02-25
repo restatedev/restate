@@ -453,7 +453,7 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
-    use restate_core::config::{Configuration, set_current_config};
+    use restate_core::config::{Configuration, set_global_config};
     use restate_core::network::NetworkServerBuilder;
     use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_log_server::LogServerService;
@@ -481,7 +481,7 @@ mod tests {
         F: FnMut(TestEnv) -> O,
         O: std::future::Future<Output = googletest::Result<()>>,
     {
-        set_current_config(config.clone());
+        set_global_config(config.clone());
         let config = Live::from_value(config);
 
         RocksDbManager::init(config.clone().map(|c| &c.common));

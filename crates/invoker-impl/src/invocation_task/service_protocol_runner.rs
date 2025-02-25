@@ -162,8 +162,13 @@ where
         );
 
         // Initialize the response stream state
-        let mut http_stream_rx =
-            ResponseStreamState::initialize(&self.invocation_task.client, request);
+        let mut http_stream_rx = crate::shortcircuit!(match ResponseStreamState::initialize(
+            &self.invocation_task.client,
+            request
+        ) {
+            Ok(http_stream_rx) => TerminalLoopState::Continue(http_stream_rx),
+            Err(err) => TerminalLoopState::Failed(InvokerError::Shutdown(err)),
+        });
 
         // Execute the replay
         crate::shortcircuit!(

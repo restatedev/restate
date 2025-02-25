@@ -358,7 +358,7 @@ mod tests {
     use googletest::assert_that;
     use googletest::matchers::{contains_substring, displays_as, err};
     use restate_core::TestCoreEnvBuilder;
-    use restate_core::config::{Configuration, set_current_config};
+    use restate_core::config::{Configuration, set_global_config};
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -370,7 +370,7 @@ mod tests {
         config.common.set_cluster_name(&cluster_name);
         config.common.set_node_name(&node_name);
         config.common.force_node_id = Some(PlainNodeId::new(1337));
-        set_current_config(config);
+        set_global_config(config);
 
         let node_config = NodeConfig::new(
             node_name,
@@ -410,7 +410,7 @@ mod tests {
         let mut config = Configuration::default();
         config.common.set_cluster_name(&cluster_name);
         config.common.set_node_name(&node_name);
-        set_current_config(config);
+        set_global_config(config);
 
         let nodes_configuration = NodesConfiguration::new(Version::MIN, other_cluster_name);
 

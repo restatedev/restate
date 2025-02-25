@@ -335,7 +335,6 @@ impl CommonOptions {
         })
     }
 
-    #[cfg(any(test, feature = "test-util"))]
     pub fn base_dir_opt(&self) -> Option<&PathBuf> {
         self.base_dir.as_ref()
     }

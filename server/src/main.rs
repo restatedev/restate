@@ -169,13 +169,14 @@ fn main() {
         let _ = writeln!(&mut stdout);
     }
 
+    let common_options = config.common.clone();
     // Setting initial configuration as global current
-    restate_core::config::set_current_config(config);
+    restate_core::config::set_global_config(config);
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {
         warn!("Failed to increase the number of open file descriptors limit.");
     }
     let tc = TaskCenterBuilder::default()
-        .options(Configuration::with_current(|config| config.common.clone()))
+        .options(common_options)
         .build()
         .expect("task_center builds");
     tc.block_on({

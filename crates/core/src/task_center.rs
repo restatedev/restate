@@ -27,6 +27,7 @@ pub use task_kind::*;
 use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -44,7 +45,9 @@ use restate_types::GenerationalNodeId;
 use restate_types::SharedString;
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
+use restate_types::live::Live;
 
+use crate::config::{ConfigWatch, Configuration, global_node_base_dir};
 use crate::metric_definitions::{self, STATUS_COMPLETED, STATUS_FAILED, TC_FINISHED, TC_SPAWN};
 use crate::{Metadata, ShutdownError, ShutdownSourceErr};
 
@@ -63,7 +66,8 @@ task_local! {
 #[derive(Default, Clone)]
 struct GlobalOverrides {
     metadata: Option<Metadata>,
-    //config: Arc<Configuration>,
+    // todo replace with `Constant` to make clear that we are not updating overrides atm
+    config: Option<Live<Configuration>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -114,6 +118,16 @@ impl TaskCenter {
         F: FnOnce(&Metadata) -> R,
     {
         Self::with_current(|tc| tc.with_metadata(f))
+    }
+
+    #[track_caller]
+    /// Attempt to access task-level overridden configuration first, if we don't have an override,
+    /// fallback to the global configuration.
+    pub(crate) fn with_configuration<F, R>(f: F) -> R
+    where
+        F: FnOnce(&Configuration) -> R,
+    {
+        Self::with_current(|tc| tc.with_configuration(f))
     }
 
     /// Attempt to set the global metadata handle. This should be called once
@@ -358,6 +372,64 @@ impl TaskCenterInner {
             })
             .ok()
             .flatten()
+    }
+
+    pub fn configuration(self: &Arc<Self>) -> Arc<Configuration> {
+        match OVERRIDES.try_with(|overrides| overrides.config.clone()) {
+            Ok(Some(config)) => config.snapshot(),
+            // No configuration override, use global configuration
+            _ => crate::config::global_configuration(),
+        }
+    }
+
+    pub fn configuration_live(self: &Arc<Self>) -> Live<Configuration> {
+        match OVERRIDES.try_with(|overrides| overrides.config.clone()) {
+            Ok(Some(config)) => config,
+            // No configuration override, use global configuration
+            _ => crate::config::global_configuration_live(),
+        }
+    }
+
+    pub fn configuration_watcher(self: &Arc<Self>) -> ConfigWatch {
+        match OVERRIDES.try_with(|overrides| {
+            // todo change once overridden configurations can be updated
+            overrides.config.as_ref().map(|_| ConfigWatch::no_op())
+        }) {
+            Ok(Some(config_watch)) => config_watch,
+            // No configuration override, use global configuration watcher
+            _ => crate::config::global_configuration_watcher(),
+        }
+    }
+
+    pub fn with_configuration<F, R>(self: &Arc<Self>, f: F) -> R
+    where
+        F: FnOnce(&Configuration) -> R,
+    {
+        match OVERRIDES
+            .try_with(|overrides| overrides.config.as_ref().map(|config| config.pinned()))
+        {
+            Ok(Some(config)) => f(&config),
+            // No configuration override, use global configuration
+            _ => f(&crate::config::global_configuration_pinned()),
+        }
+    }
+
+    pub fn node_dir(self: &Arc<Self>) -> PathBuf {
+        match OVERRIDES.try_with(|overrides| {
+            overrides.config.as_ref().map(|config| {
+                let config = config.pinned();
+                // todo allow configuration overrides w/o the base dir configured (falling back to
+                //  default value in non test scenarios and a temp dir in test scenarios).
+                config
+                    .common
+                    .base_dir_opt()
+                    .expect("configuration overrides need to specify the base dir explicitly")
+                    .join(config.node_name())
+            })
+        }) {
+            Ok(Some(node_dir)) => node_dir,
+            _ => global_node_base_dir(),
+        }
     }
 
     pub fn run_sync<F, O>(self: &Arc<Self>, f: F) -> O
@@ -1037,6 +1109,9 @@ pub fn is_cancellation_requested() -> bool {
 mod tests {
     use super::*;
 
+    use crate::config::set_global_config;
+    use crate::metadata_store::MetadataStoreClient;
+    use crate::{MetadataBuilder, MetadataManager};
     use googletest::prelude::*;
     use restate_types::config::CommonOptionsBuilder;
     use tracing_test::traced_test;
@@ -1067,6 +1142,74 @@ mod tests {
         assert!(logs_contain("Hello async"));
         assert!(logs_contain("Bye async"));
         assert!(start.elapsed() >= Duration::from_secs(10));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn task_center_overrides() -> Result<()> {
+        let tc = TaskCenterBuilder::default_for_tests()
+            .build()?
+            .into_handle();
+        let metadata_manager = MetadataManager::new(
+            MetadataBuilder::default(),
+            MetadataStoreClient::new_in_memory(),
+        );
+        let metadata_writer = metadata_manager.writer();
+        let expected_node_id = GenerationalNodeId::new(1337, 42);
+        metadata_writer.set_my_node_id(expected_node_id);
+
+        let expected_node_name = "global".to_owned();
+        let mut global_configuration = Configuration::default();
+        global_configuration
+            .common
+            .set_node_name(expected_node_name.clone());
+        set_global_config(global_configuration);
+
+        tc.try_set_global_metadata(metadata_manager.metadata().clone());
+        let (actual_node_name, actual_node_id) = tc
+            .spawn_unmanaged(TaskKind::TestRunner, "global-metadata", async {
+                (
+                    Configuration::with_current(|config| config.node_name().to_owned()),
+                    Metadata::with_current(|m| m.my_node_id()),
+                )
+            })?
+            .await?;
+
+        assert_eq!(actual_node_name, expected_node_name);
+        assert_eq!(actual_node_id, expected_node_id);
+
+        let expected_node_id_override = GenerationalNodeId::new(42, 1337);
+        let metadata_manager_override = MetadataManager::new(
+            MetadataBuilder::default(),
+            MetadataStoreClient::new_in_memory(),
+        );
+        let metadata_writer_override = metadata_manager_override.writer();
+        metadata_writer_override.set_my_node_id(expected_node_id_override);
+
+        let expected_node_name_override = "override".to_owned();
+        let mut configuration_override = Configuration::default();
+        configuration_override
+            .common
+            .set_node_name(expected_node_name_override.clone());
+
+        let (actual_node_name_override, actual_node_id_override) = tc
+            .spawn_unmanaged(
+                TaskKind::TestRunner,
+                "metadata-override",
+                async {
+                    (
+                        Configuration::with_current(|config| config.node_name().to_owned()),
+                        Metadata::with_current(|m| m.my_node_id()),
+                    )
+                }
+                .with_configuration(configuration_override)
+                .with_metadata(metadata_manager_override.metadata().clone()),
+            )?
+            .await?;
+
+        assert_eq!(actual_node_name_override, expected_node_name_override);
+        assert_eq!(actual_node_id_override, expected_node_id_override);
+
         Ok(())
     }
 }

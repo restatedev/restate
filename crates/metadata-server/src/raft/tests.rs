@@ -16,7 +16,7 @@ use futures::TryFutureExt;
 use googletest::IntoTestResult;
 use rand::RngCore;
 use rand::distr::{Alphanumeric, SampleString};
-use restate_core::config::{Configuration, set_current_config};
+use restate_core::config::{Configuration, set_global_config};
 use restate_core::metadata_store::{Precondition, serialize_value};
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataBuilder, TaskCenter, TaskKind, cancellation_token};
@@ -45,7 +45,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     configuration
         .metadata_server
         .set_kind(MetadataServerKind::Raft(raft_options));
-    set_current_config(configuration);
+    set_global_config(configuration);
 
     let uds = tempfile::tempdir()?.into_path().join("server.sock");
     let bind_address = BindAddress::Uds(uds.clone());

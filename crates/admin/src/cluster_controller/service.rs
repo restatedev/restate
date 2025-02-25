@@ -1439,7 +1439,7 @@ mod tests {
     where
         F: FnMut(TestCoreEnvBuilder<FailingConnector>) -> TestCoreEnvBuilder<FailingConnector>,
     {
-        restate_core::config::set_current_config(config);
+        restate_core::config::set_global_config(config);
         let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let bifrost_svc = BifrostService::new(builder.metadata_writer.clone())
             .with_factory(memory_loglet::Factory::default());

@@ -88,7 +88,7 @@ fn main() -> anyhow::Result<()> {
     // reason.
     config.common.set_base_dir(base_dir.clone());
 
-    restate_core::config::set_current_config(config.clone());
+    restate_core::config::set_global_config(config.clone());
 
     let recorder = PrometheusBuilder::new().install_recorder().unwrap();
     let (tc, bifrost) = spawn_environment(Configuration::live(), 1);

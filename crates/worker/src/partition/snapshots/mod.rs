@@ -14,7 +14,7 @@ mod snapshot_task;
 const SNAPSHOT_STAGING_DIR: &str = "pp-snapshots";
 const SNAPSHOT_DIR: &str = "db-snapshots";
 
-fn snapshot_staging_dir() -> PathBuf {
+pub(crate) fn snapshot_staging_dir() -> PathBuf {
     data_dir(SNAPSHOT_STAGING_DIR)
 }
 

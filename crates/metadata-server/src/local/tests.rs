@@ -237,7 +237,7 @@ async fn create_test_environment(
         ..Default::default()
     };
 
-    restate_core::config::set_current_config(config.clone());
+    restate_core::config::set_global_config(config.clone());
     let config = Constant::new(config);
     let env = TestCoreEnvBuilder::with_incoming_only_connector()
         .build()

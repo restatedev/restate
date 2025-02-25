@@ -100,7 +100,7 @@ pub fn spawn_restate(config: Configuration) -> task_center::Handle {
         .expect("task_center builds")
         .into_handle();
     let mut prometheus = Prometheus::install(&config.common);
-    restate_core::config::set_current_config(config.clone());
+    restate_core::config::set_global_config(config.clone());
     let live_config = Configuration::live();
 
     tc.block_on(async {

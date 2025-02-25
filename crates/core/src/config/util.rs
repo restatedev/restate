@@ -17,19 +17,35 @@ pub(crate) static CONFIG_UPDATE: LazyLock<watch::Sender<()>> =
 
 #[derive(Clone)]
 pub struct ConfigWatch {
-    receiver: watch::Receiver<()>,
+    receiver: Option<watch::Receiver<()>>,
 }
 
 impl ConfigWatch {
     pub fn new(receiver: watch::Receiver<()>) -> Self {
-        Self { receiver }
+        Self {
+            receiver: Some(receiver),
+        }
+    }
+
+    /// Create a no-op [`ConfigWatch`]. This is useful if the underlying configuration cannot be
+    /// updated.
+    pub fn no_op() -> Self {
+        Self { receiver: None }
     }
 
     /// Blocks until a configuration update is signaled.
     pub async fn changed(&mut self) {
-        // It's okay to ignore the result here since the sender is static, we don't
-        // care much about changes that happen during shutdown.
-        let _ = self.receiver.changed().await;
+        match &mut self.receiver {
+            None => {
+                // we are a no-op config watch
+                futures::future::pending().await
+            }
+            Some(receiver) => {
+                // It's okay to ignore the result here since the sender is static, we don't
+                // care much about changes that happen during shutdown.
+                let _ = receiver.changed().await;
+            }
+        }
     }
 }
 

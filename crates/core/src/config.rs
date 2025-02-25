@@ -27,9 +27,10 @@ use restate_types::config::{
     print_warning_deprecated_config_option,
 };
 use restate_types::errors::GenericError;
-use restate_types::live::{Live, LiveLoad, LiveLoadExt};
+use restate_types::live::{Live, LiveLoad, LiveLoadExt, Pinned};
 use restate_types::nodes_config::Role;
 
+use crate::TaskCenter;
 #[cfg(feature = "clap")]
 pub use cli_option_overrides::*;
 pub use config_loader::{
@@ -60,29 +61,14 @@ static NODE_BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 static NODE_BASE_DIR: LazyLock<parking_lot::RwLock<TempOrPath>> =
     LazyLock::new(|| parking_lot::RwLock::new(TempOrPath::Temp(tempfile::TempDir::new().unwrap())));
 
-#[cfg(not(any(test, feature = "test-util")))]
+/// Retrieves the node directory for the current node.
+///
+/// # Important
+/// This method needs to be called from within a [`TaskCenter`] task. Otherwise, it panics.
 pub fn node_dir() -> PathBuf {
-    NODE_BASE_DIR
-        .get()
-        .expect("base_dir is initialized")
-        .clone()
+    TaskCenter::with_current(|tc| tc.node_dir())
 }
 
-#[cfg(not(any(test, feature = "test-util")))]
-pub fn data_dir(dir: &str) -> PathBuf {
-    node_dir().join(dir)
-}
-
-#[cfg(any(test, feature = "test-util"))]
-pub fn node_dir() -> PathBuf {
-    let guard = NODE_BASE_DIR.read();
-    match &*guard {
-        TempOrPath::Temp(temp) => temp.path().to_path_buf(),
-        TempOrPath::Path(path) => path.clone(),
-    }
-}
-
-#[cfg(any(test, feature = "test-util"))]
 pub fn data_dir(dir: &str) -> PathBuf {
     node_dir().join(dir)
 }
@@ -118,19 +104,54 @@ pub fn reset_base_temp_dir_and_retain() -> PathBuf {
 
 /// Set the current configuration, this is temporary until we have a dedicated configuration loader
 /// thread.
-pub fn set_current_config(config: Configuration) {
+pub fn set_global_config(config: Configuration) {
     #[cfg(not(any(test, feature = "test-util")))]
-    let proposed_cwd = config.common.base_dir().join(config.node_name());
+    {
+        let proposed_cwd = config.common.base_dir().join(config.node_name());
+        NODE_BASE_DIR.get_or_init(|| proposed_cwd);
+    }
     #[cfg(any(test, feature = "test-util"))]
     if let Some(base_dir) = config.common.base_dir_opt() {
         // overwrite temp directory if an explicit base dir was configured
         set_base_temp_dir(base_dir.clone().join(config.node_name()));
     }
+
     // todo: potentially validate the config
     CONFIGURATION.store(Arc::new(config));
-    #[cfg(not(any(test, feature = "test-util")))]
-    NODE_BASE_DIR.get_or_init(|| proposed_cwd);
     notify_config_update();
+}
+
+pub(crate) fn global_node_base_dir() -> PathBuf {
+    #[cfg(any(test, feature = "test-util"))]
+    {
+        let guard = NODE_BASE_DIR.read();
+        match &*guard {
+            TempOrPath::Temp(temp) => temp.path().to_path_buf(),
+            TempOrPath::Path(path) => path.clone(),
+        }
+    }
+
+    #[cfg(not(any(test, feature = "test-util")))]
+    NODE_BASE_DIR
+        .get()
+        .expect("base_dir is initialized")
+        .clone()
+}
+
+pub(crate) fn global_configuration() -> Arc<Configuration> {
+    CONFIGURATION.load_full()
+}
+
+pub(crate) fn global_configuration_pinned() -> Pinned<Configuration> {
+    Pinned::new(CONFIGURATION.as_ref())
+}
+
+pub(crate) fn global_configuration_live() -> Live<Configuration> {
+    Live::from(CONFIGURATION.clone())
+}
+
+pub(crate) fn global_configuration_watcher() -> ConfigWatch {
+    ConfigWatch::new(CONFIG_UPDATE.subscribe())
 }
 
 /// # Restate configuration file
@@ -155,9 +176,12 @@ pub struct Configuration {
 }
 
 impl Configuration {
-    /// Gets the current configuration as an owned value. This might entail a [`ArcSwap::load_full`]
+    /// Gets the current configuration as an owned value. This might entail a [`ArcSwap::load_full`].
+    ///
+    /// # Important
+    /// This method needs to be called from within a [`TaskCenter`] task. Otherwise, it panics.
     pub fn current() -> Arc<Configuration> {
-        CONFIGURATION.load_full()
+        TaskCenter::with_current(|tc| tc.configuration())
     }
 
     /// Potentially fast access to a snapshot, should be used if a [`Live<T>`]
@@ -170,18 +194,14 @@ impl Configuration {
     ///
     /// If too many Guards are kept around, the performance might be poor. These are not intended
     /// to be stored in data structures or used across async yield points.
+    ///
+    /// # Important
+    /// This method needs to be called from within a [`TaskCenter`] task. Otherwise, it panics.
     pub fn with_current<F, R>(f: F) -> R
     where
         F: FnOnce(&Configuration) -> R,
     {
-        f(&CONFIGURATION.load())
-    }
-
-    pub async fn with_current_async<F, R>(f: F) -> R
-    where
-        F: AsyncFnOnce(&Configuration) -> R,
-    {
-        f(&CONFIGURATION.load()).await
+        TaskCenter::with_configuration(|config| f(config))
     }
 
     /// The best way to access live when holding a mutable [`LiveLoad`] is
@@ -192,11 +212,17 @@ impl Configuration {
     /// exclusive reference. This should be the preferred method for accessing the live value.
     /// Avoid using [`Self::with_current`] or [`Self::current`] in tight loops. Instead, get a new live value,
     /// and pass it down to the loop by value for very efficient access.
+    ///
+    /// # Important
+    /// This method needs to be called from within a [`TaskCenter`] task. Otherwise, it panics.
     pub fn live() -> Live<Self> {
-        Live::from(CONFIGURATION.clone())
+        TaskCenter::with_current(|tc| tc.configuration_live())
     }
 
-    /// Create an updateable that projects a part of the config
+    /// Creates a live configuration that projects a part of the config.
+    ///
+    /// # Important
+    /// This method needs to be called from within a [`TaskCenter`] task. Otherwise, it panics.
     pub fn map_live<F, U>(f: F) -> impl LiveLoad<Live = U>
     where
         F: FnMut(&Configuration) -> &U + Send + Sync + 'static + Clone,
@@ -205,8 +231,12 @@ impl Configuration {
         Configuration::live().map(f)
     }
 
+    /// Creates a [`ConfigWatch`] watcher that signals whenever the configuration changes.
+    ///
+    /// # Important
+    /// This method needs to be called from within a [`TaskCenter`] task. Otherwise, it panics.
     pub fn watcher() -> ConfigWatch {
-        ConfigWatch::new(CONFIG_UPDATE.subscribe())
+        TaskCenter::with_current(|tc| tc.configuration_watcher())
     }
 
     pub fn apply_cascading_values(mut self) -> Self {

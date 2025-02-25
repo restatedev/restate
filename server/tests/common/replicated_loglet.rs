@@ -67,7 +67,7 @@ async fn replicated_loglet_client(
     config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
     config.common.metadata_client = cluster.nodes[0].config().common.metadata_client.clone();
 
-    restate_core::config::set_current_config(config.clone());
+    restate_core::config::set_global_config(config.clone());
 
     let node = restate_node::Node::create(Live::from_value(config), Prometheus::default()).await?;
 
