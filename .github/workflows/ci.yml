@@ -233,34 +233,14 @@ jobs:
       - name: Verify the committed UI artifact matches the published one in restate-web-ui
         run: ./tools/scripts/verify-ui-artifact
 
-  check-jepsen-label:
-    runs-on: ubuntu-latest
-    outputs:
-      jepsen_tests_label: ${{ steps.check-label.outputs.has_jepsen_tests_label }}
-    steps:
-      - run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}")
-
-            if echo "$PR_DATA" | jq -e '.labels[] | select(.name == "jepsen-tests")' > /dev/null; then
-              echo "has_jepsen_tests_label=true" >> $GITHUB_OUTPUT
-            else
-              echo "has_jepsen_tests_label=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "has_jepsen_tests_label=false" >> $GITHUB_OUTPUT
-          fi
-
   jepsen:
-    # Only run if the check-labels job indicates the label is present
-    needs: [check-jepsen-label, docker]
+    needs: docker
     # id tokens are not available on forks
     if: needs.check-jepsen-label.outputs.jepsen_tests_label == 'true' && github.event.repository.fork == false
     runs-on: warp-ubuntu-latest-arm64-4x
     name: Run Jepsen tests
     concurrency:
-      group: singleton
+      group: singleton # due to the shared Jepsen worker cluster across PRs
     permissions:
       contents: read
       issues: read
