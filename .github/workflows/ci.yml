@@ -236,7 +236,7 @@ jobs:
   jepsen:
     needs: docker
     # id tokens are not available on forks
-    if: needs.check-jepsen-label.outputs.jepsen_tests_label == 'true' && github.event.repository.fork == false
+    if: github.event.repository.fork == false
     runs-on: warp-ubuntu-latest-arm64-4x
     name: Run Jepsen tests
     concurrency:
