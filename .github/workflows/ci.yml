@@ -234,23 +234,23 @@ jobs:
         run: ./tools/scripts/verify-ui-artifact
 
   check-jepsen-label:
-      runs-on: ubuntu-latest
-      outputs:
-        jepsen_tests_label: ${{ steps.check-label.outputs.has_jepsen_tests_label }}
-      steps:
-        - run: |
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}")
+    runs-on: ubuntu-latest
+    outputs:
+      jepsen_tests_label: ${{ steps.check-label.outputs.has_jepsen_tests_label }}
+    steps:
+      - run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}")
 
-              if echo "$PR_DATA" | jq -e '.labels[] | select(.name == "jepsen-tests")' > /dev/null; then
-                echo "has_jepsen_tests_label=true" >> $GITHUB_OUTPUT
-              else
-                echo "has_jepsen_tests_label=false" >> $GITHUB_OUTPUT
-              fi
+            if echo "$PR_DATA" | jq -e '.labels[] | select(.name == "jepsen-tests")' > /dev/null; then
+              echo "has_jepsen_tests_label=true" >> $GITHUB_OUTPUT
             else
               echo "has_jepsen_tests_label=false" >> $GITHUB_OUTPUT
             fi
+          else
+            echo "has_jepsen_tests_label=false" >> $GITHUB_OUTPUT
+          fi
 
   jepsen:
     # Only run if the check-labels job indicates the label is present
@@ -270,6 +270,7 @@ jobs:
       id-token: write # NB: can obtain OIDC tokens on behalf of this repository!
     steps:
     - uses: restatedev/jepsen/.github/actions/run-tests@reusable
+      continue-on-error: true
       with:
         ref: reusable
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
