@@ -13,6 +13,7 @@ mod persisted_lsn_watchdog;
 mod processor_state;
 mod spawn_processor_task;
 
+use restate_bifrost::loglet::FindTailAttr;
 use restate_types::identifiers::SnapshotId;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
@@ -51,7 +52,7 @@ use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
-use restate_types::logs::{Lsn, SequenceNumber};
+use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor::{
@@ -64,7 +65,6 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::{GenerationalNodeId, Version};
 
-use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
 use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
 use crate::metric_definitions::PARTITION_LABEL;
@@ -72,6 +72,7 @@ use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
 use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
+use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_LAST_APPLIED_LSN_LAG};
 use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
 use crate::partition::ProcessorError;
 use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
@@ -97,6 +98,7 @@ pub struct PartitionProcessorManager {
 
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
     archived_lsns: HashMap<PartitionId, Lsn>,
+    target_tail_lsns: HashMap<PartitionId, Lsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
     pending_control_processors: Option<PendingControlProcessors>,
 
@@ -197,6 +199,7 @@ impl PartitionProcessorManager {
             tx,
             persisted_lsns_rx: None,
             archived_lsns: HashMap::default(),
+            target_tail_lsns: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
             pending_control_processors: None,
             asynchronous_operations: JoinSet::default(),
@@ -241,6 +244,9 @@ impl PartitionProcessorManager {
         let mut latest_snapshot_check_interval = tokio::time::interval(Duration::from_secs(5));
         latest_snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let mut update_target_tail_lsns = tokio::time::interval(Duration::from_secs(1));
+        update_target_tail_lsns.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         self.health_status.update(WorkerStatus::Ready);
         loop {
             tokio::select! {
@@ -249,6 +255,9 @@ impl PartitionProcessorManager {
                 }
                 _ = latest_snapshot_check_interval.tick() => {
                     self.trigger_periodic_partition_snapshots();
+                }
+                _ = update_target_tail_lsns.tick() => {
+                    self.update_target_tail_lsns();
                 }
                 Some(control_processors) = self.incoming_update_processors.next() => {
                     self.pending_control_processors = Some(PendingControlProcessors::new(control_processors.peer(), control_processors.into_body()));
@@ -513,6 +522,22 @@ impl PartitionProcessorManager {
                     debug!("Partition processor is no longer running. Ignoring new leader epoch result.");
                 }
             }
+            EventKind::NewTargetTail { tail } => {
+                let Some(tail_lsn) = tail else {
+                    return;
+                };
+
+                match self.target_tail_lsns.entry(partition_id) {
+                    Entry::Occupied(mut o) => {
+                        if *o.get() < tail_lsn {
+                            o.insert(tail_lsn);
+                        }
+                    }
+                    Entry::Vacant(v) => {
+                        v.insert(tail_lsn);
+                    }
+                }
+            }
         }
     }
 
@@ -531,6 +556,32 @@ impl PartitionProcessorManager {
             }
             .in_current_tc(),
         );
+    }
+
+    /// A lightweight tail watcher that leverages the loglet watch tail implementation
+    /// to retrieve the most recently observed tail for the writable segment.
+    /// This ensures that the tail remains close to the actual value,
+    /// regardless of which segment is currently being processed by the partition processor.
+    fn update_target_tail_lsns(&mut self) {
+        for partition_id in self.processor_states.keys().cloned() {
+            let bifrost = self.bifrost.clone();
+
+            self.asynchronous_operations.spawn(
+                async move {
+                    let tail = bifrost
+                        .find_tail(LogId::from(partition_id), FindTailAttr::Approximate)
+                        .await
+                        .map(|tail| tail.offset())
+                        .ok();
+
+                    AsynchronousEvent {
+                        partition_id,
+                        inner: EventKind::NewTargetTail { tail },
+                    }
+                }
+                .in_current_tc(),
+            );
+        }
     }
 
     fn obtain_new_leader_epoch(
@@ -557,59 +608,67 @@ impl PartitionProcessorManager {
         self.processor_states
             .iter()
             .filter_map(|(partition_id, processor_state)| {
-                let status = processor_state.partition_processor_status();
+                let mut status = processor_state.partition_processor_status()?;
 
-                if let Some(mut status) = status {
-                    gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
+                gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
                         PARTITION_LABEL => partition_id.to_string())
-                    .set(status.updated_at.elapsed());
+                .set(status.updated_at.elapsed());
 
-                    gauge!(PARTITION_IS_EFFECTIVE_LEADER,
+                gauge!(PARTITION_IS_EFFECTIVE_LEADER,
                         PARTITION_LABEL => partition_id.to_string())
-                    .set(if status.is_effective_leader() {
-                        1.0
-                    } else {
-                        0.0
-                    });
-
-                    gauge!(PARTITION_IS_ACTIVE,
-                        PARTITION_LABEL => partition_id.to_string())
-                    .set(if status.replay_status == ReplayStatus::Active {
-                        1.0
-                    } else {
-                        0.0
-                    });
-
-                    if let Some(last_applied_log_lsn) = status.last_applied_log_lsn {
-                        gauge!(PARTITION_LAST_APPLIED_LOG_LSN,
-                        PARTITION_LABEL => partition_id.to_string())
-                        .set(last_applied_log_lsn.as_u64() as f64);
-                    }
-
-                    if let Some(last_persisted_log_lsn) = status.last_persisted_log_lsn {
-                        gauge!(PARTITION_LAST_PERSISTED_LOG_LSN,
-                        PARTITION_LABEL => partition_id.to_string())
-                        .set(last_persisted_log_lsn.as_u64() as f64);
-                    }
-
-                    if let Some(last_record_applied_at) = status.last_record_applied_at {
-                        gauge!(PARTITION_TIME_SINCE_LAST_RECORD,
-                        PARTITION_LABEL => partition_id.to_string())
-                        .set(last_record_applied_at.elapsed());
-                    }
-
-                    // it is a bit unfortunate that we share PartitionProcessorStatus between the
-                    // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
-                    status.last_persisted_log_lsn = persisted_lsns
-                        .as_ref()
-                        .and_then(|lsns| lsns.get(partition_id).cloned());
-
-                    status.last_archived_log_lsn = self.archived_lsns.get(partition_id).cloned();
-
-                    Some((*partition_id, status))
+                .set(if status.is_effective_leader() {
+                    1.0
                 } else {
-                    None
+                    0.0
+                });
+
+                gauge!(PARTITION_IS_ACTIVE,
+                        PARTITION_LABEL => partition_id.to_string())
+                .set(if status.replay_status == ReplayStatus::Active {
+                    1.0
+                } else {
+                    0.0
+                });
+
+                if let Some(last_applied_log_lsn) = status.last_applied_log_lsn {
+                    gauge!(PARTITION_LAST_APPLIED_LOG_LSN,
+                        PARTITION_LABEL => partition_id.to_string())
+                    .set(last_applied_log_lsn.as_u64() as f64);
                 }
+
+                if let Some(last_persisted_log_lsn) = status.last_persisted_log_lsn {
+                    gauge!(PARTITION_LAST_PERSISTED_LOG_LSN,
+                        PARTITION_LABEL => partition_id.to_string())
+                    .set(last_persisted_log_lsn.as_u64() as f64);
+                }
+
+                if let Some(last_record_applied_at) = status.last_record_applied_at {
+                    gauge!(PARTITION_TIME_SINCE_LAST_RECORD,
+                        PARTITION_LABEL => partition_id.to_string())
+                    .set(last_record_applied_at.elapsed());
+                }
+
+                // it is a bit unfortunate that we share PartitionProcessorStatus between the
+                // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
+                status.last_persisted_log_lsn = persisted_lsns
+                    .as_ref()
+                    .and_then(|lsns| lsns.get(partition_id).cloned());
+
+                status.last_archived_log_lsn = self.archived_lsns.get(partition_id).cloned();
+
+                let target_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
+                if target_tail_lsn > status.target_tail_lsn {
+                    status.target_tail_lsn = target_tail_lsn;
+                }
+
+                if let Some((target_lsn, applied_lsn)) =
+                    status.target_tail_lsn.zip(status.last_applied_log_lsn)
+                {
+                    gauge!(PARTITION_LAST_APPLIED_LSN_LAG, PARTITION_LABEL => partition_id.to_string())
+                    .set(target_lsn.prev().as_u64().saturating_sub(applied_lsn.as_u64()) as f64);
+                }
+
+                Some((*partition_id, status))
             })
             .collect()
     }
@@ -972,6 +1031,9 @@ enum EventKind {
     NewLeaderEpoch {
         leader_epoch_token: LeaderEpochToken,
         result: anyhow::Result<LeaderEpoch>,
+    },
+    NewTargetTail {
+        tail: Option<Lsn>,
     },
 }
 

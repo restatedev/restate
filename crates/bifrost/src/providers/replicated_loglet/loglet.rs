@@ -24,7 +24,7 @@ use restate_types::logs::{
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
+use crate::loglet::{FindTailAttr, Loglet, LogletCommit, OperationError, SendableLogletReadStream};
 use crate::providers::replicated_loglet::replication::spread_selector::SelectorStrategy;
 use crate::providers::replicated_loglet::sequencer::Sequencer;
 use crate::providers::replicated_loglet::tasks::{
@@ -333,7 +333,13 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         }
     }
 
-    async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
+    async fn find_tail(
+        &self,
+        attr: FindTailAttr,
+    ) -> Result<TailState<LogletOffset>, OperationError> {
+        if attr == FindTailAttr::Approximate {
+            return Ok(self.last_known_global_tail());
+        }
         self.find_tail_inner(FindTailOptions::default()).await
     }
 
@@ -550,7 +556,7 @@ mod tests {
                 assert_that!(offset, eq(LogletOffset::new(3)));
                 let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
                 assert_that!(offset, eq(LogletOffset::new(6)));
-                let tail = env.loglet.find_tail().await?;
+                let tail = env.loglet.find_tail(FindTailAttr::default()).await?;
                 assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
 
                 let cached_record = env.record_cache.get(loglet_id, 1.into());
@@ -593,7 +599,7 @@ mod tests {
                 assert_that!(offset, eq(LogletOffset::new(3)));
                 let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
                 assert_that!(offset, eq(LogletOffset::new(6)));
-                let tail = env.loglet.find_tail().await?;
+                let tail = env.loglet.find_tail(FindTailAttr::default()).await?;
                 assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
 
                 env.loglet.seal().await?;
@@ -604,7 +610,7 @@ mod tests {
                 .into();
                 let not_appended = env.loglet.enqueue_batch(batch).await?.await;
                 assert_that!(not_appended, err(pat!(AppendError::Sealed)));
-                let tail = env.loglet.find_tail().await?;
+                let tail = env.loglet.find_tail(FindTailAttr::default()).await?;
                 assert_that!(tail, eq(TailState::Sealed(LogletOffset::new(7))));
 
                 Ok(())
