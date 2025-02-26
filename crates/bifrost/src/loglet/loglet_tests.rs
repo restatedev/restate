@@ -25,7 +25,7 @@ use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber, TailState};
 
 use super::Loglet;
-use crate::loglet::AppendError;
+use crate::loglet::{AppendError, FindTailAttr};
 use crate::loglet_wrapper::LogletWrapper;
 
 async fn wait_for_trim(loglet: &LogletWrapper, required_trim_point: Lsn) -> anyhow::Result<()> {
@@ -63,7 +63,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -76,7 +76,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         assert_eq!(Lsn::new(i), offset);
         assert_eq!(None, loglet.get_trim_point().await?);
         {
-            let tail = loglet.find_tail().await?;
+            let tail = loglet.find_tail(FindTailAttr::default()).await?;
             assert_eq!(Lsn::new(i + 1), tail.offset());
             assert!(!tail.is_sealed());
         }
@@ -114,7 +114,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     // trim point and tail didn't change
     assert_eq!(None, loglet.get_trim_point().await?);
     {
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::new(end), tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -168,7 +168,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     assert_eq!(Lsn::new(4), offset);
     assert_eq!(None, loglet.get_trim_point().await?);
     {
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::new(5), tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -189,7 +189,10 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     assert!(res.is_err());
     assert!(start.elapsed() >= Duration::from_secs(10));
     // Tail didn't change.
-    assert_eq!(Lsn::new(5), loglet.find_tail().await?.offset());
+    assert_eq!(
+        Lsn::new(5),
+        loglet.find_tail(FindTailAttr::default()).await?.offset()
+    );
 
     // trim the loglet to and including 3
     loglet.trim(Lsn::new(3)).await?;
@@ -197,7 +200,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
 
     // tail didn't change
     {
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::new(5), tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -240,7 +243,7 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
 
     {
         // no records have been written yet.
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -312,7 +315,7 @@ pub async fn single_loglet_readstream_with_trims(
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -325,7 +328,10 @@ pub async fn single_loglet_readstream_with_trims(
     // Lsn(5) is trimmed, 5 records left [6..10]
     loglet.trim(Lsn::new(5)).await?;
 
-    assert_eq!(Lsn::new(11), loglet.find_tail().await?.offset());
+    assert_eq!(
+        Lsn::new(11),
+        loglet.find_tail(FindTailAttr::default()).await?.offset()
+    );
     // retry if loglet needs time to perform the trim.
     wait_for_trim(&loglet, Lsn::new(5))
         .await
@@ -359,7 +365,7 @@ pub async fn single_loglet_readstream_with_trims(
 
     // tail didn't move.
     {
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::new(11), tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -373,7 +379,7 @@ pub async fn single_loglet_readstream_with_trims(
         .into_test_result()?;
     // tail is not impacted by the trim operation
     {
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::new(11), tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -433,7 +439,7 @@ pub async fn append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -451,7 +457,7 @@ pub async fn append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()
         assert_that!(res, err(pat!(AppendError::Sealed)));
     }
 
-    let tail = loglet.find_tail().await?;
+    let tail = loglet.find_tail(FindTailAttr::default()).await?;
     // Seal must be applied after commit index 5 since it has been acknowledged (tail is 6 or higher)
     assert_that!(tail, pat!(TailState::Sealed(gt(Lsn::new(5)))));
 
@@ -475,7 +481,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -532,7 +538,10 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
         let loglet = loglet.clone();
         async move {
             loop {
-                let res = loglet.find_tail().await.expect("find_tail succeeds");
+                let res = loglet
+                    .find_tail(FindTailAttr::default())
+                    .await
+                    .expect("find_tail succeeds");
                 if res.is_sealed() {
                     return res.offset();
                 }
@@ -558,7 +567,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
         err(pat!(AppendError::Sealed))
     );
 
-    let tail = loglet.find_tail().await?;
+    let tail = loglet.find_tail(FindTailAttr::default()).await?;
     assert!(tail.is_sealed());
     let first_observed_seal = first_observed_seal.await?;
     println!("Sealed tail={tail:?}, first observed seal at={first_observed_seal}");
@@ -614,7 +623,7 @@ pub async fn seal_empty(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
         assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
@@ -631,7 +640,7 @@ pub async fn seal_empty(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     }
 
     loglet.seal().await?;
-    let tail = loglet.find_tail().await?;
+    let tail = loglet.find_tail(FindTailAttr::default()).await?;
     assert_eq!(Lsn::OLDEST, tail.offset());
     assert!(tail.is_sealed());
 
