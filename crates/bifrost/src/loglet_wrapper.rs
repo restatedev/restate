@@ -20,7 +20,7 @@ use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
 use restate_types::logs::{KeyFilter, LogletOffset, Lsn, SequenceNumber};
 use restate_types::logs::{Record, TailState};
 
-use crate::loglet::{AppendError, Loglet, OperationError, SendableLogletReadStream};
+use crate::loglet::{AppendError, FindTailAttr, Loglet, OperationError, SendableLogletReadStream};
 use crate::Result;
 use crate::{Commit, LogEntry, LsnExt};
 
@@ -132,7 +132,7 @@ impl LogletWrapper {
     pub async fn read_opt(&self, from: Lsn) -> Result<Option<LogEntry<Lsn>>, OperationError> {
         let tail_lsn = match self.tail_lsn {
             Some(tail) => tail,
-            None => self.find_tail().await?.offset(),
+            None => self.find_tail(FindTailAttr::default()).await?.offset(),
         };
         let mut stream = self
             .clone()
@@ -174,14 +174,14 @@ impl LogletWrapper {
         Ok(Commit::passthrough(self.base_lsn, commit))
     }
 
-    pub async fn find_tail(&self) -> Result<TailState<Lsn>, OperationError> {
+    pub async fn find_tail(&self, opts: FindTailAttr) -> Result<TailState<Lsn>, OperationError> {
         if let Some(tail) = self.tail_lsn {
             return Ok(TailState::Sealed(tail));
         }
 
         Ok(self
             .loglet
-            .find_tail()
+            .find_tail(opts)
             .await?
             .map(|o| self.base_lsn.offset_by(o)))
     }

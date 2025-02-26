@@ -22,6 +22,7 @@ use restate_types::Version;
 
 use crate::bifrost::BifrostInner;
 use crate::error::AdminError;
+use crate::loglet::FindTailAttr;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::{Error, Result};
 
@@ -187,7 +188,7 @@ impl<'a> BifrostAdmin<'a> {
                 }
             }
         }
-        let tail = loglet.find_tail().await?;
+        let tail = loglet.find_tail(FindTailAttr::default()).await?;
 
         Ok(SealedSegment {
             segment_index: loglet.segment_index(),

@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, instrument, trace, warn, Span};
 
+use restate_bifrost::loglet::FindTailAttr;
 use restate_bifrost::Bifrost;
 use restate_core::network::{HasConnection, Incoming, Outgoing};
 use restate_core::{cancellation_watcher, ShutdownError, TaskCenter, TaskKind};
@@ -328,7 +329,7 @@ where
         // propagate errors and let the PPM handle error retries
         let current_tail = self
             .bifrost
-            .find_tail(LogId::from(self.partition_id))
+            .find_tail(LogId::from(self.partition_id), FindTailAttr::Durable)
             .await?;
 
         debug!(
