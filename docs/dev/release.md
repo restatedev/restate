@@ -35,7 +35,7 @@ Confirm if any SDK releases are needed to keep up with the runtime and/or servic
 1. Make sure that [COMPATIBILITY_INFORMATION](/crates/node/src/cluster_marker.rs) is updated if `X.Y.Z` changes the requirements for backward/forward compatible Restate versions.
 1. Create a tag of the form `vX.Y.Z` and push it to the repository. The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which runs the unit tests, the e2e tests, creates the docker image of the runtime, builds the CLI/runtime binaries, and prepares a Github draft release.
 1. Manually publish the draft release created by the release automation [here](https://github.com/restatedev/restate/releases).
-1. Bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version after the release.
+1. Bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version with a `-dev` suffix after the release. The `-dev` suffix is helpful for distinguishing between versions that are under development and those that are released.
 
 **Note:** 
 Don't immediately create a release branch after a MAJOR/MINOR release.
