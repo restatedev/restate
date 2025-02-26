@@ -8,81 +8,84 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU16;
-use std::pin::pin;
-use std::time::Duration;
-
-use enumset::enum_set;
 use futures::never::Never;
-use tracing::{error, info};
-
+use restate_core::TaskCenterBuilder;
 use restate_local_cluster_runner::cluster::StartedCluster;
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
     shutdown,
 };
+use restate_types::config::{Configuration, LogFormat};
+use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::logs::metadata::ProviderKind::Replicated;
-use restate_types::{
-    config::{Configuration, LogFormat},
-    nodes_config::Role,
-};
+use std::num::NonZeroU16;
+use std::pin::pin;
+use std::time::Duration;
+use tracing::{error, info};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
-
     let mut base_config = Configuration::default();
     base_config.common.log_format = LogFormat::Compact;
     base_config.common.log_filter = "warn,restate=debug".to_string();
     base_config.common.default_num_partitions = NonZeroU16::new(4).unwrap();
     base_config.bifrost.default_provider = Replicated;
 
-    let nodes = Node::new_test_nodes(
-        base_config,
-        BinarySource::CargoTest,
-        enum_set!(Role::Worker | Role::LogServer),
-        3,
-        true,
-    );
+    let config = ConfigLoaderBuilder::default()
+        .load_env(true)
+        .custom_default(base_config)
+        .build()?
+        .load_once()?;
 
-    let mut shutdown_signal = pin!(shutdown());
+    let tc = TaskCenterBuilder::default()
+        .options(config.common.clone())
+        .build()?;
 
-    let cluster = Cluster::builder()
-        .cluster_name("test-cluster")
-        .nodes(nodes)
-        .build();
+    tc.block_on(async move {
+        let roles = *config.roles();
+        let auto_provision = config.common.auto_provision;
 
-    let mut cluster = tokio::select! {
-        _ = &mut shutdown_signal => {
-            info!("Shutting down before the cluster started.");
-            return Ok(());
-        },
-        started = cluster.start() => {
-            started?
+        let nodes = Node::new_test_nodes(config, BinarySource::CargoTest, roles, 3, auto_provision);
+
+        let mut shutdown_signal = pin!(shutdown());
+
+        let cluster = Cluster::builder()
+            .cluster_name("test-cluster")
+            .nodes(nodes)
+            .build();
+
+        let mut cluster = tokio::select! {
+            _ = &mut shutdown_signal => {
+                info!("Shutting down before the cluster started.");
+                return Ok(());
+            },
+            started = cluster.start() => {
+                started?
+            }
+        };
+
+        let result = tokio::select! {
+            _ = &mut shutdown_signal => {
+                Ok(())
+            },
+            result = run_cluster(&cluster) => {
+                result.map(|_never| ())
+            }
+        };
+
+        if let Err(err) = result {
+            error!("Error running cluster: {err}")
         }
-    };
 
-    let result = tokio::select! {
-        _ = &mut shutdown_signal => {
-            Ok(())
-        },
-        result = run_cluster(&cluster) => {
-            result.map(|_never| ())
-        }
-    };
+        info!("cluster shutting down");
+        cluster
+            .graceful_shutdown(Duration::from_secs(5))
+            .await
+            .expect("cluster to shut down");
 
-    if let Err(err) = result {
-        error!("Error running cluster: {err}")
-    }
-
-    info!("cluster shutting down");
-    cluster
-        .graceful_shutdown(Duration::from_secs(5))
-        .await
-        .expect("cluster to shut down");
-
-    Ok(())
+        Ok(())
+    })
 }
 
 async fn run_cluster(cluster: &StartedCluster) -> anyhow::Result<Never> {
