@@ -10,15 +10,6 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
-[features]
-default = ["lua54"]
-
-lua54 = ["mlua/lua54"]
-lua53 = ["mlua/lua53"]
-lua52 = ["mlua/lua52"]
-lua51 = ["mlua/lua51"]
-luajit = ["mlua/luajit"]
-
 [dependencies]
 # Dependencies needed to decode packets
 restate-service-protocol-v4 = { workspace = true, features = ["message-codec"] }
@@ -28,4 +19,4 @@ bytes = { workspace = true }
 thiserror = { workspace = true }
 
 # Lua
-mlua = { version = "0.10.2", features = ["module", "macros"] }
+mlua = { version = "0.10.2", features = ["module", "macros", "lua54"] }
