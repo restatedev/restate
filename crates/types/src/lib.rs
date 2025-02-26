@@ -54,6 +54,9 @@ pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
 pub use node_id::*;
 pub use version::*;
 
+// Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
+pub type SharedString = metrics::SharedString;
+
 /// Trait for merging two attributes
 pub trait Merge {
     /// Return true if the value was mutated as a result of the merge

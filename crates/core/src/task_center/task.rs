@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use restate_types::identifiers::PartitionId;
+use restate_types::SharedString;
 
 use super::{TaskId, TaskKind, TASK_CONTEXT};
 use crate::ShutdownError;
@@ -24,7 +25,7 @@ use crate::ShutdownError;
 pub struct TaskContext {
     /// It's nice to have a unique ID for each task.
     pub(super) id: TaskId,
-    pub(super) name: &'static str,
+    pub(super) name: SharedString,
     pub(super) kind: TaskKind,
     /// cancel this token to request cancelling this task.
     pub(super) cancellation_token: CancellationToken,
@@ -65,8 +66,8 @@ impl TaskContext {
         self.id
     }
 
-    pub fn name(&self) -> &'static str {
-        self.name
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn kind(&self) -> TaskKind {
@@ -96,8 +97,8 @@ impl<R> Task<R> {
         self.context.id
     }
 
-    pub fn name(&self) -> &'static str {
-        self.context.name
+    pub fn name(&self) -> &str {
+        &self.context.name
     }
 
     pub fn kind(&self) -> TaskKind {

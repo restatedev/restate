@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
@@ -26,6 +27,7 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::Lsn;
 use restate_types::schema::Schema;
+use restate_types::SharedString;
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -35,7 +37,7 @@ use crate::partition_processor_manager::processor_state::StartedProcessor;
 use crate::PartitionProcessorBuilder;
 
 pub struct SpawnPartitionProcessorTask {
-    task_name: &'static str,
+    task_name: SharedString,
     partition_id: PartitionId,
     key_range: RangeInclusive<PartitionKey>,
     configuration: Live<Configuration>,
@@ -48,7 +50,7 @@ pub struct SpawnPartitionProcessorTask {
 impl SpawnPartitionProcessorTask {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        task_name: &'static str,
+        task_name: SharedString,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
         configuration: Live<Configuration>,
@@ -126,7 +128,7 @@ impl SpawnPartitionProcessorTask {
             invoker.handle(),
         );
 
-        let invoker_name = Box::leak(Box::new(format!("invoker-{partition_id}")));
+        let invoker_name = Arc::from(format!("invoker-{partition_id}"));
         let invoker_config = configuration.clone().map(|c| &c.worker.invoker);
 
         let root_task_handle = TaskCenter::current().start_runtime(

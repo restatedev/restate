@@ -18,6 +18,7 @@ use tracing::{instrument, Instrument};
 
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
+use restate_types::SharedString;
 
 use crate::{Metadata, ShutdownError};
 
@@ -104,7 +105,7 @@ impl Handle {
     pub fn start_runtime<F, R>(
         &self,
         root_task_kind: TaskKind,
-        runtime_name: &'static str,
+        runtime_name: impl Into<SharedString>,
         partition_id: Option<PartitionId>,
         root_future: impl FnOnce() -> F + Send + 'static,
     ) -> Result<RuntimeTaskHandle<R>, RuntimeError>
@@ -120,13 +121,14 @@ impl Handle {
     pub fn spawn<F>(
         &self,
         kind: TaskKind,
-        name: &'static str,
+        name: impl Into<SharedString>,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        self.inner.spawn(kind, name, future)
+        let name = name.into();
+        self.inner.spawn(kind, &name, future)
     }
 
     /// Spawn a new task that is a child of the current task. The child task will be cancelled if the parent
@@ -135,7 +137,7 @@ impl Handle {
     pub fn spawn_child<F>(
         &self,
         kind: TaskKind,
-        name: &'static str,
+        name: impl Into<SharedString>,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
@@ -147,15 +149,16 @@ impl Handle {
     pub fn spawn_unmanaged<F, T>(
         &self,
         kind: TaskKind,
-        name: &'static str,
+        name: impl Into<SharedString>,
         future: F,
     ) -> Result<TaskHandle<T>, ShutdownError>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
+        let name = name.into();
         self.inner
-            .spawn_unmanaged(kind, name, future.in_current_span())
+            .spawn_unmanaged(kind, &name, future.in_current_span())
     }
 
     /// Must be called within a Localset-scoped task, not from a normal spawned task.
@@ -163,13 +166,15 @@ impl Handle {
     pub fn spawn_local<F>(
         &self,
         kind: TaskKind,
-        name: &'static str,
+        name: impl Into<SharedString>,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
         F: Future<Output = anyhow::Result<()>> + 'static,
     {
-        self.inner.spawn_local(kind, name, future.in_current_span())
+        let name = name.into();
+        self.inner
+            .spawn_local(kind, &name, future.in_current_span())
     }
 
     pub fn metadata(&self) -> Option<Metadata> {

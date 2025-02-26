@@ -13,6 +13,8 @@ use std::time::Duration;
 use metrics::gauge;
 use tokio::runtime::RuntimeMetrics;
 
+use restate_types::SharedString;
+
 use super::Handle;
 
 pub trait TaskCenterMonitoring {
@@ -20,7 +22,7 @@ pub trait TaskCenterMonitoring {
 
     fn ingress_runtime_metrics(&self) -> RuntimeMetrics;
 
-    fn managed_runtime_metrics(&self) -> Vec<(&'static str, RuntimeMetrics)>;
+    fn managed_runtime_metrics(&self) -> Vec<(SharedString, RuntimeMetrics)>;
 
     /// How long has the task-center been running?
     fn age(&self) -> Duration;
@@ -38,11 +40,11 @@ impl TaskCenterMonitoring for Handle {
         self.inner.ingress_runtime_handle.metrics()
     }
 
-    fn managed_runtime_metrics(&self) -> Vec<(&'static str, RuntimeMetrics)> {
+    fn managed_runtime_metrics(&self) -> Vec<(SharedString, RuntimeMetrics)> {
         let guard = self.inner.managed_runtimes.lock();
         guard
             .iter()
-            .map(|(k, v)| (*k, v.runtime_handle().metrics()))
+            .map(|(k, v)| (k.clone(), v.runtime_handle().metrics()))
             .collect()
     }
 
@@ -64,34 +66,36 @@ impl TaskCenterMonitoring for Handle {
     }
 }
 
-fn submit_runtime_metrics(runtime: &'static str, stats: RuntimeMetrics) {
-    gauge!("restate.tokio.num_workers", "runtime" => runtime).set(stats.num_workers() as f64);
-    gauge!("restate.tokio.blocking_threads", "runtime" => runtime)
+fn submit_runtime_metrics(runtime: impl Into<SharedString>, stats: RuntimeMetrics) {
+    let runtime = runtime.into();
+    gauge!("restate.tokio.num_workers", "runtime" => runtime.clone())
+        .set(stats.num_workers() as f64);
+    gauge!("restate.tokio.blocking_threads", "runtime" => runtime.clone())
         .set(stats.num_blocking_threads() as f64);
-    gauge!("restate.tokio.blocking_queue_depth", "runtime" => runtime)
+    gauge!("restate.tokio.blocking_queue_depth", "runtime" => runtime.clone())
         .set(stats.blocking_queue_depth() as f64);
-    gauge!("restate.tokio.num_alive_tasks", "runtime" => runtime)
+    gauge!("restate.tokio.num_alive_tasks", "runtime" => runtime.clone())
         .set(stats.num_alive_tasks() as f64);
-    gauge!("restate.tokio.io_driver_ready_count", "runtime" => runtime)
+    gauge!("restate.tokio.io_driver_ready_count", "runtime" => runtime.clone())
         .set(stats.io_driver_ready_count() as f64);
-    gauge!("restate.tokio.remote_schedule_count", "runtime" => runtime)
+    gauge!("restate.tokio.remote_schedule_count", "runtime" => runtime.clone())
         .set(stats.remote_schedule_count() as f64);
     // per worker stats
     for idx in 0..stats.num_workers() {
-        gauge!("restate.tokio.worker_overflow_count", "runtime" => runtime, "worker" =>
+        gauge!("restate.tokio.worker_overflow_count", "runtime" => runtime.clone(), "worker" =>
             idx.to_string())
         .set(stats.worker_overflow_count(idx) as f64);
-        gauge!("restate.tokio.worker_poll_count", "runtime" => runtime, "worker" => idx.to_string())
+        gauge!("restate.tokio.worker_poll_count", "runtime" => runtime.clone(), "worker" => idx.to_string())
             .set(stats.worker_poll_count(idx) as f64);
-        gauge!("restate.tokio.worker_park_count", "runtime" => runtime, "worker" => idx.to_string())
+        gauge!("restate.tokio.worker_park_count", "runtime" => runtime.clone(), "worker" => idx.to_string())
             .set(stats.worker_park_count(idx) as f64);
-        gauge!("restate.tokio.worker_noop_count", "runtime" => runtime, "worker" => idx.to_string())
+        gauge!("restate.tokio.worker_noop_count", "runtime" => runtime.clone(), "worker" => idx.to_string())
             .set(stats.worker_noop_count(idx) as f64);
-        gauge!("restate.tokio.worker_steal_count", "runtime" => runtime, "worker" => idx.to_string())
+        gauge!("restate.tokio.worker_steal_count", "runtime" => runtime.clone(), "worker" => idx.to_string())
             .set(stats.worker_steal_count(idx) as f64);
-        gauge!("restate.tokio.worker_total_busy_duration_seconds", "runtime" => runtime, "worker" => idx.to_string())
+        gauge!("restate.tokio.worker_total_busy_duration_seconds", "runtime" => runtime.clone(), "worker" => idx.to_string())
             .set(stats.worker_total_busy_duration(idx).as_secs_f64());
-        gauge!("restate.tokio.worker_mean_poll_time", "runtime" => runtime, "worker" => idx.to_string())
+        gauge!("restate.tokio.worker_mean_poll_time", "runtime" => runtime.clone(), "worker" => idx.to_string())
             .set(stats.worker_mean_poll_time(idx).as_secs_f64());
     }
 }

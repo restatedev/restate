@@ -20,7 +20,6 @@ pub use builder::*;
 pub use extensions::*;
 pub use handle::*;
 pub use monitoring::*;
-use restate_types::health::{Health, NodeStatus};
 pub use runtime::*;
 pub use task::*;
 pub use task_kind::*;
@@ -41,8 +40,10 @@ use tokio::task_local;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
+use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
 use restate_types::GenerationalNodeId;
+use restate_types::SharedString;
 
 use crate::metric_definitions::{self, STATUS_COMPLETED, STATUS_FAILED, TC_FINISHED, TC_SPAWN};
 use crate::{Metadata, ShutdownError, ShutdownSourceErr};
@@ -146,7 +147,7 @@ impl TaskCenter {
     #[track_caller]
     pub fn spawn_child<F>(
         kind: TaskKind,
-        name: &'static str,
+        name: impl Into<SharedString>,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
@@ -272,7 +273,7 @@ struct TaskCenterInner {
     pause_time: bool,
     default_runtime_handle: tokio::runtime::Handle,
     ingress_runtime_handle: tokio::runtime::Handle,
-    managed_runtimes: Mutex<HashMap<&'static str, OwnedRuntimeHandle>>,
+    managed_runtimes: Mutex<HashMap<SharedString, OwnedRuntimeHandle>>,
     start_time: Instant,
     /// We hold on to the owned Runtime to ensure it's dropped when task center is dropped. If this
     /// is None, it means that it's the responsibility of the Handle owner to correctly drop
@@ -303,7 +304,7 @@ impl TaskCenterInner {
         metric_definitions::describe_metrics();
         let root_task_context = TaskContext {
             id: TaskId::ROOT,
-            name: "::",
+            name: "::".into(),
             kind: TaskKind::InPlace,
             cancellation_token: CancellationToken::new(),
             partition_id: None,
@@ -384,7 +385,7 @@ impl TaskCenterInner {
     pub fn spawn<F>(
         self: &Arc<Self>,
         kind: TaskKind,
-        name: &'static str,
+        name: &SharedString,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
@@ -397,7 +398,7 @@ impl TaskCenterInner {
         // spawned tasks get their own unlinked cancellation tokens
         let cancel = CancellationToken::new();
         let (parent_id, parent_name, parent_partition) =
-            self.with_task_context(|ctx| (ctx.id, ctx.name, ctx.partition_id));
+            self.with_task_context(|ctx| (ctx.id, ctx.name.clone(), ctx.partition_id));
 
         let result = self.spawn_inner(kind, name, parent_id, parent_partition, cancel, future);
 
@@ -417,7 +418,7 @@ impl TaskCenterInner {
     pub fn spawn_child<F>(
         self: &Arc<Self>,
         kind: TaskKind,
-        name: &'static str,
+        name: impl Into<SharedString>,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
@@ -431,14 +432,15 @@ impl TaskCenterInner {
             .with_task_context(|ctx| {
                 (
                     ctx.id,
-                    ctx.name,
+                    ctx.name.clone(),
                     ctx.kind,
                     ctx.partition_id,
                     ctx.cancellation_token.child_token(),
                 )
             });
 
-        let result = self.spawn_inner(kind, name, parent_id, parent_partition, cancel, future);
+        let name = name.into();
+        let result = self.spawn_inner(kind, &name, parent_id, parent_partition, cancel, future);
 
         trace!(
             kind = ?parent_kind,
@@ -453,7 +455,7 @@ impl TaskCenterInner {
     pub fn spawn_unmanaged<F, T>(
         self: &Arc<Self>,
         kind: TaskKind,
-        name: &'static str,
+        name: &SharedString,
         future: F,
     ) -> Result<TaskHandle<T>, ShutdownError>
     where
@@ -469,7 +471,7 @@ impl TaskCenterInner {
         let id = TaskId::default();
         let context = TaskContext {
             id,
-            name,
+            name: name.clone(),
             kind,
             partition_id: parent_partition,
             cancellation_token: cancel.clone(),
@@ -485,7 +487,7 @@ impl TaskCenterInner {
     pub fn spawn_local<F>(
         self: &Arc<Self>,
         kind: TaskKind,
-        name: &'static str,
+        name: &SharedString,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
@@ -495,7 +497,7 @@ impl TaskCenterInner {
         let id = TaskId::default();
         let context = TaskContext {
             id,
-            name,
+            name: name.clone(),
             kind,
             cancellation_token: cancellation_token.clone(),
             // We must be within task-context already. let's get inherit partition_id
@@ -534,7 +536,7 @@ impl TaskCenterInner {
     pub fn start_runtime<F, R>(
         self: &Arc<Self>,
         root_task_kind: TaskKind,
-        runtime_name: &'static str,
+        runtime_name: impl Into<SharedString>,
         partition_id: Option<PartitionId>,
         root_future: impl FnOnce() -> F + Send + 'static,
     ) -> Result<RuntimeTaskHandle<R>, RuntimeError>
@@ -545,17 +547,17 @@ impl TaskCenterInner {
         if self.shutdown_requested.load(Ordering::Relaxed) {
             return Err(ShutdownError.into());
         }
-
         let cancel = CancellationToken::new();
+        let runtime_name: SharedString = runtime_name.into();
 
         // hold a lock while creating the runtime to avoid concurrent runtimes with the same name
         let mut runtimes_guard = self.managed_runtimes.lock();
-        if runtimes_guard.contains_key(runtime_name) {
+        if runtimes_guard.contains_key(&runtime_name) {
             warn!(
                 "Failed to start new runtime, a runtime with name {} already exists",
                 runtime_name
             );
-            return Err(RuntimeError::AlreadyExists(runtime_name.to_owned()));
+            return Err(RuntimeError::AlreadyExists(runtime_name.into_owned()));
         }
 
         // todo: configure the runtime according to a new runtime kind perhaps?
@@ -574,8 +576,8 @@ impl TaskCenterInner {
         let rt_handle = Arc::new(rt);
 
         runtimes_guard.insert(
-            runtime_name,
-            OwnedRuntimeHandle::new(runtime_name, cancel.clone(), rt_handle.clone()),
+            runtime_name.clone(),
+            OwnedRuntimeHandle::new(cancel.clone(), rt_handle.clone()),
         );
 
         // release the lock.
@@ -584,7 +586,7 @@ impl TaskCenterInner {
         let id = TaskId::default();
         let context = TaskContext {
             id,
-            name: runtime_name,
+            name: runtime_name.clone(),
             kind: root_task_kind,
             cancellation_token: cancel.clone(),
             partition_id,
@@ -594,19 +596,22 @@ impl TaskCenterInner {
 
         // start the work on the runtime
         let _ = thread_builder
-            .spawn(move || {
-                let local_set = LocalSet::new();
-                let result = rt_handle.block_on(local_set.run_until(unmanaged_wrapper(
-                    tc.clone(),
-                    context,
-                    root_future(),
-                )));
+            .spawn({
+                let runtime_name = runtime_name.clone();
+                move || {
+                    let local_set = LocalSet::new();
+                    let result = rt_handle.block_on(local_set.run_until(unmanaged_wrapper(
+                        tc.clone(),
+                        context,
+                        root_future(),
+                    )));
 
-                drop(rt_handle);
-                tc.drop_runtime(runtime_name);
+                    drop(rt_handle);
+                    tc.drop_runtime(runtime_name);
 
-                // need to use an oneshot here since we cannot await a thread::JoinHandle :-(
-                let _ = result_tx.send(result);
+                    // need to use an oneshot here since we cannot await a thread::JoinHandle :-(
+                    let _ = result_tx.send(result);
+                }
             })
             .unwrap();
 
@@ -615,12 +620,11 @@ impl TaskCenterInner {
 
     /// Runs **only** after the inner main thread has completed work and no other owner exists for
     /// the runtime handle.
-    fn drop_runtime(self: &Arc<Self>, name: &'static str) {
+    fn drop_runtime(self: &Arc<Self>, name: SharedString) {
         let mut runtimes_guard = self.managed_runtimes.lock();
-        if let Some(runtime) = runtimes_guard.remove(name) {
+        if let Some(runtime) = runtimes_guard.remove(&name) {
             // We must be the only owner of runtime at this point.
-            let name = runtime.name().to_owned();
-            debug!("Runtime {} completed", runtime.name());
+            debug!("Runtime {} completed", name);
             let owner = Arc::into_inner(runtime.into_inner());
             if let Some(runtime) = owner {
                 runtime.shutdown_timeout(Duration::from_secs(2));
@@ -641,7 +645,7 @@ impl TaskCenterInner {
     fn spawn_inner<F>(
         self: &Arc<Self>,
         kind: TaskKind,
-        name: &'static str,
+        name: &SharedString,
         _parent_id: TaskId,
         partition_id: Option<PartitionId>,
         cancel: CancellationToken,
@@ -654,7 +658,7 @@ impl TaskCenterInner {
         let id = TaskId::default();
         let context = TaskContext {
             id,
-            name,
+            name: name.clone(),
             kind,
             partition_id,
             cancellation_token: cancel.clone(),
@@ -679,7 +683,7 @@ impl TaskCenterInner {
     fn spawn_on_runtime<F, T>(
         self: &Arc<Self>,
         kind: TaskKind,
-        name: &'static str,
+        name: &str,
         cancellation_token: CancellationToken,
         fut: F,
     ) -> TaskHandle<T>

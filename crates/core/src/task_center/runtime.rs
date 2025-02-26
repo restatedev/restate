@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
@@ -17,27 +16,28 @@ use futures::FutureExt;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
+use restate_types::SharedString;
 /// A handle for a dedicated runtime managed by task-center
 pub struct RuntimeTaskHandle<T> {
-    name: Cow<'static, str>,
+    name: SharedString,
     cancellation_token: CancellationToken,
     inner_handle: oneshot::Receiver<T>,
 }
 
 impl<T> RuntimeTaskHandle<T> {
     pub fn new(
-        name: impl Into<Cow<'static, str>>,
+        name: SharedString,
         cancellation_token: CancellationToken,
         result_receiver: oneshot::Receiver<T>,
     ) -> Self {
         Self {
-            name: name.into(),
+            name,
             cancellation_token,
             inner_handle: result_receiver,
         }
     }
     // The runtime  name
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &SharedString {
         &self.name
     }
     /// Trigger graceful shutdown of the runtime root task. Shutdown is not guaranteed, it depends
@@ -62,27 +62,19 @@ impl<T> std::future::Future for RuntimeTaskHandle<T> {
 }
 
 pub(super) struct OwnedRuntimeHandle {
-    name: Cow<'static, str>,
     cancellation_token: CancellationToken,
     inner: Arc<tokio::runtime::Runtime>,
 }
 
 impl OwnedRuntimeHandle {
     pub fn new(
-        name: impl Into<Cow<'static, str>>,
         cancellation_token: CancellationToken,
         runtime: Arc<tokio::runtime::Runtime>,
     ) -> Self {
         Self {
-            name: name.into(),
             cancellation_token,
             inner: runtime,
         }
-    }
-
-    // The runtime name
-    pub fn name(&self) -> &str {
-        &self.name
     }
 
     // The runtime name

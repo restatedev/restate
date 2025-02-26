@@ -15,6 +15,8 @@ use pin_project_lite::pin_project;
 use tokio::task::futures::TaskLocalFuture;
 use tokio_util::sync::CancellationToken;
 
+use restate_types::SharedString;
+
 use crate::task_center::TaskContext;
 use crate::Metadata;
 
@@ -35,12 +37,14 @@ pub trait TaskCenterFutureExt: Sized {
     /// Lets task-center treat this future as a pseudo-task. It gets its own TaskId and an
     /// independent cancellation token. However, task-center will not spawn this as a task nor
     /// manage its lifecycle.
-    fn in_tc_as_task(
+    fn in_tc_as_task<S>(
         self,
         task_center: &Handle,
         kind: TaskKind,
-        name: &'static str,
-    ) -> WithTaskCenter<Self>;
+        name: S,
+    ) -> WithTaskCenter<Self>
+    where
+        S: Into<SharedString>;
 
     /// Ensures that a future will run within the task-center in current scope. This will inherit the current
     /// task context (if there is one). Otherwise, it'll run in the context of the root task (task-id=0).
@@ -54,7 +58,9 @@ pub trait TaskCenterFutureExt: Sized {
     /// Attaches current task-center and lets it treat the future as a pseudo-task. It gets its own TaskId and an
     /// independent cancellation token. However, task-center will not spawn this as a task nor
     /// manage its lifecycle.
-    fn in_current_tc_as_task(self, kind: TaskKind, name: &'static str) -> WithTaskCenter<Self>;
+    fn in_current_tc_as_task<S>(self, kind: TaskKind, name: S) -> WithTaskCenter<Self>
+    where
+        S: Into<SharedString>;
 }
 
 pin_project! {
@@ -81,15 +87,14 @@ where
         WithTaskCenter { inner_fut: inner }
     }
 
-    fn in_tc_as_task(
-        self,
-        task_center: &Handle,
-        kind: TaskKind,
-        name: &'static str,
-    ) -> WithTaskCenter<Self> {
+    fn in_tc_as_task<S>(self, task_center: &Handle, kind: TaskKind, name: S) -> WithTaskCenter<Self>
+    where
+        S: Into<SharedString>,
+    {
+        let name = name.into();
         let ctx = task_center.with_task_context(move |parent| TaskContext {
             id: TaskId::default(),
-            name,
+            name: name.clone(),
             kind,
             cancellation_token: CancellationToken::new(),
             partition_id: parent.partition_id,
@@ -113,7 +118,10 @@ where
     }
 
     #[track_caller]
-    fn in_current_tc_as_task(self, kind: TaskKind, name: &'static str) -> WithTaskCenter<Self> {
+    fn in_current_tc_as_task<S>(self, kind: TaskKind, name: S) -> WithTaskCenter<Self>
+    where
+        S: Into<SharedString>,
+    {
         TaskCenter::with_current(|tc| self.in_tc_as_task(tc, kind, name))
     }
 }

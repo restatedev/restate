@@ -411,13 +411,13 @@ where
             tokio::time::interval(Duration::from_millis(500 + rand::random::<u64>() % 524));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let partition_id_str: &'static str = Box::leak(Box::new(self.partition_id.to_string()));
+        let partition_id_str = self.partition_id.to_string();
         // Telemetry setup
         let apply_command_latency =
-            histogram!(PP_APPLY_COMMAND_DURATION, PARTITION_LABEL => partition_id_str);
+            histogram!(PP_APPLY_COMMAND_DURATION, PARTITION_LABEL => partition_id_str.clone());
         let record_actions_latency = histogram!(PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION);
         let command_batch_size =
-            histogram!(PP_APPLY_COMMAND_BATCH_SIZE, PARTITION_LABEL => partition_id_str);
+            histogram!(PP_APPLY_COMMAND_BATCH_SIZE, PARTITION_LABEL => partition_id_str.clone());
 
         let mut action_collector = ActionCollector::default();
         let mut command_buffer = Vec::with_capacity(self.max_command_batch_size);
