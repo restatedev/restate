@@ -60,7 +60,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let nodes = Node::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::Worker | Role::LogServer),
+        enum_set!(Role::MetadataServer | Role::Admin | Role::Worker | Role::LogServer),
         2,
         true,
     );

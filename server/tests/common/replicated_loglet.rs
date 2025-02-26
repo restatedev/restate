@@ -104,7 +104,7 @@ where
     let nodes = Node::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::LogServer),
+        enum_set!(Role::MetadataServer | Role::LogServer),
         log_server_count,
         true,
     );

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytestring::ByteString;
-use enumset::EnumSet;
+use enumset::enum_set;
 use googletest::prelude::err;
 use googletest::{IntoTestResult, assert_that, pat};
 use rand::seq::IndexedMutRandom;
@@ -24,6 +24,7 @@ use restate_types::config::{
     Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind, RaftOptions,
 };
 use restate_types::metadata::Precondition;
+use restate_types::nodes_config::Role;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tracing::info;
@@ -35,7 +36,7 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
     let nodes = Node::new_test_nodes(
         base_config,
         BinarySource::CargoTest,
-        EnumSet::empty(),
+        enum_set!(Role::MetadataServer),
         3,
         true,
     );
@@ -131,7 +132,7 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
     let nodes = Node::new_test_nodes(
         base_config,
         BinarySource::CargoTest,
-        EnumSet::empty(),
+        enum_set!(Role::MetadataServer),
         num_nodes,
         true,
     );
