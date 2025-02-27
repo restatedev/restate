@@ -48,7 +48,7 @@ pub struct CliApp {
 pub enum Command {
     /// Provision a new cluster
     Provision(ProvisionOpts),
-    /// Print cluster status overview (shortcut to `cluster status`)
+    /// Print cluster status overview
     Status(ClusterStatusOpts),
     /// Cluster node status
     #[clap(subcommand)]
