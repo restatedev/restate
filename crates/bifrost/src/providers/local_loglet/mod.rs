@@ -38,7 +38,7 @@ use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
 use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
+use crate::loglet::{FindTailAttr, Loglet, LogletCommit, OperationError, SendableLogletReadStream};
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
@@ -203,7 +203,7 @@ impl Loglet for LocalLoglet {
         Ok(LogletCommit::resolved(offset))
     }
 
-    async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
+    async fn find_tail(&self, _: FindTailAttr) -> Result<TailState<LogletOffset>, OperationError> {
         // `fetch_add(0)` with Release ordering to enforce using last_committed_offset as a memory
         // barrier and synchronization point with other threads.
         let last_committed =

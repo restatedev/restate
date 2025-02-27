@@ -121,12 +121,15 @@ pub trait Loglet: Send + Sync {
 
     /// The tail is *the first unwritten position* in the loglet.
     ///
-    /// Finds the durable tail of the loglet (last record offset that was durably committed) then
+    /// Finds the tail of the loglet (last record offset that was durably committed) then
     /// it returns the offset **after** it. Virtually, the returned offset is the offset returned
     /// after the next `append()` call.
     ///
     /// If the loglet is empty, the loglet should return TailState::Open(Offset::OLDEST).
-    async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError>;
+    async fn find_tail(
+        &self,
+        attr: FindTailAttr,
+    ) -> Result<TailState<LogletOffset>, OperationError>;
 
     /// The offset of the slot **before** the first readable record (if it exists), or the offset
     /// before the next slot that will be written to. Must not return Self::INVALID. If the loglet
@@ -148,6 +151,17 @@ pub trait Loglet: Send + Sync {
     /// Appends **SHOULD NOT** succeed after a `seal()` call is successful. And appends **MUST
     /// NOT** succeed after the offset returned by the *first* TailState::Sealed() response.
     async fn seal(&self) -> Result<(), OperationError>;
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub enum FindTailAttr {
+    /// Finds the durable tail of the loglet.
+    #[default]
+    Durable,
+    /// Approximate find tail of the loglet. This should cheap to run based on the
+    /// loglet implementation. If an efficient approximation is not possible, it must
+    /// fall back to a durable check.
+    Approximate,
 }
 
 /// A stream of log records from a single loglet. Loglet streams are _always_ tailing streams.
