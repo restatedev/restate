@@ -107,7 +107,7 @@ where
             .await
             .map_err(|_| NetworkError::Timeout(start.elapsed()))??;
         let outgoing = Outgoing::new(peer, msg).assign_connection(connection);
-        self.call_outgoing_timeout(outgoing, timeout - start.elapsed())
+        self.call_outgoing_timeout(outgoing, timeout.saturating_sub(start.elapsed()))
             .await
     }
 
@@ -144,7 +144,7 @@ where
 
         let start = Instant::now();
         outgoing.send_timeout(timeout).await.map_err(|e| e.source)?;
-        let remaining = timeout - start.elapsed();
+        let remaining = timeout.saturating_sub(start.elapsed());
         tokio::time::timeout(remaining, token.recv())
             .await
             .map_err(|_| NetworkError::Timeout(start.elapsed()))?
