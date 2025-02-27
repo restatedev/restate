@@ -36,10 +36,10 @@ impl ObjectStoreVersionRepository {
             anyhow::bail!("unexpected configuration value");
         };
 
-        let mut url = Url::parse(&path).context("Failed parsing snapshot repository URL")?;
+        let mut url = Url::parse(&path).context("Failed parsing metadata repository URL")?;
         // Prevent passing configuration options to object_store via the destination URL.
         url.query()
-            .inspect(|params| info!("Snapshot destination parameters ignored: {params}"));
+            .inspect(|params| info!("Metadata path parameters ignored: {params}"));
         url.set_query(None);
 
         if url.scheme() != "s3" {
