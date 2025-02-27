@@ -25,9 +25,9 @@ pub async fn create_object_store_based_meta_store(
 ) -> anyhow::Result<impl MetadataStore> {
     // obtain an instance of a version repository from the configuration.
     // we use an object_store backed version repository.
-    let version_repository = Box::new(ObjectStoreVersionRepository::from_configuration(
-        configuration.clone(),
-    )?) as Box<dyn VersionRepository>;
+    let version_repository =
+        Box::new(ObjectStoreVersionRepository::from_configuration(configuration.clone()).await?)
+            as Box<dyn VersionRepository>;
 
     // postpone the building of the store to the background task,
     // the runs at the task center.
