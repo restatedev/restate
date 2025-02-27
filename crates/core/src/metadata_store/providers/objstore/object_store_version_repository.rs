@@ -25,6 +25,7 @@ use restate_types::config::MetadataClientKind;
 #[derive(Debug)]
 pub(crate) struct ObjectStoreVersionRepository {
     object_store: Box<dyn ObjectStore>,
+    prefix: Path,
 }
 
 impl ObjectStoreVersionRepository {
@@ -44,8 +45,7 @@ impl ObjectStoreVersionRepository {
         if url.scheme() != "s3" {
             anyhow::bail!("Only the `s3://` protocol is supported for metadata path");
         }
-
-        // let prefix = url.path().to_string();
+        let prefix = Path::from(url.path());
 
         let object_store = create_object_store_client(url, &object_store)
             .await
@@ -53,6 +53,7 @@ impl ObjectStoreVersionRepository {
 
         Ok(Self {
             object_store: Box::new(object_store),
+            prefix,
         })
     }
 
@@ -61,7 +62,14 @@ impl ObjectStoreVersionRepository {
         let store = object_store::memory::InMemory::new();
         Self {
             object_store: Box::new(store),
+            prefix: Default::default(),
         }
+    }
+
+    /// Convert a metadata store key into an object store path.
+    #[inline]
+    fn path(&self, key: &ByteString) -> Path {
+        self.prefix.child(key.to_string())
     }
 }
 
@@ -71,7 +79,7 @@ const DELETED_HEADER: Bytes = Bytes::from_static(b"d");
 #[async_trait::async_trait]
 impl VersionRepository for ObjectStoreVersionRepository {
     async fn create(&self, key: ByteString, content: Bytes) -> Result<Tag, VersionRepositoryError> {
-        let path = Path::from(key.to_string());
+        let path = self.path(&key);
 
         let opts = PutOptions {
             mode: PutMode::Create,
@@ -117,7 +125,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
     }
 
     async fn get(&self, key: ByteString) -> Result<TaggedValue, VersionRepositoryError> {
-        let path = Path::from(key.to_string());
+        let path = self.path(&key);
         match self.object_store.get(&path).await {
             Ok(res) => {
                 let etag = res.meta.e_tag.as_ref().ok_or_else(|| {
@@ -154,7 +162,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
             version: None,
         };
 
-        let path = Path::from(key.to_string());
+        let path = self.path(&key);
         match self
             .object_store
             .put_opts(
@@ -181,7 +189,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         key: ByteString,
         new_content: Bytes,
     ) -> Result<Tag, VersionRepositoryError> {
-        let path = Path::from(key.to_string());
+        let path = self.path(&key);
         match self
             .object_store
             .put(&path, PutPayload::from_iter([EXISTS_HEADER, new_content]))
@@ -199,7 +207,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
     }
 
     async fn delete(&self, key: ByteString) -> Result<(), VersionRepositoryError> {
-        let path = Path::from(key.to_string());
+        let path = self.path(&key);
         match self
             .object_store
             .put(&path, PutPayload::from_bytes(DELETED_HEADER))
@@ -221,7 +229,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
             version: None,
         };
 
-        let path = Path::from(key.to_string());
+        let path = self.path(&key);
         match self
             .object_store
             .put_opts(
