@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
-use std::{cmp::Ordering, fmt::Display, future::Future, sync::Arc};
+use std::{cmp::Ordering, fmt::Display, sync::Arc};
 
 use cling::{Collect, prelude::Parser};
 use itertools::{Either, Itertools, Position};
