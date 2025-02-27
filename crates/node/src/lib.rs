@@ -154,6 +154,20 @@ impl Node {
         let is_provisioned =
             cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
+        if !matches!(
+            &config.common.metadata_client.kind,
+            restate_types::config::MetadataClientKind::Replicated { .. }
+        ) && config.has_role(Role::MetadataServer)
+        {
+            return Err(BuildError::InvalidConfiguration(anyhow::anyhow!(
+                "Detected possible misconfiguration. This node runs a replicated metadata \
+                server but is not configured to use the replicated metadata client. If you \
+                don't want to run a metadata server, remove the metadata-server role. If you \
+                want to use the replicated metadata server, then set \
+                metadata-client.type = \"replicated\""
+            )));
+        };
+
         let (metadata_store_role, metadata_store_client) = if config.has_role(Role::MetadataServer)
         {
             restate_metadata_server::create_metadata_server_and_client(
