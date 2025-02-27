@@ -57,7 +57,6 @@ jobs:
           name: docker-build-release
 
       - name: Push restate image
-        if: ${{ inputs.restateCommit != '' }}
         run: |
           for image in $(docker load --input restate.tar | awk '{print $3}')
             do docker push $image
