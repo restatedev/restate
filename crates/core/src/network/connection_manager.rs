@@ -949,7 +949,7 @@ mod tests {
                 ProtocolError::HandshakeTimeout(_)
             ))
         ));
-        assert!(start.elapsed() >= net_opts.handshake_timeout.into());
+        assert!(start.elapsed() >= Into::<std::time::Duration>::into(net_opts.handshake_timeout));
         Ok(())
     }
 
