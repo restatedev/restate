@@ -7460,6 +7460,7 @@ dependencies = [
  "indexmap 2.7.1",
  "itertools 0.14.0",
  "jsonptr 0.4.7",
+ "metrics",
  "moka",
  "notify",
  "notify-debouncer-full",

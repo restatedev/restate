@@ -62,7 +62,7 @@ use restate_types::net::partition_processor_manager::{
 };
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
-use restate_types::{GenerationalNodeId, Version};
+use restate_types::{GenerationalNodeId, SharedString, Version};
 
 use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
@@ -85,7 +85,7 @@ pub struct PartitionProcessorManager {
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
     processor_states: BTreeMap<PartitionId, ProcessorState>,
-    name_cache: BTreeMap<PartitionId, &'static str>,
+    name_cache: BTreeMap<PartitionId, SharedString>,
 
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
@@ -906,10 +906,10 @@ impl PartitionProcessorManager {
         let task_name = self
             .name_cache
             .entry(partition_id)
-            .or_insert_with(|| Box::leak(Box::new(format!("pp-{partition_id}"))));
+            .or_insert_with(|| SharedString::from(Arc::from(format!("pp-{partition_id}"))));
 
         SpawnPartitionProcessorTask::new(
-            task_name,
+            task_name.clone(),
             partition_id,
             key_range,
             self.updateable_config.clone(),
