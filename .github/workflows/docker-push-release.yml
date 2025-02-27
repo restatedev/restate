@@ -26,6 +26,9 @@ jobs:
       - name: Set up Docker containerd snapshotter
         uses: crazy-max/ghaction-setup-docker@v3
         with:
+          # Docker 28.0.1 seems to fail on GHA: https://github.com/restatedev/restate/actions/runs/13562737120/job/37909085871#step:6:47
+          # todo set to latest once new Docker version that is working on GHA is released
+          version: "27.5.1"
           set-host: true
           daemon-config: |
             {
@@ -54,7 +57,6 @@ jobs:
           name: docker-build-release
 
       - name: Push restate image
-        if: ${{ inputs.restateCommit != '' }}
         run: |
           for image in $(docker load --input restate.tar | awk '{print $3}')
             do docker push $image
