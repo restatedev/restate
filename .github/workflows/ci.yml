@@ -256,4 +256,4 @@ jobs:
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
         roleArn: 'arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role'
         clusterName: jepsen-cluster-restatedev-restate
-        testConfig: '{ "workloads": "set-vo set-mds", "nemeses": "partition-random-node", "duration": "60", "rate": "10", "concurrency": "5n", "testCount": "1" }'
+        testConfig: '{ "workloads": "set-vo set-mds set-mds-s3", "nemeses": "partition-random-node", "duration": "60", "rate": "10", "concurrency": "5n", "testCount": "1" }'
