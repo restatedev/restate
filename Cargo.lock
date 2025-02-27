@@ -6588,6 +6588,7 @@ dependencies = [
  "prost-types",
  "rand 0.9.0",
  "restate-core-derive",
+ "restate-object-store-util",
  "restate-test-util",
  "restate-types",
  "schemars",
@@ -6609,6 +6610,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "tracing-test",
+ "url",
  "workspace-hack",
  "xxhash-rust",
 ]

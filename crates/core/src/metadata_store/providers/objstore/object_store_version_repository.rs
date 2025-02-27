@@ -8,17 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Context;
 use bytes::Bytes;
 use bytestring::ByteString;
-use object_store::aws::AmazonS3Builder;
-use object_store::aws::S3ConditionalPut::ETagMatch;
 use object_store::path::Path;
 use object_store::{Error, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
+use restate_object_store_util::create_object_store_client;
+use tracing::info;
+use url::Url;
 
 use crate::metadata_store::providers::objstore::version_repository::{
     Tag, TaggedValue, VersionRepository, VersionRepositoryError,
 };
-use restate_types::config::{MetadataClientKind, ObjectStoreCredentials};
+use restate_types::config::MetadataClientKind;
 
 #[derive(Debug)]
 pub(crate) struct ObjectStoreVersionRepository {
@@ -26,28 +28,31 @@ pub(crate) struct ObjectStoreVersionRepository {
 }
 
 impl ObjectStoreVersionRepository {
-    pub(crate) fn from_configuration(configuration: MetadataClientKind) -> anyhow::Result<Self> {
-        let MetadataClientKind::ObjectStore {
-            credentials,
-            bucket,
-            ..
-        } = configuration
-        else {
+    pub(crate) async fn from_configuration(
+        configuration: MetadataClientKind,
+    ) -> anyhow::Result<Self> {
+        let MetadataClientKind::ObjectStore { path, object_store } = configuration else {
             anyhow::bail!("unexpected configuration value");
         };
 
-        let builder = match credentials {
-            ObjectStoreCredentials::AwsEnv => AmazonS3Builder::from_env(),
-        };
+        let mut url = Url::parse(&path).context("Failed parsing snapshot repository URL")?;
+        // Prevent passing configuration options to object_store via the destination URL.
+        url.query()
+            .inspect(|params| info!("Snapshot destination parameters ignored: {params}"));
+        url.set_query(None);
 
-        let store = builder
-            .with_bucket_name(bucket)
-            .with_conditional_put(ETagMatch)
-            .build()
+        if url.scheme() != "s3" {
+            anyhow::bail!("Only the `s3://` protocol is supported for metadata path");
+        }
+
+        // let prefix = url.path().to_string();
+
+        let object_store = create_object_store_client(url, &object_store)
+            .await
             .map_err(|e| anyhow::anyhow!("Unable to build an S3 object store: {}", e))?;
 
         Ok(Self {
-            object_store: Box::new(store),
+            object_store: Box::new(object_store),
         })
     }
 
