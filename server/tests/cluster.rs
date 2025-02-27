@@ -37,7 +37,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
     let nodes = Node::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::Worker | Role::LogServer),
+        enum_set!(Role::Admin | Role::MetadataServer | Role::Worker | Role::LogServer),
         3,
         false,
     );
