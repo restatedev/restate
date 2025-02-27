@@ -20,3 +20,4 @@ jobs:
       uploadImageAsTarball: docker-build-release
       parca: true
       buildIndividually: true
+      pushToDockerHub: true # won't actually push, just creates the tags
