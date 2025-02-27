@@ -635,7 +635,6 @@ impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
     fn try_from(value: MetadataClientKindShadow) -> Result<Self, Self::Error> {
         let result = match value {
             MetadataClientKindShadow::ObjectStore { path, object_store } => {
-                tracing::warn!("Using object store config: {:#?}", object_store);
                 Self::ObjectStore { path, object_store }
             }
             MetadataClientKindShadow::Etcd { addresses } => Self::Etcd { addresses },
