@@ -27,7 +27,7 @@ pub struct ObjectStoreOptions {
 
     /// AWS region to use with S3 object store destinations. This may be inferred from the
     /// environment, for example the current region when running in EC2. Because of the
-    /// request signing algorightm this must have a value. For Minio, you can generally
+    /// request signing algorithm this must have a value. For Minio, you can generally
     /// set this to any string, such as `us-east-1`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aws_region: Option<String>,
