@@ -374,7 +374,9 @@ impl Default for StorageOptions {
 
 /// # Snapshot options.
 ///
-/// Partition store snapshotting settings.
+/// Partition store snapshotting settings. At a minimum, set `destination` and
+/// `snapshot-interval-num-records` to enable snapshotting. For a complete example, see
+/// [Snapshots](https://docs.restate.dev/operate/snapshots).
 #[serde_as]
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -382,17 +384,7 @@ impl Default for StorageOptions {
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct SnapshotsOptions {
-    /// # Destination
-    ///
-    /// Newly produced snapshots are published to this location. Supports `s3://` and `file://`
-    /// protocol scheme.
-    ///
-    /// For S3 bucket destinations, Restate will use the AWS credentials available from the
-    /// environment, or the configuration profile specified by `AWS_PROFILE` environment variable,
-    /// falling back to the default AWS profile.
-    ///
-    /// Example: `s3://bucket/prefix` will put snapshots in the specified bucket and (optional)
-    /// prefix.
+    /// Base URL for cluster snapshots. Supports `s3://` and `file://` protocol scheme.
     ///
     /// Default: `None`
     pub destination: Option<String>,
