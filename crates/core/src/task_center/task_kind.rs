@@ -116,7 +116,7 @@ pub enum TaskKind {
     /// shutdown on errors and the system will wait for its graceful cancellation on shutdown.
     #[strum(props(runtime = "default"))]
     BifrostBackgroundHighPriority,
-    #[strum(props(OnCancel = "abort", runtime = "default"))]
+    #[strum(props(OnCancel = "abort", runtime = "default", OnError = "log"))]
     BifrostBackgroundLowPriority,
     /// A background appender. The task will log on errors but the system will wait for its
     /// graceful cancellation on shutdown.
