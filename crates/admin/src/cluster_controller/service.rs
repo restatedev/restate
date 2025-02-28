@@ -973,7 +973,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn auto_log_trim() -> anyhow::Result<()> {
+    async fn auto_trim_by_archived_lsn() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let interval_duration = Duration::from_secs(10);
@@ -1003,7 +1003,7 @@ mod tests {
             block_list: BTreeSet::new(),
         });
 
-        let (node_env, bifrost, _) = create_test_env(config, |builder| {
+        let (node_env, bifrost, _) = create_test_env_with_nodes(config, 2, |builder| {
             builder
                 .add_message_handler(get_node_state_handler.clone())
                 .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
@@ -1057,7 +1057,66 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn auto_trim_log() -> anyhow::Result<()> {
+    async fn auto_trim_log_by_persisted_lsn_single_node() -> anyhow::Result<()> {
+        const LOG_ID: LogId = LogId::new(0);
+
+        let networking = NetworkingOptions {
+            // we are using failing transport so we only want to use the mock connection we created.
+            num_concurrent_connections: NonZero::new(1).unwrap(),
+            ..Default::default()
+        };
+
+        let interval_duration = Duration::from_secs(10);
+        let admin_options = AdminOptionsBuilder::default()
+            .log_trim_check_interval(interval_duration.into())
+            .build()
+            .unwrap();
+        let config = Configuration {
+            networking,
+            admin: admin_options,
+            ..Default::default()
+        };
+
+        let applied_lsn = Arc::new(AtomicU64::new(0));
+        let persisted_lsn = Arc::new(AtomicU64::new(0));
+        let get_node_state_handler = Arc::new(MockNodeStateHandler {
+            applied_lsn: applied_lsn.clone(),
+            persisted_lsn: Arc::clone(&persisted_lsn),
+            archived_lsn: Arc::new(AtomicU64::new(0)), // not used in this test
+            block_list: BTreeSet::new(),
+        });
+        let (_, bifrost, _) = create_test_env_with_nodes(config, 1, |builder| {
+            builder
+                .add_message_handler(get_node_state_handler.clone())
+                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
+        })
+        .await?;
+
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
+        for i in 1..=20 {
+            let lsn = appender.append(format!("record{i}")).await?;
+            assert_eq!(Lsn::from(i), lsn);
+        }
+        applied_lsn.store(
+            bifrost.find_tail(LOG_ID).await?.offset().prev().as_u64(),
+            Ordering::Relaxed,
+        );
+        tokio::time::sleep(interval_duration * 2).await;
+        assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+
+        persisted_lsn.store(3, Ordering::Relaxed);
+        tokio::time::sleep(interval_duration * 2).await;
+        assert_eq!(bifrost.get_trim_point(LOG_ID).await?, Lsn::from(3));
+
+        persisted_lsn.store(20, Ordering::Relaxed);
+        tokio::time::sleep(interval_duration * 2).await;
+        assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
+
+        Ok(())
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn do_not_auto_trim_by_persisted_lsn_in_clusters() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let networking = NetworkingOptions {
@@ -1086,7 +1145,7 @@ mod tests {
             archived_lsn: Arc::new(AtomicU64::new(0)), // not used in this test
             block_list: BTreeSet::new(),
         });
-        let (node_env, bifrost, _) = create_test_env(config, |builder| {
+        let (node_env, bifrost, _) = create_test_env_with_nodes(config, 2, |builder| {
             builder
                 .add_message_handler(get_node_state_handler.clone())
                 .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
@@ -1126,18 +1185,13 @@ mod tests {
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        persisted_lsn.store(3, Ordering::Relaxed);
+        persisted_lsn.store(10, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
-        assert_eq!(bifrost.get_trim_point(LOG_ID).await?, Lsn::from(3));
-
-        let v = bifrost.read(LOG_ID, Lsn::from(4)).await?.unwrap();
-        assert_that!(v.sequence_number(), eq(Lsn::new(4)));
-        assert!(v.is_data_record());
-        assert_that!(v.decode_unchecked::<String>(), eq("record4".to_owned()));
+        assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
         persisted_lsn.store(20, Ordering::Relaxed);
-        tokio::time::sleep(interval_duration * 2).await;
-        assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
+        tokio::time::sleep(interval_duration * 5).await;
+        assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
         Ok(())
     }
@@ -1169,7 +1223,7 @@ mod tests {
         let applied_lsn = Arc::new(AtomicU64::new(0));
         let persisted_lsn = Arc::new(AtomicU64::new(0));
 
-        let (_node_env, bifrost, _) = create_test_env(config, |builder| {
+        let (_node_env, bifrost, _) = create_test_env_with_nodes(config, 2, |builder| {
             let block_list = builder
                 .nodes_config
                 .iter()
@@ -1240,7 +1294,7 @@ mod tests {
         let lsn = AtomicU64::new(0);
         let applied_persisted_lsn = Arc::new(lsn);
 
-        let (node_env, bifrost, cluster_state) = create_test_env(config, |builder| {
+        let (node_env, bifrost, cluster_state) = create_test_env_with_nodes(config, 2, |builder| {
             let get_node_state_handler = MockNodeStateHandler {
                 applied_lsn: applied_persisted_lsn.clone(),
                 persisted_lsn: applied_persisted_lsn.clone(),
@@ -1334,34 +1388,35 @@ mod tests {
         let persisted_lsn = Arc::new(AtomicU64::new(0));
         let archived_lsn = Arc::new(AtomicU64::new(0));
 
-        let (_node_env, bifrost, cluster_state) = create_test_env(config, |builder| {
-            assert_eq!(
-                builder.nodes_config.iter().count(),
-                2,
-                "expect two nodes in config"
-            );
+        let (_node_env, bifrost, cluster_state) =
+            create_test_env_with_nodes(config, 2, |builder| {
+                assert_eq!(
+                    builder.nodes_config.iter().count(),
+                    2,
+                    "expect two nodes in config"
+                );
 
-            let blocked_node = builder
-                .nodes_config
-                .iter()
-                .nth(1)
-                .map(|(_, node_config)| node_config.current_generation)
-                .expect("a second node in cluster");
+                let blocked_node = builder
+                    .nodes_config
+                    .iter()
+                    .nth(1)
+                    .map(|(_, node_config)| node_config.current_generation)
+                    .expect("a second node in cluster");
 
-            info!("Block list: {:?}", blocked_node);
+                info!("Block list: {:?}", blocked_node);
 
-            let get_node_state_handler = MockNodeStateHandler {
-                applied_lsn: applied_lsn.clone(),
-                persisted_lsn: persisted_lsn.clone(),
-                archived_lsn: archived_lsn.clone(),
-                block_list: [GenerationalNodeId::new(2, 2)].into(),
-            };
+                let get_node_state_handler = MockNodeStateHandler {
+                    applied_lsn: applied_lsn.clone(),
+                    persisted_lsn: persisted_lsn.clone(),
+                    archived_lsn: archived_lsn.clone(),
+                    block_list: [GenerationalNodeId::new(2, 2)].into(),
+                };
 
-            builder
-                .add_message_handler(get_node_state_handler)
-                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
-        })
-        .await?;
+                builder
+                    .add_message_handler(get_node_state_handler)
+                    .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
+            })
+            .await?;
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
@@ -1432,7 +1487,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (node_env, bifrost, cluster_state) = create_test_env(config, |builder| {
+        let (node_env, bifrost, cluster_state) = create_test_env_with_nodes(config, 2, |builder| {
             assert_eq!(
                 builder.nodes_config.iter().count(),
                 2,
@@ -1487,8 +1542,9 @@ mod tests {
         Ok(())
     }
 
-    async fn create_test_env<F>(
+    async fn create_test_env_with_nodes<F>(
         config: Configuration,
+        n: u8,
         mut modify_builder: F,
     ) -> anyhow::Result<(TestCoreEnv<FailingConnector>, Bifrost, ClusterStateWatcher)>
     where
@@ -1516,24 +1572,17 @@ mod tests {
         let cluster_state_watcher = svc.cluster_state_refresher.cluster_state_watcher();
 
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
-        nodes_config.upsert_node(NodeConfig::new(
-            "node-1".to_owned(),
-            GenerationalNodeId::new(1, 1),
-            NodeLocation::default(),
-            AdvertisedAddress::Uds("foobar".into()),
-            Role::Admin | Role::Worker,
-            LogServerConfig::default(),
-            MetadataServerConfig::default(),
-        ));
-        nodes_config.upsert_node(NodeConfig::new(
-            "node-2".to_owned(),
-            GenerationalNodeId::new(2, 2),
-            NodeLocation::default(),
-            AdvertisedAddress::Uds("bar".into()),
-            Role::Worker.into(),
-            LogServerConfig::default(),
-            MetadataServerConfig::default(),
-        ));
+        for i in 1..=n {
+            nodes_config.upsert_node(NodeConfig::new(
+                format!("node-{}", i),
+                GenerationalNodeId::new(i as u32, i as u32),
+                NodeLocation::default(),
+                AdvertisedAddress::Uds(format!("{}.sock", i).into()),
+                Role::Admin | Role::Worker,
+                LogServerConfig::default(),
+                MetadataServerConfig::default(),
+            ));
+        }
         let builder = modify_builder(builder.set_nodes_config(nodes_config));
 
         let node_env = builder.build().await;
