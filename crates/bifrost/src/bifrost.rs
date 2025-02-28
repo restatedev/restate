@@ -26,7 +26,7 @@ use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
 use crate::loglet::{LogletProvider, OperationError};
 use crate::loglet_wrapper::LogletWrapper;
-use crate::watchdog::WatchdogSender;
+use crate::watchdog::{WatchdogCommand, WatchdogSender};
 use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
 
 /// The strategy to use when bifrost fails to append or when it observes
@@ -437,7 +437,7 @@ impl BifrostInner {
         }
     }
 
-    async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
+    pub async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
         let log_metadata = Metadata::with_current(|m| m.logs_ref());
 
         let log_chain = log_metadata
@@ -447,9 +447,6 @@ impl BifrostInner {
         let mut trim_point = None;
 
         // Iterate over the chain until we find the first missing trim point, return value before
-        // todo: maybe update configuration to remember trim point for the whole chain
-        // todo: support multiple segments.
-        // todo: dispatch loglet deletion in the background when entire segments are trimmed
         for segment in log_chain.iter() {
             let loglet = self.get_loglet(log_id, segment).await?;
             let loglet_specific_trim_point = loglet.get_trim_point().await?;
@@ -481,7 +478,12 @@ impl BifrostInner {
 
             loglet.trim(trim_point).await?;
         }
-        // todo: Update logs configuration to remove sealed and empty loglets
+        // todo: maybe update configuration to remember trim point for the whole chain
+        // it's okay if the watchdog is dead
+        let _ = self.watchdog.send(WatchdogCommand::LogTrimmed {
+            log_id,
+            requested_trim_point: trim_point,
+        });
         Ok(())
     }
 
