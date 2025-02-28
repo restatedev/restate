@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use restate_serde_util::NonZeroByteCount;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use tracing::warn;
+
+use restate_serde_util::NonZeroByteCount;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 
@@ -62,7 +63,7 @@ pub struct MetadataServerOptions {
     kind: Option<MetadataServerKind>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, derive_more::Display)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
@@ -71,9 +72,11 @@ pub struct MetadataServerOptions {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum MetadataServerKind {
     #[default]
+    #[display("local")]
     Local,
     // make the Raft based metadata server primarily known as the replicated metadata server
     #[serde(rename = "replicated")]
+    #[display("replicated")]
     Raft(RaftOptions),
 }
 
