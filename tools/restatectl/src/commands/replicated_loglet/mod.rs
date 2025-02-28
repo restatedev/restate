@@ -11,9 +11,13 @@
 mod digest;
 mod digest_util;
 mod info;
+mod list_servers;
 mod storage_state;
 
 use cling::prelude::*;
+
+use restate_cli_util::_comfy_table::{Cell, Color};
+use restate_types::nodes_config::StorageState;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum ReplicatedLoglet {
@@ -22,7 +26,18 @@ pub enum ReplicatedLoglet {
     /// View loglet info
     Info(info::InfoOpts),
     /// View log-server(s) state
-    ListServers(storage_state::ListServersOpts),
+    ListServers(list_servers::ListServersOpts),
     /// [dangerous] low-level unprotected log-server's storage-state manipulation
     SetStorageState(storage_state::SetOpts),
+}
+
+fn render_storage_state(state: StorageState) -> Cell {
+    let cell = Cell::new(state);
+    match state {
+        StorageState::ReadWrite => cell.fg(Color::Green),
+        StorageState::ReadOnly => cell.fg(Color::Yellow),
+        StorageState::DataLoss => cell.fg(Color::Red),
+        StorageState::Provisioning => cell.fg(Color::Reset),
+        StorageState::Disabled => cell.fg(Color::Grey),
+    }
 }
