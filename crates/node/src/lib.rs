@@ -151,15 +151,17 @@ impl Node {
 
         if !matches!(
             &config.common.metadata_client.kind,
-            restate_types::config::MetadataClientKind::Replicated { .. }
+            restate_types::config::MetadataClientKind::Replicated { .. } // used for both local and remote Restate metadata store clients
         ) && config.has_role(Role::MetadataServer)
         {
             return Err(BuildError::InvalidConfiguration(anyhow::anyhow!(
-                "Detected possible misconfiguration. This node runs a replicated metadata \
-                server but is not configured to use the replicated metadata client. If you \
+                "Detected possible misconfiguration. This node runs a \"{}\" metadata \
+                server but is configured to use the \"{}\" metadata client. If you \
                 don't want to run a metadata server, remove the metadata-server role. If you \
-                want to use the replicated metadata server, then set \
-                metadata-client.type = \"replicated\""
+                want to use the Restate metadata store, then set \
+                metadata-client.type = \"replicated\" or leave it unset",
+                config.metadata_server.kind(),
+                config.common.metadata_client.kind,
             )));
         };
 

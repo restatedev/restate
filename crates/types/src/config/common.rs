@@ -558,7 +558,7 @@ impl Default for MetadataClientOptions {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_more::Display)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
@@ -575,6 +575,7 @@ impl Default for MetadataClientOptions {
 )]
 pub enum MetadataClientKind {
     /// Store metadata on the replicated metadata store that runs on nodes with the metadata-server role.
+    #[display("replicated")]
     Replicated {
         #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
         addresses: Vec<AdvertisedAddress>,
@@ -582,11 +583,13 @@ pub enum MetadataClientKind {
     /// Store metadata on an external etcd cluster.
     ///
     /// The addresses are formatted as `host:port`
+    #[display("etcd")]
     Etcd {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         addresses: Vec<String>,
     },
     /// Store metadata on an external object store.
+    #[display("object-store")]
     ObjectStore {
         /// # Object store path for metadata storage
         ///
