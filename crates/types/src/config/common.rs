@@ -640,6 +640,13 @@ enum MetadataClientKindShadow {
         credentials: ObjectStoreCredentials,
         bucket: String,
     },
+    // Fallback to support not having to specify the type field
+    #[serde(untagged)]
+    Fallback {
+        address: Option<AdvertisedAddress>,
+        #[serde(default)]
+        addresses: Vec<AdvertisedAddress>,
+    },
 }
 
 impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
@@ -654,7 +661,8 @@ impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
                 bucket,
             },
             MetadataClientKindShadow::Etcd { addresses } => Self::Etcd { addresses },
-            MetadataClientKindShadow::Replicated { address, addresses } => {
+            MetadataClientKindShadow::Replicated { address, addresses }
+            | MetadataClientKindShadow::Fallback { address, addresses } => {
                 let default_address: AdvertisedAddress =
                     DEFAULT_ADVERTISED_ADDRESS.parse().unwrap();
 
@@ -950,9 +958,14 @@ impl From<CommonOptionsShadow> for CommonOptions {
 
 #[cfg(test)]
 mod tests {
-    use crate::nodes_config::Role;
-
     use super::CommonOptions;
+    use crate::config::MetadataClientKind;
+    use crate::config_loader::ConfigLoaderBuilder;
+    use crate::net::AdvertisedAddress;
+    use crate::nodes_config::Role;
+    use googletest::prelude::eq;
+    use googletest::{assert_that, elements_are, pat};
+    use http::Uri;
 
     #[test]
     fn roles_compat_test() {
@@ -960,5 +973,220 @@ mod tests {
         // make sure we don't add ingress by default until previous version can parse nodes
         // configuration with this role.
         assert!(!opts.roles.contains(Role::HttpIngress));
+    }
+
+    #[test]
+    fn metadata_client_kind_backwards_compatibility() -> googletest::Result<()> {
+        let address_only = r#"
+        address = "http://127.0.0.1:15123/"
+        "#;
+
+        let metadata_client_kind: MetadataClientKind = toml::from_str(address_only)?;
+
+        assert_that!(
+            metadata_client_kind,
+            pat!(MetadataClientKind::Replicated {
+                addresses: elements_are![eq(AdvertisedAddress::Http(Uri::from_static(
+                    "http://127.0.0.1:15123/"
+                )))]
+            })
+        );
+
+        let addresses_only = r#"
+        addresses = ["http://127.0.0.1:15123/", "http://127.0.0.1:15124/"]
+        "#;
+
+        let metadata_client_kind: MetadataClientKind = toml::from_str(addresses_only)?;
+
+        assert_that!(
+            metadata_client_kind,
+            pat!(MetadataClientKind::Replicated {
+                addresses: elements_are![
+                    eq(AdvertisedAddress::Http(Uri::from_static(
+                        "http://127.0.0.1:15123/"
+                    ))),
+                    eq(AdvertisedAddress::Http(Uri::from_static(
+                        "http://127.0.0.1:15124/"
+                    )))
+                ]
+            })
+        );
+
+        let addresses_only = r#"
+        type = "etcd"
+        addresses = ["http://127.0.0.1:15123/", "http://127.0.0.1:15124/"]
+        "#;
+
+        let metadata_client_kind: MetadataClientKind = toml::from_str(addresses_only)?;
+
+        assert_that!(
+            metadata_client_kind,
+            pat!(MetadataClientKind::Etcd {
+                addresses: elements_are![
+                    eq("http://127.0.0.1:15123/"),
+                    eq("http://127.0.0.1:15124/")
+                ]
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_store_client_backwards_compatibility() -> googletest::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let config_path_address = temp_dir.path().join("config1.toml");
+        let config_file_address = r#"
+        [metadata-store-client]
+        address = "http://127.0.0.1:15123/"
+        "#;
+
+        std::fs::write(config_path_address.clone(), config_file_address)?;
+
+        let config_loader = ConfigLoaderBuilder::default()
+            .path(Some(config_path_address))
+            .build()?;
+        let configuration = config_loader.load_once()?;
+
+        assert_that!(
+            configuration.common.metadata_client.kind,
+            pat!(MetadataClientKind::Replicated {
+                addresses: elements_are![eq(AdvertisedAddress::Http(Uri::from_static(
+                    "http://127.0.0.1:15123/"
+                )))]
+            })
+        );
+
+        let config_path_addresses = temp_dir.path().join("config2.toml");
+        let config_file_addresses = r#"
+        [metadata-store-client]
+        addresses = ["http://127.0.0.1:15123/", "http://127.0.0.1:15124/"]
+        "#;
+
+        std::fs::write(config_path_addresses.clone(), config_file_addresses)?;
+
+        let config_loader = ConfigLoaderBuilder::default()
+            .path(Some(config_path_addresses))
+            .build()?;
+        let configuration = config_loader.load_once()?;
+
+        assert_that!(
+            configuration.common.metadata_client.kind,
+            pat!(MetadataClientKind::Replicated {
+                addresses: elements_are![
+                    eq(AdvertisedAddress::Http(Uri::from_static(
+                        "http://127.0.0.1:15123/"
+                    ))),
+                    eq(AdvertisedAddress::Http(Uri::from_static(
+                        "http://127.0.0.1:15124/"
+                    )))
+                ]
+            })
+        );
+
+        let config_path_etcd = temp_dir.path().join("config2.toml");
+        let config_file_etcd = r#"
+        [metadata-store-client]
+        type = "etcd"
+        addresses = ["http://127.0.0.1:15123/", "http://127.0.0.1:15124/"]
+        "#;
+
+        std::fs::write(config_path_etcd.clone(), config_file_etcd)?;
+
+        let config_loader = ConfigLoaderBuilder::default()
+            .path(Some(config_path_etcd))
+            .build()?;
+        let configuration = config_loader.load_once()?;
+
+        assert_that!(
+            configuration.common.metadata_client.kind,
+            pat!(MetadataClientKind::Etcd {
+                addresses: elements_are![
+                    eq("http://127.0.0.1:15123/"),
+                    eq("http://127.0.0.1:15124/")
+                ]
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_client_compatibility() -> googletest::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let config_path_address = temp_dir.path().join("config1.toml");
+        let config_file_address = r#"
+        [metadata-client]
+        address = "http://127.0.0.1:15123/"
+        "#;
+
+        std::fs::write(config_path_address.clone(), config_file_address)?;
+
+        let config_loader = ConfigLoaderBuilder::default()
+            .path(Some(config_path_address))
+            .build()?;
+        let configuration = config_loader.load_once()?;
+
+        assert_that!(
+            configuration.common.metadata_client.kind,
+            pat!(MetadataClientKind::Replicated {
+                addresses: elements_are![eq(AdvertisedAddress::Http(Uri::from_static(
+                    "http://127.0.0.1:15123/"
+                )))]
+            })
+        );
+
+        let config_path_addresses = temp_dir.path().join("config2.toml");
+        let config_file_addresses = r#"
+        [metadata-client]
+        addresses = ["http://127.0.0.1:15123/", "http://127.0.0.1:15124/"]
+        "#;
+
+        std::fs::write(config_path_addresses.clone(), config_file_addresses)?;
+
+        let config_loader = ConfigLoaderBuilder::default()
+            .path(Some(config_path_addresses))
+            .build()?;
+        let configuration = config_loader.load_once()?;
+
+        assert_that!(
+            configuration.common.metadata_client.kind,
+            pat!(MetadataClientKind::Replicated {
+                addresses: elements_are![
+                    eq(AdvertisedAddress::Http(Uri::from_static(
+                        "http://127.0.0.1:15123/"
+                    ))),
+                    eq(AdvertisedAddress::Http(Uri::from_static(
+                        "http://127.0.0.1:15124/"
+                    )))
+                ]
+            })
+        );
+
+        let config_path_etcd = temp_dir.path().join("config2.toml");
+        let config_file_etcd = r#"
+        [metadata-client]
+        type = "etcd"
+        addresses = ["http://127.0.0.1:15123/", "http://127.0.0.1:15124/"]
+        "#;
+
+        std::fs::write(config_path_etcd.clone(), config_file_etcd)?;
+
+        let config_loader = ConfigLoaderBuilder::default()
+            .path(Some(config_path_etcd))
+            .build()?;
+        let configuration = config_loader.load_once()?;
+
+        assert_that!(
+            configuration.common.metadata_client.kind,
+            pat!(MetadataClientKind::Etcd {
+                addresses: elements_are![
+                    eq("http://127.0.0.1:15123/"),
+                    eq("http://127.0.0.1:15124/")
+                ]
+            })
+        );
+
+        Ok(())
     }
 }
