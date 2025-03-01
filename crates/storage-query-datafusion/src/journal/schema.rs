@@ -14,7 +14,9 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_table!(sys_journal(
+define_sort_order!(sys_journal(partition_key, id));
+
+define_table!(sys_journal (
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 

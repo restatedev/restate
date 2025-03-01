@@ -21,7 +21,7 @@ use restate_types::identifiers::PartitionKey;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::inbox::row::append_inbox_row;
-use crate::inbox::schema::SysInboxBuilder;
+use crate::inbox::schema::{SysInboxBuilder, sys_inbox_sort_order};
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -43,6 +43,7 @@ pub(crate) fn register_self(
     let table = PartitionedTableProvider::new(
         partition_selector,
         SysInboxBuilder::schema(),
+        sys_inbox_sort_order(),
         ctx.create_distributed_scanner(NAME, local_partition_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_service_key("service_key")

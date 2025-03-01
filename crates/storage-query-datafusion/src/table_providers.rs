@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::context::SelectPartitions;
 use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
-use crate::table_util::compute_ordering;
+use crate::table_util::{find_sort_columns, make_ordering};
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
@@ -44,6 +44,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
 pub(crate) struct PartitionedTableProvider<T, S> {
     partition_selector: S,
     schema: SchemaRef,
+    ordering: Vec<String>,
     partition_scanner: T,
     partition_key_extractor: FirstMatchingPartitionKeyExtractor,
 }
@@ -52,12 +53,14 @@ impl<T, S> PartitionedTableProvider<T, S> {
     pub(crate) fn new(
         partition_selector: S,
         schema: SchemaRef,
+        ordering: Vec<String>,
         partition_scanner: T,
         partition_key_extractor: FirstMatchingPartitionKeyExtractor,
     ) -> Self {
         Self {
             partition_selector,
             schema,
+            ordering,
             partition_scanner,
             partition_key_extractor,
         }
@@ -129,15 +132,24 @@ where
             live_partitions
         };
 
-        let eq_properties = if let Some(ordering) = compute_ordering(projected_schema.clone()) {
-            EquivalenceProperties::new_with_orderings(projected_schema.clone(), &[ordering])
-        } else {
+        let sort_columns = find_sort_columns(&self.ordering, &projected_schema);
+
+        let eq_properties = if sort_columns.is_empty() {
             EquivalenceProperties::new(projected_schema.clone())
+        } else {
+            let ordering = make_ordering(sort_columns.clone());
+            EquivalenceProperties::new_with_orderings(projected_schema.clone(), &[ordering])
+        };
+
+        let partition_plan = if sort_columns.is_empty() {
+            Partitioning::UnknownPartitioning(required_partitions.len())
+        } else {
+            Partitioning::Hash(sort_columns, required_partitions.len())
         };
 
         let plan = PlanProperties::new(
             eq_properties,
-            Partitioning::UnknownPartitioning(required_partitions.len()),
+            partition_plan,
             EmissionType::Incremental,
             Boundedness::Bounded,
         );

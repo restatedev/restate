@@ -20,7 +20,7 @@ use restate_storage_api::promise_table::{OwnedPromiseRow, ReadOnlyPromiseTable};
 use restate_types::identifiers::PartitionKey;
 
 use super::row::append_promise_row;
-use super::schema::SysPromiseBuilder;
+use super::schema::{SysPromiseBuilder, sys_promise_sort_order};
 use crate::context::{QueryContext, SelectPartitions};
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -42,6 +42,7 @@ pub(crate) fn register_self(
     let table = PartitionedTableProvider::new(
         partition_selector,
         SysPromiseBuilder::schema(),
+        sys_promise_sort_order(),
         ctx.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key"),
     );

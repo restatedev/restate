@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_expr::expressions::col;
-use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
 use std::fmt::Write;
+use std::sync::Arc;
 use tracing::error;
 
 #[macro_export]
@@ -28,13 +29,27 @@ macro_rules! log_data_corruption_error {
     };
 }
 
-pub(crate) fn compute_ordering(schema: SchemaRef) -> Option<LexOrdering> {
-    let ordering = LexOrdering::new(vec![PhysicalSortExpr {
-        expr: col("partition_key", &schema).ok()?,
-        options: Default::default(),
-    }]);
+pub(crate) fn find_sort_columns(
+    ordering: &[String],
+    schema: &Schema,
+) -> Vec<Arc<dyn PhysicalExpr>> {
+    // find the maximal ordered prefix from @ordering, that exists in @schema.
+    ordering
+        .iter()
+        .map_while(|column_name| col(column_name, schema).ok())
+        .collect()
+}
 
-    Some(ordering)
+pub(crate) fn make_ordering(columns: Vec<Arc<dyn PhysicalExpr>>) -> LexOrdering {
+    let cols: Vec<_> = columns
+        .into_iter()
+        .map(|expr| PhysicalSortExpr {
+            expr,
+            options: Default::default(),
+        })
+        .collect();
+
+    LexOrdering::new(cols)
 }
 
 #[inline]
