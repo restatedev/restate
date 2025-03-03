@@ -20,7 +20,7 @@ use restate_storage_api::idempotency_table::{IdempotencyMetadata, ReadOnlyIdempo
 use restate_types::identifiers::{IdempotencyId, PartitionKey};
 
 use super::row::append_idempotency_row;
-use super::schema::SysIdempotencyBuilder;
+use super::schema::{SysIdempotencyBuilder, sys_idempotency_sort_order};
 use crate::context::{QueryContext, SelectPartitions};
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -42,6 +42,7 @@ pub(crate) fn register_self(
     let table = PartitionedTableProvider::new(
         partition_selector,
         SysIdempotencyBuilder::schema(),
+        sys_idempotency_sort_order(),
         ctx.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_service_key("service_key")

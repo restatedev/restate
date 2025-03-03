@@ -16,7 +16,7 @@ use tonic::codec::CompressionEncoding;
 use tracing::{debug, trace};
 
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvcServer;
+use restate_core::network::grpc::CoreNodeSvcHandler;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportConnect};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
@@ -24,7 +24,7 @@ use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::config::CommonOptions;
 use restate_types::protobuf::common::NodeStatus;
 
-use super::grpc_svc_handler::{CoreNodeSvcHandler, NodeCtlSvcHandler};
+use super::grpc_svc_handler::NodeCtlSvcHandler;
 use super::pprof;
 use crate::network_server::metrics::{install_global_prometheus_recorder, render_metrics};
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
@@ -112,11 +112,7 @@ impl NetworkServer {
 
         server_builder.register_grpc_service(
             TonicServiceFilter::new(
-                CoreNodeSvcServer::new(CoreNodeSvcHandler::new(connection_manager))
-                    .max_decoding_message_size(32 * 1024 * 1024)
-                    .max_encoding_message_size(32 * 1024 * 1024)
-                    .accept_compressed(CompressionEncoding::Gzip)
-                    .send_compressed(CompressionEncoding::Gzip),
+                CoreNodeSvcHandler::new(connection_manager).into_server(),
                 WaitForReady::new(node_health, NodeStatus::Alive),
             ),
             restate_core::network::protobuf::core_node_svc::FILE_DESCRIPTOR_SET,

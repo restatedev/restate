@@ -25,7 +25,7 @@ use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::invocation_state::row::append_invocation_state_row;
-use crate::invocation_state::schema::SysInvocationStateBuilder;
+use crate::invocation_state::schema::{SysInvocationStateBuilder, sys_invocation_state_sort_order};
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::table_util::Builder;
@@ -57,6 +57,7 @@ pub(crate) fn register_self(
     let status_table = PartitionedTableProvider::new(
         partition_selector,
         SysInvocationStateBuilder::schema(),
+        sys_invocation_state_sort_order(),
         ctx.create_distributed_scanner(NAME, local_partition_scanner),
         FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
     );

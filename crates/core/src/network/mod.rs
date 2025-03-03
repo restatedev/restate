@@ -11,6 +11,7 @@
 mod connection;
 mod connection_manager;
 mod error;
+pub mod grpc;
 mod handshake;
 mod message_router;
 pub(crate) mod metric_definitions;
@@ -29,11 +30,12 @@ mod types;
 pub use connection::{OwnedConnection, WeakConnection};
 pub use connection_manager::ConnectionManager;
 pub use error::*;
+pub use grpc::GrpcConnector;
 pub use message_router::*;
 pub use network_sender::*;
 pub use networking::Networking;
 pub use server_builder::NetworkServerBuilder;
-pub use transport_connector::{GrpcConnector, TransportConnect};
+pub use transport_connector::TransportConnect;
 pub use types::*;
 
 #[cfg(any(test, feature = "test-util"))]
