@@ -24,6 +24,7 @@ use restate_local_cluster_runner::{
     node::{BinarySource, Node},
 };
 use restate_rocksdb::RocksDbManager;
+use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::logs::LogletId;
 use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{Chain, LogletParams, SegmentIndex};
@@ -65,10 +66,9 @@ async fn replicated_loglet_client(
     config.common.advertised_address = AdvertisedAddress::Uds(node_socket.clone());
     config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
     config.common.metadata_client = cluster.nodes[0].config().common.metadata_client.clone();
-
     restate_types::config::set_current_config(config.clone());
 
-    let node = restate_node::Node::create(Live::from_value(config)).await?;
+    let node = restate_node::Node::create(Live::from_value(config), Prometheus::default()).await?;
 
     let bifrost = node.bifrost();
     let metadata_writer = node.metadata_writer();
