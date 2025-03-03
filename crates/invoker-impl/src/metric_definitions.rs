@@ -13,9 +13,11 @@
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
+pub const INVOKER_SEG_QUEUE_LEN: &str = "restate.invoker.segmented_queue.len";
 pub const INVOKER_INVOCATION_TASK: &str = "restate.invoker.invocation_task.total";
 pub const INVOKER_AVAILABLE_SLOTS: &str = "restate.invoker.available_slots";
 pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
+pub const INVOKER_TASKS_IN_FLIGHT: &str = "restate.invoker.inflight_tasks_count";
 
 pub const TASK_OP_STARTED: &str = "started";
 pub const TASK_OP_SUSPENDED: &str = "suspended";
@@ -27,6 +29,12 @@ pub(crate) fn describe_metrics() {
         INVOKER_ENQUEUE,
         Unit::Count,
         "Number of invocations that were added to the queue"
+    );
+
+    describe_gauge!(
+        INVOKER_SEG_QUEUE_LEN,
+        Unit::Count,
+        "Number of invocations in the queue"
     );
 
     describe_counter!(
@@ -45,5 +53,11 @@ pub(crate) fn describe_metrics() {
         INVOKER_TASK_DURATION,
         Unit::Seconds,
         "Time taken to complete an invoker task"
-    )
+    );
+
+    describe_gauge!(
+        INVOKER_TASKS_IN_FLIGHT,
+        Unit::Count,
+        "Number of inflight invoker tasks"
+    );
 }

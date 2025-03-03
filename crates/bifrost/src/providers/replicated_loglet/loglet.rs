@@ -24,7 +24,9 @@ use restate_types::logs::{
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
 use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
+use crate::loglet::{
+    FindTailOptions, Loglet, LogletCommit, OperationError, SendableLogletReadStream,
+};
 use crate::providers::replicated_loglet::replication::spread_selector::SelectorStrategy;
 use crate::providers::replicated_loglet::sequencer::Sequencer;
 use crate::providers::replicated_loglet::tasks::{
@@ -160,7 +162,7 @@ impl<T> SequencerAccess<T> {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum FindTailOptions {
+pub(crate) enum FindTailFlags {
     #[default]
     Default,
     /// Tells the loglet provider to force a check on the seal status of the loglet. Note that the
@@ -176,7 +178,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
 
     pub async fn find_tail_inner(
         &self,
-        find_tail_opts: FindTailOptions,
+        find_tail_opts: FindTailFlags,
     ) -> Result<TailState<LogletOffset>, OperationError> {
         let latest_tail = *self.known_global_tail.get();
         if latest_tail.is_sealed() {
@@ -184,14 +186,14 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         }
         let find_tail_opts = if self.sequencer.maybe_sealed() {
             // auto-force seal check if we have reasons to believe that it might be sealing
-            FindTailOptions::ForceSealCheck
+            FindTailFlags::ForceSealCheck
         } else {
             find_tail_opts
         };
 
         match self.sequencer {
             SequencerAccess::Local { ref handle } => {
-                if find_tail_opts == FindTailOptions::ForceSealCheck {
+                if find_tail_opts == FindTailFlags::ForceSealCheck {
                     if self.sequencer.maybe_sealed() {
                         // let's fire a seal to ensure this seal is complete.
                         self.seal().await?;
@@ -333,8 +335,14 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         }
     }
 
-    async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
-        self.find_tail_inner(FindTailOptions::default()).await
+    async fn find_tail(
+        &self,
+        opts: FindTailOptions,
+    ) -> Result<TailState<LogletOffset>, OperationError> {
+        if opts == FindTailOptions::Fast {
+            return Ok(self.last_known_global_tail());
+        }
+        self.find_tail_inner(FindTailFlags::default()).await
     }
 
     #[instrument(
@@ -549,7 +557,7 @@ mod tests {
                 assert_that!(offset, eq(LogletOffset::new(3)));
                 let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
                 assert_that!(offset, eq(LogletOffset::new(6)));
-                let tail = env.loglet.find_tail().await?;
+                let tail = env.loglet.find_tail(FindTailOptions::default()).await?;
                 assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
 
                 let cached_record = env.record_cache.get(loglet_id, 1.into());
@@ -592,7 +600,7 @@ mod tests {
                 assert_that!(offset, eq(LogletOffset::new(3)));
                 let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
                 assert_that!(offset, eq(LogletOffset::new(6)));
-                let tail = env.loglet.find_tail().await?;
+                let tail = env.loglet.find_tail(FindTailOptions::default()).await?;
                 assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
 
                 env.loglet.seal().await?;
@@ -603,7 +611,7 @@ mod tests {
                 .into();
                 let not_appended = env.loglet.enqueue_batch(batch).await?.await;
                 assert_that!(not_appended, err(pat!(AppendError::Sealed)));
-                let tail = env.loglet.find_tail().await?;
+                let tail = env.loglet.find_tail(FindTailOptions::default()).await?;
                 assert_that!(tail, eq(TailState::Sealed(LogletOffset::new(7))));
 
                 Ok(())

@@ -26,7 +26,7 @@ use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
 use crate::loglet::util::TailOffsetWatch;
-use crate::providers::replicated_loglet::loglet::FindTailOptions;
+use crate::providers::replicated_loglet::loglet::FindTailFlags;
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
 use crate::providers::replicated_loglet::rpc_routers::{LogServersRpc, SequencersRpc};
 
@@ -92,7 +92,7 @@ impl<T: TransportConnect> FindTailTask<T> {
     }
 
     #[instrument(skip_all)]
-    pub async fn run(self, opts: FindTailOptions) -> FindTailResult {
+    pub async fn run(self, opts: FindTailFlags) -> FindTailResult {
         // Special case:
         // If all nodes in the nodeset is in "provisioning", we can confidently short-circuit
         // the result to LogletOffset::Oldest and the loglet is definitely unsealed.
@@ -118,7 +118,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                 segment_index: self.segment_index,
                 loglet_id: self.my_params.loglet_id,
             },
-            force_seal_check: opts == FindTailOptions::ForceSealCheck,
+            force_seal_check: opts == FindTailFlags::ForceSealCheck,
         };
 
         // todo: use cluster-state information when this becomes node-level available to avoid

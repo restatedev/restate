@@ -151,6 +151,7 @@ pub async fn list_partitions(
         "PERSISTED-LSN",
         "SKIPPED-RECORDS",
         "ARCHIVED-LSN",
+        "LSN-LAG",
         "LAST-UPDATE",
     ]);
 
@@ -284,6 +285,17 @@ pub async fn list_partitions(
                         .status
                         .last_archived_log_lsn
                         .map(|x| x.to_string())
+                        .unwrap_or("-".to_owned()),
+                ),
+                Cell::new(
+                    processor
+                        .status
+                        .target_tail_lsn
+                        .zip(processor.status.last_applied_log_lsn)
+                        .map(|(tail, applied)| {
+                            // (tail - 1) - applied_lsn = tail - (applied_lsn + 1)
+                            tail.value.saturating_sub(applied.value + 1).to_string()
+                        })
                         .unwrap_or("-".to_owned()),
                 ),
                 render_as_duration(processor.status.updated_at, Tense::Past),

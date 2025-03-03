@@ -20,7 +20,7 @@ use restate_core::network::TransportConnect;
 use restate_types::logs::LogletId;
 
 use crate::loglet::OperationError;
-use crate::providers::replicated_loglet::loglet::{FindTailOptions, ReplicatedLoglet};
+use crate::providers::replicated_loglet::loglet::{FindTailFlags, ReplicatedLoglet};
 
 pub struct PeriodicTailChecker {}
 
@@ -30,14 +30,14 @@ impl PeriodicTailChecker {
         loglet_id: LogletId,
         loglet: Weak<ReplicatedLoglet<T>>,
         duration: Duration,
-        opts: FindTailOptions,
+        opts: FindTailFlags,
     ) -> anyhow::Result<()> {
         debug!(
             %loglet_id,
             "Started a background periodic tail checker for this loglet",
         );
         // Optimization. Don't run the check if the tail/seal has been updated recently.
-        // Unfortunately this requires a litte bit more setup in the TailOffsetWatch so we don't do
+        // Unfortunately this requires a little bit more setup in the TailOffsetWatch so we don't do
         // it.
         loop {
             let Some(loglet) = loglet.upgrade() else {

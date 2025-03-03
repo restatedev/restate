@@ -172,6 +172,11 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
         };
         len
     }
+
+    /// Number of records in queue
+    pub fn len(&self) -> usize {
+        self.segments.iter().fold(0, |len, seg| len + seg.len())
+    }
 }
 
 impl<T> SegmentQueue<T> {
