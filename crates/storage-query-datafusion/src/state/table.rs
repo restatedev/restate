@@ -24,7 +24,7 @@ use crate::context::{QueryContext, SelectPartitions};
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::state::row::append_state_row;
-use crate::state::schema::StateBuilder;
+use crate::state::schema::{StateBuilder, state_sort_order};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
 const NAME: &str = "state";
@@ -43,6 +43,7 @@ pub(crate) fn register_self(
     let table = PartitionedTableProvider::new(
         partition_selector,
         StateBuilder::schema(),
+        state_sort_order(),
         ctx.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key"),
     );

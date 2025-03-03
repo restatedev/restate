@@ -590,9 +590,25 @@ macro_rules! define_table {
     })
 }
 
+macro_rules! define_sort_order {
+
+    ($table_name: ident (
+        $(
+            $element:ident
+        ),+ $(,)?)
+    ) => (paste::paste! {
+
+        pub fn [< $table_name:snake _ sort_order >]() -> Vec<String> {
+           vec![ $( stringify!($element).to_string(),)+ ]
+        }
+
+        })
+}
+
 pub(crate) use define_builder;
 pub(crate) use define_data_type;
 pub(crate) use define_primitive_trait;
+pub(crate) use define_sort_order;
 pub(crate) use define_table;
 #[cfg(feature = "table_docs")]
 pub(crate) use document_type;
