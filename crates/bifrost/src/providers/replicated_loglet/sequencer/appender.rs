@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, trace, warn};
 
 use restate_core::{
-    TaskCenterFutureExt,
+    Metadata, TaskCenterFutureExt,
     network::{Incoming, NetworkError, Networking, TransportConnect, rpc_router::RpcRouter},
 };
 use restate_types::replicated_loglet::Spread;
@@ -92,7 +92,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
         // state after the nodeset has been created until the loglet is sealed.
         let checker = NodeSetChecker::<NodeAttributes>::new(
             sequencer_shared_state.selector.nodeset(),
-            &networking.metadata().nodes_config_ref(),
+            &Metadata::with_current(|m| m.nodes_config_ref()),
             sequencer_shared_state.selector.replication_property(),
         );
 
@@ -246,11 +246,11 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
     fn generate_spread(&mut self) -> Result<Spread, SpreadSelectorError> {
         let rng = &mut rand::rng();
-        let nodes_config = &self.networking.metadata().nodes_config_ref();
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
         match self
             .sequencer_shared_state
             .selector
-            .select(rng, nodes_config, &self.graylist)
+            .select(rng, &nodes_config, &self.graylist)
         {
             Ok(spread) => Ok(spread),
             Err(err) => {
@@ -263,7 +263,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 self.reset_graylist();
                 self.sequencer_shared_state
                     .selector
-                    .select(rng, nodes_config, &self.graylist)
+                    .select(rng, &nodes_config, &self.graylist)
             }
         }
     }

@@ -18,7 +18,7 @@ use restate_types::protobuf::node::Message;
 
 use super::{NetworkError, ProtocolError};
 
-pub trait TransportConnect: Send + Sync + 'static {
+pub trait TransportConnect: Clone + Send + Sync + 'static {
     fn connect(
         &self,
         node_id: GenerationalNodeId,
@@ -30,6 +30,22 @@ pub trait TransportConnect: Send + Sync + 'static {
             NetworkError,
         >,
     > + Send;
+}
+
+impl<T: TransportConnect> TransportConnect for std::sync::Arc<T> {
+    fn connect(
+        &self,
+        node_id: GenerationalNodeId,
+        nodes_config: &NodesConfiguration,
+        output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+    ) -> impl Future<
+        Output = Result<
+            impl Stream<Item = Result<Message, ProtocolError>> + Send + Unpin + 'static,
+            NetworkError,
+        >,
+    > + Send {
+        (**self).connect(node_id, nodes_config, output_stream)
+    }
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -148,7 +164,7 @@ pub mod test_util {
         }
     }
 
-    impl TransportConnect for MessageCollectorMockConnector {
+    impl TransportConnect for Arc<MessageCollectorMockConnector> {
         async fn connect(
             &self,
             node_id: GenerationalNodeId,
@@ -165,8 +181,8 @@ pub mod test_util {
     }
 
     /// Transport that fails all outgoing connections
-    #[derive(Default)]
-    pub struct FailingConnector {}
+    #[derive(Default, Clone)]
+    pub struct FailingConnector;
 
     #[cfg(any(test, feature = "test-util"))]
     impl TransportConnect for FailingConnector {

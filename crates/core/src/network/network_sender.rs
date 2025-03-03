@@ -13,7 +13,7 @@ use restate_types::net::codec::{Targeted, WireEncode};
 use super::{NetworkSendError, NoConnection, Outgoing};
 
 /// Send NetworkMessage to nodes
-pub trait NetworkSender<S = NoConnection>: Send + Sync + Clone
+pub trait NetworkSender<S = NoConnection>: Send + Sync
 where
     S: super::private::Sealed,
 {

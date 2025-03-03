@@ -10,18 +10,18 @@
 
 use std::collections::BTreeMap;
 
-use restate_types::PlainNodeId;
-use restate_types::retries::RetryPolicy;
 use tokio::task::JoinSet;
 use tracing::{Instrument, debug, instrument, trace};
 
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Incoming, Networking, TransportConnect};
-use restate_core::{ShutdownError, TaskCenterFutureExt};
+use restate_core::{Metadata, ShutdownError, TaskCenterFutureExt};
+use restate_types::PlainNodeId;
 use restate_types::net::log_server::{
     GetLogletInfo, LogServerRequestHeader, LogServerResponseHeader, LogletInfo, Status,
 };
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
+use restate_types::retries::RetryPolicy;
 
 use super::util::Disposition;
 use crate::loglet::util::TailOffsetWatch;
@@ -62,6 +62,7 @@ impl CheckSealTask {
         known_global_tail: &TailOffsetWatch,
         networking: &Networking<T>,
     ) -> Result<CheckSealOutcome, ShutdownError> {
+        let metadata = Metadata::current();
         if known_global_tail.is_sealed() {
             return Ok(CheckSealOutcome::FullySealed);
         }
@@ -73,20 +74,18 @@ impl CheckSealTask {
         // the result to LogletOffset::Oldest and the loglet is definitely unsealed.
         if my_params
             .nodeset
-            .all_provisioning(&networking.metadata().nodes_config_ref())
+            .all_provisioning(&metadata.nodes_config_ref())
         {
             return Ok(CheckSealOutcome::Open);
         }
         // todo: If effective nodeset is empty, should we consider that the loglet is implicitly
         // sealed?
 
-        let effective_nodeset = my_params
-            .nodeset
-            .to_effective(&networking.metadata().nodes_config_ref());
+        let effective_nodeset = my_params.nodeset.to_effective(&metadata.nodes_config_ref());
 
         let mut nodeset_checker = NodeSetChecker::<bool>::new(
             &effective_nodeset,
-            &networking.metadata().nodes_config_ref(),
+            &metadata.nodes_config_ref(),
             &my_params.replication,
         );
 

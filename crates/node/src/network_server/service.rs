@@ -15,7 +15,7 @@ use restate_core::TaskCenter;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::grpc::CoreNodeSvcHandler;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
-use restate_core::network::{ConnectionManager, NetworkServerBuilder, TransportConnect};
+use restate_core::network::{ConnectionManager, NetworkServerBuilder};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::CommonOptions;
@@ -29,8 +29,8 @@ use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 pub struct NetworkServer {}
 
 impl NetworkServer {
-    pub async fn run<T: TransportConnect>(
-        connection_manager: ConnectionManager<T>,
+    pub async fn run(
+        connection_manager: ConnectionManager,
         mut server_builder: NetworkServerBuilder,
         options: CommonOptions,
         metadata_store_client: MetadataStoreClient,

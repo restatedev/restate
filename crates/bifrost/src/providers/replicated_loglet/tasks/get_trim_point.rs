@@ -11,8 +11,8 @@
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, instrument, trace};
 
-use restate_core::TaskCenterFutureExt;
 use restate_core::network::{Incoming, Networking, TransportConnect};
+use restate_core::{Metadata, TaskCenterFutureExt};
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, LogletInfo, Status};
@@ -62,13 +62,14 @@ impl<'a> GetTrimPointTask<'a> {
         self,
         networking: Networking<T>,
     ) -> Result<Option<LogletOffset>, OperationError> {
+        let metadata = Metadata::current();
         // Special case:
         // If all nodes in the nodeset are in "provisioning", we can confidently short-circuit
         // the result to None assuming that this loglet has never been trimmed.
         if self
             .my_params
             .nodeset
-            .all_provisioning(&networking.metadata().nodes_config_ref())
+            .all_provisioning(&metadata.nodes_config_ref())
         {
             return Ok(None);
         }
@@ -76,7 +77,7 @@ impl<'a> GetTrimPointTask<'a> {
         let effective_nodeset = self
             .my_params
             .nodeset
-            .to_effective(&networking.metadata().nodes_config_ref());
+            .to_effective(&metadata.nodes_config_ref());
 
         if effective_nodeset.is_empty() {
             // all nodes are disabled, we can't determine the trim point but we know that this
@@ -129,7 +130,7 @@ impl<'a> GetTrimPointTask<'a> {
 
         let mut nodeset_checker = NodeSetChecker::<Option<LogletOffset>>::new(
             &effective_nodeset,
-            &networking.metadata().nodes_config_ref(),
+            &metadata.nodes_config_ref(),
             &self.my_params.replication,
         );
 
