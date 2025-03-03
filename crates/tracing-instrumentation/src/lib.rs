@@ -10,6 +10,8 @@
 
 mod exporter;
 mod pretty;
+#[cfg(feature = "prometheus")]
+pub mod prometheus_metrics;
 
 use std::collections::HashMap;
 use std::env;

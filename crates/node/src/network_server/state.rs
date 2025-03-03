@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics_exporter_prometheus::PrometheusHandle;
+use std::sync::Arc;
+
 use restate_core::task_center;
+use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct NodeCtrlHandlerState {
     #[builder(default)]
-    pub prometheus_handle: Option<PrometheusHandle>,
+    pub prometheus_handle: Arc<Prometheus>,
     pub task_center: task_center::Handle,
 }

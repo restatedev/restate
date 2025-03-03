@@ -44,7 +44,7 @@ restate-metadata-server = { workspace = true }
 restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
-restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
+restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio", "prometheus"] }
 restate-types = { workspace = true, features = ["clap"] }
 restate-worker = { workspace = true }
 
