@@ -31,7 +31,7 @@ pub struct RpcRequestDispatcher<C> {
     retry_policy: RetryPolicy,
 }
 
-impl<T> Clone for RpcRequestDispatcher<T> {
+impl<T: Clone> Clone for RpcRequestDispatcher<T> {
     fn clone(&self) -> Self {
         RpcRequestDispatcher {
             partition_processor_rpc_client: self.partition_processor_rpc_client.clone(),
