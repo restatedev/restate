@@ -454,6 +454,7 @@ mod tests {
     use restate_types::logs::{KeyFilter, SequenceNumber};
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
+    use crate::loglet::FindTailOptions;
     use crate::{BifrostService, ErrorRecoveryStrategy};
 
     #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -478,7 +479,9 @@ mod tests {
         let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, read_from, Lsn::MAX)?;
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
 
-        let tail = bifrost.find_tail(LOG_ID).await?;
+        let tail = bifrost
+            .find_tail(LOG_ID, FindTailOptions::default())
+            .await?;
         // no records have been written
         assert!(!tail.is_sealed());
         assert_eq!(Lsn::OLDEST, tail.offset());
@@ -567,7 +570,13 @@ mod tests {
         // [1..5] trimmed. trim_point = 5
         bifrost.admin().trim(LOG_ID, Lsn::from(5)).await?;
 
-        assert_eq!(Lsn::from(11), bifrost.find_tail(LOG_ID).await?.offset());
+        assert_eq!(
+            Lsn::from(11),
+            bifrost
+                .find_tail(LOG_ID, FindTailOptions::default())
+                .await?
+                .offset()
+        );
         assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
 
         let mut read_stream =
@@ -584,7 +593,10 @@ mod tests {
         assert!(!read_stream.is_terminated());
         assert_eq!(Lsn::from(8), read_stream.read_pointer());
 
-        let tail = bifrost.find_tail(LOG_ID).await?.offset();
+        let tail = bifrost
+            .find_tail(LOG_ID, FindTailOptions::default())
+            .await?
+            .offset();
         // trimming beyond the release point will fall back to the release point
         bifrost.admin().trim(LOG_ID, Lsn::from(u64::MAX)).await?;
         let trim_point = bifrost.get_trim_point(LOG_ID).await?;
@@ -654,7 +666,9 @@ mod tests {
             pat!(Poll::Pending)
         );
 
-        let tail = bifrost.find_tail(LOG_ID).await?;
+        let tail = bifrost
+            .find_tail(LOG_ID, FindTailOptions::default())
+            .await?;
         // no records have been written
         assert!(!tail.is_sealed());
         assert_eq!(Lsn::OLDEST, tail.offset());
@@ -716,7 +730,9 @@ mod tests {
             pat!(Poll::Pending)
         );
 
-        let tail = bifrost.find_tail(LOG_ID).await?;
+        let tail = bifrost
+            .find_tail(LOG_ID, FindTailOptions::default())
+            .await?;
 
         assert!(tail.is_sealed());
         assert_eq!(Lsn::from(11), tail.offset());
@@ -803,7 +819,9 @@ mod tests {
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
 
-        let tail = bifrost.find_tail(LOG_ID).await?;
+        let tail = bifrost
+            .find_tail(LOG_ID, FindTailOptions::default())
+            .await?;
         // no records have been written
         assert!(!tail.is_sealed());
         assert_eq!(Lsn::OLDEST, tail.offset());
@@ -827,7 +845,9 @@ mod tests {
             )
             .await?;
 
-        let tail = bifrost.find_tail(LOG_ID).await?;
+        let tail = bifrost
+            .find_tail(LOG_ID, FindTailOptions::default())
+            .await?;
 
         assert!(!tail.is_sealed());
         assert_eq!(Lsn::from(11), tail.offset());
@@ -851,7 +871,9 @@ mod tests {
             .unwrap();
 
         assert_that!(
-            segment_1_loglet.find_tail().await?,
+            segment_1_loglet
+                .find_tail(FindTailOptions::default())
+                .await?,
             pat!(TailState::Sealed(eq(Lsn::from(11))))
         );
 

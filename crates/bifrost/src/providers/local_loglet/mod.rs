@@ -39,7 +39,9 @@ use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATI
 use self::read_stream::LocalLogletReadStream;
 use crate::Result;
 use crate::loglet::util::TailOffsetWatch;
-use crate::loglet::{Loglet, LogletCommit, OperationError, SendableLogletReadStream};
+use crate::loglet::{
+    FindTailOptions, Loglet, LogletCommit, OperationError, SendableLogletReadStream,
+};
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
@@ -203,7 +205,10 @@ impl Loglet for LocalLoglet {
         Ok(LogletCommit::resolved(offset))
     }
 
-    async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
+    async fn find_tail(
+        &self,
+        _: FindTailOptions,
+    ) -> Result<TailState<LogletOffset>, OperationError> {
         // `fetch_add(0)` with Release ordering to enforce using last_committed_offset as a memory
         // barrier and synchronization point with other threads.
         let last_committed =

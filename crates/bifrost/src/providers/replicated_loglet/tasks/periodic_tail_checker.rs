@@ -20,7 +20,7 @@ use restate_core::network::TransportConnect;
 use restate_types::logs::LogletId;
 
 use crate::loglet::OperationError;
-use crate::providers::replicated_loglet::loglet::{FindTailOptions, ReplicatedLoglet};
+use crate::providers::replicated_loglet::loglet::{FindTailFlags, ReplicatedLoglet};
 
 pub struct PeriodicTailChecker {}
 
@@ -30,7 +30,7 @@ impl PeriodicTailChecker {
         loglet_id: LogletId,
         loglet: Weak<ReplicatedLoglet<T>>,
         duration: Duration,
-        opts: FindTailOptions,
+        opts: FindTailFlags,
     ) -> anyhow::Result<()> {
         debug!(
             %loglet_id,
