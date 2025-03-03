@@ -33,8 +33,8 @@ use crate::LogEntry;
 use crate::Result;
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
-    Loglet, LogletCommit, LogletProvider, LogletProviderFactory, LogletReadStream, OperationError,
-    SendableLogletReadStream,
+    FindTailOptions, Loglet, LogletCommit, LogletProvider, LogletProviderFactory, LogletReadStream,
+    OperationError, SendableLogletReadStream,
 };
 
 #[derive(Default)]
@@ -370,7 +370,10 @@ impl Loglet for MemoryLoglet {
         Ok(LogletCommit::resolved(last_committed_offset))
     }
 
-    async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
+    async fn find_tail(
+        &self,
+        _: FindTailOptions,
+    ) -> Result<TailState<LogletOffset>, OperationError> {
         let _guard = self.log.lock().unwrap();
         let committed =
             LogletOffset::new(self.last_committed_offset.load(Ordering::Relaxed)).next();

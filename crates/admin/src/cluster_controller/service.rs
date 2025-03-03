@@ -813,6 +813,7 @@ mod tests {
     use tracing::{debug, info, warn};
 
     use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
+    use restate_bifrost::loglet::FindTailOptions;
     use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::{Bifrost, BifrostService, ErrorRecoveryStrategy};
     use restate_core::network::{
@@ -980,7 +981,12 @@ mod tests {
             assert_eq!(Lsn::from(i), lsn);
         }
         applied_lsn.store(
-            bifrost.find_tail(LOG_ID).await?.offset().prev().as_u64(),
+            bifrost
+                .find_tail(LOG_ID, FindTailOptions::default())
+                .await?
+                .offset()
+                .prev()
+                .as_u64(),
             Ordering::Relaxed,
         );
 
@@ -1057,7 +1063,12 @@ mod tests {
             assert_eq!(Lsn::from(i), lsn);
         }
         applied_lsn.store(
-            bifrost.find_tail(LOG_ID).await?.offset().prev().as_u64(),
+            bifrost
+                .find_tail(LOG_ID, FindTailOptions::default())
+                .await?
+                .offset()
+                .prev()
+                .as_u64(),
             Ordering::Relaxed,
         );
         tokio::time::sleep(interval_duration * 2).await;
@@ -1134,7 +1145,12 @@ mod tests {
             assert_eq!(Lsn::from(i), lsn);
         }
         applied_lsn.store(
-            bifrost.find_tail(LOG_ID).await?.offset().prev().as_u64(),
+            bifrost
+                .find_tail(LOG_ID, FindTailOptions::default())
+                .await?
+                .offset()
+                .prev()
+                .as_u64(),
             Ordering::Relaxed,
         );
         tokio::time::sleep(interval_duration * 10).await;
@@ -1214,7 +1230,12 @@ mod tests {
             assert_eq!(Lsn::from(i), lsn);
         }
         applied_persisted_lsn.store(
-            bifrost.find_tail(LOG_ID).await?.offset().prev().as_u64(),
+            bifrost
+                .find_tail(LOG_ID, FindTailOptions::default())
+                .await?
+                .offset()
+                .prev()
+                .as_u64(),
             Ordering::Relaxed,
         );
 
@@ -1296,7 +1317,12 @@ mod tests {
             assert_eq!(Lsn::from(i), lsn);
         }
         applied_lsn.store(
-            bifrost.find_tail(LOG_ID).await?.offset().prev().as_u64(),
+            bifrost
+                .find_tail(LOG_ID, FindTailOptions::default())
+                .await?
+                .offset()
+                .prev()
+                .as_u64(),
             Ordering::Relaxed,
         );
         tokio::time::sleep(interval_duration * 2).await;
