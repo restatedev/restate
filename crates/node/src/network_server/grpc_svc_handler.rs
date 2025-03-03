@@ -11,15 +11,14 @@
 use std::cmp::max_by_key;
 use std::num::NonZeroU16;
 
-use crate::{ClusterConfiguration, provision_cluster_metadata};
 use anyhow::Context;
 use bytes::BytesMut;
 use enumset::EnumSet;
-use futures::stream::BoxStream;
+use tonic::{Request, Response, Status};
+use tracing::debug;
+
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util::create_tonic_channel;
-use restate_core::network::protobuf::core_node_svc::core_node_svc_server::CoreNodeSvc;
-use restate_core::network::{ConnectionManager, ProtocolError, TransportConnect};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
 use restate_core::protobuf::node_ctl_svc::{
     ClusterHealthResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest, GetMetadataResponse,
@@ -33,12 +32,10 @@ use restate_types::config::Configuration;
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
-use restate_types::protobuf::node::Message;
 use restate_types::replication::ReplicationProperty;
 use restate_types::storage::StorageCodec;
-use tokio_stream::StreamExt;
-use tonic::{Request, Response, Status, Streaming};
-use tracing::debug;
+
+use crate::{ClusterConfiguration, provision_cluster_metadata};
 
 pub struct NodeCtlSvcHandler {
     task_center: task_center::Handle,
@@ -281,48 +278,5 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         };
 
         Ok(Response::new(cluster_state_response))
-    }
-}
-
-pub struct CoreNodeSvcHandler<T> {
-    connections: ConnectionManager<T>,
-}
-
-impl<T> CoreNodeSvcHandler<T> {
-    pub fn new(connections: ConnectionManager<T>) -> Self {
-        Self { connections }
-    }
-}
-
-#[async_trait::async_trait]
-impl<T> CoreNodeSvc for CoreNodeSvcHandler<T>
-where
-    T: TransportConnect,
-{
-    type CreateConnectionStream = BoxStream<'static, Result<Message, Status>>;
-
-    // Status codes returned in different scenarios:
-    // - DeadlineExceeded: No hello received within deadline
-    // - InvalidArgument: Header should always be set or any other missing required part of the
-    //                    handshake. This also happens if the client sent wrong message on handshake.
-    // - AlreadyExists: A node with a newer generation has been observed already
-    // - Cancelled: received an error from the client, or the client has dropped the stream during
-    //              handshake.
-    // - Unavailable: This node is shutting down
-    async fn create_connection(
-        &self,
-        request: Request<Streaming<Message>>,
-    ) -> Result<Response<Self::CreateConnectionStream>, Status> {
-        let incoming = request.into_inner();
-        let transformed = incoming.map(|x| x.map_err(ProtocolError::from));
-        let output_stream = self
-            .connections
-            .accept_incoming_connection(transformed)
-            .await?;
-
-        // For uniformity with outbound connections, we map all responses to Ok, we never rely on
-        // sending tonic::Status errors explicitly. We use ConnectionControl frames to communicate
-        // errors and/or drop the stream when necessary.
-        Ok(Response::new(Box::pin(output_stream.map(Ok))))
     }
 }
