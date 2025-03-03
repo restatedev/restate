@@ -17,7 +17,8 @@ use anyhow::Context;
 use assert2::let_assert;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
-use metrics::histogram;
+use metrics::{SharedString, counter, gauge, histogram};
+use restate_bifrost::loglet::FindTailOptions;
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{Span, debug, error, info, instrument, trace, warn};
@@ -65,8 +66,10 @@ use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::metric_definitions::{
-    PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION, PP_APPLY_COMMAND_BATCH_SIZE,
-    PP_APPLY_COMMAND_DURATION,
+    PARTITION_APPLY_COMMAND_BATCH_SIZE, PARTITION_APPLY_COMMAND_DURATION, PARTITION_LABEL,
+    PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
+    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_RECORD_READ_COUNT,
+    PARTITION_RPC_QUEUE_OUTSTANDING_REQUESTS, PARTITION_RPC_QUEUE_UTILIZATION_PERCENT,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
@@ -328,7 +331,10 @@ where
         // propagate errors and let the PPM handle error retries
         let current_tail = self
             .bifrost
-            .find_tail(LogId::from(self.partition_id))
+            .find_tail(
+                LogId::from(self.partition_id),
+                FindTailOptions::ConsistentRead,
+            )
             .await?;
 
         debug!(
@@ -342,6 +348,7 @@ where
                     %last_applied_lsn,
                     "Processor has caught up with the log tail."
                 );
+                self.status.target_tail_lsn = None;
                 self.status.replay_status = ReplayStatus::Active;
             }
         } else {
@@ -367,8 +374,20 @@ where
             );
         }
 
+        // Telemetry setup
+        let partition_id_str = SharedString::from(self.partition_id.to_string());
+        let apply_command_latency = histogram!(PARTITION_APPLY_COMMAND_DURATION, PARTITION_LABEL => partition_id_str.clone());
+        let record_actions_latency = histogram!(PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION);
+        let record_write_to_read_latencty = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => partition_id_str.clone());
+        let command_batch_size = histogram!(PARTITION_APPLY_COMMAND_BATCH_SIZE, PARTITION_LABEL => partition_id_str.clone());
+        let command_read_count =
+            counter!(PARTITION_RECORD_READ_COUNT, PARTITION_LABEL => partition_id_str.clone());
+        let rpc_queue_utilization = gauge!(PARTITION_RPC_QUEUE_UTILIZATION_PERCENT, PARTITION_LABEL => partition_id_str.clone());
+        let rpc_queue_len =
+            gauge!(PARTITION_RPC_QUEUE_OUTSTANDING_REQUESTS, PARTITION_LABEL => partition_id_str);
         // Start reading after the last applied lsn
         let key_query = KeyFilter::Within(self.partition_key_range.clone());
+
         let mut record_stream = self
             .bifrost
             .create_reader(
@@ -382,6 +401,9 @@ where
                     trace!(?entry, "Read entry");
                     let lsn = entry.sequence_number();
                     if entry.is_data_record() {
+                        entry.as_record().inspect(|record| {
+                            record_write_to_read_latencty.record(record.created_at().elapsed());
+                        });
                         entry
                             .try_decode_arc::<Envelope>()
                             .map(|envelope| Ok((lsn, envelope?)))
@@ -411,20 +433,18 @@ where
             tokio::time::interval(Duration::from_millis(500 + rand::random::<u64>() % 524));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let partition_id_str = self.partition_id.to_string();
-        // Telemetry setup
-        let apply_command_latency =
-            histogram!(PP_APPLY_COMMAND_DURATION, PARTITION_LABEL => partition_id_str.clone());
-        let record_actions_latency = histogram!(PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION);
-        let command_batch_size =
-            histogram!(PP_APPLY_COMMAND_BATCH_SIZE, PARTITION_LABEL => partition_id_str.clone());
-
         let mut action_collector = ActionCollector::default();
         let mut command_buffer = Vec::with_capacity(self.max_command_batch_size);
 
         info!("Partition {} started", self.partition_id);
 
         loop {
+            let utilization =
+                (self.rpc_rx.len() as f64 * 100.0) / self.rpc_rx.max_capacity() as f64;
+
+            rpc_queue_utilization.set(utilization);
+            rpc_queue_len.set(self.rpc_rx.len() as f64);
+
             tokio::select! {
                 Some(command) = self.control_rx.recv() => {
                     if let Err(err) = self.on_command(command).await {
@@ -444,6 +464,7 @@ where
                     // check that reading has succeeded
                     operation?;
 
+                    command_read_count.increment(u64::try_from(command_buffer.len()).expect("usize fit in u64"));
                     command_batch_size.record(command_buffer.len() as f64);
 
                     let mut transaction = partition_store.transaction();
@@ -781,6 +802,7 @@ where
             {
                 // finished catching up
                 self.status.replay_status = ReplayStatus::Active;
+                self.status.target_tail_lsn = None;
             }
             _ => {}
         };

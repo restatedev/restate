@@ -12,6 +12,7 @@ use bytes::{Bytes, BytesMut};
 use tonic::{Request, Response, Status, async_trait};
 use tracing::info;
 
+use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BiforstError};
 use restate_core::{Metadata, MetadataWriter};
 use restate_types::identifiers::PartitionId;
@@ -279,7 +280,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             })?;
 
         let tail_state = writable_loglet
-            .find_tail()
+            .find_tail(FindTailOptions::default())
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 

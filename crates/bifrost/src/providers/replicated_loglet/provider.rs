@@ -35,7 +35,7 @@ use super::rpc_routers::{LogServersRpc, SequencersRpc};
 use crate::Error;
 use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
-use crate::providers::replicated_loglet::loglet::FindTailOptions;
+use crate::providers::replicated_loglet::loglet::FindTailFlags;
 use crate::providers::replicated_loglet::tasks::PeriodicTailChecker;
 
 pub struct Factory<T> {
@@ -193,10 +193,10 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                             .replicated_loglet
                             .sequencer_inactivity_timeout
                             .into(),
-                        FindTailOptions::ForceSealCheck,
+                        FindTailFlags::ForceSealCheck,
                     )
                 } else {
-                    (Duration::from_secs(2), FindTailOptions::Default)
+                    (Duration::from_secs(2), FindTailFlags::Default)
                 };
                 let _ = TaskCenter::spawn(
                     TaskKind::BifrostBackgroundLowPriority,
