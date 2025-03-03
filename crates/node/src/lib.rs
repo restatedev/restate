@@ -19,10 +19,6 @@ use prost_dto::IntoProst;
 use std::num::NonZeroU16;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::cluster_marker::ClusterValidationError;
-use crate::init::NodeInit;
-use crate::network_server::NetworkServer;
-use crate::roles::{AdminRole, BaseRole, IngressRole, WorkerRole};
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{
@@ -39,6 +35,7 @@ use restate_log_server::LogServerService;
 use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
 };
+use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::live::Live;
 #[cfg(feature = "replicated-loglet")]
@@ -54,6 +51,11 @@ use restate_types::protobuf::common::{
 };
 use restate_types::storage::StorageEncode;
 use restate_types::{GenerationalNodeId, Version, Versioned};
+
+use crate::cluster_marker::ClusterValidationError;
+use crate::init::NodeInit;
+use crate::network_server::NetworkServer;
+use crate::roles::{AdminRole, BaseRole, IngressRole, WorkerRole};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -132,10 +134,14 @@ pub struct Node {
     log_server: Option<LogServerService>,
     networking: Networking<GrpcConnector>,
     is_provisioned: bool,
+    prometheus: Prometheus,
 }
 
 impl Node {
-    pub async fn create(updateable_config: Live<Configuration>) -> Result<Self, BuildError> {
+    pub async fn create(
+        updateable_config: Live<Configuration>,
+        prometheus: Prometheus,
+    ) -> Result<Self, BuildError> {
         let mut server_builder = NetworkServerBuilder::default();
         let config = updateable_config.pinned();
 
@@ -327,6 +333,7 @@ impl Node {
             server_builder,
             networking,
             is_provisioned,
+            prometheus,
         })
     }
 
@@ -349,6 +356,7 @@ impl Node {
                     self.server_builder,
                     common_options,
                     metadata_store_client,
+                    self.prometheus,
                 )
                 .await?;
                 Ok(())
