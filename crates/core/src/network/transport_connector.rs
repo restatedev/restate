@@ -10,17 +10,13 @@
 
 use std::future::Future;
 
-use futures::{Stream, StreamExt};
-use tracing::trace;
+use futures::Stream;
 
 use restate_types::GenerationalNodeId;
-use restate_types::config::NetworkingOptions;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::node::Message;
 
-use super::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use super::{NetworkError, ProtocolError};
-use crate::network::net_util::create_tonic_channel;
 
 pub trait TransportConnect: Send + Sync + 'static {
     fn connect(
@@ -34,40 +30,6 @@ pub trait TransportConnect: Send + Sync + 'static {
             NetworkError,
         >,
     > + Send;
-}
-
-pub struct GrpcConnector {
-    networking_options: NetworkingOptions,
-}
-
-impl GrpcConnector {
-    pub fn new(networking_options: NetworkingOptions) -> Self {
-        Self { networking_options }
-    }
-}
-
-impl TransportConnect for GrpcConnector {
-    async fn connect(
-        &self,
-        node_id: GenerationalNodeId,
-        nodes_config: &NodesConfiguration,
-        output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
-    ) -> Result<
-        impl Stream<Item = Result<Message, ProtocolError>> + Send + Unpin + 'static,
-        NetworkError,
-    > {
-        let address = nodes_config.find_node_by_id(node_id)?.address.clone();
-
-        trace!("Attempting to connect to node {} at {}", node_id, address);
-        let channel = create_tonic_channel(address, &self.networking_options);
-
-        // Establish the connection
-        let mut client = CoreNodeSvcClient::new(channel)
-            .max_decoding_message_size(32 * 1024 * 1024)
-            .max_encoding_message_size(32 * 1024 * 1024);
-        let incoming = client.create_connection(output_stream).await?.into_inner();
-        Ok(incoming.map(|x| x.map_err(ProtocolError::from)))
-    }
 }
 
 #[cfg(any(test, feature = "test-util"))]
