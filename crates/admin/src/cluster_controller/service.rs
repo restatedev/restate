@@ -627,13 +627,17 @@ enum ClusterConfigurationUpdateError {
     MissingPartitionTable,
 }
 
-#[derive(Clone)]
-struct PartitionProcessorManagerClient<N>
-where
-    N: Clone,
-{
+struct PartitionProcessorManagerClient<N> {
     network_sender: N,
     create_snapshot_router: RpcRouter<CreateSnapshotRequest>,
+}
+impl<N: Clone> Clone for PartitionProcessorManagerClient<N> {
+    fn clone(&self) -> Self {
+        Self {
+            network_sender: self.network_sender.clone(),
+            create_snapshot_router: self.create_snapshot_router.clone(),
+        }
+    }
 }
 
 impl<N> PartitionProcessorManagerClient<N>
