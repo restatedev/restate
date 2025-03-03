@@ -67,6 +67,28 @@ COPY --from=builder /restate/LICENSE /LICENSE
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
 # useful for health checks
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y curl openssh-server iptables && rm -rf /var/lib/apt/lists/*
+RUN curl -L -o /usr/sbin/zinit https://github.com/threefoldtech/zinit/releases/download/v0.2.14/zinit && \
+    chmod +x /usr/sbin/zinit && \
+    mkdir /etc/zinit
+RUN cat <<EOF > /etc/zinit/sshd.yaml
+exec: |
+  sh -c "
+    ssh-keygen -A
+    mkdir -p /run/sshd
+    mkdir -p /root/.ssh
+    echo "" > /root/.ssh
+
+    for username in \${SSH_USERS}; do
+        curl https://github.com/\${username}.keys >> /root/.ssh/authorized_keys
+    done
+
+    exec /usr/sbin/sshd -D
+  "
+EOF
+RUN cat <<EOF > /etc/zinit/restate.yaml
+exec: /usr/local/bin/restate-server
+log: stdout
+EOF
 WORKDIR /
-ENTRYPOINT ["/usr/local/bin/restate-server"]
+ENTRYPOINT ["/usr/sbin/zinit", "init", "--container"]
