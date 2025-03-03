@@ -12,13 +12,10 @@ use std::fmt::Write;
 
 use axum::extract::State;
 use metrics_exporter_prometheus::formatting;
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use metrics_util::MetricKindMask;
 use rocksdb::statistics::{Histogram, Ticker};
 
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_rocksdb::{CfName, RocksDbManager};
-use restate_types::config::CommonOptions;
 
 use crate::network_server::prometheus_helpers::{
     MetricUnit, format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
@@ -176,32 +173,15 @@ const ROCKSDB_CF_PROPERTIES: &[(&str, MetricUnit)] = &[
     ("rocksdb.num-files-at-level6", MetricUnit::Count),
 ];
 
-pub(crate) fn install_global_prometheus_recorder(opts: &CommonOptions) -> PrometheusHandle {
-    let builder = PrometheusBuilder::default()
-        // Remove a metric from registry if it was not updated for that duration
-        .idle_timeout(
-            MetricKindMask::HISTOGRAM,
-            opts.histogram_inactivity_timeout.map(Into::into),
-        );
-    let recorder = builder.build_recorder();
-    let prometheus_handle = recorder.handle();
-
-    // We do not expect this to fail except due to atomic CAS failure
-    // which should never happen in practice.
-    metrics::set_global_recorder(recorder).expect("no global metrics recorder should be installed");
-    prometheus_handle
-}
-
 // -- Direct HTTP Handlers --
 pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String {
     let default_cf = CfName::new("default");
     let mut out = String::new();
 
-    // Default tokio runtime metrics
-    state.task_center.submit_metrics();
-
     // Response content type is plain/text and that's expected.
-    if let Some(prometheus_handle) = state.prometheus_handle {
+    if let Some(prometheus_handle) = state.prometheus_handle.handle() {
+        // Default tokio runtime metrics
+        state.task_center.submit_metrics();
         // Internal system metrics
         let _ = write!(&mut out, "{}", prometheus_handle.render());
     }

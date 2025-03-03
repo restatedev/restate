@@ -17,6 +17,12 @@ service_per_crate = []
 
 options_schema = ["dep:schemars"]
 rt-tokio = ["dep:tokio"]
+prometheus = [
+  "dep:tokio",
+  "dep:metrics",
+  "dep:metrics-exporter-prometheus",
+  "dep:metrics-util",
+]
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
@@ -24,14 +30,17 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 restate-types = { workspace = true }
 
 arc-swap = { workspace = true }
-console-subscriber = { version = "0.4.1", features = ["parking_lot"], optional = true }
+console-subscriber = { version = "0.4.1", features = [ "parking_lot", ], optional = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
+metrics = { workspace = true, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
+metrics-util = { workspace = true, optional = true }
 nu-ansi-term = "0.50.1"
 opentelemetry = { workspace = true }
-opentelemetry-contrib = { workspace = true, features = ["jaeger_json_exporter", "rt-tokio"] }
+opentelemetry-contrib = { workspace = true, features = [ "jaeger_json_exporter", "rt-tokio", ] }
 opentelemetry-otlp = { workspace = true, features = ["tls", "tls-roots"] }
-opentelemetry-semantic-conventions = {  workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }

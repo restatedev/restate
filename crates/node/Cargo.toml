@@ -30,7 +30,7 @@ restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
-restate-tracing-instrumentation = { workspace = true }
+restate-tracing-instrumentation = { workspace = true, features = ["prometheus"] }
 restate-types = { workspace = true, features = ["clap"] }
 restate-worker = { workspace = true }
 
@@ -46,7 +46,6 @@ futures = { workspace = true }
 http = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
-metrics-util = { workspace = true }
 prost-dto = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }

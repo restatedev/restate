@@ -8,14 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
+mod connector;
+mod svc_handler;
 
-use restate_core::task_center;
-use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
+pub use connector::GrpcConnector;
+pub use svc_handler::CoreNodeSvcHandler;
 
-#[derive(Clone, derive_builder::Builder)]
-pub struct NodeCtrlHandlerState {
-    #[builder(default)]
-    pub prometheus_handle: Arc<Prometheus>,
-    pub task_center: task_center::Handle,
-}
+/// The maximum size for a grpc message for core networking service.
+/// This impacts the buffer limit for prost codec.
+const MAX_MESSAGE_SIZE: usize = 32 * 1024 * 1024;

@@ -21,6 +21,7 @@ use pprof::flamegraph::Options;
 use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind, task_center};
 use restate_node::Node;
 use restate_rocksdb::RocksDbManager;
+use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::{
     CommonOptionsBuilder, Configuration, ConfigurationBuilder, WorkerOptionsBuilder,
 };
@@ -100,14 +101,16 @@ pub fn spawn_restate(config: Configuration) -> task_center::Handle {
         .build()
         .expect("task_center builds")
         .into_handle();
+    let mut prometheus = Prometheus::install(&config.common);
     restate_types::config::set_current_config(config.clone());
     let updateable_config = Configuration::updateable();
 
     tc.block_on(async {
         RocksDbManager::init(Constant::new(config.common));
+        prometheus.start_upkeep_task();
 
         TaskCenter::spawn(TaskKind::SystemBoot, "restate", async move {
-            let node = Node::create(updateable_config)
+            let node = Node::create(updateable_config, prometheus)
                 .await
                 .expect("Restate node must build");
             node.start().await
