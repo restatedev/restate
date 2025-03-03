@@ -17,6 +17,7 @@ restate-core = { workspace = true }
 restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-server = { workspace = true }
+restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio", "prometheus"] }
 restate-types = { workspace = true, features = ["clap"] }
 
 anyhow = { workspace = true }
