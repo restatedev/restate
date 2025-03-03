@@ -175,7 +175,7 @@ impl Node {
         let metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
         let mut router_builder = MessageRouterBuilder::default();
-        let networking = Networking::new(metadata.clone(), config.networking.clone());
+        let networking = Networking::with_grpc_connector();
         metadata_manager.register_in_message_router(&mut router_builder);
         let partition_routing_refresher = PartitionRoutingRefresher::default();
 
