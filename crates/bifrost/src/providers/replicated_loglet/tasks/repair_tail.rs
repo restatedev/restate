@@ -13,7 +13,7 @@ use tokio::time::Instant;
 use tracing::{Instrument, debug, error, info, warn};
 
 use restate_core::network::{Networking, TransportConnect};
-use restate_core::{ShutdownError, TaskCenterFutureExt};
+use restate_core::{Metadata, ShutdownError, TaskCenterFutureExt};
 use restate_types::logs::{KeyFilter, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetDigest, LogServerRequestHeader};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
@@ -116,6 +116,7 @@ impl<T: TransportConnect> RepairTail<T> {
     }
 
     pub async fn run(mut self) -> RepairTailResult {
+        let metadata = Metadata::current();
         if self.digests.is_finished() {
             debug!(
                 loglet_id = %self.my_params.loglet_id,
@@ -136,7 +137,7 @@ impl<T: TransportConnect> RepairTail<T> {
         let effective_nodeset = self
             .my_params
             .nodeset
-            .to_effective(&self.networking.metadata().nodes_config_ref());
+            .to_effective(&metadata.nodes_config_ref());
 
         // Dispatch GetDigest to all readable nodes
         for node in effective_nodeset.iter() {
@@ -176,10 +177,7 @@ impl<T: TransportConnect> RepairTail<T> {
                 &self.known_global_tail,
             );
             debug!(loglet_id = %self.my_params.loglet_id, "Received digest from {}", peer_node);
-            if self
-                .digests
-                .advance(&self.networking.metadata().nodes_config_ref())
-            {
+            if self.digests.advance(&metadata.nodes_config_ref()) {
                 break;
                 // can we start repair, but continue to accept digest responses as repair is on-going.
             }
@@ -211,10 +209,7 @@ impl<T: TransportConnect> RepairTail<T> {
         }
 
         // No enough nodes responded to be able to repair
-        if !self
-            .digests
-            .can_repair(&self.networking.metadata().nodes_config_ref())
-        {
+        if !self.digests.can_repair(&metadata.nodes_config_ref()) {
             error!(
                 loglet_id = %self.my_params.loglet_id,
                 start_offset = %self.digests.start_offset(),
@@ -233,10 +228,7 @@ impl<T: TransportConnect> RepairTail<T> {
         // we have enough nodes to form write quorum, but we cannot repair because no nodes have
         // reported any copies for the oldest record within the repair range.
         // couldn't find any node with copies
-        if !self
-            .digests
-            .advance(&self.networking.metadata().nodes_config_ref())
-        {
+        if !self.digests.advance(&metadata.nodes_config_ref()) {
             error!(
                 loglet_id = %self.my_params.loglet_id,
                 start_offset = %self.digests.start_offset(),
@@ -303,7 +295,7 @@ impl<T: TransportConnect> RepairTail<T> {
                         digest_message.into_body(),
                         &self.known_global_tail,
                     );
-                    self.digests.advance(&self.networking.metadata().nodes_config_ref());
+                    self.digests.advance(&metadata.nodes_config_ref());
 
                 }
                     // we have no more work to do. We'll likely fail.

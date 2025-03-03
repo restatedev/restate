@@ -57,7 +57,6 @@ impl<T: TransportConnect> Factory<T> {
         // Handling Sequencer(s) incoming requests
         let request_pump = RequestPump::new(
             &Configuration::pinned().bifrost.replicated_loglet,
-            networking.metadata().clone(),
             router_builder,
         );
 
@@ -129,9 +128,6 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
         }
     }
 
-    pub(crate) fn networking(&self) -> &Networking<T> {
-        &self.networking
-    }
     /// Gets a loglet if it's already have been activated
     pub(crate) fn get_active_loglet(
         &self,

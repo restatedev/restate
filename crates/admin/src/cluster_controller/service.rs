@@ -628,10 +628,7 @@ enum ClusterConfigurationUpdateError {
 }
 
 #[derive(Clone)]
-struct PartitionProcessorManagerClient<N>
-where
-    N: Clone,
-{
+struct PartitionProcessorManagerClient<N> {
     network_sender: N,
     create_snapshot_router: RpcRouter<CreateSnapshotRequest>,
 }

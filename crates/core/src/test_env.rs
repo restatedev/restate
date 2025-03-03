@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use futures::Stream;
 
-use restate_types::config::NetworkingOptions;
 use restate_types::locality::NodeLocation;
 use restate_types::logs::metadata::{ProviderKind, bootstrap_logs_metadata};
 use restate_types::metadata_store::keys::{
@@ -33,8 +32,8 @@ use restate_types::{GenerationalNodeId, Version};
 use crate::TaskCenter;
 use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
-    ConnectionManager, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder,
-    NetworkError, Networking, ProtocolError, TransportConnect,
+    FailingConnector, Incoming, MessageHandler, MessageRouterBuilder, NetworkError, Networking,
+    ProtocolError, TransportConnect,
 };
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{MetadataBuilder, TaskId, spawn_metadata_manager};
@@ -54,37 +53,20 @@ pub struct TestCoreEnvBuilder<T> {
 
 impl TestCoreEnvBuilder<FailingConnector> {
     pub fn with_incoming_only_connector() -> Self {
-        let metadata_builder = MetadataBuilder::default();
-        let net_opts = NetworkingOptions::default();
-        let connection_manager =
-            ConnectionManager::new_incoming_only(metadata_builder.to_metadata());
-        let networking = Networking::with_connection_manager(
-            metadata_builder.to_metadata(),
-            net_opts,
-            connection_manager,
-        );
-
-        TestCoreEnvBuilder::with_networking(networking, metadata_builder)
+        let networking = Networking::new_incoming_only();
+        TestCoreEnvBuilder::with_networking(networking)
     }
 }
 impl<T: TransportConnect> TestCoreEnvBuilder<T> {
-    pub fn with_transport_connector(connector: Arc<T>) -> TestCoreEnvBuilder<T> {
-        let metadata_builder = MetadataBuilder::default();
-        let net_opts = NetworkingOptions::default();
-        let connection_manager =
-            ConnectionManager::new(metadata_builder.to_metadata(), connector, net_opts.clone());
-        let networking = Networking::with_connection_manager(
-            metadata_builder.to_metadata(),
-            net_opts,
-            connection_manager,
-        );
-
-        TestCoreEnvBuilder::with_networking(networking, metadata_builder)
+    pub fn with_transport_connector(connector: T) -> TestCoreEnvBuilder<T> {
+        let networking = Networking::with_connector(connector);
+        TestCoreEnvBuilder::with_networking(networking)
     }
 
-    pub fn with_networking(networking: Networking<T>, metadata_builder: MetadataBuilder) -> Self {
+    pub fn with_networking(networking: Networking<T>) -> Self {
         let my_node_id = GenerationalNodeId::new(1, 1);
         let metadata_store_client = MetadataStoreClient::new_in_memory();
+        let metadata_builder = MetadataBuilder::default();
         let metadata = metadata_builder.to_metadata();
         let metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());

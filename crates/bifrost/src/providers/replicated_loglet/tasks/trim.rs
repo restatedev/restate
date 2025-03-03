@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_core::TaskCenterFutureExt;
+use restate_core::{Metadata, TaskCenterFutureExt};
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, debug, instrument, trace, warn};
 
@@ -74,11 +74,12 @@ impl<'a> TrimTask<'a> {
         trim_point: LogletOffset,
         networking: Networking<T>,
     ) -> Result<(), OperationError> {
+        let metadata = Metadata::current();
         // Use the entire nodeset except for StorageState::Disabled.
         let effective_nodeset = self
             .my_params
             .nodeset
-            .to_effective(&networking.metadata().nodes_config_ref());
+            .to_effective(&metadata.nodes_config_ref());
         // caller might have already done this, but it's here for resilience against user error.
         let trim_point = trim_point.min(self.known_global_tail.latest_offset().prev_unchecked());
         if trim_point == LogletOffset::INVALID {
@@ -94,7 +95,7 @@ impl<'a> TrimTask<'a> {
 
         let mut nodeset_checker = NodeSetChecker::<bool>::new(
             &effective_nodeset,
-            &networking.metadata().nodes_config_ref(),
+            &metadata.nodes_config_ref(),
             &self.my_params.replication,
         );
 

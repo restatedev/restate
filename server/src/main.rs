@@ -17,11 +17,10 @@ use std::time::Duration;
 
 use clap::Parser;
 use codederror::CodedError;
-use restate_core::TaskCenter;
-use restate_types::nodes_config::Role;
 use tracing::error;
 use tracing::{info, trace, warn};
 
+use restate_core::TaskCenter;
 use restate_core::TaskCenterBuilder;
 use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
@@ -29,10 +28,12 @@ use restate_rocksdb::RocksDbManager;
 use restate_server::build_info;
 use restate_tracing_instrumentation::TracingGuard;
 use restate_tracing_instrumentation::init_tracing_and_logging;
+use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::art::render_restate_logo;
 use restate_types::config::CommonOptionCliOverride;
 use restate_types::config::{Configuration, PRODUCTION_PROFILE_DEFAULTS};
 use restate_types::config_loader::ConfigLoaderBuilder;
+use restate_types::nodes_config::Role;
 
 mod signal;
 mod telemetry;
@@ -116,6 +117,10 @@ fn main() {
         println!("{}", config.dump().expect("config is toml serializable"));
         std::process::exit(0);
     }
+
+    // Install the recorder as early as possible
+    let mut prometheus = Prometheus::install(&config.common);
+
     if std::io::stdout().is_terminal() {
         let mut stdout = std::io::stdout().lock();
         let _ = writeln!(
@@ -180,6 +185,8 @@ fn main() {
             let tracing_guard =
                 init_tracing_and_logging(&Configuration::pinned().common, "restate-server")
                     .expect("failed to configure logging and tracing!");
+            // Starts prometheus periodic upkeep tasks
+            prometheus.start_upkeep_task();
 
             // Log panics as tracing errors if possible
             let prev_hook = std::panic::take_hook();
@@ -213,7 +220,7 @@ fn main() {
             let telemetry = telemetry::Telemetry::create(&Configuration::pinned().common);
             telemetry.start();
 
-            let node = Node::create(Configuration::updateable()).await;
+            let node = Node::create(Configuration::updateable(), prometheus).await;
             if let Err(err) = node {
                 handle_error(err);
             }

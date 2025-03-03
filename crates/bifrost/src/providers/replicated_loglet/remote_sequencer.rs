@@ -577,7 +577,7 @@ mod test {
     async fn setup<F, O>(sequencer: SequencerMockHandler, test: F)
     where
         O: Future<Output = ()>,
-        F: FnOnce(RemoteSequencer<MockConnector>) -> O,
+        F: FnOnce(RemoteSequencer<Arc<MockConnector>>) -> O,
     {
         let (connector, _receiver) = MockConnector::new(100);
         let connector = Arc::new(connector);

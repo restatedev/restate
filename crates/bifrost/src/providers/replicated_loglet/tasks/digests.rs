@@ -16,7 +16,7 @@ use tracing::{debug, trace, warn};
 
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{Networking, TransportConnect};
-use restate_core::{ShutdownError, TaskCenterFutureExt, cancellation_watcher};
+use restate_core::{Metadata, ShutdownError, TaskCenterFutureExt, cancellation_watcher};
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
     Digest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
@@ -172,6 +172,7 @@ impl Digests {
         networking: &Networking<T>,
         store_rpc: &RpcRouter<Store>,
     ) -> Result<(), OperationError> {
+        let metadata = Metadata::current();
         let offset = entry.sequence_number();
         if offset < self.start_offset {
             // Ignore this record. We have already moved past this offset.
@@ -202,7 +203,7 @@ impl Digests {
             .select_fixups(
                 known_copies,
                 &mut rng(),
-                &networking.metadata().nodes_config_ref(),
+                &metadata.nodes_config_ref(),
                 &NodeSet::default(),
             )
             // what do we do if we can't generate a spread? nodes are in data-loss or readonly, or
@@ -224,7 +225,7 @@ impl Digests {
 
         let mut replication_checker = NodeSetChecker::new(
             self.spread_selector.nodeset(),
-            &networking.metadata().nodes_config_ref(),
+            &metadata.nodes_config_ref(),
             self.spread_selector.replication_property(),
         );
         // record is already replicated on those nodes

@@ -12,9 +12,9 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tracing::{Instrument, debug, instrument, trace, warn};
 
-use restate_core::TaskCenterFutureExt;
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Incoming, Networking, TransportConnect};
+use restate_core::{Metadata, TaskCenterFutureExt};
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
@@ -51,6 +51,7 @@ impl SealTask {
         networking: &Networking<T>,
     ) -> Result<LogletOffset, ReplicatedLogletError> {
         let start = Instant::now();
+        let metadata = Metadata::current();
         debug!(
             loglet_id = %my_params.loglet_id,
             is_sealed = known_global_tail.is_sealed(),
@@ -59,7 +60,7 @@ impl SealTask {
         // If all nodes in the nodeset is in "provisioning", we can cannot seal.
         if my_params
             .nodeset
-            .all_provisioning(&networking.metadata().nodes_config_ref())
+            .all_provisioning(&metadata.nodes_config_ref())
         {
             warn!(
                 loglet_id = %my_params.loglet_id,
@@ -69,13 +70,11 @@ impl SealTask {
             return Err(ReplicatedLogletError::SealFailed(Default::default()));
         }
         // Use the entire nodeset except for StorageState::Disabled.
-        let effective_nodeset = my_params
-            .nodeset
-            .to_effective(&networking.metadata().nodes_config_ref());
+        let effective_nodeset = my_params.nodeset.to_effective(&metadata.nodes_config_ref());
 
         let mut nodeset_checker = NodeSetChecker::<NodeSealStatus>::new(
             &effective_nodeset,
-            &networking.metadata().nodes_config_ref(),
+            &metadata.nodes_config_ref(),
             &my_params.replication,
         );
 

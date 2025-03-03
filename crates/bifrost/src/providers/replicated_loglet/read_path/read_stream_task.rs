@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tracing::{info, trace};
 
 use restate_core::network::{NetworkError, Networking, TransportConnect};
-use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, my_node_id};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber};
@@ -136,8 +136,7 @@ impl ReadStreamTask {
         mut self,
         networking: Networking<T>,
     ) -> Result<(), OperationError> {
-        let mut nodes_config = networking.metadata().updateable_nodes_config();
-        let my_node_id = networking.my_node_id();
+        let mut nodes_config = Metadata::with_current(|m| m.updateable_nodes_config());
         let records_rpc_timeout = *Configuration::pinned()
             .bifrost
             .replicated_loglet
@@ -307,7 +306,7 @@ impl ReadStreamTask {
             let effective_nodeset =
                 EffectiveNodeSet::new(self.my_params.nodeset.clone(), nodes_config.live_load());
             // Order the nodeset such that our node is the first one to attempt
-            let mut mutable_effective_nodeset = effective_nodeset.shuffle_for_reads(my_node_id);
+            let mut mutable_effective_nodeset = effective_nodeset.shuffle_for_reads(my_node_id());
 
             if mutable_effective_nodeset.is_empty() {
                 // if nodeset is all disabled, no readable nodes. impossible situation to resolve,

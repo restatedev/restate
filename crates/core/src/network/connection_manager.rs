@@ -21,7 +21,7 @@ use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{Instrument, Span, debug, info, instrument, trace, warn};
 
-use restate_types::config::NetworkingOptions;
+use restate_types::config::Configuration;
 use restate_types::net::codec::MessageBodyExt;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
@@ -43,7 +43,7 @@ use crate::network::metric_definitions::{
     NETWORK_MESSAGE_PROCESSING_DURATION, NETWORK_MESSAGE_RECEIVED, NETWORK_MESSAGE_RECEIVED_BYTES,
 };
 use crate::network::{Incoming, PeerMetadataVersion};
-use crate::{Metadata, TaskCenter, TaskContext, TaskId, TaskKind};
+use crate::{Metadata, TaskCenter, TaskContext, TaskId, TaskKind, my_node_id};
 
 #[derive(Copy, Clone, PartialOrd, PartialEq, Default)]
 struct GenStatus {
@@ -131,56 +131,12 @@ impl Default for ConnectionManagerInner {
     }
 }
 
-pub struct ConnectionManager<T> {
+#[derive(Clone, Default)]
+pub struct ConnectionManager {
     inner: Arc<Mutex<ConnectionManagerInner>>,
-    networking_options: NetworkingOptions,
-    transport_connector: Arc<T>,
-    metadata: Metadata,
 }
 
-impl<T> Clone for ConnectionManager<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            networking_options: self.networking_options.clone(),
-            transport_connector: self.transport_connector.clone(),
-            metadata: self.metadata.clone(),
-        }
-    }
-}
-
-#[cfg(any(test, feature = "test-util"))]
-/// used for testing. Accepts connections but can't establish new connections
-impl ConnectionManager<super::FailingConnector> {
-    pub fn new_incoming_only(metadata: Metadata) -> Self {
-        use restate_types::config::Configuration;
-        let inner = Arc::new(Mutex::new(ConnectionManagerInner::default()));
-
-        Self {
-            metadata,
-            inner,
-            transport_connector: Arc::new(super::FailingConnector::default()),
-            networking_options: Configuration::pinned().networking.clone(),
-        }
-    }
-}
-
-impl<T: TransportConnect> ConnectionManager<T> {
-    /// Creates the connection manager.
-    pub fn new(
-        metadata: Metadata,
-        transport_connector: Arc<T>,
-        networking_options: NetworkingOptions,
-    ) -> Self {
-        let inner = Arc::new(Mutex::new(ConnectionManagerInner::default()));
-
-        Self {
-            metadata,
-            inner,
-            transport_connector,
-            networking_options,
-        }
-    }
+impl ConnectionManager {
     /// Updates the message router. Note that this only impacts new connections.
     /// In general, this should be called once on application start after
     /// initializing all message handlers.
@@ -196,6 +152,7 @@ impl<T: TransportConnect> ConnectionManager<T> {
     where
         S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
     {
+        let metadata = Metadata::current();
         // Perform the handshake inline before creating the reactor. This allows
         // us to naturally push-back on stream creation by piggybacking on the
         // concurrency limit of the server + the handshake timeout.
@@ -220,11 +177,11 @@ impl<T: TransportConnect> ConnectionManager<T> {
         debug!("Accepting incoming connection");
         let (header, hello) = wait_for_hello(
             &mut incoming,
-            self.networking_options.handshake_timeout.into(),
+            Configuration::pinned().networking.handshake_timeout.into(),
         )
         .await?;
-        let nodes_config = self.metadata.nodes_config_ref();
-        let my_node_id = self.metadata.my_node_id();
+        let nodes_config = metadata.nodes_config_ref();
+        let my_node_id = metadata.my_node_id();
         // NodeId **must** be generational at this layer, we may support accepting connections from
         // anonymous nodes in the future. When this happens, this restate-server release will not
         // be compatible with it.
@@ -266,10 +223,14 @@ impl<T: TransportConnect> ConnectionManager<T> {
             selected_protocol_version
         );
 
-        self.verify_node_id(peer_node_id, &header, &nodes_config)?;
+        self.verify_node_id(peer_node_id, &header, &nodes_config, &metadata)?;
 
-        let (tx, output_stream) =
-            mpsc::channel(self.networking_options.outbound_queue_length.into());
+        let (tx, output_stream) = mpsc::channel(
+            Configuration::pinned()
+                .networking
+                .outbound_queue_length
+                .get(),
+        );
         let output_stream = ReceiverStream::new(output_stream);
         // Enqueue the welcome message
         let welcome = Welcome::new(my_node_id, selected_protocol_version);
@@ -298,23 +259,18 @@ impl<T: TransportConnect> ConnectionManager<T> {
         Ok(output_stream)
     }
 
-    /// Always attempts to create a new connection with peer
-    pub async fn enforce_new_connection(
-        &self,
-        node_id: GenerationalNodeId,
-    ) -> Result<WeakConnection, NetworkError> {
-        let connection = self.connect(node_id).await?;
-        Ok(connection.downgrade())
-    }
-
     /// Gets an existing connection or creates a new one if no active connection exists. If
     /// multiple connections already exist, it returns a random one.
-    pub async fn get_or_connect(
+    pub async fn get_or_connect<C>(
         &self,
         node_id: GenerationalNodeId,
-    ) -> Result<Arc<OwnedConnection>, NetworkError> {
+        transport_connector: &C,
+    ) -> Result<Arc<OwnedConnection>, NetworkError>
+    where
+        C: TransportConnect,
+    {
         // fail fast if we are connecting to our previous self
-        if self.metadata.my_node_id().is_same_but_different(&node_id) {
+        if my_node_id().is_same_but_different(&node_id) {
             return Err(NetworkError::NodeIsGone(node_id));
         }
 
@@ -323,7 +279,9 @@ impl<T: TransportConnect> ConnectionManager<T> {
             let guard = self.inner.lock();
             guard.get_random_connection(
                 &node_id,
-                self.networking_options.num_concurrent_connections(),
+                Configuration::pinned()
+                    .networking
+                    .num_concurrent_connections(),
             )
             // lock is dropped.
         };
@@ -349,30 +307,39 @@ impl<T: TransportConnect> ConnectionManager<T> {
             return Err(NetworkError::NodeIsGone(node_id));
         }
         // We have no connection. We attempt to create a new connection.
-        self.connect(node_id).await
+        self.connect(node_id, transport_connector).await
     }
 
-    async fn connect(
+    async fn connect<C>(
         &self,
         node_id: GenerationalNodeId,
-    ) -> Result<Arc<OwnedConnection>, NetworkError> {
-        if node_id == self.metadata.my_node_id() {
+        transport_connector: &C,
+    ) -> Result<Arc<OwnedConnection>, NetworkError>
+    where
+        C: TransportConnect,
+    {
+        let metadata = Metadata::current();
+        if node_id == metadata.my_node_id() {
             return self.connect_loopback();
         }
 
-        let my_node_id = self.metadata.my_node_id();
-        let nodes_config = self.metadata.nodes_config_snapshot();
+        let my_node_id = metadata.my_node_id();
+        let nodes_config = metadata.nodes_config_snapshot();
         let cluster_name = nodes_config.cluster_name().to_owned();
 
-        let (tx, output_stream) =
-            mpsc::channel(self.networking_options.outbound_queue_length.into());
+        let (tx, output_stream) = mpsc::channel(
+            Configuration::pinned()
+                .networking
+                .outbound_queue_length
+                .get(),
+        );
         let output_stream = ReceiverStream::new(output_stream);
         let hello = Hello::new(my_node_id, cluster_name);
 
         // perform handshake.
         let hello = Message::new(
             Header::new(
-                self.metadata.nodes_config_version(),
+                metadata.nodes_config_version(),
                 None,
                 None,
                 None,
@@ -386,14 +353,13 @@ impl<T: TransportConnect> ConnectionManager<T> {
         tx.send(hello).await.expect("Channel accept hello message");
 
         // Establish the connection
-        let mut incoming = self
-            .transport_connector
+        let mut incoming = transport_connector
             .connect(node_id, &nodes_config, output_stream)
             .await?;
         // finish the handshake
         let (_header, welcome) = wait_for_welcome(
             &mut incoming,
-            self.networking_options.handshake_timeout.into(),
+            Configuration::pinned().networking.handshake_timeout.into(),
         )
         .await?;
         let protocol_version = welcome.protocol_version();
@@ -429,9 +395,14 @@ impl<T: TransportConnect> ConnectionManager<T> {
 
     #[instrument(skip_all)]
     fn connect_loopback(&self) -> Result<Arc<OwnedConnection>, NetworkError> {
-        let (tx, rx) = mpsc::channel(self.networking_options.outbound_queue_length.get());
+        let (tx, rx) = mpsc::channel(
+            Configuration::pinned()
+                .networking
+                .outbound_queue_length
+                .get(),
+        );
         let connection = OwnedConnection::new(
-            self.metadata.my_node_id(),
+            my_node_id(),
             restate_types::net::CURRENT_PROTOCOL_VERSION,
             tx,
         );
@@ -445,6 +416,7 @@ impl<T: TransportConnect> ConnectionManager<T> {
         peer_node_id: GenerationalNodeId,
         header: &Header,
         nodes_config: &NodesConfiguration,
+        metadata: &Metadata,
     ) -> Result<(), NetworkError> {
         if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
             // If nodeId is unrecognized and peer is at higher nodes configuration version,
@@ -454,7 +426,7 @@ impl<T: TransportConnect> ConnectionManager<T> {
                 let peer_is_in_the_future = other_nodes_config_version > nodes_config.version();
 
                 if peer_is_in_the_future {
-                    self.metadata.notify_observed_version(
+                    metadata.notify_observed_version(
                         MetadataKind::NodesConfiguration,
                         other_nodes_config_version,
                         None,
@@ -545,16 +517,9 @@ impl<T: TransportConnect> ConnectionManager<T> {
         let task_id = TaskCenter::spawn_child(
             TaskKind::ConnectionReactor,
             "network-connection-reactor",
-            run_reactor(
-                self.inner.clone(),
-                connection.clone(),
-                router,
-                incoming,
-                self.metadata.clone(),
-            )
-            .instrument(span),
+            run_reactor(self.inner.clone(), connection.clone(), router, incoming).instrument(span),
         )?;
-        if peer_node_id != self.metadata.my_node_id() {
+        if peer_node_id != my_node_id() {
             debug!(
                 peer = %peer_node_id,
                 task_id = %task_id,
@@ -581,12 +546,12 @@ async fn run_reactor<S>(
     connection: Arc<OwnedConnection>,
     router: MessageRouter,
     mut incoming: S,
-    metadata: Metadata,
 ) -> anyhow::Result<()>
 where
     S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send,
 {
     let current_task = TaskContext::current();
+    let metadata = Metadata::current();
     Span::current().record("task_id", tracing::field::display(current_task.id()));
     let mut cancellation = std::pin::pin!(current_task.cancellation_token().cancelled());
     let mut seen_versions = MetadataVersions::default();
@@ -888,6 +853,7 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
+    use restate_types::config::NetworkingOptions;
     use restate_types::locality::NodeLocation;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -916,7 +882,7 @@ mod tests {
     async fn test_hello_welcome_handshake() -> Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let metadata = Metadata::current();
-        let connections = ConnectionManager::new_incoming_only(metadata.clone());
+        let connections = ConnectionManager::default();
 
         let _mock_connection = MockPeerConnection::connect(
             GenerationalNodeId::new(1, 1),
@@ -934,10 +900,9 @@ mod tests {
     #[restate_core::test(start_paused = true)]
     async fn test_hello_welcome_timeout() -> Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
-        let metadata = Metadata::current();
         let net_opts = NetworkingOptions::default();
         let (_tx, rx) = mpsc::channel(1);
-        let connections = ConnectionManager::new_incoming_only(metadata);
+        let connections = ConnectionManager::default();
 
         let start = tokio::time::Instant::now();
         let incoming = ReceiverStream::new(rx);
@@ -982,7 +947,7 @@ mod tests {
             .await
             .expect("Channel accept hello message");
 
-        let connections = ConnectionManager::new_incoming_only(metadata.clone());
+        let connections = ConnectionManager::default();
         let incoming = ReceiverStream::new(rx);
         let resp = connections.accept_incoming_connection(incoming).await;
         assert!(resp.is_err());
@@ -1015,7 +980,7 @@ mod tests {
         );
         tx.send(Ok(hello)).await?;
 
-        let connections = ConnectionManager::new_incoming_only(metadata.clone());
+        let connections = ConnectionManager::default();
         let incoming = ReceiverStream::new(rx);
         let err = connections
             .accept_incoming_connection(incoming)
@@ -1058,7 +1023,7 @@ mod tests {
             .await
             .expect("Channel accept hello message");
 
-        let connections = ConnectionManager::new_incoming_only(metadata.clone());
+        let connections = ConnectionManager::default();
 
         let incoming = ReceiverStream::new(rx);
         let err = connections
@@ -1097,7 +1062,7 @@ mod tests {
             .await
             .expect("Channel accept hello message");
 
-        let connections = ConnectionManager::new_incoming_only(metadata);
+        let connections = ConnectionManager::default();
 
         let incoming = ReceiverStream::new(rx);
         let err = connections
