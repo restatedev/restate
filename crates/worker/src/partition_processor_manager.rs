@@ -774,12 +774,14 @@ impl PartitionProcessorManager {
                     .map(|partition| &partition.key_range)
                 {
                     debug!(%partition_id, "Starting new partition processor to run as {}", control_processor.command);
-                    let starting_task = self
-                        .start_partition_processor_task(partition_id, partition_key_range.clone());
+                    let start_partition_processor_task = self.crate_start_partition_processor_task(
+                        partition_id,
+                        partition_key_range.clone(),
+                    );
 
                     self.asynchronous_operations.spawn(
                         async move {
-                            let result = starting_task.run();
+                            let result = start_partition_processor_task.run();
                             AsynchronousEvent {
                                 partition_id,
                                 inner: EventKind::Started(result),
@@ -978,7 +980,7 @@ impl PartitionProcessorManager {
     ///
     /// This allows multiple partition processors to be started concurrently without holding
     /// and exclusive lock to [`Self`]
-    fn start_partition_processor_task(
+    fn crate_start_partition_processor_task(
         &mut self,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
