@@ -11,7 +11,6 @@
 use crate::grpc::MetadataServerSnapshot;
 use crate::grpc::handler::MetadataServerHandler;
 use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
-use crate::grpc::pb_conversions::ConversionError;
 use crate::local::migrate_nodes_configuration;
 use crate::metric_definitions::{
     METADATA_SERVER_REPLICATED_APPLIED_LSN, METADATA_SERVER_REPLICATED_COMMITTED_LSN,
@@ -50,7 +49,7 @@ use raft_proto::ConfChangeI;
 use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
 use rand::prelude::IteratorRandom;
 use rand::rng;
-use restate_core::metadata_store::{Precondition, serialize_value};
+use restate_core::metadata_store::serialize_value;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{
@@ -59,9 +58,10 @@ use restate_core::{
 use restate_types::config::{
     Configuration, MetadataServerKind, MetadataServerOptions, RocksDbOptions,
 };
-use restate_types::errors::GenericError;
+use restate_types::errors::{ConversionError, GenericError};
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxedLiveLoad, Constant};
+use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};

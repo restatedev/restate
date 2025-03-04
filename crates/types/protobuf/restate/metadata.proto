@@ -1,0 +1,33 @@
+// Copyright (c) 2025 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+package restate.metadata;
+
+import "google/protobuf/empty.proto";
+import "restate/common.proto";
+
+message VersionedValue {
+  restate.common.Version version = 1;
+  bytes bytes = 2;
+}
+
+enum PreconditionKind {
+  PreconditionKind_UNKNOWN = 0;
+  NONE = 1;
+  DOES_NOT_EXIST = 2;
+  MATCHES_VERSION = 3;
+}
+
+message Precondition {
+  PreconditionKind kind = 1;
+  // needs to be set in case of PreconditionKind::MATCHES_VERSION
+  optional restate.common.Version version = 2;
+}

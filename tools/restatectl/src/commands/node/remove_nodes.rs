@@ -15,10 +15,11 @@ use clap::Parser;
 use cling::{Collect, Run};
 use itertools::Itertools;
 use restate_cli_util::c_println;
-use restate_core::metadata_store::{MetadataStoreClient, Precondition};
+use restate_core::metadata_store::MetadataStoreClient;
 use restate_metadata_server::create_client;
 use restate_types::PlainNodeId;
 use restate_types::config::{MetadataClientKind, MetadataClientOptions};
+use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{NodesConfiguration, Role};
 

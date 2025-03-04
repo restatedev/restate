@@ -452,6 +452,7 @@ mod tests {
     use restate_types::live::{Constant, Live};
     use restate_types::logs::metadata::{ProviderKind, new_single_node_loglet_params};
     use restate_types::logs::{KeyFilter, SequenceNumber};
+    use restate_types::metadata::Precondition;
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
     use crate::loglet::FindTailOptions;
@@ -754,7 +755,7 @@ mod tests {
             .put(
                 BIFROST_CONFIG_KEY.clone(),
                 &new_metadata,
-                restate_metadata_server::Precondition::MatchesVersion(old_version),
+                Precondition::MatchesVersion(old_version),
             )
             .await?;
 
@@ -958,7 +959,7 @@ mod tests {
             .put(
                 BIFROST_CONFIG_KEY.clone(),
                 &new_metadata,
-                restate_metadata_server::Precondition::MatchesVersion(old_version),
+                Precondition::MatchesVersion(old_version),
             )
             .await?;
 

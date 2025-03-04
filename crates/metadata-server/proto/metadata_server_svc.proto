@@ -11,6 +11,7 @@ syntax = "proto3";
 
 import "google/protobuf/empty.proto";
 import "restate/common.proto";
+import "restate/metadata.proto";
 
 package restate.metadata_server_svc;
 
@@ -39,38 +40,18 @@ message GetRequest { string key = 1; }
 
 message PutRequest {
   string key = 1;
-  VersionedValue value = 2;
-  Precondition precondition = 3;
+  restate.metadata.VersionedValue value = 2;
+  restate.metadata.Precondition precondition = 3;
 }
 
 message DeleteRequest {
   string key = 1;
-  Precondition precondition = 2;
+  restate.metadata.Precondition precondition = 2;
 }
 
-message VersionedValue {
-  Version version = 1;
-  bytes bytes = 2;
-}
+message GetResponse { optional restate.metadata.VersionedValue value = 1; }
 
-message GetResponse { optional VersionedValue value = 1; }
-
-message Version { uint32 value = 1; }
-
-message GetVersionResponse { optional Version version = 1; }
-
-enum PreconditionKind {
-  PreconditionKind_UNKNOWN = 0;
-  NONE = 1;
-  DOES_NOT_EXIST = 2;
-  MATCHES_VERSION = 3;
-}
-
-message Precondition {
-  PreconditionKind kind = 1;
-  // needs to be set in case of PreconditionKind::MATCHES_VERSION
-  optional Version version = 2;
-}
+message GetVersionResponse { optional restate.common.Version version = 1; }
 
 message ProvisionRequest { bytes nodes_configuration = 1; }
 
@@ -121,14 +102,14 @@ message WriteRequest {
   Ulid request_id = 1;
   WriteRequestKind kind = 2;
   bytes key = 3;
-  Precondition precondition = 4;
+  restate.metadata.Precondition precondition = 4;
   // value is only required if WriteRequestKind is set to PUT
-  optional VersionedValue value = 7;
+  optional restate.metadata.VersionedValue value = 7;
 }
 
 message KvEntry {
   bytes key = 1;
-  VersionedValue value = 2;
+  restate.metadata.VersionedValue value = 2;
 }
 
 message MetadataServerSnapshot {
