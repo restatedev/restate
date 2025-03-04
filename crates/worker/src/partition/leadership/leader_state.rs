@@ -46,6 +46,8 @@ use tracing::{debug, trace};
 
 const BATCH_READY_UP_TO: usize = 10;
 
+type RpcReciprocal = Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>;
+
 pub struct LeaderState {
     partition_id: PartitionId,
     pub leader_epoch: LeaderEpoch,
@@ -61,10 +63,7 @@ pub struct LeaderState {
     pub timer_service: Pin<Box<TimerService>>,
     self_proposer: SelfProposer,
 
-    pub awaiting_rpc_actions: HashMap<
-        PartitionProcessorRpcRequestId,
-        Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-    >,
+    awaiting_rpc_actions: HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
     awaiting_rpc_self_propose: FuturesUnordered<SelfAppendFuture>,
 
     invoker_stream: InvokerStream,
@@ -279,17 +278,16 @@ impl LeaderState {
         cmd: Command,
     ) {
         match self.awaiting_rpc_actions.entry(request_id) {
-            Entry::Occupied(o) => {
+            Entry::Occupied(mut o) => {
                 // In this case, someone already proposed this command,
                 // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
-                let old_reciprocal = o.remove();
+                let old_reciprocal = o.insert(reciprocal);
                 trace!(%request_id, "Replacing rpc with newer request");
                 respond_to_rpc(
                     old_reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
                         "retried".to_string(),
                     ))),
                 );
-                self.awaiting_rpc_actions.insert(request_id, reciprocal);
             }
             Entry::Vacant(v) => {
                 // In this case, no one proposed this command yet, let's try to propose it
@@ -507,7 +505,7 @@ impl Future for SelfAppendFuture {
         let append_result = ready!(self.commit_token.poll_unpin(cx));
 
         if append_result.is_err() {
-            self.get_mut().fail_with_internal();
+            self.fail_with_internal();
             return Poll::Ready(());
         }
         self.succeed_with_appended();

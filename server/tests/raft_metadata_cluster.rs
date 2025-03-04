@@ -199,6 +199,9 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
 
     info!("Starting the metadata cluster chaos test");
 
+    let mut successes = 0;
+    let mut failures = 0;
+    let mut last_err = None;
     while start_chaos.elapsed() < chaos_duration {
         match test_state {
             State::Write => {
@@ -212,8 +215,11 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
                     )
                     .await;
                 if result.is_err() {
+                    failures += 1;
+                    last_err = Some(result.err().unwrap());
                     test_state = State::Reconcile;
                 } else {
+                    successes += 1;
                     current_version = Some(next_value.version());
                     next_value = Value {
                         value: next_value.value + 1,
@@ -253,7 +259,13 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
     }
 
     // make sure that we have written at least some values
-    assert!(next_value.value > 1);
+    assert!(
+        next_value.value > 1,
+        "successful writes: {successes} failed writes: {failures}, last error: {}",
+        last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "none".to_owned())
+    );
 
     info!(
         "Finished metadata cluster chaos test with value: {}",
