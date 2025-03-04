@@ -13,6 +13,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use super::QueryServiceState;
+use super::convert::{ConvertRecordBatchStream, V1_CONVERTER};
+use super::error::StorageQueryError;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json, http};
@@ -33,10 +36,7 @@ use restate_admin_rest_model::version::AdminApiVersion;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
-
-use super::QueryServiceState;
-use super::convert::{ConvertRecordBatchStream, V1_CONVERTER};
-use super::error::StorageQueryError;
+use tracing::{Level, enabled, warn};
 
 #[serde_as]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -76,15 +76,18 @@ pub async fn query(
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
-            WriteRecordBatchStream::<JsonWriter>::new(record_batch_stream)?
+            WriteRecordBatchStream::<JsonWriter>::new(record_batch_stream, payload.query)?
                 .map_ok(Frame::data)
                 .left_stream(),
             "application/json",
         ),
         _ => (
-            WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(record_batch_stream)?
-                .map_ok(Frame::data)
-                .right_stream(),
+            WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
+                record_batch_stream,
+                payload.query,
+            )?
+            .map_ok(Frame::data)
+            .right_stream(),
             "application/vnd.apache.arrow.stream",
         ),
     };
@@ -194,14 +197,19 @@ struct WriteRecordBatchStream<W> {
     done: bool,
     record_batch_stream: SendableRecordBatchStream,
     stream_writer: W,
+    query: String,
 }
 
 impl<W: RecordBatchWriter> WriteRecordBatchStream<W> {
-    fn new(record_batch_stream: SendableRecordBatchStream) -> Result<Self, DataFusionError> {
+    fn new(
+        record_batch_stream: SendableRecordBatchStream,
+        query: String,
+    ) -> Result<Self, DataFusionError> {
         Ok(WriteRecordBatchStream {
             done: false,
             stream_writer: W::new(&record_batch_stream.schema())?,
             record_batch_stream,
+            query,
         })
     }
 }
@@ -220,6 +228,12 @@ impl<W: RecordBatchWriter + Unpin> Stream for WriteRecordBatchStream<W> {
             match record_batch.and_then(|record_batch| self.stream_writer.write(&record_batch)) {
                 Ok(bytes) => Poll::Ready(Some(Ok(bytes))),
                 Err(err) => {
+                    if enabled!(Level::DEBUG) {
+                        warn!(query = %self.query, %err, "Query failed");
+                    } else {
+                        warn!(%err, "Query failed");
+                    }
+
                     self.done = true;
                     Poll::Ready(Some(Err(err)))
                 }
