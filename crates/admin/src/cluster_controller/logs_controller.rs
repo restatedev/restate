@@ -21,6 +21,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{Instrument, Level, debug, enabled, error, info, trace_span};
 
+use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_core::metadata_store::{Precondition, WriteError};
 use restate_core::{
@@ -1093,7 +1094,7 @@ impl LogsController {
                     }
 
                     debug!(%log_id, segment_index=%writeable_loglet.segment_index(), "Attempting to find tail for loglet");
-                    let found_tail = match writeable_loglet.find_tail().await {
+                    let found_tail = match writeable_loglet.find_tail(FindTailOptions::ConsistentRead).await {
                         Ok(tail) => tail,
                         Err(err) => {
                             debug!(error=%err, %log_id, segment_index=%writeable_loglet.segment_index(), "Failed to find tail for loglet");

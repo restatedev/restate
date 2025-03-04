@@ -30,7 +30,7 @@ use restate_types::net::replicated_loglet::{
 };
 
 use super::error::ReplicatedLogletError;
-use super::loglet::{FindTailOptions, ReplicatedLoglet};
+use super::loglet::{FindTailFlags, ReplicatedLoglet};
 use super::provider::ReplicatedLogletProvider;
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{AppendError, Loglet, LogletCommit, OperationError};
@@ -161,10 +161,7 @@ impl RequestPump {
 
         if msg.force_seal_check {
             let _ = TaskCenter::spawn(TaskKind::Disposable, "remote-check-seal", async move {
-                match loglet
-                    .find_tail_inner(FindTailOptions::ForceSealCheck)
-                    .await
-                {
+                match loglet.find_tail_inner(FindTailFlags::ForceSealCheck).await {
                     Ok(tail) => {
                         let sequencer_state = SequencerState {
                             header: CommonResponseHeader {

@@ -21,11 +21,14 @@ mod tests {
 
     use futures_util::StreamExt;
     use googletest::prelude::*;
-    use restate_bifrost::{ErrorRecoveryStrategy, loglet::AppendError};
     use test_log::test;
     use tokio::task::{JoinHandle, JoinSet};
     use tokio_util::sync::CancellationToken;
 
+    use restate_bifrost::{
+        ErrorRecoveryStrategy,
+        loglet::{AppendError, FindTailOptions},
+    };
     use restate_core::{Metadata, TaskCenterFutureExt};
     use restate_types::{
         GenerationalNodeId, Version,
@@ -68,7 +71,7 @@ mod tests {
                 assert_that!(offset, eq(LogletOffset::new(3)));
                 let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
                 assert_that!(offset, eq(LogletOffset::new(6)));
-                let tail = env.loglet.find_tail().await?;
+                let tail = env.loglet.find_tail(FindTailOptions::default()).await?;
                 assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
 
                 Ok(())
@@ -95,7 +98,7 @@ mod tests {
                 assert_that!(offset, eq(LogletOffset::new(3)));
                 let offset = env.loglet.enqueue_batch(batch.clone()).await?.await?;
                 assert_that!(offset, eq(LogletOffset::new(6)));
-                let tail = env.loglet.find_tail().await?;
+                let tail = env.loglet.find_tail(FindTailOptions::default()).await?;
                 assert_that!(tail, eq(TailState::Open(LogletOffset::new(7))));
 
                 env.loglet.seal().await?;
@@ -106,7 +109,7 @@ mod tests {
                 .into();
                 let not_appended = env.loglet.enqueue_batch(batch).await?.await;
                 assert_that!(not_appended, err(pat!(AppendError::Sealed)));
-                let tail = env.loglet.find_tail().await?;
+                let tail = env.loglet.find_tail(FindTailOptions::default()).await?;
                 assert_that!(tail, eq(TailState::Sealed(LogletOffset::new(7))));
 
                 Ok(())
