@@ -21,7 +21,8 @@ use serde_with::serde_as;
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 
 use super::{
-    AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions, print_warning_deprecated_config_option,
+    AwsOptions, HttpOptions, ObjectStoreOptions, PerfStatsLevel, RocksDbOptions,
+    print_warning_deprecated_config_option,
 };
 use crate::PlainNodeId;
 use crate::locality::NodeLocation;
@@ -563,27 +564,6 @@ impl Default for MetadataClientOptions {
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
-    rename_all_fields = "kebab-case"
-)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "schemars",
-    schemars(
-        title = "Metadata Store",
-        description = "Definition of a bootstrap metadata store"
-    )
-)]
-pub enum ObjectStoreCredentials {
-    /// # Use standard AWS environment variables
-    ///
-    /// Configure the object store by setting the standard AWS env variables (prefixed with AWS_)
-    AwsEnv,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(
-    tag = "type",
-    rename_all = "kebab-case",
     rename_all_fields = "kebab-case",
     try_from = "MetadataClientKindShadow"
 )]
@@ -610,11 +590,18 @@ pub enum MetadataClientKind {
     },
     /// Store metadata on an external object store.
     ObjectStore {
-        credentials: ObjectStoreCredentials,
-
-        /// # The bucket name to use for storage
+        /// # Object store path for metadata storage
+        ///
+        /// This location will be used to persist cluster metadata. Takes the form of a URL
+        /// with `s3://` as the protocol and bucket name as the authority, plus an optional
+        /// prefix specified as the path component.
+        ///
+        /// Example: `s3://bucket/prefix`
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-        bucket: String,
+        path: String,
+
+        #[serde(flatten)]
+        object_store: ObjectStoreOptions,
     },
 }
 
@@ -637,8 +624,9 @@ enum MetadataClientKindShadow {
         addresses: Vec<String>,
     },
     ObjectStore {
-        credentials: ObjectStoreCredentials,
-        bucket: String,
+        path: String,
+        #[serde(flatten)]
+        object_store: ObjectStoreOptions,
     },
     // Fallback to support not having to specify the type field
     #[serde(untagged)]
@@ -653,13 +641,9 @@ impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
     type Error = &'static str;
     fn try_from(value: MetadataClientKindShadow) -> Result<Self, Self::Error> {
         let result = match value {
-            MetadataClientKindShadow::ObjectStore {
-                credentials,
-                bucket,
-            } => Self::ObjectStore {
-                credentials,
-                bucket,
-            },
+            MetadataClientKindShadow::ObjectStore { path, object_store } => {
+                Self::ObjectStore { path, object_store }
+            }
             MetadataClientKindShadow::Etcd { addresses } => Self::Etcd { addresses },
             MetadataClientKindShadow::Replicated { address, addresses }
             | MetadataClientKindShadow::Fallback { address, addresses } => {
@@ -773,7 +757,7 @@ impl Default for TracingOptions {
 ///
 /// | Current Name             | Backwards Compatible Aliases  |
 /// |--------------------------|------------------------------|
-/// | `auto_provision`        | `allow_bootstrap`           |
+/// | `auto_provision`         | `allow_bootstrap`           |
 /// | `default_num_partitions` | `bootstrap_num_partitions`  |
 ///
 /// Once we no longer support the backwards compatible aliases, we can remove this struct.
