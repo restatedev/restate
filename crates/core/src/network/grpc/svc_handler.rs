@@ -16,17 +16,17 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::network::protobuf::core_node_svc::core_node_svc_server::{
     CoreNodeSvc, CoreNodeSvcServer,
 };
-use crate::network::{ConnectionManager, ProtocolError, TransportConnect};
+use crate::network::{ConnectionManager, ProtocolError};
 use restate_types::protobuf::node::Message;
 
 use super::MAX_MESSAGE_SIZE;
 
-pub struct CoreNodeSvcHandler<T> {
-    connections: ConnectionManager<T>,
+pub struct CoreNodeSvcHandler {
+    connections: ConnectionManager,
 }
 
-impl<T> CoreNodeSvcHandler<T> {
-    pub fn new(connections: ConnectionManager<T>) -> Self {
+impl CoreNodeSvcHandler {
+    pub fn new(connections: ConnectionManager) -> Self {
         Self { connections }
     }
 
@@ -40,10 +40,7 @@ impl<T> CoreNodeSvcHandler<T> {
 }
 
 #[async_trait::async_trait]
-impl<T> CoreNodeSvc for CoreNodeSvcHandler<T>
-where
-    T: TransportConnect,
-{
+impl CoreNodeSvc for CoreNodeSvcHandler {
     type CreateConnectionStream = BoxStream<'static, Result<Message, Status>>;
 
     // Status codes returned in different scenarios:

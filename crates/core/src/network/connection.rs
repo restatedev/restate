@@ -351,7 +351,6 @@ pub mod test_util {
     use crate::network::NetworkError;
     use crate::network::PeerMetadataVersion;
     use crate::network::ProtocolError;
-    use crate::network::TransportConnect;
     use crate::network::handshake::negotiate_protocol_version;
     use crate::network::handshake::wait_for_hello;
 
@@ -378,11 +377,11 @@ pub mod test_util {
 
     impl MockPeerConnection {
         /// must run in task-center
-        pub async fn connect<T: TransportConnect>(
+        pub async fn connect(
             from_node_id: GenerationalNodeId,
             my_node_config_version: Version,
             my_cluster_name: String,
-            connection_manager: &ConnectionManager<T>,
+            connection_manager: &ConnectionManager,
             message_buffer: usize,
         ) -> anyhow::Result<Self> {
             let (sender, rx) = mpsc::channel(message_buffer);

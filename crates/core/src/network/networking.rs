@@ -9,13 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 
 use tracing::{debug, instrument, trace};
 
-use restate_types::config::NetworkingOptions;
+use restate_types::NodeId;
+use restate_types::config::Configuration;
 use restate_types::net::codec::{Targeted, WireEncode};
-use restate_types::{GenerationalNodeId, NodeId};
 
 use super::{
     ConnectionManager, HasConnection, NetworkError, NetworkSendError, NetworkSender, NoConnection,
@@ -26,58 +25,49 @@ use crate::Metadata;
 
 /// Access to node-to-node networking infrastructure.
 pub struct Networking<T> {
-    connections: ConnectionManager<T>,
-    metadata: Metadata,
-    options: NetworkingOptions,
+    connections: ConnectionManager,
+    connector: T,
 }
 
-impl<T> Clone for Networking<T> {
+impl<T: Clone> Clone for Networking<T> {
     fn clone(&self) -> Self {
         Self {
             connections: self.connections.clone(),
-            metadata: self.metadata.clone(),
-            options: self.options.clone(),
+            connector: self.connector.clone(),
         }
     }
 }
 
 impl Networking<GrpcConnector> {
-    pub fn new(metadata: Metadata, options: NetworkingOptions) -> Self {
+    pub fn with_grpc_connector() -> Self {
         Self {
-            connections: ConnectionManager::new(
-                metadata.clone(),
-                Arc::new(GrpcConnector::new(options.clone())),
-                options.clone(),
-            ),
-            metadata,
-            options,
+            connections: ConnectionManager::default(),
+            connector: GrpcConnector,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+/// used for testing. Accepts connections but can't establish new connections
+impl Networking<super::FailingConnector> {
+    pub fn new_incoming_only() -> Self {
+        Self {
+            connections: ConnectionManager::default(),
+            connector: super::FailingConnector,
         }
     }
 }
 
 impl<T: TransportConnect> Networking<T> {
-    pub fn with_connection_manager(
-        metadata: Metadata,
-        options: NetworkingOptions,
-        connection_manager: ConnectionManager<T>,
-    ) -> Self {
+    pub fn with_connector(connector: T) -> Self {
         Self {
-            connections: connection_manager,
-            metadata,
-            options,
+            connector,
+            connections: ConnectionManager::default(),
         }
     }
 
-    pub fn connection_manager(&self) -> &ConnectionManager<T> {
+    pub fn connection_manager(&self) -> &ConnectionManager {
         &self.connections
-    }
-
-    pub fn metadata(&self) -> &Metadata {
-        &self.metadata
-    }
-
-    pub fn my_node_id(&self) -> GenerationalNodeId {
-        self.metadata.my_node_id()
     }
 
     /// A connection sender is pinned to a single stream, thus guaranteeing ordered delivery of
@@ -91,14 +81,17 @@ impl<T: TransportConnect> Networking<T> {
         let node = match node.as_generational() {
             Some(node) => node,
             None => {
-                self.metadata
-                    .nodes_config_ref()
+                Metadata::with_current(|metadata| metadata.nodes_config_ref())
                     .find_node_by_id(node)?
                     .current_generation
             }
         };
 
-        Ok(self.connections.get_or_connect(node).await?.downgrade())
+        Ok(self
+            .connections
+            .get_or_connect(node, &self.connector)
+            .await?
+            .downgrade())
     }
 }
 
@@ -108,23 +101,27 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
     where
         M: WireEncode + Targeted + Send + Sync,
     {
+        let metadata = Metadata::current();
         let target_is_generational = msg.peer().is_generational();
         let original_peer = *msg.peer();
         let mut attempts = 0;
-        let max_attempts: usize = self
-            .options
+        let max_attempts: usize = Configuration::pinned()
+            .networking
             .connect_retry_policy
             .max_attempts()
             .unwrap_or(NonZeroUsize::MAX)
             .into(); // max_attempts() be Some at this point
-        let mut retry_policy = self.options.connect_retry_policy.iter();
+        let mut retry_policy = Configuration::pinned()
+            .networking
+            .connect_retry_policy
+            .clone()
+            .into_iter();
         let mut peer_as_generational = msg.peer().as_generational();
         loop {
             // find latest generation if this is not generational node id. We do this in the loop
             // to ensure we get the latest if it has been updated since last attempt.
             if !original_peer.is_generational() {
-                let current_generation = match self
-                    .metadata
+                let current_generation = match metadata
                     .nodes_config_ref()
                     .find_node_by_id(original_peer)
                 {
@@ -151,7 +148,11 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
 
             let sender = {
                 let peer_as_generational = peer_as_generational.unwrap();
-                match self.connections.get_or_connect(peer_as_generational).await {
+                match self
+                    .connections
+                    .get_or_connect(peer_as_generational, &self.connector)
+                    .await
+                {
                     Ok(sender) => sender,
                     // retryable errors
                     Err(

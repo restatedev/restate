@@ -134,7 +134,7 @@ pub struct PartitionProcessorRpcClient<C> {
     partition_routing: PartitionRouting,
 }
 
-impl<C> Clone for PartitionProcessorRpcClient<C> {
+impl<C: Clone> Clone for PartitionProcessorRpcClient<C> {
     fn clone(&self) -> Self {
         Self {
             networking: self.networking.clone(),
