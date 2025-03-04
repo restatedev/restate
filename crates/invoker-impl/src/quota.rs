@@ -28,7 +28,10 @@ impl InvokerConcurrencyQuota {
 
     pub(super) fn is_slot_available(&self) -> bool {
         match self {
-            Self::Unlimited => true,
+            Self::Unlimited => {
+                gauge!(INVOKER_AVAILABLE_SLOTS).set(f64::INFINITY);
+                true
+            }
             Self::Limited { available_slots } => {
                 gauge!(INVOKER_AVAILABLE_SLOTS).set(*available_slots as f64);
                 *available_slots > 0

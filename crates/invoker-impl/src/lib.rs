@@ -23,7 +23,8 @@ use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use itertools::Itertools;
-use metrics::counter;
+use metric_definitions::{INVOKER_PENDING_TASKS, INVOKER_TASKS_IN_FLIGHT};
+use metrics::{counter, gauge};
 use restate_core::cancellation_watcher;
 use restate_errors::warn_it;
 use restate_invoker_api::{
@@ -347,6 +348,9 @@ where
     where
         F: Future<Output = ()>,
     {
+        gauge!(INVOKER_PENDING_TASKS).set(segmented_input_queue.len() as f64);
+        gauge!(INVOKER_TASKS_IN_FLIGHT).set(self.invocation_tasks.len() as f64);
+
         tokio::select! {
             Some(cmd) = self.status_rx.recv() => {
                 let keys = cmd.payload();
