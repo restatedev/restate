@@ -19,7 +19,6 @@ test-util = ["memory-loglet", "unsafe-mutable-config", "dep:tempfile", "dep:rest
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-base64-util = { workspace = true }
-restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-utoipa = { workspace = true }
@@ -34,7 +33,6 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
-codederror = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 downcast-rs = { workspace = true }
@@ -42,7 +40,6 @@ dyn-clone = { version = "1.0" }
 enum-map = { workspace = true }
 enum_dispatch = "0.3.13"
 enumset = { workspace = true, features = ["serde"] }
-figment = { version = "0.10.8", features = ["env", "toml"] }
 flexbuffers = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
@@ -52,8 +49,6 @@ indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 metrics = { workspace = true }
 moka = { workspace = true, features = ["sync", "logging"] }
-notify = { version = "7.0.0" }
-notify-debouncer-full = { version = "0.4" }
 num-traits = { version = "0.2.17" }
 opentelemetry = { workspace = true }
 parking_lot = { workspace = true }
@@ -79,7 +74,6 @@ tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tiny-gradient = { version = "0.1.0" }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
-toml = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
@@ -93,6 +87,7 @@ googletest = { workspace = true }
 rand = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+toml = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }

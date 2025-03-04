@@ -31,7 +31,7 @@ restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["prometheus"] }
-restate-types = { workspace = true, features = ["clap"] }
+restate-types = { workspace = true}
 restate-worker = { workspace = true }
 
 anyhow = { workspace = true }

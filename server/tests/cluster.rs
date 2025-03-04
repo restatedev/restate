@@ -15,14 +15,15 @@ use enumset::enum_set;
 use futures_util::StreamExt;
 use googletest::IntoTestResult;
 use regex::Regex;
+use restate_core::config::Configuration;
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig};
+use restate_types::nodes_config::Role;
 use restate_types::partition_table::PartitionReplication;
 use restate_types::replication::ReplicationProperty;
-use restate_types::{config::Configuration, nodes_config::Role};
 use test_log::test;
 
 mod common;

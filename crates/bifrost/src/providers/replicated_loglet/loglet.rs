@@ -453,13 +453,13 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
+    use restate_core::config::{Configuration, set_global_config};
     use restate_core::network::NetworkServerBuilder;
     use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{Configuration, set_current_config};
     use restate_types::health::HealthStatus;
-    use restate_types::live::Live;
+    use restate_types::live::{Live, LiveLoadExt};
     use restate_types::logs::{Keys, LogletId};
     use restate_types::replication::{NodeSet, ReplicationProperty};
     use restate_types::{GenerationalNodeId, PlainNodeId};
@@ -481,7 +481,7 @@ mod tests {
         F: FnMut(TestEnv) -> O,
         O: std::future::Future<Output = googletest::Result<()>>,
     {
-        set_current_config(config.clone());
+        set_global_config(config.clone());
         let config = Live::from_value(config);
 
         RocksDbManager::init(config.clone().map(|c| &c.common));

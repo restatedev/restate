@@ -34,6 +34,7 @@ use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNum
 
 use self::log_store::LogStoreError;
 use self::log_store::RocksDbLogStore;
+pub use self::log_store::local_loglet_data_dir;
 use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
@@ -296,10 +297,10 @@ mod tests {
     use test_log::test;
 
     use crate::loglet::Loglet;
+    use restate_core::config::Configuration;
     use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
-    use restate_types::live::Live;
+    use restate_types::live::{Live, LiveLoadExt};
     use restate_types::logs::Keys;
     use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
@@ -330,15 +331,10 @@ mod tests {
         RocksDbManager::init(config.clone().map(|c| &c.common));
         let params = LogletParams::from("42".to_string());
 
-        let log_store = RocksDbLogStore::create(
-            &config.pinned().bifrost.local,
-            config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
-        )
-        .await?;
+        let local_loglet_config = config.map(|config| &config.bifrost.local);
+        let log_store = RocksDbLogStore::create(local_loglet_config.clone()).await?;
 
-        let log_writer = log_store
-            .create_writer()
-            .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+        let log_writer = log_store.create_writer().start(local_loglet_config)?;
 
         let loglet = Arc::new(LocalLoglet::create(
             params
@@ -367,15 +363,10 @@ mod tests {
         let config = Live::from_value(Configuration::default());
         RocksDbManager::init(config.clone().map(|c| &c.common));
 
-        let log_store = RocksDbLogStore::create(
-            &config.pinned().bifrost.local,
-            config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
-        )
-        .await?;
+        let local_loglet_config = config.map(|config| &config.bifrost.local);
+        let log_store = RocksDbLogStore::create(local_loglet_config.clone()).await?;
 
-        let log_writer = log_store
-            .create_writer()
-            .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+        let log_writer = log_store.create_writer().start(local_loglet_config)?;
 
         // Run the test 10 times
         for i in 1..=10 {

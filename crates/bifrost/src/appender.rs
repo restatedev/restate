@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, instrument, trace, warn};
 
+use restate_core::config::Configuration;
 use restate_core::{Metadata, TargetVersion, TaskCenter};
 use restate_futures_util::overdue::OverdueLoggingExt;
-use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn, Record};
@@ -43,7 +43,7 @@ impl Appender {
         error_recovery_strategy: ErrorRecoveryStrategy,
         bifrost_inner: Arc<BifrostInner>,
     ) -> Self {
-        let config = Configuration::updateable();
+        let config = Configuration::live();
         Self {
             log_id,
             config,
@@ -167,15 +167,11 @@ impl Appender {
         sealed_segment: SegmentIndex,
         error_recovery_strategy: ErrorRecoveryStrategy,
     ) -> Result<LogletWrapper> {
-        let mut retry_iter = Configuration::pinned()
-            .bifrost
-            .append_retry_policy()
-            .into_iter();
+        let mut retry_iter =
+            Configuration::with_current(|config| config.bifrost.append_retry_policy().into_iter());
 
-        let auto_recovery_threshold: Duration = Configuration::pinned()
-            .bifrost
-            .auto_recovery_interval
-            .into();
+        let auto_recovery_threshold: Duration =
+            Configuration::with_current(|config| config.bifrost.auto_recovery_interval.into());
         let start = Instant::now();
 
         // Let's give metadata manager an opportunity to sync up to the latest log chain,

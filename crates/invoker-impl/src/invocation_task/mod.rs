@@ -22,6 +22,7 @@ use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::histogram;
+use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_invoker_api::{
     EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
 };
@@ -47,7 +48,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{instrument, warn};
 
@@ -437,14 +437,18 @@ enum ResponseStreamState {
 }
 
 impl ResponseStreamState {
-    fn initialize(client: &ServiceClient, req: Request<InvokerBodyStream>) -> Self {
+    fn initialize(
+        client: &ServiceClient,
+        req: Request<InvokerBodyStream>,
+    ) -> Result<Self, ShutdownError> {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.
         // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
-        Self::WaitingHeaders(AbortOnDrop(tokio::task::spawn(client.call(req))))
+        TaskCenter::spawn_unmanaged(TaskKind::Invoker, "invoker-stream", client.call(req))
+            .map(|task_handle| Self::WaitingHeaders(AbortOnDrop(task_handle)))
     }
 
     // Could be replaced by a Future implementation
@@ -457,8 +461,8 @@ impl ResponseStreamState {
                 let http_response = match ready!(join_handle.poll_unpin(cx)) {
                     Ok(Ok(res)) => res,
                     Ok(Err(hyper_err)) => return Poll::Ready(Err(InvokerError::Client(hyper_err))),
-                    Err(join_err) => {
-                        return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)));
+                    Err(shutdown_err) => {
+                        return Poll::Ready(Err(InvokerError::Shutdown(shutdown_err)));
                     }
                 };
 
@@ -490,8 +494,8 @@ impl ResponseStreamState {
                         Ok(Err(hyper_err)) => {
                             return Poll::Ready(Err(InvokerError::Client(hyper_err)));
                         }
-                        Err(join_err) => {
-                            return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)));
+                        Err(shutdown_err) => {
+                            return Poll::Ready(Err(InvokerError::Shutdown(shutdown_err)));
                         }
                     };
 
@@ -526,11 +530,10 @@ impl ResponseStreamState {
 /// but it doesn't wait for the task to complete, because we simply don't have async drops!
 /// For more: https://github.com/tokio-rs/tokio/issues/2596
 /// Inspired by: https://github.com/cyb0124/abort-on-drop
-#[derive(Debug)]
-struct AbortOnDrop<T>(JoinHandle<T>);
+struct AbortOnDrop<T>(TaskHandle<T>);
 
 impl<T> Future for AbortOnDrop<T> {
-    type Output = <JoinHandle<T> as Future>::Output;
+    type Output = <TaskHandle<T> as Future>::Output;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Pin::new(&mut self.0).poll(cx)

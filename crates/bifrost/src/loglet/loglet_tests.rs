@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use googletest::prelude::*;
 use tokio::sync::Barrier;
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::info;
 
@@ -24,7 +24,7 @@ use restate_test_util::let_assert;
 use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber, TailState};
 
-use super::Loglet;
+use super::{Loglet, OperationError};
 use crate::loglet::{AppendError, FindTailOptions};
 use crate::loglet_wrapper::LogletWrapper;
 
@@ -255,20 +255,21 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
     // The reader is expected to wait/block until records appear at offset 6. It then reads 5 records (offsets [6-10]).
     let read_counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = read_counter.clone();
-    let reader_bg_handle: JoinHandle<googletest::Result<()>> = tokio::spawn(async move {
-        for i in 6..=10 {
-            let record = reader.next().await.expect("to never terminate")?;
-            let expected_offset = Lsn::new(i);
-            counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            assert_eq!(expected_offset, record.sequence_number());
-            assert!(reader.read_pointer() > expected_offset);
-            assert_that!(
-                record.decode_unchecked::<String>(),
-                eq(format!("record{expected_offset}"))
-            );
-        }
-        Ok(())
-    });
+    let reader_bg_handle =
+        TaskCenter::spawn_unmanaged(TaskKind::Background, "background-read", async move {
+            for i in 6..=10 {
+                let record = reader.next().await.expect("to never terminate")?;
+                let expected_offset = Lsn::new(i);
+                counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                assert_eq!(expected_offset, record.sequence_number());
+                assert!(reader.read_pointer() > expected_offset);
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq(format!("record{expected_offset}"))
+                );
+            }
+            Ok::<_, OperationError>(())
+        })?;
 
     tokio::task::yield_now().await;
     // Not finished, we still didn't append records

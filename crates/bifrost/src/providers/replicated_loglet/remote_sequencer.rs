@@ -18,6 +18,11 @@ use std::{
 
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
 
+use super::rpc_routers::SequencersRpc;
+use crate::loglet::{
+    AppendError, LogletCommit, LogletCommitResolver, OperationError, util::TailOffsetWatch,
+};
+use restate_core::config::Configuration;
 use restate_core::{
     ShutdownError, TaskCenter, TaskKind,
     network::{
@@ -27,7 +32,6 @@ use restate_core::{
 };
 use restate_types::{
     GenerationalNodeId,
-    config::Configuration,
     errors::MaybeRetryableError,
     logs::{LogId, Record, metadata::SegmentIndex},
     net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
@@ -35,11 +39,6 @@ use restate_types::{
     replicated_loglet::ReplicatedLogletParams,
 };
 use tracing::instrument;
-
-use super::rpc_routers::SequencersRpc;
-use crate::loglet::{
-    AppendError, LogletCommit, LogletCommitResolver, OperationError, util::TailOffsetWatch,
-};
 
 pub struct RemoteSequencer<T> {
     log_id: LogId,
@@ -76,11 +75,13 @@ where
         known_global_tail: TailOffsetWatch,
         sequencers_rpc: SequencersRpc,
     ) -> Self {
-        let max_inflight_records_in_config: usize = Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .maximum_inflight_records
-            .into();
+        let max_inflight_records_in_config: usize = Configuration::with_current(|config| {
+            config
+                .bifrost
+                .replicated_loglet
+                .maximum_inflight_records
+                .into()
+        });
 
         let record_permits = Arc::new(Semaphore::new(max_inflight_records_in_config));
 

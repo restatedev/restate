@@ -8,12 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::PathBuf;
-
-use restate_types::config::CommonOptionCliOverride;
-
 use self::append_latency::AppendLatencyOpts;
 use self::write_to_read::WriteToReadOpts;
+use restate_core::config::CommonOptionCliOverride;
+use std::path::PathBuf;
 
 pub mod append_latency;
 pub mod util;

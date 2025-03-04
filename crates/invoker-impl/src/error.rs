@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use http::{HeaderName, HeaderValue};
+use restate_core::ShutdownError;
 use restate_invoker_api::InvocationErrorReport;
 use restate_service_client::ServiceClientError;
 use restate_service_protocol::message::{EncodingError, MessageType};
@@ -155,6 +156,9 @@ pub(crate) enum InvokerError {
     #[error("service is temporary unavailable '{0}'")]
     #[code(restate_errors::RT0010)]
     ServiceUnavailable(http::StatusCode),
+    #[error(transparent)]
+    #[code(unknown)]
+    Shutdown(ShutdownError),
 }
 
 impl InvokerError {

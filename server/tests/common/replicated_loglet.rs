@@ -17,6 +17,7 @@ use googletest::internal::test_outcome::TestAssertionFailure;
 
 use restate_bifrost::{Bifrost, loglet::Loglet};
 use restate_core::TaskCenter;
+use restate_core::config::Configuration;
 use restate_core::metadata_store::Precondition;
 use restate_core::{MetadataWriter, metadata_store::MetadataStoreClient};
 use restate_local_cluster_runner::{
@@ -31,7 +32,6 @@ use restate_types::logs::metadata::{Chain, LogletParams, SegmentIndex};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::{
     GenerationalNodeId, PlainNodeId,
-    config::Configuration,
     live::Live,
     logs::{LogId, metadata::ProviderKind},
     net::{AdvertisedAddress, BindAddress},
@@ -66,7 +66,8 @@ async fn replicated_loglet_client(
     config.common.advertised_address = AdvertisedAddress::Uds(node_socket.clone());
     config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
     config.common.metadata_client = cluster.nodes[0].config().common.metadata_client.clone();
-    restate_types::config::set_current_config(config.clone());
+
+    restate_core::config::set_global_config(config.clone());
 
     let node = restate_node::Node::create(Live::from_value(config), Prometheus::default()).await?;
 
@@ -113,7 +114,7 @@ where
     // this will still respect LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true
     let base_dir: MaybeTempDir = tempfile::tempdir()?.into();
 
-    RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+    RocksDbManager::init(Configuration::map_live(|c| &c.common));
 
     let mut cluster = Cluster::builder()
         .base_dir(base_dir.as_path().to_owned())

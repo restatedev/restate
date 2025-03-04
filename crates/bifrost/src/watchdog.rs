@@ -16,10 +16,10 @@ use enum_map::Enum;
 use tokio::task::JoinSet;
 use tracing::{debug, trace, warn};
 
+use restate_core::config::Configuration;
 use restate_core::metadata_store::{ReadWriteError, retry_on_retryable_error};
 use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_metadata_server::ReadModifyWriteError;
-use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Logs, ProviderKind};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
@@ -106,10 +106,12 @@ impl Watchdog {
                     return Ok(());
                 }
                 // todo(asoli): Notify providers about trimmed loglets for pruning.
-                let opts = Configuration::pinned();
-                retry_on_retryable_error(opts.common.network_error_retry_policy.clone(), || {
-                    trim_chain_if_needed(&bifrost, log_id, requested_trim_point, trim_point)
-                })
+                retry_on_retryable_error(
+                    Configuration::with_current(|config| {
+                        config.common.network_error_retry_policy.clone()
+                    }),
+                    || trim_chain_if_needed(&bifrost, log_id, requested_trim_point, trim_point),
+                )
                 .await
                 .with_context(|| {
                     format!(

@@ -8,20 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytestring::ByteString;
-use clap::Parser;
-use cling::{Collect, Run};
-use tracing::debug;
-
-use restate_rocksdb::RocksDbManager;
-use restate_types::config::Configuration;
-
 use crate::commands::metadata::{
     GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts, create_metadata_store_client,
 };
 use crate::connection::ConnectionInfo;
 use crate::environment::metadata_store;
 use crate::environment::task_center::run_in_task_center;
+use bytestring::ByteString;
+use clap::Parser;
+use cling::{Collect, Run};
+use restate_core::config::Configuration;
+use restate_rocksdb::RocksDbManager;
+use tracing::debug;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
@@ -60,8 +58,8 @@ async fn get_value_remote(
 }
 
 async fn get_value_direct(opts: &GetValueOpts) -> anyhow::Result<Option<GenericMetadataValue>> {
-    run_in_task_center(opts.metadata.config_file.as_ref(), |config| async move {
-        let rocksdb_manager = RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+    run_in_task_center(opts.metadata.config_file.as_ref(), async |config| {
+        let rocksdb_manager = RocksDbManager::init(Configuration::map_live(|c| &c.common));
         debug!("RocksDB Initialized");
 
         let metadata_store_client = metadata_store::start_metadata_server(config.clone()).await?;

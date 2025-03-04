@@ -18,14 +18,12 @@ use futures_util::{TryFutureExt, future};
 use http::Uri;
 use http::header::CONTENT_TYPE;
 use pprof::flamegraph::Options;
+use restate_core::config::{ConfigLoaderBuilder, Configuration, ConfigurationBuilder};
 use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind, task_center};
 use restate_node::Node;
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
-use restate_types::config::{
-    CommonOptionsBuilder, Configuration, ConfigurationBuilder, WorkerOptionsBuilder,
-};
-use restate_types::config_loader::ConfigLoaderBuilder;
+use restate_types::config::{CommonOptionsBuilder, WorkerOptionsBuilder};
 use restate_types::live::Constant;
 use restate_types::retries::RetryPolicy;
 use tokio::runtime::Runtime;
@@ -102,15 +100,15 @@ pub fn spawn_restate(config: Configuration) -> task_center::Handle {
         .expect("task_center builds")
         .into_handle();
     let mut prometheus = Prometheus::install(&config.common);
-    restate_types::config::set_current_config(config.clone());
-    let updateable_config = Configuration::updateable();
+    restate_core::config::set_global_config(config.clone());
+    let live_config = Configuration::live();
 
     tc.block_on(async {
         RocksDbManager::init(Constant::new(config.common));
         prometheus.start_upkeep_task();
 
         TaskCenter::spawn(TaskKind::SystemBoot, "restate", async move {
-            let node = Node::create(updateable_config, prometheus)
+            let node = Node::create(live_config, prometheus)
                 .await
                 .expect("Restate node must build");
             node.start().await

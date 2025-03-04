@@ -14,14 +14,15 @@ use anyhow::Context;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, instrument, warn};
 
+use restate_core::config::Configuration;
 use restate_core::metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_types::GenerationalNodeId;
-use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::live::LiveLoadExt;
 use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
@@ -60,11 +61,7 @@ impl LogServerService {
         //
         // 1. A log-store
         let log_store_builder = RocksDbLogStoreBuilder::create(
-            updateable_config.clone().map(|c| &c.log_server).boxed(),
-            updateable_config
-                .clone()
-                .map(|c| &c.log_server.rocksdb)
-                .boxed(),
+            updateable_config.clone().map(|c| &c.log_server),
             record_cache.clone(),
         )
         .await
@@ -242,10 +239,8 @@ impl LogServerService {
         expected_state: StorageState,
         target_state: StorageState,
     ) -> anyhow::Result<StorageState> {
-        let retry_policy = Configuration::pinned()
-            .common
-            .network_error_retry_policy
-            .clone();
+        let retry_policy =
+            Configuration::with_current(|config| config.common.network_error_retry_policy.clone());
         let mut first_attempt = true;
 
         let nodes_config = match retry_on_retryable_error(retry_policy, || {

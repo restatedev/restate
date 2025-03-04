@@ -12,16 +12,15 @@ use std::num::NonZeroUsize;
 
 use tracing::{debug, instrument, trace};
 
-use restate_types::NodeId;
-use restate_types::config::Configuration;
-use restate_types::net::codec::{Targeted, WireEncode};
-
 use super::{
     ConnectionManager, HasConnection, NetworkError, NetworkSendError, NetworkSender, NoConnection,
     Outgoing, WeakConnection,
 };
 use super::{GrpcConnector, TransportConnect};
 use crate::Metadata;
+use crate::config::Configuration;
+use restate_types::NodeId;
+use restate_types::net::codec::{Targeted, WireEncode};
 
 /// Access to node-to-node networking infrastructure.
 pub struct Networking<T> {
@@ -105,17 +104,17 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
         let target_is_generational = msg.peer().is_generational();
         let original_peer = *msg.peer();
         let mut attempts = 0;
-        let max_attempts: usize = Configuration::pinned()
-            .networking
-            .connect_retry_policy
-            .max_attempts()
-            .unwrap_or(NonZeroUsize::MAX)
-            .into(); // max_attempts() be Some at this point
-        let mut retry_policy = Configuration::pinned()
-            .networking
-            .connect_retry_policy
-            .clone()
-            .into_iter();
+        let max_attempts: usize = Configuration::with_current(|config| {
+            config
+                .networking
+                .connect_retry_policy
+                .max_attempts()
+                .unwrap_or(NonZeroUsize::MAX)
+                .into()
+        }); // max_attempts() be Some at this point
+        let mut retry_policy = Configuration::with_current(|config| {
+            config.networking.connect_retry_policy.clone().into_iter()
+        });
         let mut peer_as_generational = msg.peer().as_generational();
         loop {
             // find latest generation if this is not generational node id. We do this in the loop

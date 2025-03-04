@@ -21,13 +21,13 @@ use tokio::sync::Semaphore;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, info, instrument, trace};
 
+use restate_core::config::Configuration;
 use restate_core::{
     ShutdownError, TaskCenter, TaskKind,
     network::{Networking, TransportConnect, rpc_router::RpcRouter},
 };
 use restate_types::{
     GenerationalNodeId,
-    config::Configuration,
     logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber},
     net::log_server::Store,
     replicated_loglet::ReplicatedLogletParams,
@@ -154,11 +154,13 @@ impl<T: TransportConnect> Sequencer<T> {
             my_params.replication.clone(),
         );
 
-        let max_in_flight_records_in_config: usize = Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .maximum_inflight_records
-            .into();
+        let max_in_flight_records_in_config: usize = Configuration::with_current(|config| {
+            config
+                .bifrost
+                .replicated_loglet
+                .maximum_inflight_records
+                .into()
+        });
 
         let record_permits = Arc::new(Semaphore::new(max_in_flight_records_in_config));
 

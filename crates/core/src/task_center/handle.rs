@@ -10,6 +10,7 @@
 
 use std::fmt::Debug;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -19,7 +20,9 @@ use tracing::{Instrument, instrument};
 use restate_types::SharedString;
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
+use restate_types::live::Live;
 
+use crate::config::{ConfigWatch, Configuration};
 use crate::{Metadata, ShutdownError};
 
 use super::{
@@ -55,6 +58,21 @@ impl Handle {
         F: FnOnce(&Metadata) -> R,
     {
         self.inner.with_metadata(f)
+    }
+
+    /// Attempt to access task-level overridden configuration first, if we don't have an override,
+    /// fallback to the global configuration.
+    pub(crate) fn with_configuration<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Configuration) -> R,
+    {
+        self.inner.with_configuration(f)
+    }
+
+    /// Attempt to access the task-level overridden node dir first, if we don't have an override,
+    /// fallback to the global node dir.
+    pub(crate) fn node_dir(&self) -> PathBuf {
+        self.inner.node_dir()
     }
 
     /// Attempt to set the global metadata handle. This should be called once
@@ -179,6 +197,18 @@ impl Handle {
 
     pub fn metadata(&self) -> Option<Metadata> {
         self.inner.metadata()
+    }
+
+    pub fn configuration(&self) -> Arc<Configuration> {
+        self.inner.configuration()
+    }
+
+    pub fn configuration_live(&self) -> Live<Configuration> {
+        self.inner.configuration_live()
+    }
+
+    pub fn configuration_watcher(&self) -> ConfigWatch {
+        self.inner.configuration_watcher()
     }
 
     /// Take control over the running task from task-center. This returns None if the task was not

@@ -24,6 +24,7 @@ use restate_core::TaskCenter;
 use std::time::Duration;
 
 use restate_bifrost::Bifrost;
+use restate_core::config::Configuration;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
@@ -41,12 +42,13 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::{
 };
 use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 use restate_storage_query_postgres::service::PostgresQueryService;
-use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::live::LiveLoadExt;
 use restate_types::protobuf::common::WorkerStatus;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
+use crate::partition::snapshots;
 use crate::partition::snapshots::SnapshotRepository;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
@@ -97,7 +99,7 @@ pub enum Error {
 }
 
 pub struct Worker {
-    updateable_config: Live<Configuration>,
+    live_config: Live<Configuration>,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
     datafusion_remote_scanner: RemoteQueryScannerServer,
@@ -109,7 +111,7 @@ pub struct Worker {
 impl Worker {
     #[allow(clippy::too_many_arguments)]
     pub async fn create<T: TransportConnect>(
-        updateable_config: Live<Configuration>,
+        mut live_config: Live<Configuration>,
         health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
         partition_routing: PartitionRouting,
@@ -121,7 +123,12 @@ impl Worker {
         metric_definitions::describe_metrics();
         health_status.update(WorkerStatus::StartingUp);
 
-        let config = updateable_config.pinned();
+        let partition_store_manager =
+            PartitionStoreManager::create(live_config.clone().map(|c| &c.worker.storage), &[])
+                .await?;
+
+        let live_config_clone = live_config.clone();
+        let config = live_config.live_load();
 
         // ingress_kafka
         let ingress_kafka = IngressKafkaService::new(bifrost.clone());
@@ -129,16 +136,6 @@ impl Worker {
             config.ingress.clone(),
             ingress_kafka.create_command_sender(),
         );
-
-        let partition_store_manager = PartitionStoreManager::create(
-            updateable_config.clone().map(|c| &c.worker.storage),
-            updateable_config
-                .clone()
-                .map(|c| &c.worker.storage.rocksdb)
-                .boxed(),
-            &[],
-        )
-        .await?;
 
         let snapshots_options = &config.worker.snapshots;
         if snapshots_options.snapshot_interval_num_records.is_some()
@@ -151,14 +148,14 @@ impl Worker {
 
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
-            updateable_config.clone(),
+            live_config_clone,
             metadata_store_client,
             partition_store_manager.clone(),
             router_builder,
             bifrost,
             SnapshotRepository::create_if_configured(
                 snapshots_options,
-                config.worker.storage.snapshots_staging_dir(),
+                snapshots::snapshot_staging_dir(),
                 config.common.cluster_name().to_owned(),
             )
             .await
@@ -195,7 +192,7 @@ impl Worker {
         );
 
         Ok(Self {
-            updateable_config,
+            live_config,
             storage_query_context,
             storage_query_postgres,
             datafusion_remote_scanner,
@@ -237,7 +234,7 @@ impl Worker {
             TaskKind::SystemService,
             "kafka-ingress",
             self.ingress_kafka
-                .run(self.updateable_config.clone().map(|c| &c.ingress)),
+                .run(self.live_config.clone().map(|c| &c.ingress)),
         )?;
 
         TaskCenter::spawn_child(

@@ -10,7 +10,6 @@
 
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use http::Uri;
@@ -99,10 +98,6 @@ pub struct AdminOptions {
 }
 
 impl AdminOptions {
-    pub fn data_dir(&self) -> PathBuf {
-        super::data_dir("registry")
-    }
-
     pub fn concurrent_api_requests_limit(&self) -> usize {
         std::cmp::min(
             self.concurrent_api_requests_limit

@@ -13,11 +13,14 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use codederror::CodedError;
 use enum_map::Enum;
+use restate_core::ShutdownError;
+use restate_core::config::Configuration;
 use restate_rocksdb::CfName;
 use restate_rocksdb::IoMode;
 use restate_rocksdb::Priority;
+use restate_rocksdb::{RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_types::config::Configuration;
+use restate_storage_api::{Storage, StorageError, Transaction};
 use rocksdb::DBCompressionType;
 use rocksdb::DBPinnableSlice;
 use rocksdb::DBRawIteratorWithThreadMode;
@@ -30,10 +33,6 @@ use std::path::PathBuf;
 use std::slice;
 use std::sync::Arc;
 use tracing::trace;
-
-use restate_core::ShutdownError;
-use restate_rocksdb::{RocksDb, RocksError};
-use restate_storage_api::{Storage, StorageError, Transaction};
 
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
@@ -656,11 +655,9 @@ impl Transaction for PartitionStoreTransaction<'_> {
         if self.write_batch_with_index.is_empty() {
             return Ok(());
         }
-        let io_mode = if Configuration::pinned()
-            .worker
-            .storage
-            .always_commit_in_background
-        {
+        let io_mode = if Configuration::with_current(|config| {
+            config.worker.storage.always_commit_in_background
+        }) {
             IoMode::AlwaysBackground
         } else {
             IoMode::Default

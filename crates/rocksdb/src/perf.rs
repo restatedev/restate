@@ -10,15 +10,15 @@
 
 use std::time::Instant;
 
-use metrics::{counter, histogram};
-use restate_types::config::{Configuration, PerfStatsLevel};
-use rocksdb::{PerfContext, PerfMetric};
-
 use crate::{
     BLOCK_DECOMPRESS_DURATION, BLOCK_READ_BYTES, BLOCK_READ_DURATION, GET_FROM_MEMTABLE_DURATION,
     NEXT_ON_MEMTABLE, OP_NAME, SEEK_ON_MEMTABLE, TOTAL_DURATION, WRITE_ARTIFICIAL_DELAY_DURATION,
     WRITE_MEMTABLE_DURATION, WRITE_PRE_AND_POST_DURATION, WRITE_WAL_DURATION,
 };
+use metrics::{counter, histogram};
+use restate_core::config::Configuration;
+use restate_types::config::PerfStatsLevel;
+use rocksdb::{PerfContext, PerfMetric};
 
 fn convert_perf_level(input: PerfStatsLevel) -> rocksdb::perf::PerfStatsLevel {
     use rocksdb::perf::PerfStatsLevel as RocksLevel;
@@ -53,7 +53,9 @@ impl RocksDbPerfGuard {
     /// This guard should not be used across await points. Stats are thread local.
     #[must_use]
     pub fn new(name: &'static str) -> Self {
-        let rocks_level = convert_perf_level(Configuration::pinned().common.rocksdb_perf_level);
+        let rocks_level = Configuration::with_current(|config| {
+            convert_perf_level(config.common.rocksdb_perf_level)
+        });
         rocksdb::perf::set_perf_stats(rocks_level);
         // Behind the scenes, this "gets" the thread-local perf context and doesn't clear it up.
         let mut context = PerfContext::default();

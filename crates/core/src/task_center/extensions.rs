@@ -12,12 +12,14 @@ use std::future::Future;
 use std::pin::Pin;
 
 use pin_project_lite::pin_project;
+use restate_types::live::Live;
 use tokio::task::futures::TaskLocalFuture;
 use tokio_util::sync::CancellationToken;
 
 use restate_types::SharedString;
 
 use crate::Metadata;
+use crate::config::Configuration;
 use crate::task_center::TaskContext;
 
 use super::{
@@ -138,45 +140,98 @@ impl<T: Future> Future for WithTaskCenter<T> {
     }
 }
 
-/// Adds the ability to override Metadata for a future and all its children
-pub trait MetadataFutureExt: Sized {
-    /// Attaches restate's Metadata as an override on a future and all children futures or
+/// Adds the ability to override Metadata and Configuration for a future and all its children
+pub trait OverrideFutureExt: Sized {
+    /// Attaches Restate's Metadata as an override on a future and all children futures or
     /// task-center tasks spawned from it.
-    fn with_metadata(self, metadata: &Metadata) -> WithMetadata<Self>;
+    fn with_metadata(self, metadata: Metadata) -> WithOverrides<Self>;
+
+    /// Attaches Restate's Configuration as an override on a future and all children futures or
+    /// task-center tasks spawned from it.
+    fn with_configuration(self, configuration: Configuration) -> WithOverrides<Self>;
 }
 
 pin_project! {
-    pub struct WithMetadata<F> {
+    pub struct WithOverrides<F> {
         #[pin]
-        inner_fut: TaskLocalFuture<GlobalOverrides, F>,
+        state: OverrideState<F>,
     }
 }
 
-impl<F, O> MetadataFutureExt for F
+pin_project! {
+    #[project = OverrideStateProj]
+    enum OverrideState<F> {
+        Uninit {
+            metadata: Option<Metadata>,
+            configuration: Option<Configuration>,
+            future: Option<F>,
+        },
+        Init{
+            #[pin]
+            future: TaskLocalFuture<GlobalOverrides, F>
+        },
+    }
+}
+
+impl<F, O> OverrideFutureExt for F
 where
     F: Future<Output = O>,
 {
-    fn with_metadata(self, metadata: &Metadata) -> WithMetadata<Self> {
-        let current_overrides = OVERRIDES.try_with(Clone::clone).unwrap_or_default();
-        // temporary mute until overrides include more fields
-        #[allow(clippy::needless_update)]
-        let overrides = GlobalOverrides {
-            metadata: Some(metadata.clone()),
-            ..current_overrides
-        };
-        let inner = OVERRIDES.scope(overrides, self);
-        WithMetadata { inner_fut: inner }
+    fn with_metadata(self, metadata: Metadata) -> WithOverrides<Self> {
+        WithOverrides {
+            state: OverrideState::Uninit {
+                metadata: Some(metadata),
+                configuration: None,
+                future: Some(self),
+            },
+        }
+    }
+
+    fn with_configuration(self, configuration: Configuration) -> WithOverrides<Self> {
+        WithOverrides {
+            state: OverrideState::Uninit {
+                metadata: None,
+                configuration: Some(configuration),
+                future: Some(self),
+            },
+        }
     }
 }
 
-impl<T: Future> Future for WithMetadata<T> {
+impl<T: Future> Future for WithOverrides<T> {
     type Output = T::Output;
 
     fn poll(
         self: Pin<&mut Self>,
         ctx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        let this = self.project();
-        this.inner_fut.poll(ctx)
+        let mut this = self.project();
+
+        if let OverrideStateProj::Uninit {
+            metadata,
+            configuration,
+            future,
+        } = this.state.as_mut().project()
+        {
+            let current_overrides = OVERRIDES.try_with(Clone::clone).unwrap_or_default();
+
+            let overrides = GlobalOverrides {
+                metadata: metadata.take().or(current_overrides.metadata),
+                config: configuration
+                    .take()
+                    .map(Live::from_value)
+                    .or(current_overrides.config),
+            };
+
+            let future = OVERRIDES.scope(overrides, future.take().expect("future must be present"));
+
+            this.state.set(OverrideState::Init { future });
+        }
+
+        let OverrideStateProj::Init { future } = this.state.project() else {
+            panic!("Expect to be in init state here")
+        };
+
+        future.poll(ctx)
     }
 }

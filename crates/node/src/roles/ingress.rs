@@ -16,7 +16,7 @@ use restate_ingress_http::HyperServerIngress;
 use restate_ingress_http::rpc_request_dispatcher::RpcRequestDispatcher;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
-use restate_types::live::{BoxedLiveLoad, Live};
+use restate_types::live::{BoxLiveLoad, Live};
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::Schema;
@@ -29,7 +29,7 @@ pub struct IngressRole<T> {
 
 impl<T: TransportConnect> IngressRole<T> {
     pub fn create(
-        mut ingress_options: BoxedLiveLoad<IngressOptions>,
+        mut ingress_options: BoxLiveLoad<IngressOptions>,
         health: HealthStatus<IngressStatus>,
         networking: Networking<T>,
         schema: Live<Schema>,

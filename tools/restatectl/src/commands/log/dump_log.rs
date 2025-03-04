@@ -18,10 +18,11 @@ use tracing::{debug, info};
 
 use restate_bifrost::BifrostService;
 use restate_bifrost::loglet::FindTailOptions;
+use restate_core::config::Configuration;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, TaskKind};
 use restate_rocksdb::RocksDbManager;
-use restate_types::config::Configuration;
+use restate_types::live::LiveLoadExt;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_wal_protocol::Envelope;
 
@@ -59,15 +60,15 @@ struct DecodedLogRecord {
 }
 
 async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
-    run_in_task_center(opts.config_file.as_ref(), |config| async move {
-        if !config.bifrost.local.data_dir().exists() {
+    run_in_task_center(opts.config_file.as_ref(), async |config| {
+        if !restate_bifrost::providers::local_loglet::local_loglet_data_dir().exists() {
             bail!(
                 "The specified path '{}' does not contain a local-loglet directory.",
-                config.bifrost.local.data_dir().display()
+                restate_bifrost::providers::local_loglet::local_loglet_data_dir().display()
             );
         }
 
-        let rocksdb_manager = RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+        let rocksdb_manager = RocksDbManager::init(Configuration::map_live(|c| &c.common));
         debug!("RocksDB Initialized");
 
         let metadata_builder = MetadataBuilder::default();
@@ -89,8 +90,11 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
             metadata_manager.run(),
         )?;
 
-        let bifrost_svc =
-            BifrostService::new(metadata_writer).enable_local_loglet(&Configuration::updateable());
+        let bifrost_svc = BifrostService::new(metadata_writer).enable_local_loglet(
+            Configuration::live()
+                .map(|config| &config.bifrost.local)
+                .boxed(),
+        );
 
         let bifrost = bifrost_svc.handle();
         // Ensures bifrost has initial metadata synced up before starting the worker.

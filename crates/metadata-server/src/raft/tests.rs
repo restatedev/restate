@@ -16,13 +16,14 @@ use futures::TryFutureExt;
 use googletest::IntoTestResult;
 use rand::RngCore;
 use rand::distr::{Alphanumeric, SampleString};
+use restate_core::config::{Configuration, set_global_config};
 use restate_core::metadata_store::{Precondition, serialize_value};
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataBuilder, TaskCenter, TaskKind, cancellation_token};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    CommonOptions, Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
-    MetadataServerOptions, RaftOptions, RocksDbOptions, set_current_config,
+    CommonOptions, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
+    MetadataServerOptions, RaftOptions,
 };
 use restate_types::health::Health;
 use restate_types::live::Constant;
@@ -44,7 +45,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     configuration
         .metadata_server
         .set_kind(MetadataServerKind::Raft(raft_options));
-    set_current_config(configuration);
+    set_global_config(configuration);
 
     let uds = tempfile::tempdir()?.into_path().join("server.sock");
     let bind_address = BindAddress::Uds(uds.clone());
@@ -53,10 +54,9 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     RocksDbManager::init(Constant::new(CommonOptions::default()));
 
     // initialize the local storage with some data that we can migrate
-    let mut local_storage = crate::local::storage::RocksDbStorage::create(
-        &MetadataServerOptions::default(),
-        Constant::new(RocksDbOptions::default()).boxed(),
-    )
+    let mut local_storage = crate::local::storage::RocksDbStorage::create(Constant::new(
+        MetadataServerOptions::default(),
+    ))
     .await?;
 
     let my_generation = 1;
@@ -64,7 +64,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     let mut nodes_configuration =
         NodesConfiguration::new(Version::MIN, "migration-local-to-replicated".to_owned());
     let my_node_config = NodeConfig::new(
-        Configuration::pinned().common.node_name().to_owned(),
+        Configuration::with_current(|config| config.common.node_name().to_owned()),
         // configure a zero node id to test the migration path for zero node ids
         PlainNodeId::from(0).with_generation(my_generation),
         NodeLocation::default(),
@@ -116,7 +116,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     let health = Health::default();
 
     let metadata_server = RaftMetadataServer::create(
-        Constant::new(RocksDbOptions::default()).boxed(),
+        Constant::new(MetadataServerOptions::default()),
         health.metadata_server_status(),
         &mut server_builder,
     )
@@ -155,9 +155,10 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
 
     assert_eq!(actual_nodes_configuration.len(), 1);
 
-    let my_actual_node_config = actual_nodes_configuration
-        .find_node_by_name(Configuration::pinned().common.node_name())
-        .expect("my node config should be present");
+    let my_actual_node_config = Configuration::with_current(|config| {
+        actual_nodes_configuration.find_node_by_name(config.common.node_name())
+    })
+    .expect("my node config should be present");
     // validate that the zero node id was migrated to a non-zero value
     assert_ne!(
         my_actual_node_config.current_generation.as_plain(),

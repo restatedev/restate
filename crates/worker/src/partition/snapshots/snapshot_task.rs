@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::PathBuf;
 use std::time::SystemTime;
 
 use tracing::{debug, info, instrument, warn};
@@ -20,13 +19,12 @@ use restate_partition_store::snapshots::{
 };
 use restate_types::identifiers::{PartitionId, SnapshotId};
 
-use crate::partition::snapshots::SnapshotRepository;
+use crate::partition::snapshots::{SnapshotRepository, snapshots_base_dir};
 
 /// Creates a partition store snapshot along with Restate snapshot metadata.
 pub struct SnapshotPartitionTask {
     pub snapshot_id: SnapshotId,
     pub partition_id: PartitionId,
-    pub snapshot_base_path: PathBuf,
     pub partition_store_manager: PartitionStoreManager,
     pub cluster_name: String,
     pub node_name: String,
@@ -59,7 +57,7 @@ impl SnapshotPartitionTask {
             .export_partition_snapshot(
                 self.partition_id,
                 self.snapshot_id,
-                self.snapshot_base_path.as_path(),
+                snapshots_base_dir().as_path(),
             )
             .await?;
 

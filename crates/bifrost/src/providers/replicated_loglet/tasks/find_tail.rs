@@ -13,11 +13,11 @@ use std::time::Duration;
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
 
+use restate_core::config::Configuration;
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{NetworkError, Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenterFutureExt};
 use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, LogletId, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail};
@@ -509,10 +509,9 @@ impl<'a> FindTailOnNode<'a> {
         self,
         networking: &'a Networking<T>,
     ) -> (PlainNodeId, NodeTailStatus) {
-        let request_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
+        let request_timeout = *Configuration::with_current(|config| {
+            config.bifrost.replicated_loglet.log_server_rpc_timeout
+        });
 
         let request = GetLogletInfo {
             header: LogServerRequestHeader::new(
@@ -587,16 +586,17 @@ impl WaitForTailOnNode {
         requested_tail: LogletOffset,
         networking: Networking<T>,
     ) -> (PlainNodeId, NodeTailStatus) {
-        let request_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
+        let request_timeout = *Configuration::with_current(|config| {
+            config.bifrost.replicated_loglet.log_server_rpc_timeout
+        });
 
-        let retry_policy = Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_retry_policy
-            .clone();
+        let retry_policy = Configuration::with_current(|config| {
+            config
+                .bifrost
+                .replicated_loglet
+                .log_server_retry_policy
+                .clone()
+        });
 
         let mut retry_iter = retry_policy.into_iter();
         loop {

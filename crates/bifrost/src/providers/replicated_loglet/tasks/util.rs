@@ -10,16 +10,15 @@
 
 use std::time::Duration;
 
-use tokio::time::Instant;
-use tracing::{instrument, trace};
-
 use restate_core::ShutdownError;
+use restate_core::config::Configuration;
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Incoming, NetworkError, Networking, TransportConnect};
 use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
 use restate_types::net::log_server::{LogServerRequest, LogServerResponse};
 use restate_types::retries::RetryPolicy;
+use tokio::time::Instant;
+use tracing::{instrument, trace};
 
 use crate::loglet::util::TailOffsetWatch;
 
@@ -83,10 +82,9 @@ where
     ) -> Result<O, TaskError> {
         let start = Instant::now();
         let loglet_id = self.request.header().loglet_id;
-        let request_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
+        let request_timeout = Configuration::with_current(|config| {
+            *config.bifrost.replicated_loglet.log_server_rpc_timeout
+        });
 
         let mut retry_iter = self.retry_policy.into_iter();
 

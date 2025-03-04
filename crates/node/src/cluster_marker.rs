@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::config::node_filepath;
+use restate_core::config::node_filepath;
 use semver::Version;
 use std::cmp::Ordering;
 use std::fs::{File, OpenOptions};

@@ -12,8 +12,8 @@ use restate_core::{Metadata, TaskCenterFutureExt};
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, debug, instrument, trace, warn};
 
+use restate_core::config::Configuration;
 use restate_core::network::{Incoming, Networking, TransportConnect};
-use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Status, Trim, Trimmed};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
@@ -128,11 +128,13 @@ impl<'a> TrimTask<'a> {
                         request,
                         &trim_rpc_router,
                         &known_global_tail,
-                        Configuration::pinned()
-                            .bifrost
-                            .replicated_loglet
-                            .log_server_retry_policy
-                            .clone(),
+                        Configuration::with_current(|config| {
+                            config
+                                .bifrost
+                                .replicated_loglet
+                                .log_server_retry_policy
+                                .clone()
+                        }),
                     );
 
                     (node_id, task.run(on_trim_response, &networking).await)

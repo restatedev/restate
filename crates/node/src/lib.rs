@@ -21,6 +21,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
+use restate_core::config::Configuration;
 use restate_core::metadata_store::{
     Precondition, ReadWriteError, WriteError, retry_on_retryable_error,
 };
@@ -36,8 +37,9 @@ use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
 };
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::config::CommonOptions;
 use restate_types::live::Live;
+use restate_types::live::LiveLoadExt;
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
@@ -180,12 +182,9 @@ impl Node {
         let partition_routing_refresher = PartitionRoutingRefresher::default();
 
         #[cfg(feature = "replicated-loglet")]
-        let record_cache = RecordCache::new(
-            Configuration::pinned()
-                .bifrost
-                .record_cache_memory_size
-                .as_usize(),
-        );
+        let record_cache = RecordCache::new(Configuration::with_current(|config| {
+            config.bifrost.record_cache_memory_size.as_usize()
+        }));
 
         // Setup bifrost
         // replicated-loglet
@@ -196,8 +195,12 @@ impl Node {
             record_cache.clone(),
             &mut router_builder,
         );
-        let bifrost_svc =
-            BifrostService::new(metadata_manager.writer()).enable_local_loglet(&updateable_config);
+        let bifrost_svc = BifrostService::new(metadata_manager.writer()).enable_local_loglet(
+            updateable_config
+                .clone()
+                .map(|config| &config.bifrost.local)
+                .boxed(),
+        );
 
         #[cfg(feature = "replicated-loglet")]
         let bifrost_svc = bifrost_svc.with_factory(replicated_loglet_factory);
@@ -579,7 +582,7 @@ impl ClusterConfiguration {
         ClusterConfiguration {
             num_partitions: configuration.common.default_num_partitions,
             partition_replication: configuration.admin.default_partition_replication.clone(),
-            bifrost_provider: ProviderConfiguration::from_configuration(configuration),
+            bifrost_provider: ProviderConfiguration::from_bifrost_options(&configuration.bifrost),
         }
     }
 }

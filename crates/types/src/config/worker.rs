@@ -17,7 +17,6 @@ use serde_with::serde_as;
 use tracing::warn;
 
 use super::{CommonOptions, ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder};
-use crate::identifiers::PartitionId;
 use crate::retries::RetryPolicy;
 use restate_serde_util::NonZeroByteCount;
 
@@ -334,14 +333,6 @@ impl StorageOptions {
             .get()
     }
 
-    pub fn data_dir(&self) -> PathBuf {
-        super::data_dir("db")
-    }
-
-    pub fn snapshots_staging_dir(&self) -> PathBuf {
-        super::data_dir("pp-snapshots")
-    }
-
     pub fn persist_lsn_interval(&self) -> Option<Duration> {
         if self.persist_lsn_interval.is_zero() {
             None
@@ -409,14 +400,4 @@ pub struct SnapshotsOptions {
 
 fn is_default_snapshots_options(opts: &SnapshotsOptions) -> bool {
     opts == &SnapshotsOptions::default()
-}
-
-impl SnapshotsOptions {
-    pub fn snapshots_base_dir(&self) -> PathBuf {
-        super::data_dir("db-snapshots")
-    }
-
-    pub fn snapshots_dir(&self, partition_id: PartitionId) -> PathBuf {
-        super::data_dir("db-snapshots").join(partition_id.to_string())
-    }
 }

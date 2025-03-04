@@ -10,11 +10,10 @@
 
 use std::io::Write;
 
+use restate_core::config::Configuration;
 use restate_rocksdb::RocksDbManager;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::{info, warn};
-
-use restate_types::config::Configuration;
 
 pub(super) async fn shutdown() -> &'static str {
     let signal = tokio::select! {
@@ -34,7 +33,7 @@ pub(super) async fn sigusr1_dump_config() {
     loop {
         stream.recv().await;
         warn!("Received SIGUSR1, dumping configuration");
-        let config = Configuration::pinned().dump();
+        let config = Configuration::with_current(|config| config.dump());
         match config {
             Err(e) => warn!("Failed to dump configuration: {}", e),
             Ok(config) => {

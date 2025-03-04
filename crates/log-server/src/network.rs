@@ -20,8 +20,8 @@ use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, trace};
 
 use restate_core::cancellation_watcher;
+use restate_core::config::Configuration;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
-use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::logs::LogletId;

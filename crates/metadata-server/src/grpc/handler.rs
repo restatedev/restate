@@ -12,15 +12,14 @@ use std::ops::Deref;
 
 use async_trait::async_trait;
 use metrics::{counter, histogram};
-use tokio::sync::{oneshot, watch};
-use tokio::time::Instant;
-use tonic::{Request, Response, Status};
-
+use restate_core::config::Configuration;
 use restate_core::metadata_store::{Precondition, serialize_value};
-use restate_types::config::Configuration;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
+use tokio::sync::{oneshot, watch};
+use tokio::time::Instant;
+use tonic::{Request, Response, Status};
 
 use crate::grpc::metadata_server_svc_server::MetadataServerSvc;
 use crate::grpc::pb_conversions::ConversionError;
@@ -258,8 +257,10 @@ impl MetadataServerSvc for MetadataServerHandler {
                     .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
             // Make sure that the NodesConfiguration our node and has the right metadata store state set.
-            prepare_initial_nodes_configuration(&Configuration::pinned(), &mut nodes_configuration)
-                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+            Configuration::with_current(|config| {
+                prepare_initial_nodes_configuration(config, &mut nodes_configuration)
+            })
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
             let versioned_value = serialize_value(&nodes_configuration)
                 .map_err(|err| Status::invalid_argument(err.to_string()))?;

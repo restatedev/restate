@@ -448,8 +448,9 @@ mod tests {
     use restate_core::{MetadataKind, TargetVersion, TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
     use restate_types::Versioned;
-    use restate_types::config::{CommonOptions, Configuration};
-    use restate_types::live::{Constant, Live};
+    use restate_types::config::CommonOptions;
+    use restate_types::config::LocalLogletOptions;
+    use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::metadata::{ProviderKind, new_single_node_loglet_params};
     use restate_types::logs::{KeyFilter, SequenceNumber};
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
@@ -469,10 +470,10 @@ mod tests {
 
         let read_from = Lsn::from(6);
 
-        let config = Live::from_value(Configuration::default());
+        let config = Constant::new(LocalLogletOptions::default()).boxed();
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-        let svc = BifrostService::new(env.metadata_writer).enable_local_loglet(&config);
+        let svc = BifrostService::new(env.metadata_writer).enable_local_loglet(config);
         let bifrost = svc.handle();
         svc.start().await.expect("loglet must start");
 
@@ -548,11 +549,10 @@ mod tests {
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
-        let config = Live::from_value(Configuration::default());
+        let config = Constant::new(LocalLogletOptions::default()).boxed();
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-        let svc =
-            BifrostService::new(node_env.metadata_writer.clone()).enable_local_loglet(&config);
+        let svc = BifrostService::new(node_env.metadata_writer.clone()).enable_local_loglet(config);
         let bifrost = svc.handle();
 
         svc.start().await.expect("loglet must start");
@@ -647,12 +647,12 @@ mod tests {
             .build()
             .await;
 
-        let config = Live::from_value(Configuration::default());
+        let config = Constant::new(LocalLogletOptions::default()).boxed();
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer.clone())
-            .enable_local_loglet(&config)
+            .enable_local_loglet(config)
             .enable_in_memory_loglet();
         let bifrost = svc.handle();
         svc.start().await.expect("loglet must start");
@@ -807,12 +807,12 @@ mod tests {
             .build()
             .await;
 
-        let config = Live::from_value(Configuration::default());
+        let config = Constant::new(LocalLogletOptions::default()).boxed();
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer)
-            .enable_local_loglet(&config)
+            .enable_local_loglet(config)
             .enable_in_memory_loglet();
         let bifrost = svc.handle();
         svc.start().await.expect("loglet must start");
@@ -927,12 +927,12 @@ mod tests {
             .build()
             .await;
 
-        let config = Live::from_value(Configuration::default());
+        let config = Constant::new(LocalLogletOptions::default()).boxed();
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer)
-            .enable_local_loglet(&config)
+            .enable_local_loglet(config)
             .enable_in_memory_loglet();
         let bifrost = svc.handle();
         svc.start().await.expect("loglet must start");

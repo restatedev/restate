@@ -17,6 +17,7 @@ use enumset::EnumSet;
 use tonic::{Request, Response, Status};
 use tracing::debug;
 
+use restate_core::config::Configuration;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
@@ -28,7 +29,6 @@ use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{Metadata, MetadataKind, TargetVersion, TaskCenter, task_center};
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::Version;
-use restate_types::config::Configuration;
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
@@ -188,7 +188,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         request: Request<ProvisionClusterRequest>,
     ) -> Result<Response<ProvisionClusterResponse>, Status> {
         let request = request.into_inner();
-        let config = Configuration::pinned();
+        let config = Configuration::current();
 
         let dry_run = request.dry_run;
         let cluster_configuration = Self::resolve_cluster_configuration(&config, request)
@@ -235,10 +235,12 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let mut max_metadata_cluster_configuration = None;
 
         for (node_id, node_config) in nodes_configuration.iter_role(Role::MetadataServer) {
-            let mut metadata_server_client = MetadataServerSvcClient::new(create_tonic_channel(
-                node_config.address.clone(),
-                &Configuration::pinned().networking,
-            ));
+            let mut metadata_server_client = Configuration::with_current(|config| {
+                MetadataServerSvcClient::new(create_tonic_channel(
+                    node_config.address.clone(),
+                    &config.networking,
+                ))
+            });
 
             let response = match metadata_server_client.status(()).await {
                 Ok(response) => response.into_inner(),

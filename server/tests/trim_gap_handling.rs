@@ -24,6 +24,7 @@ use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::Cluste
 use restate_admin::cluster_controller::protobuf::{
     ClusterStateRequest, CreatePartitionSnapshotRequest, DescribeLogRequest, TrimLogRequest,
 };
+use restate_core::config::Configuration;
 use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
 use restate_local_cluster_runner::{
     cluster::Cluster,
@@ -33,10 +34,10 @@ use restate_types::config::{LogFormat, MetadataClientKind};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
 use restate_types::logs::{LogId, Lsn};
+use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::RunMode;
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::retries::RetryPolicy;
-use restate_types::{config::Configuration, nodes_config::Role};
 
 mod common;
 

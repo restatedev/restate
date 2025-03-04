@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod config;
 mod error;
 mod metadata;
 pub mod metadata_store;
@@ -46,7 +47,7 @@ pub use metadata::{
     TargetVersion, spawn_metadata_manager,
 };
 pub use task_center::{
-    AsyncRuntime, MetadataFutureExt, RuntimeError, RuntimeTaskHandle, TaskCenter,
+    AsyncRuntime, OverrideFutureExt, RuntimeError, RuntimeTaskHandle, TaskCenter,
     TaskCenterBuildError, TaskCenterBuilder, TaskCenterFutureExt, TaskContext, TaskHandle, TaskId,
     TaskKind, cancellation_token, cancellation_watcher, is_cancellation_requested, my_node_id,
 };

@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use crate::cluster_marker::mark_cluster_as_provisioned;
+use restate_core::config::Configuration;
 use restate_core::metadata_store::{MetadataStoreClient, ReadWriteError};
 use restate_core::{
     Metadata, MetadataWriter, ShutdownError, SyncError, TargetVersion, cancellation_token,
 };
 use restate_types::PlainNodeId;
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::config::CommonOptions;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
@@ -70,7 +71,7 @@ impl<'a> NodeInit<'a> {
     }
 
     pub async fn init(self) -> anyhow::Result<()> {
-        let config = Configuration::pinned().into_arc();
+        let config = Configuration::current();
 
         let join_cluster = Self::join_cluster(
             self.metadata_store_client,
@@ -123,9 +124,8 @@ impl<'a> NodeInit<'a> {
         // fetch the latest metadata
         let metadata = Metadata::current();
 
-        let config = Configuration::pinned();
-
-        let retry_policy = config.common.network_error_retry_policy.clone();
+        let retry_policy =
+            Configuration::with_current(|config| config.common.network_error_retry_policy.clone());
 
         if let Err(err) = retry_policy
             .retry_if(
@@ -358,7 +358,7 @@ mod tests {
     use googletest::assert_that;
     use googletest::matchers::{contains_substring, displays_as, err};
     use restate_core::TestCoreEnvBuilder;
-    use restate_types::config::{Configuration, set_current_config};
+    use restate_core::config::{Configuration, set_global_config};
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -370,7 +370,7 @@ mod tests {
         config.common.set_cluster_name(&cluster_name);
         config.common.set_node_name(&node_name);
         config.common.force_node_id = Some(PlainNodeId::new(1337));
-        set_current_config(config);
+        set_global_config(config);
 
         let node_config = NodeConfig::new(
             node_name,
@@ -410,7 +410,7 @@ mod tests {
         let mut config = Configuration::default();
         config.common.set_cluster_name(&cluster_name);
         config.common.set_node_name(&node_name);
-        set_current_config(config);
+        set_global_config(config);
 
         let nodes_configuration = NodesConfiguration::new(Version::MIN, other_cluster_name);
 

@@ -209,7 +209,7 @@ impl ConfigLoader {
         if should_update {
             match self.load_once() {
                 Ok(config) => {
-                    crate::config::set_current_config(config);
+                    crate::config::set_global_config(config);
                 }
                 Err(e) => {
                     warn!(
