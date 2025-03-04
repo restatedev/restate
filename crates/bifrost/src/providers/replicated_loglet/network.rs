@@ -73,23 +73,17 @@ macro_rules! return_error_status {
 }
 
 pub struct RequestPump {
-    metadata: Metadata,
     append_stream: MessageStream<Append>,
     get_sequencer_state_stream: MessageStream<GetSequencerState>,
 }
 
 impl RequestPump {
-    pub fn new(
-        _opts: &ReplicatedLogletOptions,
-        metadata: Metadata,
-        router_builder: &mut MessageRouterBuilder,
-    ) -> Self {
+    pub fn new(_opts: &ReplicatedLogletOptions, router_builder: &mut MessageRouterBuilder) -> Self {
         // todo(asoli) read from opts
         let queue_length = 128;
         let append_stream = router_builder.subscribe_to_stream(queue_length);
         let get_sequencer_state_stream = router_builder.subscribe_to_stream(queue_length);
         Self {
-            metadata,
             append_stream,
             get_sequencer_state_stream,
         }
@@ -261,7 +255,8 @@ impl RequestPump {
         peer_version: &PeerMetadataVersion,
         header: &CommonRequestHeader,
     ) -> Result<Arc<ReplicatedLoglet<T>>, SequencerStatus> {
-        let mut current_logs_version = provider.networking().metadata().logs_version();
+        let metadata = Metadata::current();
+        let mut current_logs_version = metadata.logs_version();
         let request_logs_version = peer_version.logs.unwrap_or(current_logs_version);
 
         loop {
@@ -282,9 +277,7 @@ impl RequestPump {
             }
 
             if request_logs_version > current_logs_version {
-                match provider
-                    .networking()
-                    .metadata()
+                match metadata
                     .sync(
                         MetadataKind::Logs,
                         TargetVersion::Version(request_logs_version),
@@ -298,8 +291,7 @@ impl RequestPump {
                         //todo(azmy): make timeout configurable
                         let result = tokio::time::timeout(
                             Duration::from_secs(2),
-                            self.metadata
-                                .wait_for_version(MetadataKind::Logs, request_logs_version),
+                            metadata.wait_for_version(MetadataKind::Logs, request_logs_version),
                         )
                         .await;
 
@@ -316,7 +308,7 @@ impl RequestPump {
                     }
                 }
 
-                current_logs_version = provider.networking().metadata().logs_version();
+                current_logs_version = metadata.logs_version();
             } else {
                 return Err(SequencerStatus::UnknownLogId);
             }
@@ -329,7 +321,7 @@ impl RequestPump {
         header: &CommonRequestHeader,
     ) -> Result<Arc<ReplicatedLoglet<T>>, SequencerStatus> {
         // search the chain
-        let logs = self.metadata.logs_ref();
+        let logs = Metadata::with_current(|m| m.logs_ref());
         let chain = logs
             .chain(&header.log_id)
             .ok_or(SequencerStatus::UnknownLogId)?;

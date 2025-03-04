@@ -13,9 +13,9 @@ use std::time::Duration;
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
 
-use restate_core::TaskCenterFutureExt;
 use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::{NetworkError, Networking, TransportConnect};
+use restate_core::{Metadata, TaskCenterFutureExt};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
@@ -93,13 +93,14 @@ impl<T: TransportConnect> FindTailTask<T> {
 
     #[instrument(skip_all)]
     pub async fn run(self, opts: FindTailFlags) -> FindTailResult {
+        let metadata = Metadata::current();
         // Special case:
         // If all nodes in the nodeset is in "provisioning", we can confidently short-circuit
         // the result to LogletOffset::Oldest and the loglet is definitely unsealed.
         if self
             .my_params
             .nodeset
-            .all_provisioning(&self.networking.metadata().nodes_config_ref())
+            .all_provisioning(&metadata.nodes_config_ref())
         {
             return FindTailResult::Open {
                 global_tail: LogletOffset::OLDEST,
@@ -178,7 +179,7 @@ impl<T: TransportConnect> FindTailTask<T> {
             let effective_nodeset = self
                 .my_params
                 .nodeset
-                .to_effective(&self.networking.metadata().nodes_config_ref());
+                .to_effective(&metadata.nodes_config_ref());
 
             let mut inflight_info_requests = JoinSet::new();
             for node in effective_nodeset.iter() {
@@ -205,7 +206,7 @@ impl<T: TransportConnect> FindTailTask<T> {
             // procedure.
             let mut nodeset_checker = NodeSetChecker::<NodeTailStatus>::new(
                 &effective_nodeset,
-                &self.networking.metadata().nodes_config_ref(),
+                &metadata.nodes_config_ref(),
                 &self.my_params.replication,
             );
 

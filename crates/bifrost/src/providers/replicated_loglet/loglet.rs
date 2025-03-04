@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tracing::{debug, info, instrument, trace};
 
+use restate_core::my_node_id;
 use restate_core::network::{Networking, TransportConnect};
 use restate_types::logs::metadata::{ProviderKind, SegmentIndex};
 use restate_types::logs::{
@@ -77,7 +78,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         record_cache: RecordCache,
     ) -> Self {
         let known_global_tail = TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST));
-        let sequencer = if networking.my_node_id() == my_params.sequencer {
+        let sequencer = if my_node_id() == my_params.sequencer {
             debug!(
                 loglet_id = %my_params.loglet_id,
                 "We are the sequencer node for this loglet"
