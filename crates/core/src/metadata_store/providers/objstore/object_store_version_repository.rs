@@ -11,7 +11,7 @@
 use anyhow::Context;
 use bytes::Bytes;
 use bytestring::ByteString;
-use object_store::path::Path;
+use object_store::path::{Path, PathPart};
 use object_store::{Error, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
 use restate_object_store_util::create_object_store_client;
 use tracing::info;
@@ -69,7 +69,8 @@ impl ObjectStoreVersionRepository {
     /// Convert a metadata store key into an object store path.
     #[inline]
     fn path(&self, key: &ByteString) -> Path {
-        self.prefix.child(key.to_string())
+        self.prefix
+            .child(PathPart::from(<ByteString as AsRef<str>>::as_ref(key)))
     }
 }
 
