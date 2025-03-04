@@ -234,13 +234,12 @@ jobs:
         run: ./tools/scripts/verify-ui-artifact
 
   jepsen:
-    needs: docker
     # id tokens are not available on forks
     if: github.event.repository.fork == false
     runs-on: warp-ubuntu-latest-arm64-4x
     name: Run Jepsen tests
-    concurrency:
-      group: singleton # due to the shared Jepsen worker cluster across PRs
+    env:
+      CLUSTER_NAME: restatedev-restate-${{ github.event.pull_request.number != null && format('pr{0}', github.event.pull_request.number) || format('run{0}', github.run_id) }}
     permissions:
       contents: read
       issues: read
@@ -248,12 +247,35 @@ jobs:
       pull-requests: write
       actions: read
       id-token: write # NB: can obtain OIDC tokens on behalf of this repository!
+
     steps:
-    - uses: restatedev/jepsen/.github/actions/run-tests@reusable
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: us-east-1 # co-locate with WarpBuild worker
+        role-to-assume: 'arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role'
+    - name: Setup Jepsen cluster ${{ env.CLUSTER_NAME }}
+      uses: restatedev/jepsen/.github/actions/setup
+      with:
+        ref: ${{ inputs.ref }}
+        clusterName: ${{ env.CLUSTER_NAME }}
+    - name: Wait for Docker image artifact
+      id: wait-for-docker
+      uses: fountainhead/action-wait-for-check@v1.2.0
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        checkName: docker
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        timeoutSeconds: 1800
+        intervalSeconds: 10
+    - name: Run Jepsen tests
+      uses: restatedev/jepsen/.github/actions/run-tests
+      if: steps.wait-for-docker.outputs.conclusion == 'success'
       continue-on-error: true
       with:
-        ref: reusable
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-        roleArn: 'arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role'
-        clusterName: jepsen-cluster-restatedev-restate
         testConfig: '{ "workloads": "set-vo set-mds set-mds-s3", "nemeses": "partition-random-node", "duration": "60", "rate": "10", "concurrency": "5n", "testCount": "1" }'
+    - name: Tear down Jepsen cluster ${{ env.CLUSTER_NAME }}
+      uses: restatedev/jepsen/.github/actions/teardown
+      if: always()
+      with:
+        clusterName: ${{ env.CLUSTER_NAME }}
