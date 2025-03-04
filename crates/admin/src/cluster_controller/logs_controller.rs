@@ -23,7 +23,7 @@ use tracing::{Instrument, Level, debug, enabled, error, info, trace_span};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BifrostError};
-use restate_core::metadata_store::{Precondition, WriteError};
+use restate_core::metadata_store::WriteError;
 use restate_core::{
     Metadata, MetadataKind, MetadataWriter, ShutdownError, TargetVersion, TaskCenterFutureExt,
 };
@@ -37,6 +37,7 @@ use restate_types::logs::metadata::{
     ProviderKind, ReplicatedLogletConfig, SegmentIndex,
 };
 use restate_types::logs::{LogId, LogletId, Lsn, TailState};
+use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, StorageState};
 use restate_types::partition_table::PartitionTable;

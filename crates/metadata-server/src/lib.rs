@@ -20,25 +20,24 @@ use crate::raft::{RaftMetadataServer, create_replicated_metadata_client};
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
-use grpc::pb_conversions::ConversionError;
 use itertools::Itertools;
 use prost::Message;
 use raft_proto::eraftpb::Snapshot;
-use restate_core::metadata_store::VersionedValue;
 use restate_core::metadata_store::providers::{
     EtcdMetadataStore, create_object_store_based_meta_store,
 };
 pub use restate_core::metadata_store::{
-    MetadataStoreClient, Precondition, ReadError, ReadModifyWriteError, WriteError,
+    MetadataStoreClient, ReadError, ReadModifyWriteError, WriteError,
 };
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
 use restate_types::config::{
     Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
 };
-use restate_types::errors::{GenericError, MaybeRetryableError};
+use restate_types::errors::{ConversionError, GenericError, MaybeRetryableError};
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,

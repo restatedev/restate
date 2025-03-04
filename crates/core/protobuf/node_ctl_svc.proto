@@ -12,6 +12,7 @@ syntax = "proto3";
 import "google/protobuf/empty.proto";
 import "restate/cluster.proto";
 import "restate/common.proto";
+import "restate/metadata.proto";
 
 package restate.node_ctl_svc;
 
@@ -19,6 +20,7 @@ service NodeCtlSvc {
   // Get identity information from this node.
   rpc GetIdent(google.protobuf.Empty) returns (IdentResponse);
 
+  // Get metadata given the metadata kind
   rpc GetMetadata(GetMetadataRequest) returns (GetMetadataResponse);
 
   // Provision the Restate cluster on this node.
@@ -27,6 +29,21 @@ service NodeCtlSvc {
 
   // Returns the cluster health from the point of view of this node.
   rpc ClusterHealth(google.protobuf.Empty) returns (ClusterHealthResponse);
+
+  // Metadata proxy functions
+
+  // Get a versioned kv-pair
+  rpc MetadataGet(MetadataGetRequest) returns (MetadataGetResponse);
+
+  // Get the current version for a kv-pair
+  rpc MetadataGetVersion(MetadataGetRequest)
+      returns (MetadataGetVersionResponse);
+
+  // Puts the given kv-pair into the metadata store
+  rpc MetadataPut(MetadataPutRequest) returns (google.protobuf.Empty);
+
+  // Deletes the given kv-pair
+  rpc MetadataDelete(MetadataDeleteRequest) returns (google.protobuf.Empty);
 }
 
 message ProvisionClusterRequest {
@@ -42,7 +59,8 @@ message ProvisionClusterRequest {
   // if unset then the configured cluster default log replication will be used
   optional restate.cluster.ReplicationProperty log_replication = 5;
   // only used if provider = "replicated"
-  // if unset then the configured cluster default target nodeset size will be used
+  // if unset then the configured cluster default target nodeset size will be
+  // used
   optional uint32 target_nodeset_size = 6;
 }
 
@@ -91,4 +109,25 @@ message ClusterHealthResponse {
 
 message EmbeddedMetadataClusterHealth {
   repeated restate.common.NodeId members = 1;
+}
+
+message MetadataGetRequest { string key = 1; }
+
+message MetadataPutRequest {
+  string key = 1;
+  restate.metadata.VersionedValue value = 2;
+  restate.metadata.Precondition precondition = 3;
+}
+
+message MetadataDeleteRequest {
+  string key = 1;
+  restate.metadata.Precondition precondition = 2;
+}
+
+message MetadataGetResponse {
+  optional restate.metadata.VersionedValue value = 1;
+}
+
+message MetadataGetVersionResponse {
+  optional restate.common.Version version = 1;
 }

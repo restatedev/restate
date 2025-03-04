@@ -22,14 +22,19 @@ use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
 use restate_core::protobuf::node_ctl_svc::{
     ClusterHealthResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest, GetMetadataResponse,
-    IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse,
+    IdentResponse, MetadataDeleteRequest, MetadataGetRequest, MetadataGetResponse,
+    MetadataGetVersionResponse, MetadataPutRequest, ProvisionClusterRequest,
+    ProvisionClusterResponse,
 };
 use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{Metadata, MetadataKind, TargetVersion, TaskCenter, task_center};
+use restate_metadata_server::WriteError;
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::Version;
 use restate_types::config::Configuration;
+use restate_types::errors::ConversionError;
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
+use restate_types::metadata::VersionedValue;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::replication::ReplicationProperty;
@@ -278,5 +283,99 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         };
 
         Ok(Response::new(cluster_state_response))
+    }
+
+    /// Get a versioned kv-pair
+    async fn metadata_get(
+        &self,
+        request: tonic::Request<MetadataGetRequest>,
+    ) -> Result<Response<MetadataGetResponse>, Status> {
+        let request = request.into_inner();
+        let value = self
+            .metadata_store_client
+            .inner()
+            .get(request.key.into())
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let response = MetadataGetResponse {
+            value: value.map(Into::into),
+        };
+
+        Ok(Response::new(response))
+    }
+
+    /// Get the current version for a kv-pair
+    async fn metadata_get_version(
+        &self,
+        request: Request<MetadataGetRequest>,
+    ) -> Result<Response<MetadataGetVersionResponse>, Status> {
+        let request = request.into_inner();
+        let value = self
+            .metadata_store_client
+            .inner()
+            .get_version(request.key.into())
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let response = MetadataGetVersionResponse {
+            version: value.map(Into::into),
+        };
+
+        Ok(Response::new(response))
+    }
+    /// Puts the given kv-pair into the metadata store
+    async fn metadata_put(
+        &self,
+        request: Request<MetadataPutRequest>,
+    ) -> Result<Response<()>, Status> {
+        let request = request.into_inner();
+        let value: VersionedValue = request
+            .value
+            .ok_or_else(|| Status::invalid_argument("value is required"))?
+            .try_into()
+            .map_err(|err: ConversionError| Status::invalid_argument(err.to_string()))?;
+
+        let precondition = request
+            .precondition
+            .ok_or_else(|| Status::invalid_argument("precondition is required"))?
+            .try_into()
+            .map_err(|err: ConversionError| Status::invalid_argument(err.to_string()))?;
+
+        self.metadata_store_client
+            .inner()
+            .put(request.key.into(), value, precondition)
+            .await
+            .map_err(|err| match err {
+                WriteError::FailedPrecondition(msg) => Status::failed_precondition(msg),
+                err => Status::internal(err.to_string()),
+            })?;
+
+        Ok(Response::new(()))
+    }
+
+    /// Deletes the given kv-pair
+    async fn metadata_delete(
+        &self,
+        request: Request<MetadataDeleteRequest>,
+    ) -> Result<Response<()>, Status> {
+        let request = request.into_inner();
+
+        let precondition = request
+            .precondition
+            .ok_or_else(|| Status::invalid_argument("precondition is required"))?
+            .try_into()
+            .map_err(|err: ConversionError| Status::invalid_argument(err.to_string()))?;
+
+        self.metadata_store_client
+            .inner()
+            .delete(request.key.into(), precondition)
+            .await
+            .map_err(|err| match err {
+                WriteError::FailedPrecondition(msg) => Status::failed_precondition(msg),
+                err => Status::internal(err.to_string()),
+            })?;
+
+        Ok(Response::new(()))
     }
 }
