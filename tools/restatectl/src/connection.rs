@@ -269,14 +269,15 @@ impl ConnectionInfo {
     /// Returns an error if:
     /// - No nodes match the requested role.
     /// - All nodes return an error.
-    pub async fn try_each<F, T, Fut>(
+    pub async fn try_each<F, T, E, Fut>(
         &self,
         role: Option<Role>,
         mut node_operation: F,
     ) -> Result<Response<T>, ConnectionInfoError>
     where
         F: FnMut(Channel) -> Fut,
-        Fut: Future<Output = Result<Response<T>, Status>>,
+        E: Into<NodeOperationError>,
+        Fut: Future<Output = Result<Response<T>, E>>,
     {
         let nodes_config = self.get_nodes_configuration().await?;
         let mut open_connections = self.open_connections.lock().await;
@@ -306,10 +307,10 @@ impl ConnectionInfo {
 
             if let Some(channel) = channel {
                 debug!("Trying {}...", node.address);
-                let result = node_operation(channel).await;
+                let result = node_operation(channel).await.map_err(Into::into);
                 match result {
                     Ok(response) => return Ok(response),
-                    Err(status) => {
+                    Err(NodeOperationError::Retryable(status)) => {
                         if status.code() == Code::Unavailable
                             || status.code() == Code::DeadlineExceeded
                         {
@@ -319,6 +320,10 @@ impl ConnectionInfo {
                                 .insert(node.address.clone());
                         }
                         errors.error(node.address.clone(), status);
+                    }
+                    Err(NodeOperationError::Terminal(status)) => {
+                        errors.error(node.address.clone(), status);
+                        break;
                     }
                 }
             } else {
@@ -372,6 +377,20 @@ impl ConnectionInfo {
                 })
                 .clone(),
         )
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum NodeOperationError {
+    #[error(transparent)]
+    Retryable(Status),
+    #[error(transparent)]
+    Terminal(Status),
+}
+
+impl From<Status> for NodeOperationError {
+    fn from(value: Status) -> Self {
+        Self::Retryable(value)
     }
 }
 

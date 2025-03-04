@@ -8,24 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytestring::ByteString;
+use anyhow::Context;
 use clap::Parser;
 use cling::{Collect, Run};
 use json_patch::Patch;
 use serde_json::Value;
-use tracing::debug;
+use tonic::Code;
+use tonic::codec::CompressionEncoding;
 
-use restate_core::metadata_store::{MetadataStoreClient, Precondition};
-use restate_rocksdb::RocksDbManager;
+use restate_core::protobuf::node_ctl_svc::MetadataPutRequest;
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_types::Version;
-use restate_types::config::Configuration;
+use restate_types::metadata::Precondition;
 
-use crate::commands::metadata::{
-    GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts, create_metadata_store_client,
-};
-use crate::connection::ConnectionInfo;
-use crate::environment::metadata_store::start_metadata_server;
-use crate::environment::task_center::run_in_task_center;
+use crate::commands::metadata::MetadataCommonOpts;
+use crate::connection::{ConnectionInfo, NodeOperationError};
+
+use super::GenericMetadataValue;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
@@ -58,10 +57,7 @@ pub(crate) async fn patch_value(
     let patch = serde_json::from_str(opts.patch.as_str())
         .map_err(|e| anyhow::anyhow!("Parsing JSON patch: {}", e))?;
 
-    let value = match opts.metadata.access_mode {
-        MetadataAccessMode::Remote => patch_value_remote(connection, opts, patch).await?,
-        MetadataAccessMode::Direct => patch_value_direct(opts, patch).await?,
-    };
+    let value = patch_value_inner(connection, opts, patch).await?;
 
     let value = serde_json::to_string_pretty(&value).map_err(|e| anyhow::anyhow!(e))?;
     println!("{value}");
@@ -69,46 +65,12 @@ pub(crate) async fn patch_value(
     Ok(())
 }
 
-async fn patch_value_remote(
+async fn patch_value_inner(
     connection: &ConnectionInfo,
     opts: &PatchValueOpts,
     patch: Patch,
-) -> anyhow::Result<Option<GenericMetadataValue>> {
-    let metadata_store_client = create_metadata_store_client(connection, &opts.metadata).await?;
-    Ok(Some(
-        patch_value_inner(opts, &patch, &metadata_store_client).await?,
-    ))
-}
-
-async fn patch_value_direct(
-    opts: &PatchValueOpts,
-    patch: Patch,
-) -> anyhow::Result<Option<GenericMetadataValue>> {
-    let value = run_in_task_center(opts.metadata.config_file.as_ref(), |config| async move {
-        let rocksdb_manager = RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
-        debug!("RocksDB Initialized");
-
-        let metadata_store_client = start_metadata_server(config.clone()).await?;
-        debug!("Metadata store client created");
-
-        let result = patch_value_inner(opts, &patch, &metadata_store_client).await;
-
-        rocksdb_manager.shutdown().await;
-        result
-    })
-    .await?;
-
-    Ok(Some(value))
-}
-
-async fn patch_value_inner(
-    opts: &PatchValueOpts,
-    patch: &Patch,
-    metadata_store_client: &MetadataStoreClient,
 ) -> anyhow::Result<GenericMetadataValue> {
-    let value: Option<GenericMetadataValue> = metadata_store_client
-        .get(ByteString::from(opts.key.as_str()))
-        .await?;
+    let value = super::get_value(connection, &opts.key).await?;
 
     let current_version = value
         .as_ref()
@@ -126,35 +88,40 @@ async fn patch_value_inner(
     }
 
     let mut document = value.map(|v| v.to_json_value()).unwrap_or(Value::Null);
-    let value = match json_patch::patch(&mut document, patch) {
-        Ok(_) => {
-            let new_value = GenericMetadataValue {
-                version: current_version.next(),
-                data: serde_json::from_value(document.clone()).map_err(|e| anyhow::anyhow!(e))?,
-            };
-            if !opts.dry_run {
-                debug!(
-                    "Updating metadata key '{}' with expected {:?} version to {:?}",
-                    opts.key, current_version, new_value.version
-                );
-                metadata_store_client
-                    .put(
-                        ByteString::from(opts.key.as_str()),
-                        &new_value,
-                        if current_version == Version::INVALID {
-                            Precondition::DoesNotExist
-                        } else {
-                            Precondition::MatchesVersion(current_version)
-                        },
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Store update failed: {}", e))?
-            } else {
-                println!("Dry run - updated value:\n");
-            }
-            Ok(new_value)
-        }
-        Err(e) => Err(anyhow::anyhow!("Patch failed: {}", e)),
-    }?;
-    Ok(value)
+    json_patch::patch(&mut document, &patch).context("Patch failed")?;
+
+    let new_value = GenericMetadataValue {
+        version: current_version.next(),
+        fields: serde_json::from_value(document.clone()).map_err(|e| anyhow::anyhow!(e))?,
+    };
+
+    let precondition = if current_version == Version::INVALID {
+        Precondition::DoesNotExist
+    } else {
+        Precondition::MatchesVersion(current_version)
+    };
+
+    let request = MetadataPutRequest {
+        key: opts.key.clone(),
+        precondition: Some(precondition.into()),
+        value: Some(new_value.clone().try_into()?),
+    };
+
+    connection
+        .try_each(None, |channel| async {
+            let mut client = NodeCtlSvcClient::new(channel)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip);
+
+            client.metadata_put(request.clone()).await.map_err(|err| {
+                if err.code() == Code::FailedPrecondition {
+                    NodeOperationError::Terminal(err)
+                } else {
+                    NodeOperationError::Retryable(err)
+                }
+            })
+        })
+        .await?;
+
+    Ok(new_value)
 }

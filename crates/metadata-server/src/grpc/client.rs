@@ -10,19 +10,18 @@
 
 use crate::KnownLeader;
 use crate::grpc::metadata_server_svc_client::MetadataServerSvcClient;
-use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
 use async_trait::async_trait;
 use bytes::BytesMut;
 use bytestring::ByteString;
 use parking_lot::Mutex;
 use rand::prelude::IteratorRandom;
-use restate_core::metadata_store::{
-    MetadataStore, Precondition, ProvisionError, ReadError, VersionedValue, WriteError,
-};
+use restate_core::metadata_store::{MetadataStore, ProvisionError, ReadError, WriteError};
 use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
 use restate_core::{Metadata, TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::config::Configuration;
+use restate_types::errors::ConversionError;
+use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::net::AdvertisedAddress;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};

@@ -15,11 +15,12 @@ mod put;
 use std::path::PathBuf;
 
 use cling::prelude::*;
+use tonic::codec::CompressionEncoding;
 
-use restate_core::metadata_store::MetadataStoreClient;
-use restate_metadata_server::create_client;
-use restate_types::config::MetadataClientOptions;
-use restate_types::nodes_config::Role;
+use restate_core::protobuf::node_ctl_svc::MetadataGetRequest;
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_types::protobuf::metadata::VersionedValue;
+use restate_types::storage::StorageCodec;
 use restate_types::{Version, Versioned, flexbuffers_storage_encode_decode};
 
 use crate::connection::ConnectionInfo;
@@ -37,19 +38,6 @@ pub enum Metadata {
 #[derive(Args, Clone, Debug)]
 #[clap()]
 pub struct MetadataCommonOpts {
-    /// Etcd store server addresses
-    #[arg(
-        short,
-        long = "etcd",
-        value_delimiter = ',',
-        required_if_eq("remote_service_type", "etcd")
-    )]
-    etcd: Vec<String>,
-
-    /// Metadata store access mode
-    #[arg(long, default_value_t)]
-    access_mode: MetadataAccessMode,
-
     /// Service type for access mode = "remote"
     #[arg(long, default_value_t)]
     remote_service_type: RemoteServiceType,
@@ -64,16 +52,6 @@ pub struct MetadataCommonOpts {
     config_file: Option<PathBuf>,
 }
 
-#[derive(clap::ValueEnum, Clone, Default, Debug, strum::Display)]
-#[strum(serialize_all = "kebab-case")]
-enum MetadataAccessMode {
-    /// Connect to a remote metadata server at the specified address
-    #[default]
-    Remote,
-    /// Open a local metadata store database directory directly
-    Direct,
-}
-
 #[derive(clap::ValueEnum, Clone, Default, Debug, strum::Display, PartialEq)]
 #[strum(serialize_all = "kebab-case")]
 enum RemoteServiceType {
@@ -84,18 +62,17 @@ enum RemoteServiceType {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GenericMetadataValue {
-    // We assume that the concrete serialized type's encoded version field is called "version".
     version: Version,
 
     #[serde(flatten)]
-    data: serde_json::Map<String, serde_json::Value>,
+    fields: serde_json::Map<String, serde_json::Value>,
 }
 
 flexbuffers_storage_encode_decode!(GenericMetadataValue);
 
 impl GenericMetadataValue {
     pub fn to_json_value(&self) -> serde_json::Value {
-        serde_json::Value::Object(self.data.clone())
+        serde_json::Value::Object(self.fields.clone())
     }
 }
 
@@ -105,30 +82,59 @@ impl Versioned for GenericMetadataValue {
     }
 }
 
-pub async fn create_metadata_store_client(
-    connection: &ConnectionInfo,
-    opts: &MetadataCommonOpts,
-) -> anyhow::Result<MetadataStoreClient> {
-    let client = match opts.remote_service_type {
-        RemoteServiceType::Restate => {
-            let nodes = connection.get_nodes_configuration().await?;
-            let addresses = nodes
-                .iter_role(Role::MetadataServer)
-                .map(|(_, node)| node.address.clone())
-                .collect();
-            restate_types::config::MetadataClientKind::Replicated { addresses }
+impl TryFrom<VersionedValue> for GenericMetadataValue {
+    type Error = anyhow::Error;
+    fn try_from(mut versioned_value: VersionedValue) -> Result<Self, Self::Error> {
+        let version: Version = versioned_value
+            .version
+            .ok_or_else(|| anyhow::anyhow!("version is required"))?
+            .into();
+
+        let value: GenericMetadataValue = StorageCodec::decode(&mut versioned_value.bytes)?;
+        if value.version != version {
+            anyhow::bail!("returned payload and metadata object versions must align");
         }
-        RemoteServiceType::Etcd => restate_types::config::MetadataClientKind::Etcd {
-            addresses: opts.etcd.clone(),
-        },
+
+        Ok(value)
+    }
+}
+
+impl TryFrom<GenericMetadataValue> for VersionedValue {
+    type Error = anyhow::Error;
+
+    fn try_from(value: GenericMetadataValue) -> Result<Self, Self::Error> {
+        let mut buf = bytes::BytesMut::new();
+        StorageCodec::encode(&value, &mut buf)?;
+
+        Ok(Self {
+            version: Some(value.version.into()),
+            bytes: buf.into(),
+        })
+    }
+}
+
+async fn get_value(
+    connection: &ConnectionInfo,
+    key: impl AsRef<str>,
+) -> anyhow::Result<Option<GenericMetadataValue>> {
+    let key = key.as_ref();
+    let response = connection
+        .try_each(None, |channel| async {
+            let mut client = NodeCtlSvcClient::new(channel)
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip);
+            client
+                .metadata_get(MetadataGetRequest {
+                    key: key.to_owned(),
+                })
+                .await
+        })
+        .await?;
+
+    let response = response.into_inner();
+    let Some(value) = response.value else {
+        return Ok(None);
     };
 
-    let metadata_store_client_options = MetadataClientOptions {
-        kind: client,
-        ..MetadataClientOptions::default()
-    };
-
-    create_client(metadata_store_client_options)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create metadata store client: {}", e))
+    Ok(Some(value.try_into()?))
 }

@@ -13,7 +13,6 @@ use crate::{PreconditionViolation, RequestError};
 use bytes::BytesMut;
 use bytestring::ByteString;
 use itertools::Itertools;
-use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
@@ -21,6 +20,7 @@ use restate_rocksdb::{
 use restate_types::Version;
 use restate_types::config::{MetadataServerOptions, RocksDbOptions, data_dir};
 use restate_types::live::BoxedLiveLoad;
+use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use rocksdb::{
     BoundColumnFamily, DBCompressionType, Error, IteratorMode, ReadOptions, WriteBatch,

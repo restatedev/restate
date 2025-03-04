@@ -14,18 +14,18 @@ use std::time::Duration;
 use clap::Parser;
 use codederror::CodedError;
 use metrics_exporter_prometheus::PrometheusBuilder;
-use restate_core::task_center::TaskCenterMonitoring;
 use tracing::trace;
 
 use bifrost_benchpress::util::{print_prometheus_stats, print_rocksdb_stats};
 use bifrost_benchpress::{Arguments, Command, append_latency, write_to_read};
 use restate_bifrost::{Bifrost, BifrostService};
+use restate_core::task_center::TaskCenterMonitoring;
 use restate_core::{
     MetadataBuilder, MetadataManager, TaskCenter, TaskCenterBuilder, spawn_metadata_manager,
     task_center,
 };
 use restate_errors::fmt::RestateCode;
-use restate_metadata_server::{MetadataStoreClient, Precondition};
+use restate_metadata_server::MetadataStoreClient;
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_types::config::{
@@ -33,6 +33,7 @@ use restate_types::config::{
 };
 use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::Live;
+use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
 // Configure jemalloc similar to mimic restate server

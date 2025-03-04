@@ -13,11 +13,11 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use enum_map::EnumMap;
-use restate_types::config::Configuration;
 use tokio::time::Instant;
 use tracing::{info, instrument, warn};
 
 use restate_core::{Metadata, MetadataKind, MetadataWriter, TargetVersion};
+use restate_types::config::Configuration;
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
 use restate_types::storage::StorageEncode;
@@ -626,6 +626,7 @@ mod tests {
     use restate_types::live::Constant;
     use restate_types::logs::SequenceNumber;
     use restate_types::logs::metadata::{SegmentIndex, new_single_node_loglet_params};
+    use restate_types::metadata::Precondition;
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
     use restate_types::partition_table::PartitionTable;
     use restate_types::{Version, Versioned};
@@ -886,7 +887,7 @@ mod tests {
             .put(
                 BIFROST_CONFIG_KEY.clone(),
                 &new_metadata,
-                restate_metadata_server::Precondition::MatchesVersion(old_version),
+                Precondition::MatchesVersion(old_version),
             )
             .await?;
 
