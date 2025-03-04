@@ -254,7 +254,7 @@ jobs:
         aws-region: us-east-1 # co-locate with WarpBuild worker
         role-to-assume: 'arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role'
     - name: Setup Jepsen cluster ${{ env.CLUSTER_NAME }}
-      uses: restatedev/jepsen/.github/actions/setup
+      uses: restatedev/jepsen/.github/actions/setup@main
       with:
         ref: ${{ inputs.ref }}
         clusterName: ${{ env.CLUSTER_NAME }}
@@ -268,14 +268,14 @@ jobs:
         timeoutSeconds: 1800
         intervalSeconds: 10
     - name: Run Jepsen tests
-      uses: restatedev/jepsen/.github/actions/run-tests
+      uses: restatedev/jepsen/.github/actions/run-tests@main
       if: steps.wait-for-docker.outputs.conclusion == 'success'
       continue-on-error: true
       with:
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
         testConfig: '{ "workloads": "set-vo set-mds set-mds-s3", "nemeses": "partition-random-node", "duration": "60", "rate": "10", "concurrency": "5n", "testCount": "1" }'
     - name: Tear down Jepsen cluster ${{ env.CLUSTER_NAME }}
-      uses: restatedev/jepsen/.github/actions/teardown
+      uses: restatedev/jepsen/.github/actions/teardown@main
       if: always()
       with:
         clusterName: ${{ env.CLUSTER_NAME }}
