@@ -461,12 +461,13 @@ impl<S> StateMachineApplyContext<'_, S> {
                 Ok(())
             }
             Command::NotifySignal(notify_signal_request) => {
-                entries::OnJournalEntryCommand::from_entry(
-                    notify_signal_request.invocation_id,
-                    self.get_invocation_status(&notify_signal_request.invocation_id)
+                lifecycle::OnNotifySignalCommand {
+                    invocation_id: notify_signal_request.invocation_id,
+                    invocation_status: self
+                        .get_invocation_status(&notify_signal_request.invocation_id)
                         .await?,
-                    notify_signal_request.signal.into(),
-                )
+                    signal: notify_signal_request.signal,
+                }
                 .apply(self)
                 .await?;
                 Ok(())
