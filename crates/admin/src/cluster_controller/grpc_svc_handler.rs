@@ -173,7 +173,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
         match self
             .controller_handle
-            .create_partition_snapshot(partition_id)
+            .create_partition_snapshot(partition_id, request.min_target_lsn.map(Lsn::new))
             .await
             .map_err(|_| Status::aborted("Node is shutting down"))?
         {

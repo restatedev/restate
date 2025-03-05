@@ -13,21 +13,26 @@ use std::ops::RangeInclusive;
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use rocksdb::ExportImportFilesMetaData;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
+
+use restate_core::worker_api::SnapshotError;
+use restate_rocksdb::{
+    CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
+};
+use restate_storage_api::StorageError;
+use restate_storage_api::fsm_table::ReadOnlyFsmTable;
+use restate_types::config::{RocksDbOptions, StorageOptions};
+use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
+use restate_types::live::{BoxedLiveLoad, LiveLoad};
+use restate_types::logs::Lsn;
 
 use crate::DB;
 use crate::PartitionStore;
 use crate::cf_options;
 use crate::snapshots::LocalPartitionSnapshot;
-use restate_core::worker_api::SnapshotError;
-use restate_rocksdb::{
-    CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
-};
-use restate_types::config::{RocksDbOptions, StorageOptions};
-use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
-use restate_types::live::{BoxedLiveLoad, LiveLoad};
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -210,6 +215,7 @@ impl PartitionStoreManager {
     pub async fn export_partition_snapshot(
         &self,
         partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
         snapshot_base_path: &Path,
     ) -> Result<LocalPartitionSnapshot, SnapshotError> {
@@ -219,6 +225,25 @@ impl PartitionStoreManager {
             .get(&partition_id)
             .cloned()
             .ok_or(SnapshotError::PartitionNotFound(partition_id))?;
+
+        if let Some(min_target_lsn) = min_target_lsn {
+            let applied_lsn = partition_store
+                .get_applied_lsn()
+                .await
+                .map_err(|e| SnapshotError::SnapshotExport(partition_id, anyhow!(e)))?
+                .ok_or(SnapshotError::SnapshotExport(
+                    partition_id,
+                    anyhow!(StorageError::DataIntegrityError),
+                ))?;
+
+            if applied_lsn < min_target_lsn {
+                return Err(SnapshotError::MinimumTargetLsnNotMet {
+                    partition_id,
+                    min_target_lsn,
+                    applied_lsn,
+                });
+            }
+        };
 
         // RocksDB will create the snapshot directory but the parent must exist first:
         tokio::fs::create_dir_all(snapshot_base_path)

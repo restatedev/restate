@@ -173,6 +173,7 @@ enum ClusterControllerCommand {
     },
     CreateSnapshot {
         partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
         response_tx: oneshot::Sender<anyhow::Result<Snapshot>>,
     },
     UpdateClusterConfiguration {
@@ -225,13 +226,15 @@ impl ClusterControllerHandle {
     pub async fn create_partition_snapshot(
         &self,
         partition_id: PartitionId,
-    ) -> Result<Result<Snapshot, anyhow::Error>, ShutdownError> {
+        min_target_lsn: Option<Lsn>,
+    ) -> Result<anyhow::Result<Snapshot>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         let _ = self
             .tx
             .send(ClusterControllerCommand::CreateSnapshot {
                 partition_id,
+                min_target_lsn,
                 response_tx,
             })
             .await;
@@ -373,6 +376,7 @@ impl<T: TransportConnect> Service<T> {
     async fn create_partition_snapshot(
         &self,
         partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
         response_tx: oneshot::Sender<anyhow::Result<Snapshot>>,
     ) {
         let cluster_state = self.cluster_state_refresher.get_cluster_state();
@@ -386,6 +390,26 @@ impl<T: TransportConnect> Service<T> {
                 node.partitions
                     .get(&partition_id)
                     .filter(|status| status.is_effective_leader())
+                    .inspect(|status| {
+                        if let Some(min_target_lsn) = min_target_lsn {
+                            match status.last_applied_log_lsn {
+                                None => {
+                                    debug!(
+                                        ?min_target_lsn,
+                                        "Partition leader {:?} isn't reporting an applied LSN; sending snapshot request anyway",
+                                        node,
+                                    );
+                                }
+                                Some(applied_lsn)  => if applied_lsn < min_target_lsn {
+                                    debug!(
+                                        "Partition leader is reporting an applied {:?} < target {:?}; sending snapshot request anyway",
+                                        min_target_lsn,
+                                        applied_lsn,
+                                    );
+                                }
+                            }
+                        }
+                    })
                     .map(|_| node)
                     .cloned()
             })
@@ -406,7 +430,11 @@ impl<T: TransportConnect> Service<T> {
                     async move {
                         let _ = response_tx.send(
                             node_rpc_client
-                                .create_snapshot(node.generational_node_id, partition_id)
+                                .create_snapshot(
+                                    node.generational_node_id,
+                                    partition_id,
+                                    min_target_lsn,
+                                )
                                 .await,
                         );
                         Ok(())
@@ -549,11 +577,13 @@ impl<T: TransportConnect> Service<T> {
             }
             ClusterControllerCommand::CreateSnapshot {
                 partition_id,
+                min_target_lsn,
                 response_tx,
             } => {
                 info!(?partition_id, "Create snapshot command received");
-                self.create_partition_snapshot(partition_id, response_tx)
+                self.create_partition_snapshot(partition_id, min_target_lsn, response_tx)
                     .await;
+                // todo(pavel): trim the log on successful snapshot
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
                 partition_replication: replication_strategy,
@@ -650,6 +680,7 @@ where
         &mut self,
         node_id: GenerationalNodeId,
         partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
     ) -> anyhow::Result<Snapshot> {
         // todo(pavel): make snapshot RPC timeout configurable, especially if this includes remote upload in the future
         let response = tokio::time::timeout(
@@ -657,7 +688,10 @@ where
             self.create_snapshot_router.call(
                 &self.network_sender,
                 node_id,
-                CreateSnapshotRequest { partition_id },
+                CreateSnapshotRequest {
+                    partition_id,
+                    min_target_lsn,
+                },
             ),
         )
         .await?;
