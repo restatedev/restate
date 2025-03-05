@@ -33,6 +33,7 @@ use restate_types::{
 };
 use rev_lines::RevLines;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::num::NonZeroU16;
 use std::{
     ffi::OsString,
@@ -347,13 +348,34 @@ impl Node {
 
         let mut child = cmd.spawn().map_err(NodeStartError::SpawnError)?;
         let pid = child.id().expect("child to have a pid");
+
+        let admin_address = if self.config().has_role(Role::Admin) {
+            Cow::Owned(self.config().admin.bind_address.to_string())
+        } else {
+            Cow::Borrowed("None")
+        };
+
+        let ingress_address = if self.config().has_role(Role::Worker) {
+            Cow::Owned(self.config().ingress.bind_address.to_string())
+        } else {
+            Cow::Borrowed("None")
+        };
+
         info!(
+            node_address = %self.config().common.advertised_address,
+            %admin_address,
+            %ingress_address,
             "Started node {} in {} (pid {pid})",
             base_config.node_name(),
             node_base_dir.display(),
         );
         let stdout = child.stdout.take().expect("child to have a stdout pipe");
         let stderr = child.stderr.take().expect("child to have a stderr pipe");
+
+        info!(
+            "To connect to node {} using restate CLI:\nexport RESTATE_ADMIN_URL=http://{admin_address}",
+            base_config.node_name()
+        );
 
         let stdout_reader =
             stream::try_unfold(BufReader::new(stdout).lines(), |mut lines| async move {
