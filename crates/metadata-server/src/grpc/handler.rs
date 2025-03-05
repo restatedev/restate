@@ -16,14 +16,15 @@ use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 use tonic::{Request, Response, Status};
 
-use restate_core::metadata_store::{Precondition, serialize_value};
+use restate_core::metadata_store::serialize_value;
 use restate_types::config::Configuration;
+use restate_types::errors::ConversionError;
+use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
 
 use crate::grpc::metadata_server_svc_server::MetadataServerSvc;
-use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse,
     ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest, StatusResponse,

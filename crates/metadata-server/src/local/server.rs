@@ -12,14 +12,14 @@ use crate::local::storage::RocksDbStorage;
 use crate::{MetadataServer, MetadataStoreRequest, RequestError, RequestReceiver, RequestSender};
 use bytestring::ByteString;
 use restate_core::metadata_store::{
-    MetadataStoreClient, Precondition, ProvisionedMetadataStore, ReadError, VersionedValue,
-    WriteError, serialize_value,
+    MetadataStoreClient, ProvisionedMetadataStore, ReadError, WriteError, serialize_value,
 };
 use restate_core::{MetadataWriter, ShutdownError, cancellation_watcher};
 use restate_rocksdb::RocksError;
 use restate_types::config::{Configuration, MetadataServerOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;
+use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration};
 use restate_types::protobuf::common::MetadataServerStatus;

@@ -15,7 +15,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use bytestring::ByteString;
 use metrics::{counter, histogram};
 use tokio::time::Instant;
@@ -24,11 +24,12 @@ use tracing::debug;
 use restate_types::errors::{
     BoxedMaybeRetryableError, GenericError, IntoMaybeRetryable, MaybeRetryableError,
 };
+use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::retries::RetryPolicy;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, StorageEncodeError};
-use restate_types::{Version, Versioned, flexbuffers_storage_encode_decode};
+use restate_types::{Version, Versioned};
 
 #[cfg(any(test, feature = "test-util"))]
 use crate::metadata_store::test_util::InMemoryMetadataStore;
@@ -136,32 +137,6 @@ impl MaybeRetryableError for ProvisionError {
             ProvisionError::NotSupported(_) => false,
         }
     }
-}
-
-#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct VersionedValue {
-    pub version: Version,
-    #[debug(skip)]
-    pub value: Bytes,
-}
-
-impl VersionedValue {
-    pub fn new(version: Version, value: Bytes) -> Self {
-        Self { version, value }
-    }
-}
-
-flexbuffers_storage_encode_decode!(VersionedValue);
-
-/// Preconditions for the write operations of the [`MetadataStore`].
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_more::Display)]
-pub enum Precondition {
-    /// No precondition
-    None,
-    /// Key-value pair must not exist for the write operation to succeed.
-    DoesNotExist,
-    /// Key-value pair must have the provided [`Version`] for the write operation to succeed.
-    MatchesVersion(Version),
 }
 
 /// Metadata store abstraction. The metadata store implementations need to support linearizable

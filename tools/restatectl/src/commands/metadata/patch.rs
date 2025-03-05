@@ -15,10 +15,11 @@ use json_patch::Patch;
 use serde_json::Value;
 use tracing::debug;
 
-use restate_core::metadata_store::{MetadataStoreClient, Precondition};
+use restate_core::metadata_store::MetadataStoreClient;
 use restate_rocksdb::RocksDbManager;
 use restate_types::Version;
 use restate_types::config::Configuration;
+use restate_types::metadata::Precondition;
 
 use crate::commands::metadata::{
     GenericMetadataValue, MetadataAccessMode, MetadataCommonOpts, create_metadata_store_client,
