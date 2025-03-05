@@ -32,3 +32,11 @@ pub mod node_ctl_svc {
         }
     }
 }
+
+pub mod metadata_proxy_svc {
+
+    tonic::include_proto!("restate.metadata_proxy_svc");
+
+    pub const FILE_DESCRIPTOR_SET: &[u8] =
+        tonic::include_file_descriptor_set!("metadata_proxy_svc_descriptor");
+}

@@ -19,11 +19,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(out_dir.join("node_ctl_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .extern_path(".restate.node", "::restate_types::protobuf::node")
         .extern_path(".restate.common", "::restate_types::protobuf::common")
         .extern_path(".restate.cluster", "::restate_types::protobuf::cluster")
         .compile_protos(
             &["./protobuf/node_ctl_svc.proto"],
+            &["protobuf", "../types/protobuf"],
+        )?;
+
+    tonic_build::configure()
+        .bytes(["."])
+        .file_descriptor_set_path(out_dir.join("metadata_proxy_svc_descriptor.bin"))
+        // allow older protobuf compiler to be used
+        .protoc_arg("--experimental_allow_proto3_optional")
+        .extern_path(".restate.common", "::restate_types::protobuf::common")
+        .extern_path(".restate.metadata", "::restate_types::protobuf::metadata")
+        .compile_protos(
+            &["./protobuf/metadata_proxy_svc.proto"],
             &["protobuf", "../types/protobuf"],
         )?;
 

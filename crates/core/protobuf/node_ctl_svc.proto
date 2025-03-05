@@ -19,6 +19,7 @@ service NodeCtlSvc {
   // Get identity information from this node.
   rpc GetIdent(google.protobuf.Empty) returns (IdentResponse);
 
+  // Get metadata given the metadata kind
   rpc GetMetadata(GetMetadataRequest) returns (GetMetadataResponse);
 
   // Provision the Restate cluster on this node.
@@ -42,7 +43,8 @@ message ProvisionClusterRequest {
   // if unset then the configured cluster default log replication will be used
   optional restate.cluster.ReplicationProperty log_replication = 5;
   // only used if provider = "replicated"
-  // if unset then the configured cluster default target nodeset size will be used
+  // if unset then the configured cluster default target nodeset size will be
+  // used
   optional uint32 target_nodeset_size = 6;
 }
 

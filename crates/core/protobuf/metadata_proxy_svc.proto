@@ -1,0 +1,47 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+import "restate/common.proto";
+import "restate/metadata.proto";
+
+package restate.metadata_proxy_svc;
+
+service MetadataProxySvc {
+  // Get a versioned kv-pair
+  rpc Get(GetRequest) returns (GetResponse);
+
+  // Get the current version for a kv-pair
+  rpc GetVersion(GetRequest) returns (GetVersionResponse);
+
+  // Puts the given kv-pair into the metadata store
+  rpc Put(PutRequest) returns (google.protobuf.Empty);
+
+  // Deletes the given kv-pair
+  rpc Delete(DeleteRequest) returns (google.protobuf.Empty);
+}
+
+message GetRequest { string key = 1; }
+
+message PutRequest {
+  string key = 1;
+  restate.metadata.VersionedValue value = 2;
+  restate.metadata.Precondition precondition = 3;
+}
+
+message DeleteRequest {
+  string key = 1;
+  restate.metadata.Precondition precondition = 2;
+}
+
+message GetResponse { optional restate.metadata.VersionedValue value = 1; }
+
+message GetVersionResponse { optional restate.common.Version version = 1; }

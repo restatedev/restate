@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use axum::routing::{MethodFilter, get, on};
+use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::MetadataProxySvcServer;
 use tonic::codec::CompressionEncoding;
 
 use restate_core::TaskCenter;
@@ -21,7 +22,7 @@ use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::CommonOptions;
 use restate_types::protobuf::common::NodeStatus;
 
-use super::grpc_svc_handler::NodeCtlSvcHandler;
+use super::grpc_svc_handler::{MetadataProxySvcHandler, NodeCtlSvcHandler};
 use super::pprof;
 use crate::network_server::metrics::render_metrics;
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
@@ -71,11 +72,18 @@ impl NetworkServer {
                 TaskCenter::current(),
                 options.cluster_name().to_owned(),
                 options.roles,
-                metadata_store_client,
+                metadata_store_client.clone(),
             ))
             .accept_compressed(CompressionEncoding::Gzip)
             .send_compressed(CompressionEncoding::Gzip),
             restate_core::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
+        );
+
+        server_builder.register_grpc_service(
+            MetadataProxySvcServer::new(MetadataProxySvcHandler::new(metadata_store_client))
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+            restate_core::protobuf::metadata_proxy_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder.register_grpc_service(
