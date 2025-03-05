@@ -17,6 +17,7 @@ use futures::Stream;
 use restate_types::config::NetworkingOptions;
 use restate_types::locality::NodeLocation;
 use restate_types::logs::metadata::{ProviderKind, bootstrap_logs_metadata};
+use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
 };
@@ -31,7 +32,7 @@ use restate_types::protobuf::node::Message;
 use restate_types::{GenerationalNodeId, Version};
 
 use crate::TaskCenter;
-use crate::metadata_store::{MetadataStoreClient, Precondition};
+use crate::metadata_store::MetadataStoreClient;
 use crate::network::{
     ConnectionManager, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder,
     NetworkError, Networking, ProtocolError, TransportConnect,

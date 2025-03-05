@@ -21,9 +21,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
-use restate_core::metadata_store::{
-    Precondition, ReadWriteError, WriteError, retry_on_retryable_error,
-};
+use restate_core::metadata_store::{ReadWriteError, WriteError, retry_on_retryable_error};
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
@@ -41,6 +39,7 @@ use restate_types::live::Live;
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
+use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,

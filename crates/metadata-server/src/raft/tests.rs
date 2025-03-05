@@ -16,7 +16,7 @@ use futures::TryFutureExt;
 use googletest::IntoTestResult;
 use rand::RngCore;
 use rand::distr::{Alphanumeric, SampleString};
-use restate_core::metadata_store::{Precondition, serialize_value};
+use restate_core::metadata_store::serialize_value;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataBuilder, TaskCenter, TaskKind, cancellation_token};
 use restate_rocksdb::RocksDbManager;
@@ -27,6 +27,7 @@ use restate_types::config::{
 use restate_types::health::Health;
 use restate_types::live::Constant;
 use restate_types::locality::NodeLocation;
+use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::nodes_config::{
