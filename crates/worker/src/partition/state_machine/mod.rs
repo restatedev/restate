@@ -3213,7 +3213,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             _ => {
                 debug!(
-                    reself.storage.invocation.id = %invocation_id,
+                    restate.invocation.id = %invocation_id,
                     ?completion,
                     "Ignoring completion for invocation that is no longer running."
                 )
