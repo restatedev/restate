@@ -55,11 +55,9 @@ half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", features = ["raw"] }
 hdrhistogram = { version = "7" }
-hex = { version = "0.4" }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
 hyper-582f2526e08bb6a0 = { package = "hyper", version = "0.14", features = ["client", "http1", "http2", "runtime", "server", "stream"] }
 hyper-dff4ba8e3ae991db = { package = "hyper", version = "1", features = ["full"] }
-hyper-rustls-adf3d7031871b0af = { package = "hyper-rustls", version = "0.24", features = ["http2"] }
 hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
@@ -92,7 +90,6 @@ regex-automata = { version = "0.4", default-features = false, features = ["dfa",
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 ring = { version = "0.17", features = ["std"] }
-rustls-647d43efb71741da = { package = "rustls", version = "0.21" }
 schemars = { version = "0.8", features = ["bytes", "enumset", "preserve_order"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
@@ -167,11 +164,9 @@ half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", features = ["raw"] }
 hdrhistogram = { version = "7" }
-hex = { version = "0.4" }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
 hyper-582f2526e08bb6a0 = { package = "hyper", version = "0.14", features = ["client", "http1", "http2", "runtime", "server", "stream"] }
 hyper-dff4ba8e3ae991db = { package = "hyper", version = "1", features = ["full"] }
-hyper-rustls-adf3d7031871b0af = { package = "hyper-rustls", version = "0.24", features = ["http2"] }
 hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
@@ -204,7 +199,6 @@ regex-automata = { version = "0.4", default-features = false, features = ["dfa",
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 ring = { version = "0.17", features = ["std"] }
-rustls-647d43efb71741da = { package = "rustls", version = "0.21" }
 schemars = { version = "0.8", features = ["bytes", "enumset", "preserve_order"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
@@ -217,7 +211,6 @@ syn-dff4ba8e3ae991db = { package = "syn", version = "1", features = ["extra-trai
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
-time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt"] }
@@ -242,14 +235,14 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
-rustls-2b5c6dc72f624058 = { package = "rustls", version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
@@ -257,14 +250,14 @@ tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features 
 bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
-rustls-2b5c6dc72f624058 = { package = "rustls", version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
@@ -272,13 +265,13 @@ tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features 
 bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
-rustls-2b5c6dc72f624058 = { package = "rustls", version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
@@ -286,13 +279,13 @@ tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features 
 bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-hyper-rustls-754bda37e0fb3874 = { package = "hyper-rustls", version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
-rustls-2b5c6dc72f624058 = { package = "rustls", version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 

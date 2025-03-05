@@ -17,6 +17,7 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-types = { workspace = true }
 restate-core-derive = { workspace = true, optional = true }
+restate-object-store-util = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
@@ -64,6 +65,7 @@ tower = { workspace = true }
 tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+url = { workspace = true }
 xxhash-rust = { workspace = true }
 
 [build-dependencies]
