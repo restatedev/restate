@@ -45,6 +45,11 @@ pub struct QueryEngineOptions {
     ///
     /// The address to bind for the psql service.
     pub pgsql_bind_address: SocketAddr,
+
+    /// # Default per node scan parallelism
+    ///
+    /// The number of parallel scanner to use for a query execution
+    partition_scan_parallelism: Option<NonZeroUsize>,
 }
 
 impl QueryEngineOptions {
@@ -59,6 +64,7 @@ impl Default for QueryEngineOptions {
             tmp_dir: None,
             query_parallelism: None,
             pgsql_bind_address: "0.0.0.0:9071".parse().unwrap(),
+            partition_scan_parallelism: None,
         }
     }
 }

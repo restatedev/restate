@@ -66,6 +66,7 @@ impl Scanner {
 
 pub struct RemoteQueryScannerServer {
     expire_old_scanners_after: Duration,
+    max_concurrent_queries: usize,
     query_context: QueryContext,
     open_stream: MessageStream<RemoteQueryScannerOpen>,
     next_stream: MessageStream<RemoteQueryScannerNext>,
@@ -75,6 +76,7 @@ pub struct RemoteQueryScannerServer {
 impl RemoteQueryScannerServer {
     pub fn new(
         expire_old_scanners_after: Duration,
+        max_concurrent_queries: Option<usize>,
         query_context: QueryContext,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
@@ -84,6 +86,7 @@ impl RemoteQueryScannerServer {
 
         Self {
             expire_old_scanners_after,
+            max_concurrent_queries: max_concurrent_queries.unwrap_or(usize::MAX),
             query_context,
             open_stream,
             next_stream,
@@ -94,6 +97,7 @@ impl RemoteQueryScannerServer {
     pub async fn run(self) -> anyhow::Result<()> {
         let RemoteQueryScannerServer {
             expire_old_scanners_after,
+            max_concurrent_queries,
             query_context,
             mut open_stream,
             mut next_stream,
@@ -116,9 +120,16 @@ impl RemoteQueryScannerServer {
                             return Ok(());
                         },
                         Some(scan_req) = open_stream.next() => {
-                            next_scanner_id += 1;
-                            let scanner_id = ScannerId(my_node_id(), next_scanner_id);
-                            Self::on_open(scanner_id, scan_req, &mut scanners, query_context.clone()).await;
+                            if scanners.len() >= max_concurrent_queries {
+                                warn!("To many open scanners.");
+                                let (reciprocal, _body) = scan_req.split();
+                                let response = RemoteQueryScannerOpened::Failure;
+                                let _ = reciprocal.prepare(response).send().await;
+                            } else {
+                                next_scanner_id += 1;
+                                let scanner_id = ScannerId(my_node_id(), next_scanner_id);
+                                Self::on_open(scanner_id, scan_req, &mut scanners, query_context.clone()).await;
+                            }
                         },
                         Some(next_req) = next_stream.next() => {
                             let (reciprocal, req) = next_req.split();

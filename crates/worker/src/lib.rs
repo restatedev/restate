@@ -190,6 +190,7 @@ impl Worker {
 
         let datafusion_remote_scanner = RemoteQueryScannerServer::new(
             Duration::from_secs(60),
+            config.admin.query_engine.query_parallelism(),
             storage_query_context.clone(),
             router_builder,
         );
