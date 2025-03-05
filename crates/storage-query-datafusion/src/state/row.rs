@@ -33,5 +33,7 @@ pub(crate) fn append_state_row(
             row.value_utf8(str);
         }
     }
-    row.value(&state_value);
+    if row.is_value_defined() {
+        row.value(&state_value);
+    }
 }
