@@ -157,6 +157,7 @@ message InvocationStatusV2 {
   uint32 journal_length = 14;
   optional string deployment_id = 15;
   optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
+  bool hotfix_apply_cancellation_after_deployment_is_pinned = 25;
 
   // Suspended
   repeated uint32 waiting_for_completions = 17;

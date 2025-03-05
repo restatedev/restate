@@ -102,7 +102,7 @@ use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::time::Instant;
-use tracing::{error, info};
+use tracing::error;
 use utils::SpanExt;
 
 #[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
@@ -1126,7 +1126,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + PromiseTable
             + TimerTable,
     {
-        let status = self.get_invocation_status(&invocation_id).await?;
+        let mut status = self.get_invocation_status(&invocation_id).await?;
 
         match status.get_invocation_metadata().and_then(|meta| {
             meta.pinned_deployment
@@ -1147,10 +1147,26 @@ impl<S> StateMachineApplyContext<'_, S> {
                 InvocationStatus::Invoked(_) | InvocationStatus::Suspended { .. }
             ) =>
             {
-                // We ignore the cancel when we haven't a pinned deployment yet,
-                // because we don't know what we should do (cancellation works differently between journal table v1 and v2).
-                // In any case, this would have no visible effect to the user
-                info!("Ignoring cancellation because the invocation made no progress so far!");
+                // We need to apply a corner case fix here.
+                // We don't know yet what's the protocol version being used, but we know the status is either invoker or suspended.
+                // To sort this out, we write a field in invocation status to
+                trace!(
+                    "Storing hotfix for cancellation when invocation doesn't have a pinned service protocol, but is invoked/suspended"
+                );
+
+                match &mut status {
+                    InvocationStatus::Invoked(metadata)
+                    | InvocationStatus::Suspended { metadata, .. } => {
+                        metadata.hotfix_apply_cancellation_after_deployment_is_pinned = true;
+                    }
+                    _ => {
+                        unreachable!("It's checked above")
+                    }
+                };
+
+                self.storage
+                    .put_invocation_status(&invocation_id, &status)
+                    .await?;
                 return Ok(());
             }
             _ => {

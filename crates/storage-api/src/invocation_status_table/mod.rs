@@ -485,6 +485,8 @@ pub struct InFlightInvocationMetadata {
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_duration: Duration,
     pub idempotency_key: Option<ByteString>,
+    // TODO remove this when we remove protocol <= v3
+    pub hotfix_apply_cancellation_after_deployment_is_pinned: bool,
 }
 
 impl InFlightInvocationMetadata {
@@ -508,6 +510,7 @@ impl InFlightInvocationMetadata {
                 completion_retention_duration: pre_flight_invocation_metadata
                     .completion_retention_duration,
                 idempotency_key: pre_flight_invocation_metadata.idempotency_key,
+                hotfix_apply_cancellation_after_deployment_is_pinned: false,
             },
             InvocationInput {
                 argument: pre_flight_invocation_metadata.argument,
@@ -635,6 +638,7 @@ mod test_util {
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 completion_retention_duration: Duration::ZERO,
                 idempotency_key: None,
+                hotfix_apply_cancellation_after_deployment_is_pinned: false,
             }
         }
     }

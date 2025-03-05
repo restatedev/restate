@@ -105,20 +105,23 @@ mod tests {
 
     use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use crate::partition::types::{InvokerEffect, InvokerEffectKind};
     use assert2::assert;
     use googletest::pat;
-    use googletest::prelude::{assert_that, contains, eq, ge, some};
+    use googletest::prelude::{assert_that, contains, eq, ge, not, some};
     use restate_storage_api::invocation_status_table::{
         InvocationStatus, ReadOnlyInvocationStatusTable,
     };
+    use restate_types::deployment::PinnedDeployment;
     use restate_types::errors::CANCELED_INVOCATION_ERROR;
-    use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+    use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
     use restate_types::invocation::{
         InvocationTarget, InvocationTermination, NotifySignalRequest, ResponseResult,
         ServiceInvocation, ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::CANCEL_SIGNAL;
     use restate_types::net::partition_processor::IngressResponseResult;
+    use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
     use restate_wal_protocol::Command;
 
@@ -156,6 +159,47 @@ mod tests {
             .apply(Command::NotifySignal(NotifySignalRequest {
                 invocation_id,
                 signal: CANCEL_SIGNAL.try_into().unwrap(),
+            }))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::forward_notification(
+                invocation_id,
+                CANCEL_SIGNAL.clone()
+            ))
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn cancel_invoked_invocation_without_pinned_deployment() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+
+        // Send signal notification before pinning the deployment
+        let actions = test_env
+            .apply(Command::NotifySignal(NotifySignalRequest {
+                invocation_id,
+                signal: CANCEL_SIGNAL.try_into().unwrap(),
+            }))
+            .await;
+        assert_that!(
+            actions,
+            not(contains(matchers::actions::forward_notification(
+                invocation_id,
+                CANCEL_SIGNAL.clone()
+            )))
+        );
+
+        // Now pin to protocol v4, this should apply the cancel notification
+        let actions = test_env
+            .apply(Command::InvokerEffect(InvokerEffect {
+                invocation_id,
+                kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
+                    deployment_id: DeploymentId::default(),
+                    service_protocol_version: ServiceProtocolVersion::V4,
+                }),
             }))
             .await;
         assert_that!(

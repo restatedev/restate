@@ -412,6 +412,7 @@ pub mod v1 {
                     waiting_for_signal_indexes,
                     waiting_for_signal_names,
                     result,
+                    hotfix_apply_cancellation_after_deployment_is_pinned,
                 } = value;
 
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
@@ -505,6 +506,7 @@ pub mod v1 {
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
+                                hotfix_apply_cancellation_after_deployment_is_pinned
                             },
                         ))
                     }
@@ -527,6 +529,7 @@ pub mod v1 {
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
+                                hotfix_apply_cancellation_after_deployment_is_pinned
                             },
                             waiting_for_notifications: waiting_for_completions
                                 .into_iter()
@@ -565,6 +568,7 @@ pub mod v1 {
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
+                                hotfix_apply_cancellation_after_deployment_is_pinned
                             },
                         ))
                     }
@@ -643,6 +647,7 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
+                        hotfix_apply_cancellation_after_deployment_is_pinned: false,
                         waiting_for_completions: vec![],
                         waiting_for_signal_indexes: vec![],
                         waiting_for_signal_names: vec![],
@@ -698,6 +703,7 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
+                        hotfix_apply_cancellation_after_deployment_is_pinned: false,
                         waiting_for_completions: vec![],
                         waiting_for_signal_indexes: vec![],
                         waiting_for_signal_names: vec![],
@@ -713,6 +719,7 @@ pub mod v1 {
                             source,
                             completion_retention_duration,
                             idempotency_key,
+                            hotfix_apply_cancellation_after_deployment_is_pinned
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -766,6 +773,7 @@ pub mod v1 {
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
                             result: None,
+                            hotfix_apply_cancellation_after_deployment_is_pinned
                         }
                     }
                     restate_storage_api::invocation_status_table::InvocationStatus::Suspended {
@@ -778,7 +786,7 @@ pub mod v1 {
                                 timestamps,
                                 source,
                                 completion_retention_duration,
-                                idempotency_key,
+                                idempotency_key, hotfix_apply_cancellation_after_deployment_is_pinned,
                             },
                         waiting_for_notifications,
                     } => {
@@ -850,6 +858,7 @@ pub mod v1 {
                             waiting_for_signal_indexes,
                             waiting_for_signal_names,
                             result: None,
+                            hotfix_apply_cancellation_after_deployment_is_pinned
                         }
                     }
                     restate_storage_api::invocation_status_table::InvocationStatus::Killed(
@@ -861,7 +870,7 @@ pub mod v1 {
                             timestamps,
                             source,
                             completion_retention_duration,
-                            idempotency_key,
+                            idempotency_key, hotfix_apply_cancellation_after_deployment_is_pinned,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -915,6 +924,7 @@ pub mod v1 {
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
                             result: None,
+                            hotfix_apply_cancellation_after_deployment_is_pinned
                         }
                     }
                     restate_storage_api::invocation_status_table::InvocationStatus::Completed(
@@ -957,6 +967,7 @@ pub mod v1 {
                         journal_length: 0,
                         deployment_id: None,
                         service_protocol_version: None,
+                        hotfix_apply_cancellation_after_deployment_is_pinned: false,
                         waiting_for_completions: vec![],
                         waiting_for_signal_indexes: vec![],
                         waiting_for_signal_names: vec![],
@@ -1220,6 +1231,7 @@ pub mod v1 {
                         source,
                         completion_retention_duration: completion_retention_time,
                         idempotency_key,
+                        hotfix_apply_cancellation_after_deployment_is_pinned: false,
                     },
                 )
             }
@@ -1336,6 +1348,7 @@ pub mod v1 {
                         source: caller,
                         completion_retention_duration: completion_retention_time,
                         idempotency_key,
+                        hotfix_apply_cancellation_after_deployment_is_pinned: false,
                     },
                     waiting_for_completed_entries,
                 ))
