@@ -258,6 +258,9 @@ jobs:
       with:
         ref: ${{ inputs.ref }}
         clusterName: ${{ env.CLUSTER_NAME }}
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        unset-current-credentials: true
     - name: Wait for Docker image artifact
       id: wait-for-docker
       uses: fountainhead/action-wait-for-check@v1.2.0
@@ -274,6 +277,16 @@ jobs:
       with:
         restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
         testConfig: '{ "workloads": "set-vo set-mds set-mds-s3", "nemeses": "partition-random-node", "duration": "60", "rate": "10", "concurrency": "5n", "testCount": "1" }'
+    - name: Fail if no Docker artifact
+      if: steps.wait-for-docker.outputs.conclusion != 'success'
+      continue-on-error: true
+      run: |
+        echo "::error::Docker step did not complete?"
+        exit 1
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: us-east-1
+        role-to-assume: 'arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role'
     - name: Tear down Jepsen cluster ${{ env.CLUSTER_NAME }}
       uses: restatedev/jepsen/.github/actions/teardown@main
       if: always()
