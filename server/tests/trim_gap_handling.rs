@@ -17,12 +17,12 @@ use googletest::fail;
 use tempfile::TempDir;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use url::Url;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, CreatePartitionSnapshotRequest, DescribeLogRequest, TrimLogRequest,
+    ClusterStateRequest, CreatePartitionSnapshotRequest, DescribeLogRequest,
 };
 use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
 use restate_local_cluster_runner::{
@@ -47,6 +47,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     base_config.bifrost.default_provider = Replicated;
     base_config.common.log_filter = "restate=debug,warn".to_owned();
     base_config.common.log_format = LogFormat::Compact;
+    base_config.admin.log_tail_update_interval = Duration::from_secs(1).into();
 
     let no_snapshot_repository_config = base_config.clone();
 
@@ -132,8 +133,8 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let snapshot_response = client
         .create_partition_snapshot(CreatePartitionSnapshotRequest {
             partition_id: 0,
-            min_target_lsn: None,
-            trim_log: None,
+            min_target_lsn: Some(3),
+            trim_log: Some(true),
         })
         .await?
         .into_inner();
@@ -142,15 +143,17 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         snapshot_response.min_applied_lsn
     );
 
-    tokio::time::timeout(
+    let trim_point = tokio::time::timeout(
         Duration::from_secs(3),
-        trim_log(
-            &mut client,
-            LogId::new(0),
-            Lsn::new(snapshot_response.min_applied_lsn),
-        ),
+        get_trim_point(&mut client, LogId::new(0), Lsn::new(3)),
     )
     .await??;
+    assert!(
+        trim_point >= Lsn::new(3),
+        "Trim point {} is less than the expected minimum of 3",
+        trim_point
+    );
+    assert_eq!(snapshot_response.min_applied_lsn, trim_point.as_u64());
 
     let mut worker_3 = Node::new_test_node(
         "node-3",
@@ -254,37 +257,26 @@ async fn any_partition_active(
     Ok(())
 }
 
-async fn trim_log(
+async fn get_trim_point(
     client: &mut ClusterCtrlSvcClient<Channel>,
     log_id: LogId,
-    trim_point: Lsn,
-) -> googletest::Result<()> {
+    expected_trim_point: Lsn,
+) -> googletest::Result<Lsn> {
     loop {
-        // We have to keep retrying the trim operation as the admin node may decide to no-op it if
-        // the trim point is after the known global tail.
-        client
-            .trim_log(TrimLogRequest {
-                log_id: log_id.into(),
-                trim_point: trim_point.as_u64(),
-            })
-            .await?;
-
         let response = client
             .describe_log(DescribeLogRequest {
                 log_id: log_id.into(),
             })
             .await?
             .into_inner();
-        debug!("Got trim log response: {:?}", response);
+        info!("Got log trim point response: {}", response.trim_point);
 
-        if response.trim_point >= trim_point.as_u64() {
-            info!("Log trimmed to LSN {}", response.trim_point);
-            break;
+        if response.trim_point >= expected_trim_point.as_u64() {
+            return Ok(response.trim_point.into());
         }
 
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    Ok(())
 }
 
 async fn applied_lsn_converged(
