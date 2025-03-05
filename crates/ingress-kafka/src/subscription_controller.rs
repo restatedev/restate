@@ -144,11 +144,7 @@ impl Service {
         let consumer_task = consumer_task::ConsumerTask::new(
             client_config,
             vec![topic.to_string()],
-            MessageSender::new(
-                subscription,
-                self.dispatcher.clone(),
-                options.experimental_feature_kafka_ingress_next(),
-            ),
+            MessageSender::new(subscription, self.dispatcher.clone()),
         );
 
         task_orchestrator.start(subscription_id, consumer_task);
