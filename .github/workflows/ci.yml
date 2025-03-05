@@ -260,13 +260,14 @@ jobs:
         clusterName: ${{ env.CLUSTER_NAME }}
     - uses: aws-actions/configure-aws-credentials@v4
       with:
+        aws-region: us-east-1
         unset-current-credentials: true
     - name: Wait for Docker image artifact
       id: wait-for-docker
       uses: fountainhead/action-wait-for-check@v1.2.0
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        checkName: build-and-push-image
+        checkName: "Create docker image"
         ref: ${{ github.event.pull_request.head.sha || github.sha }}
         timeoutSeconds: 1800
         intervalSeconds: 10
