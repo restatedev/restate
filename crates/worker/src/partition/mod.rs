@@ -95,7 +95,6 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     pub partition_key_range: RangeInclusive<PartitionKey>,
 
     num_timers_in_memory_limit: Option<usize>,
-    disable_idempotency_table: bool,
     invocation_status_killed: bool,
     cleanup_interval: Duration,
     channel_size: usize,
@@ -129,7 +128,6 @@ where
             partition_key_range,
             status,
             num_timers_in_memory_limit: options.num_timers_in_memory_limit(),
-            disable_idempotency_table: options.experimental_feature_disable_idempotency_table(),
             invocation_status_killed: options.experimental_feature_invocation_status_killed(),
             cleanup_interval: options.cleanup_interval(),
             channel_size: options.internal_queue_length(),
@@ -151,7 +149,6 @@ where
             partition_key_range,
             num_timers_in_memory_limit,
             cleanup_interval,
-            disable_idempotency_table,
             invocation_status_killed,
             channel_size,
             max_command_batch_size,
@@ -166,7 +163,6 @@ where
         let state_machine = Self::create_state_machine(
             &mut partition_store,
             partition_key_range.clone(),
-            disable_idempotency_table,
             invocation_status_killed,
         )
         .await?;
@@ -210,7 +206,6 @@ where
     async fn create_state_machine(
         partition_store: &mut PartitionStore,
         partition_key_range: RangeInclusive<PartitionKey>,
-        disable_idempotency_table: bool,
         invocation_status_killed: bool,
     ) -> Result<StateMachine, StorageError> {
         let inbox_seq_number = partition_store.get_inbox_seq_number().await?;
@@ -218,9 +213,6 @@ where
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
 
         let mut experimental_features = EnumSet::empty();
-        if disable_idempotency_table {
-            experimental_features |= ExperimentalFeature::DisableIdempotencyTable;
-        }
         if invocation_status_killed {
             experimental_features |= ExperimentalFeature::InvocationStatusKilled;
         }
