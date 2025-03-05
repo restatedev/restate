@@ -227,6 +227,7 @@ impl ClusterControllerHandle {
         &self,
         partition_id: PartitionId,
         min_target_lsn: Option<Lsn>,
+        trim_log: Option<bool>,
     ) -> Result<anyhow::Result<Snapshot>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -239,7 +240,19 @@ impl ClusterControllerHandle {
             })
             .await;
 
-        response_rx.await.map_err(|_| ShutdownError)
+        let create_snapshot_response = response_rx.await.map_err(|_| ShutdownError)?;
+
+        if let (Ok(snapshot), Some(true)) = (&create_snapshot_response, trim_log) {
+            // todo(pavel): apply the safety logic from cluster auto-trim
+            if let Err(trim_error) = self
+                .trim_log(LogId::from(partition_id), snapshot.min_applied_lsn)
+                .await?
+            {
+                return Ok(Err(trim_error));
+            }
+        }
+
+        Ok(create_snapshot_response)
     }
 
     pub async fn update_cluster_configuration(
@@ -571,7 +584,7 @@ impl<T: TransportConnect> Service<T> {
                 info!(
                     ?log_id,
                     trim_point_inclusive = ?trim_point,
-                    "Manual trim log command received");
+                    "Trim log command received");
                 let result = self.bifrost.admin().trim(log_id, trim_point).await;
                 let _ = response_tx.send(result.map_err(Into::into));
             }
@@ -583,7 +596,6 @@ impl<T: TransportConnect> Service<T> {
                 info!(?partition_id, "Create snapshot command received");
                 self.create_partition_snapshot(partition_id, min_target_lsn, response_tx)
                     .await;
-                // todo(pavel): trim the log on successful snapshot
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
                 partition_replication: replication_strategy,
