@@ -114,7 +114,6 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
             ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)
                 .unwrap(),
         ),
-        false,
     );
 
     TaskCenter::spawn(

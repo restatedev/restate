@@ -79,8 +79,6 @@ pub struct SchemaRegistry<V> {
     metadata_writer: MetadataWriter,
     service_discovery: ServiceDiscovery,
     subscription_validator: V,
-
-    experimental_feature_kafka_ingress_next: bool,
 }
 
 impl<V> SchemaRegistry<V> {
@@ -88,13 +86,11 @@ impl<V> SchemaRegistry<V> {
         metadata_writer: MetadataWriter,
         service_discovery: ServiceDiscovery,
         subscription_validator: V,
-        experimental_feature_kafka_ingress_next: bool,
     ) -> Self {
         Self {
             metadata_writer,
             service_discovery,
             subscription_validator,
-            experimental_feature_kafka_ingress_next,
         }
     }
 
@@ -127,10 +123,8 @@ impl<V> SchemaRegistry<V> {
         };
 
         let (id, services) = if !apply_mode.should_apply() {
-            let mut updater = SchemaUpdater::new(
-                Metadata::with_current(|m| m.schema()).deref().clone(),
-                self.experimental_feature_kafka_ingress_next,
-            );
+            let mut updater =
+                SchemaUpdater::new(Metadata::with_current(|m| m.schema()).deref().clone());
 
             // suppress logging output in case of a dry run
             let id = tracing::subscriber::with_default(NoSubscriber::new(), || {
@@ -155,10 +149,8 @@ impl<V> SchemaRegistry<V> {
                 .read_modify_write(
                     SCHEMA_INFORMATION_KEY.clone(),
                     |schema_information: Option<Schema>| {
-                        let mut updater = SchemaUpdater::new(
-                            schema_information.unwrap_or_default(),
-                            self.experimental_feature_kafka_ingress_next,
-                        );
+                        let mut updater =
+                            SchemaUpdater::new(schema_information.unwrap_or_default());
 
                         new_deployment_id = Some(updater.add_deployment(
                             deployment_metadata.clone(),
@@ -214,10 +206,8 @@ impl<V> SchemaRegistry<V> {
         };
 
         if !apply_mode.should_apply() {
-            let mut updater = SchemaUpdater::new(
-                Metadata::with_current(|m| m.schema()).deref().clone(),
-                self.experimental_feature_kafka_ingress_next,
-            );
+            let mut updater =
+                SchemaUpdater::new(Metadata::with_current(|m| m.schema()).deref().clone());
 
             // suppress logging output in case of a dry run
             tracing::subscriber::with_default(NoSubscriber::new(), || {
@@ -239,10 +229,8 @@ impl<V> SchemaRegistry<V> {
                 .read_modify_write(
                     SCHEMA_INFORMATION_KEY.clone(),
                     |schema_information: Option<Schema>| {
-                        let mut updater = SchemaUpdater::new(
-                            schema_information.unwrap_or_default(),
-                            self.experimental_feature_kafka_ingress_next,
-                        );
+                        let mut updater =
+                            SchemaUpdater::new(schema_information.unwrap_or_default());
 
                         updater.update_deployment(
                             deployment_id,
@@ -279,10 +267,7 @@ impl<V> SchemaRegistry<V> {
                     let schema_information: Schema = schema_registry.unwrap_or_default();
 
                     if schema_information.get_deployment(&deployment_id).is_some() {
-                        let mut updater = SchemaUpdater::new(
-                            schema_information,
-                            self.experimental_feature_kafka_ingress_next,
-                        );
+                        let mut updater = SchemaUpdater::new(schema_information);
                         updater.remove_deployment(deployment_id);
                         Ok(updater.into_inner())
                     } else {
@@ -317,10 +302,7 @@ impl<V> SchemaRegistry<V> {
                         .resolve_latest_service(&service_name)
                         .is_some()
                     {
-                        let mut updater = SchemaUpdater::new(
-                            schema_information,
-                            self.experimental_feature_kafka_ingress_next,
-                        );
+                        let mut updater = SchemaUpdater::new(schema_information);
                         updater.modify_service(service_name.clone(), changes.clone())?;
                         Ok(updater.into_inner())
                     } else {
@@ -359,10 +341,7 @@ impl<V> SchemaRegistry<V> {
                         .get_subscription(subscription_id)
                         .is_some()
                     {
-                        let mut updater = SchemaUpdater::new(
-                            schema_information,
-                            self.experimental_feature_kafka_ingress_next,
-                        );
+                        let mut updater = SchemaUpdater::new(schema_information);
                         updater.remove_subscription(subscription_id);
                         Ok(updater.into_inner())
                     } else {
@@ -454,10 +433,7 @@ where
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
                 |schema_information: Option<Schema>| {
-                    let mut updater = SchemaUpdater::new(
-                        schema_information.unwrap_or_default(),
-                        self.experimental_feature_kafka_ingress_next,
-                    );
+                    let mut updater = SchemaUpdater::new(schema_information.unwrap_or_default());
                     subscription_id = Some(updater.add_subscription(
                         None,
                         source.clone(),
