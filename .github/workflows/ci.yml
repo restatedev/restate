@@ -249,47 +249,52 @@ jobs:
       id-token: write # NB: can obtain OIDC tokens on behalf of this repository!
 
     steps:
-    - uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-region: us-east-1 # co-locate with WarpBuild worker
-        role-to-assume: 'arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role'
-    - name: Setup Jepsen cluster ${{ env.CLUSTER_NAME }}
-      uses: restatedev/jepsen/.github/actions/setup@main
-      with:
-        ref: ${{ inputs.ref }}
-        clusterName: ${{ env.CLUSTER_NAME }}
-    - uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-region: us-east-1
-        unset-current-credentials: true
-    - name: Wait for Docker image artifact
-      id: wait-for-docker
-      uses: fountainhead/action-wait-for-check@v1.2.0
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        checkName: "Create docker image"
-        ref: ${{ github.event.pull_request.head.sha || github.sha }}
-        timeoutSeconds: 1800
-        intervalSeconds: 10
-    - name: Run Jepsen tests
-      uses: restatedev/jepsen/.github/actions/run-tests@main
-      if: steps.wait-for-docker.outputs.conclusion == 'success'
-      continue-on-error: true
-      with:
-        restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-        testConfig: '{ "workloads": "set-vo set-mds set-mds-s3", "nemeses": "partition-random-node", "duration": "60", "rate": "10", "concurrency": "5n", "testCount": "1" }'
-    - name: Fail if no Docker artifact
-      if: steps.wait-for-docker.outputs.conclusion != 'success'
-      continue-on-error: true
-      run: |
-        echo "::error::Docker step did not complete?"
-        exit 1
-    - uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-region: us-east-1
-        role-to-assume: 'arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role'
-    - name: Tear down Jepsen cluster ${{ env.CLUSTER_NAME }}
-      uses: restatedev/jepsen/.github/actions/teardown@main
-      if: always()
-      with:
-        clusterName: ${{ env.CLUSTER_NAME }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1 # co-locate with WarpBuild worker
+          role-to-assume: "arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role"
+      - name: Setup Jepsen cluster ${{ env.CLUSTER_NAME }}
+        uses: restatedev/jepsen/.github/actions/setup@main
+        with:
+          ref: ${{ inputs.ref }}
+          clusterName: ${{ env.CLUSTER_NAME }}
+      - name: Drop AWS credentials
+        run: |
+          echo "AWS_ACCESS_KEY_ID=" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=" >> $GITHUB_ENV
+          echo "AWS_SESSION_TOKEN=" >> $GITHUB_ENV
+
+      - name: Wait for Docker image artifact
+        id: wait-for-docker
+        uses: fountainhead/action-wait-for-check@v1.2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          checkName: "Create docker image"
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          timeoutSeconds: 1800
+          intervalSeconds: 10
+
+      - name: Run Jepsen tests
+        uses: restatedev/jepsen/.github/actions/run-tests@main
+        if: steps.wait-for-docker.outputs.conclusion == 'success'
+        continue-on-error: true
+        with:
+          restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+          testConfig: '{ "workloads": "set-vo set-mds set-mds-s3", "nemeses": "partition-random-node", "duration": "60", "rate": "10", "concurrency": "5n", "testCount": "1" }'
+
+      - name: Fail if no Docker artifact
+        if: steps.wait-for-docker.outputs.conclusion != 'success'
+        continue-on-error: true
+        run: |
+          echo "::error::Docker step did not complete?"
+          exit 1
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: "arn:aws:iam::339713187748:role/github-restatedev-restate-actions-role"
+      - name: Tear down Jepsen cluster ${{ env.CLUSTER_NAME }}
+        uses: restatedev/jepsen/.github/actions/teardown@main
+        if: always()
+        with:
+          clusterName: ${{ env.CLUSTER_NAME }}
