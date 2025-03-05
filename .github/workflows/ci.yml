@@ -269,7 +269,7 @@ jobs:
         uses: fountainhead/action-wait-for-check@v1.2.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          checkName: "Create docker image"
+          checkName: "Create docker image / build-and-push-image"
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           timeoutSeconds: 1800
           intervalSeconds: 10
