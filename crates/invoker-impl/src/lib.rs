@@ -22,7 +22,6 @@ use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
-use itertools::Itertools;
 use metric_definitions::{INVOKER_PENDING_TASKS, INVOKER_TASKS_IN_FLIGHT};
 use metrics::{counter, gauge};
 use restate_core::cancellation_watcher;
@@ -359,7 +358,6 @@ where
                     .registered_partitions_with_keys(keys.clone())
                     .flat_map(|partition| self.status_store.status_for_partition(partition))
                     .filter(|status| keys.contains(&status.invocation_id().partition_key()))
-                    .sorted_by_key(|e| e.invocation_id().partition_key())
                     .collect();
 
                 let _ = cmd.reply(statuses);

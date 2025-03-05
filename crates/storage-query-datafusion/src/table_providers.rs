@@ -105,7 +105,7 @@ where
 
     async fn scan(
         &self,
-        _state: &(dyn datafusion::catalog::Session),
+        state: &(dyn datafusion::catalog::Session),
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         _limit: Option<usize>,
@@ -126,7 +126,7 @@ where
             .await
             .map_err(DataFusionError::External)?;
 
-        let required_partitions = if let Some(partition_key) = partition_key {
+        let partitions_to_scan = if let Some(partition_key) = partition_key {
             filter_partitions(partition_key, live_partitions.into_iter())
         } else {
             live_partitions
@@ -142,9 +142,14 @@ where
         };
 
         let partition_plan = if sort_columns.is_empty() {
-            Partitioning::UnknownPartitioning(required_partitions.len())
+            Partitioning::UnknownPartitioning(partitions_to_scan.len())
+        } else if partitions_to_scan.len() <= state.config_options().execution.target_partitions {
+            Partitioning::Hash(sort_columns, partitions_to_scan.len())
         } else {
-            Partitioning::Hash(sort_columns, required_partitions.len())
+            // although we have a valid sort order, we must ask datafusion to repartition the rows
+            // to fit into `target_partitions`.
+            // this is a hidden requirement/bug in the scan interface.
+            Partitioning::UnknownPartitioning(partitions_to_scan.len())
         };
 
         let plan = PlanProperties::new(
@@ -155,7 +160,7 @@ where
         );
 
         Ok(Arc::new(PartitionedExecutionPlan {
-            live_partitions: required_partitions,
+            live_partitions: partitions_to_scan,
             projected_schema,
             scanner: self.partition_scanner.clone(),
             plan,
