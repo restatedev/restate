@@ -84,6 +84,8 @@ async fn inner_create_snapshot(
 ) -> anyhow::Result<()> {
     let request = CreatePartitionSnapshotRequest {
         partition_id: partition_id.into(),
+        min_target_lsn: None,
+        trim_log: None,
     };
 
     let response = connection
