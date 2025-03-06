@@ -87,7 +87,8 @@ message TrimLogRequest {
 
 // Requests a partition snapshot to be archived. Optionally, a minimum
 // target LSN for the snapshot may be set and the log can be trimmed to the
-// archived LSN at the same time.
+// archived LSN at the same time. It is safe to retry this operation on
+// error with the same inputs.
 message CreatePartitionSnapshotRequest {
   uint32 partition_id = 1;
   // Minimum LSN (inclusive) which must be covered by the snapshot; if set it is treated as a hard
