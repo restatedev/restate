@@ -12,19 +12,20 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use cling::prelude::*;
+use restate_core::protobuf::metadata_proxy_svc::MetadataStoreProxy;
+use restate_metadata_server::MetadataStoreClient;
 
 use restate_bifrost::providers::replicated_loglet::logserver_candidate_filter;
 use restate_bifrost::providers::replicated_loglet::replication::NodeSetChecker;
 use restate_cli_util::c_println;
-use restate_metadata_server::{MetadataStoreClient, create_client};
-use restate_types::config::{MetadataClientKind, MetadataClientOptions};
+use restate_types::config::MetadataClientOptions;
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{NodesConfiguration, Role, StorageState};
 use restate_types::replication::{NodeSetSelector, NodeSetSelectorOptions};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
-use crate::connection::ConnectionInfo;
+use crate::connection::{ConnectionInfo, NodeOperationError};
 
 // note 1: this is until we have a way to proxy metadata requests through nodes
 // note 2: currently supports replicated metadata only, node must be one of metadata nodes
@@ -47,27 +48,6 @@ async fn set_storage_state(connection: &ConnectionInfo, opts: &SetOpts) -> anyho
     }
 
     let nodes_config = connection.get_nodes_configuration().await?;
-
-    // find metadata nodes
-    let addresses: Vec<_> = nodes_config
-        .iter_role(Role::MetadataServer)
-        .map(|(_, config)| config.address.clone())
-        .collect();
-    if addresses.is_empty() {
-        return Err(anyhow::anyhow!(
-            "No nodes are configured to run metadata-server role, this command only \
-             supports replicated metadata deployment"
-        ));
-    }
-
-    let metadata_store_client_options = MetadataClientOptions {
-        kind: MetadataClientKind::Replicated { addresses },
-        ..Default::default()
-    };
-
-    let metadata_client = create_client(metadata_store_client_options)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create metadata store client: {}", e))?;
 
     let mut current_states: HashMap<GenerationalNodeId, StorageState> =
         HashMap::with_capacity(opts.nodes.len());
@@ -183,7 +163,18 @@ async fn set_storage_state(connection: &ConnectionInfo, opts: &SetOpts) -> anyho
         }
     }
 
-    update_storage_state(&metadata_client, &current_states, opts.storage_state).await?;
+    let backoff_policy = &MetadataClientOptions::default().backoff_policy;
+
+    connection
+        .try_each(None, |channel| async {
+            let metadata_store_proxy = MetadataStoreProxy::new(channel);
+            let metadata_store_client =
+                MetadataStoreClient::new(metadata_store_proxy, Some(backoff_policy.clone()));
+
+            update_storage_state(&metadata_store_client, &current_states, opts.storage_state).await
+        })
+        .await?;
+
     for (node, old_state) in current_states {
         c_println!(
             "{} storage-state has been updated from {} to {}",
@@ -199,13 +190,13 @@ async fn update_storage_state(
     metadata_client: &MetadataStoreClient,
     nodes: &HashMap<GenerationalNodeId, StorageState>,
     target_state: StorageState,
-) -> anyhow::Result<()> {
+) -> Result<(), NodeOperationError> {
     metadata_client
         .read_modify_write(
             NODES_CONFIG_KEY.clone(),
             move |nodes_config: Option<NodesConfiguration>| {
-                let mut nodes_config =
-                    nodes_config.ok_or(anyhow::anyhow!("Missing nodes configuration!"))?;
+                let mut nodes_config = nodes_config.context("Missing nodes configuration")?;
+
                 for (my_node_id, expected_state) in nodes {
                     // If this fails, it means that a newer node has started somewhere else, and we
                     // should not attempt to update the storage-state. Instead, we fail.
@@ -231,6 +222,7 @@ async fn update_storage_state(
                 Ok(nodes_config)
             },
         )
-        .await?;
-    Ok(())
+        .await
+        .map(|_| ())
+        .map_err(Into::into)
 }

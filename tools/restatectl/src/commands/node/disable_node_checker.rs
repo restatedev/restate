@@ -37,21 +37,17 @@ pub enum DisableNodeError {
     MetadataMember,
 }
 
-pub struct DisableNodeChecker {
-    nodes_configuration: NodesConfiguration,
-    logs: Logs,
+pub struct DisableNodeChecker<'a, 'b> {
+    nodes_configuration: &'a NodesConfiguration,
+    logs: &'b Logs,
 }
 
-impl DisableNodeChecker {
-    pub fn new(nodes_configuration: NodesConfiguration, logs: Logs) -> Self {
+impl<'a, 'b> DisableNodeChecker<'a, 'b> {
+    pub fn new(nodes_configuration: &'a NodesConfiguration, logs: &'b Logs) -> Self {
         DisableNodeChecker {
             nodes_configuration,
             logs,
         }
-    }
-
-    pub fn nodes_configuration(&self) -> &NodesConfiguration {
-        &self.nodes_configuration
     }
 
     pub fn safe_to_disable_node(&self, node_id: PlainNodeId) -> Result<(), DisableNodeError> {
