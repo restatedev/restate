@@ -143,7 +143,7 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
     let mut options = Options::default();
     if cfg!(target_os = "macos") {
         // Ignore different thread origins to merge traces. This seems not needed on Linux.
-        options.base = vec!["__pthread_joiner_wake".to_string(), "_main".to_string()];
+        options.base = vec!["_pthread_key_init_np".to_string(), "_main".to_string()];
     }
     options
 }
