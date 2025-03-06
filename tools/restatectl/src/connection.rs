@@ -15,8 +15,9 @@ use std::{cmp::Ordering, fmt::Display, sync::Arc};
 use cling::{Collect, prelude::Parser};
 use itertools::{Either, Itertools, Position};
 use rand::{rng, seq::SliceRandom};
+use restate_metadata_server::ReadModifyWriteError;
 use tokio::sync::{Mutex, MutexGuard};
-use tonic::{Code, Response, Status, codec::CompressionEncoding, transport::Channel};
+use tonic::{Code, Status, codec::CompressionEncoding, transport::Channel};
 use tracing::{debug, info};
 
 use restate_core::protobuf::node_ctl_svc::{
@@ -269,14 +270,15 @@ impl ConnectionInfo {
     /// Returns an error if:
     /// - No nodes match the requested role.
     /// - All nodes return an error.
-    pub async fn try_each<F, T, Fut>(
+    pub async fn try_each<F, T, E, Fut>(
         &self,
         role: Option<Role>,
         mut node_operation: F,
-    ) -> Result<Response<T>, ConnectionInfoError>
+    ) -> Result<T, ConnectionInfoError>
     where
         F: FnMut(Channel) -> Fut,
-        Fut: Future<Output = Result<Response<T>, Status>>,
+        E: Into<NodeOperationError>,
+        Fut: Future<Output = Result<T, E>>,
     {
         let nodes_config = self.get_nodes_configuration().await?;
         let mut open_connections = self.open_connections.lock().await;
@@ -306,10 +308,10 @@ impl ConnectionInfo {
 
             if let Some(channel) = channel {
                 debug!("Trying {}...", node.address);
-                let result = node_operation(channel).await;
+                let result = node_operation(channel).await.map_err(Into::into);
                 match result {
                     Ok(response) => return Ok(response),
-                    Err(status) => {
+                    Err(NodeOperationError::RetryElsewhere(status)) => {
                         if status.code() == Code::Unavailable
                             || status.code() == Code::DeadlineExceeded
                         {
@@ -319,6 +321,10 @@ impl ConnectionInfo {
                                 .insert(node.address.clone());
                         }
                         errors.error(node.address.clone(), status);
+                    }
+                    Err(NodeOperationError::Terminal(status)) => {
+                        errors.error(node.address.clone(), status);
+                        break;
                     }
                 }
             } else {
@@ -372,6 +378,45 @@ impl ConnectionInfo {
                 })
                 .clone(),
         )
+    }
+}
+
+/// Error type returned by a [`ConnectionInfo::try_each`] node_operation closure
+#[derive(Debug, thiserror::Error)]
+pub enum NodeOperationError {
+    /// An error that can be retried on a different node
+    /// but terminal on this node.
+    #[error(transparent)]
+    RetryElsewhere(Status),
+    /// Don not retry on any other node(s)
+    #[error(transparent)]
+    Terminal(Status),
+}
+
+impl From<Status> for NodeOperationError {
+    fn from(value: Status) -> Self {
+        match value.code() {
+            Code::FailedPrecondition => Self::Terminal(value),
+            _ => Self::RetryElsewhere(value),
+        }
+    }
+}
+
+impl<E> From<ReadModifyWriteError<E>> for NodeOperationError
+where
+    E: ToString,
+{
+    fn from(value: ReadModifyWriteError<E>) -> Self {
+        match value {
+            ReadModifyWriteError::FailedOperation(err) => {
+                // we don't ever try again
+                NodeOperationError::Terminal(Status::unknown(err.to_string()))
+            }
+            ReadModifyWriteError::ReadWrite(err) => {
+                // possible node failure, we can try the next reachable node
+                NodeOperationError::RetryElsewhere(Status::unknown(err.to_string()))
+            }
+        }
     }
 }
 
