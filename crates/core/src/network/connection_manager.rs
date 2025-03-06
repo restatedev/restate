@@ -16,9 +16,7 @@ use futures::{FutureExt, Stream, StreamExt};
 use metrics::{counter, histogram};
 use opentelemetry::global;
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tokio_stream::wrappers::ReceiverStream;
 use tracing::{Instrument, Span, debug, info, instrument, trace, warn};
 
 use restate_types::config::Configuration;
@@ -35,6 +33,7 @@ use super::handshake::wait_for_welcome;
 use super::metric_definitions::{
     self, CONNECTION_DROPPED, INCOMING_CONNECTION, OUTGOING_CONNECTION,
 };
+use super::streams::{DropEgressStream, EgressStream};
 use super::transport_connector::TransportConnect;
 use super::{Handler, MessageRouter};
 use crate::metadata::Urgency;
@@ -42,6 +41,7 @@ use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
 use crate::network::metric_definitions::{
     NETWORK_MESSAGE_PROCESSING_DURATION, NETWORK_MESSAGE_RECEIVED, NETWORK_MESSAGE_RECEIVED_BYTES,
 };
+use crate::network::streams::EgressMessage;
 use crate::network::{Incoming, PeerMetadataVersion};
 use crate::{Metadata, TaskCenter, TaskContext, TaskId, TaskKind, my_node_id};
 
@@ -148,7 +148,7 @@ impl ConnectionManager {
     pub async fn accept_incoming_connection<S>(
         &self,
         mut incoming: S,
-    ) -> Result<impl Stream<Item = Message> + Unpin + Send + 'static, NetworkError>
+    ) -> Result<EgressStream, NetworkError>
     where
         S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
     {
@@ -225,38 +225,26 @@ impl ConnectionManager {
 
         self.verify_node_id(peer_node_id, &header, &nodes_config, &metadata)?;
 
-        let (tx, output_stream) = mpsc::channel(
+        let (tx, egress, drop_egress) = EgressStream::create(
             Configuration::pinned()
                 .networking
                 .outbound_queue_length
                 .get(),
         );
-        let output_stream = ReceiverStream::new(output_stream);
         // Enqueue the welcome message
         let welcome = Welcome::new(my_node_id, selected_protocol_version);
 
-        let welcome = Message::new(
-            Header::new(
-                nodes_config.version(),
-                None,
-                None,
-                None,
-                crate::network::generate_msg_id(),
-                Some(header.msg_id),
-            ),
-            welcome,
-        );
-
-        tx.try_send(welcome)
-            .expect("channel accept Welcome message");
+        tx.send(EgressMessage::Message(Header::default(), welcome.into()))
+            .await
+            .unwrap();
         let connection = OwnedConnection::new(peer_node_id, selected_protocol_version, tx);
 
         INCOMING_CONNECTION.increment(1);
         // Register the connection.
-        let _ = self.start_connection_reactor(connection, incoming)?;
+        let _ = self.start_connection_reactor(connection, incoming, drop_egress)?;
 
         // Our output stream, i.e. responses.
-        Ok(output_stream)
+        Ok(egress)
     }
 
     /// Gets an existing connection or creates a new one if no active connection exists. If
@@ -327,34 +315,23 @@ impl ConnectionManager {
         let nodes_config = metadata.nodes_config_snapshot();
         let cluster_name = nodes_config.cluster_name().to_owned();
 
-        let (tx, output_stream) = mpsc::channel(
+        let (tx, egress, drop_egress) = EgressStream::create(
             Configuration::pinned()
                 .networking
                 .outbound_queue_length
                 .get(),
         );
-        let output_stream = ReceiverStream::new(output_stream);
-        let hello = Hello::new(my_node_id, cluster_name);
 
         // perform handshake.
-        let hello = Message::new(
-            Header::new(
-                metadata.nodes_config_version(),
-                None,
-                None,
-                None,
-                super::generate_msg_id(),
-                None,
-            ),
-            hello,
-        );
-
+        let hello = Hello::new(my_node_id, cluster_name);
         // Prime the channel with the hello message before connecting.
-        tx.send(hello).await.expect("Channel accept hello message");
+        tx.send(EgressMessage::Message(Header::default(), hello.into()))
+            .await
+            .unwrap();
 
         // Establish the connection
         let mut incoming = transport_connector
-            .connect(node_id, &nodes_config, output_stream)
+            .connect(node_id, &nodes_config, egress)
             .await?;
         // finish the handshake
         let (_header, welcome) = wait_for_welcome(
@@ -390,12 +367,14 @@ impl ConnectionManager {
         let connection = OwnedConnection::new(peer_node_id, protocol_version, tx);
 
         OUTGOING_CONNECTION.increment(1);
-        self.start_connection_reactor(connection, incoming)
+        self.start_connection_reactor(connection, incoming, drop_egress)
     }
 
     #[instrument(skip_all)]
     fn connect_loopback(&self) -> Result<Arc<OwnedConnection>, NetworkError> {
-        let (tx, rx) = mpsc::channel(
+        trace!("Creating an express path connection to self");
+        // todo: for loopback we should avoid the additional buffering to reduce latency and avoid memory bloat.
+        let (tx, egress, drop_egress) = EgressStream::create(
             Configuration::pinned()
                 .networking
                 .outbound_queue_length
@@ -407,8 +386,7 @@ impl ConnectionManager {
             tx,
         );
 
-        let incoming = ReceiverStream::new(rx).map(Ok);
-        self.start_connection_reactor(connection, incoming)
+        self.start_connection_reactor(connection, egress.map(Ok), drop_egress)
     }
 
     fn verify_node_id(
@@ -459,6 +437,7 @@ impl ConnectionManager {
         &self,
         connection: OwnedConnection,
         incoming: S,
+        drop_egress: DropEgressStream,
     ) -> Result<Arc<OwnedConnection>, NetworkError>
     where
         S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
@@ -517,7 +496,14 @@ impl ConnectionManager {
         let task_id = TaskCenter::spawn_child(
             TaskKind::ConnectionReactor,
             "network-connection-reactor",
-            run_reactor(self.inner.clone(), connection.clone(), router, incoming).instrument(span),
+            run_reactor(
+                self.inner.clone(),
+                connection.clone(),
+                router,
+                incoming,
+                drop_egress,
+            )
+            .instrument(span),
         )?;
         if peer_node_id != my_node_id() {
             debug!(
@@ -546,6 +532,7 @@ async fn run_reactor<S>(
     connection: Arc<OwnedConnection>,
     router: MessageRouter,
     mut incoming: S,
+    drop_egress: DropEgressStream,
 ) -> anyhow::Result<()>
 where
     S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send,
@@ -558,6 +545,7 @@ where
 
     let mut needs_drain = false;
     let mut is_peer_shutting_down = false;
+    let mut drop_egress = std::pin::pin!(drop_egress);
     // Receive loop
     loop {
         // read a message from the stream
@@ -575,6 +563,14 @@ where
                 needs_drain = true;
                 break;
             },
+            _ = &mut drop_egress =>  {
+                // egress stream has been dropped, we should terminate the connection.
+                // since this has been triggered externally, we'll assume that it's impossible to
+                // respond to requests on this channel, so we'll simply drop everything to floor
+                debug!("Stopping connection reactor due to egress stream drop");
+                needs_drain = false;
+                break;
+            }
             msg = incoming.next() => {
                 match msg {
                     Some(Ok(msg)) => { msg }
@@ -756,6 +752,7 @@ where
 
     // We should also terminate response stream. This happens automatically when
     // the sender is dropped
+    drop_egress.close();
     on_connection_terminated(&connection_manager);
     CONNECTION_DROPPED.increment(1);
     debug!(
@@ -852,6 +849,7 @@ impl MetadataVersions {
 mod tests {
     use super::*;
 
+    use futures::stream;
     use googletest::prelude::*;
     use restate_types::config::NetworkingOptions;
     use restate_types::locality::NodeLocation;
@@ -873,6 +871,7 @@ mod tests {
     };
     use restate_types::protobuf::node::message::Body;
     use restate_types::protobuf::node::{Header, Hello};
+    use tokio_stream::wrappers::ReceiverStream;
 
     use crate::network::MockPeerConnection;
     use crate::{self as restate_core, TestCoreEnv, TestCoreEnvBuilder};
@@ -901,12 +900,12 @@ mod tests {
     async fn test_hello_welcome_timeout() -> Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let net_opts = NetworkingOptions::default();
-        let (_tx, rx) = mpsc::channel(1);
         let connections = ConnectionManager::default();
 
         let start = tokio::time::Instant::now();
-        let incoming = ReceiverStream::new(rx);
-        let resp = connections.accept_incoming_connection(incoming).await;
+        let resp = connections
+            .accept_incoming_connection(stream::pending())
+            .await;
         assert!(resp.is_err());
         assert!(matches!(
             resp,
