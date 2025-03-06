@@ -94,7 +94,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
         let status = self.status_handle.clone();
         let partition_store_manager = self.partition_store_manager.clone();
         let schema = projection.clone();
-        let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
+        let mut stream_builder = RecordBatchReceiverStream::builder(projection, 2);
         let tx = stream_builder.tx();
 
         let background_task = async move {

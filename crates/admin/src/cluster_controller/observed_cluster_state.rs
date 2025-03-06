@@ -38,6 +38,23 @@ impl ObservedClusterState {
     }
 
     pub fn update(&mut self, cluster_state: &ClusterState) {
+        // In case nodes were removed and no longer exists in the cluster_state;
+        // we make sure they are completely removed from both dead and alive sets.
+        //
+        // todo: this need to be optimized. most of the time this will retain
+        // everything only burning cpu cycles.
+        self.alive_nodes
+            .retain(|id, _| cluster_state.nodes.contains_key(id));
+        self.dead_nodes
+            .retain(|id| cluster_state.nodes.contains_key(id));
+        self.nodes_to_partitions
+            .retain(|id, _| cluster_state.nodes.contains_key(id));
+        for partition_state in self.partitions.values_mut() {
+            partition_state
+                .partition_processors
+                .retain(|id, _| cluster_state.nodes.contains_key(id));
+        }
+
         self.update_nodes(cluster_state);
         self.update_partitions(cluster_state);
     }

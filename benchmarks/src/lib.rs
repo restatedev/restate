@@ -11,23 +11,25 @@
 #![allow(clippy::async_yields_async)]
 
 //! Utilities for benchmarking the Restate runtime
-use std::num::NonZeroU16;
-use std::time::Duration;
-
+use anyhow::anyhow;
 use futures_util::{TryFutureExt, future};
 use http::Uri;
 use http::header::CONTENT_TYPE;
 use pprof::flamegraph::Options;
-use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind, task_center};
+use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind, cancellation_token, task_center};
 use restate_node::Node;
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::{
-    CommonOptionsBuilder, Configuration, ConfigurationBuilder, WorkerOptionsBuilder,
+    BifrostOptionsBuilder, CommonOptionsBuilder, Configuration, ConfigurationBuilder,
+    MetadataServerKind, MetadataServerOptionsBuilder, RaftOptions, WorkerOptionsBuilder,
 };
 use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::Constant;
+use restate_types::logs::metadata::ProviderKind;
 use restate_types::retries::RetryPolicy;
+use std::num::NonZeroU16;
+use std::time::Duration;
 use tokio::runtime::Runtime;
 use tracing::warn;
 
@@ -121,12 +123,27 @@ pub fn spawn_restate(config: Configuration) -> task_center::Handle {
     tc
 }
 
+pub fn spawn_mock_service_endpoint(task_center_handle: &task_center::Handle) {
+    task_center_handle.block_on(async {
+        TaskCenter::spawn(TaskKind::TestRunner, "mock-service-endpoint", async {
+            cancellation_token()
+                .run_until_cancelled(mock_service_endpoint::listener::run_listener(
+                    "127.0.0.1:9080".parse().expect("valid socket addr"),
+                ))
+                .await
+                .map(|result| result.map_err(|err| anyhow!("mock service endpoint failed: {err}")))
+                .unwrap_or(Ok(()))
+        })
+        .expect("mock service endpoint should start");
+    });
+}
+
 pub fn flamegraph_options<'a>() -> Options<'a> {
     #[allow(unused_mut)]
     let mut options = Options::default();
     if cfg!(target_os = "macos") {
         // Ignore different thread origins to merge traces. This seems not needed on Linux.
-        options.base = vec!["__pthread_joiner_wake".to_string(), "_main".to_string()];
+        options.base = vec!["_pthread_key_init_np".to_string(), "_main".to_string()];
     }
     options
 }
@@ -142,9 +159,21 @@ pub fn restate_configuration() -> Configuration {
         .build()
         .expect("building worker options should work");
 
+    let metadata_server_options = MetadataServerOptionsBuilder::default()
+        .kind(Some(MetadataServerKind::Raft(RaftOptions::default())))
+        .build()
+        .expect("building metadata server options should work");
+
+    let bifrost_options = BifrostOptionsBuilder::default()
+        .default_provider(ProviderKind::Replicated)
+        .build()
+        .expect("building bifrost options should work");
+
     let config = ConfigurationBuilder::default()
         .common(common_options)
         .worker(worker_options)
+        .metadata_server(metadata_server_options)
+        .bifrost(bifrost_options)
         .build()
         .expect("building the configuration should work");
 
