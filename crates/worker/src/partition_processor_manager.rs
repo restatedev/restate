@@ -977,7 +977,7 @@ impl PartitionProcessorManager {
                 debug!(
                     %partition_id,
                     snapshot_id = %pending.get().snapshot_id,
-                    "A snapshot export is currently underway"
+                    "A snapshot export is already in progress, refusing to start a new export"
                 );
                 if let Some(sender) = sender {
                     let _ = sender.send(Err(SnapshotError::SnapshotInProgress(partition_id)));

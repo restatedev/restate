@@ -403,26 +403,6 @@ impl<T: TransportConnect> Service<T> {
                 node.partitions
                     .get(&partition_id)
                     .filter(|status| status.is_effective_leader())
-                    .inspect(|status| {
-                        if let Some(min_target_lsn) = min_target_lsn {
-                            match status.last_applied_log_lsn {
-                                None => {
-                                    debug!(
-                                        ?min_target_lsn,
-                                        "Partition leader {:?} isn't reporting an applied LSN; sending snapshot request anyway",
-                                        node,
-                                    );
-                                }
-                                Some(applied_lsn)  => if applied_lsn < min_target_lsn {
-                                    debug!(
-                                        "Partition leader is reporting an applied {:?} < target {:?}; sending snapshot request anyway",
-                                        min_target_lsn,
-                                        applied_lsn,
-                                    );
-                                }
-                            }
-                        }
-                    })
                     .map(|_| node)
                     .cloned()
             })
@@ -694,21 +674,17 @@ where
         partition_id: PartitionId,
         min_target_lsn: Option<Lsn>,
     ) -> anyhow::Result<Snapshot> {
-        // todo(pavel): make snapshot RPC timeout configurable, especially if this includes remote upload in the future
-        let response = tokio::time::timeout(
-            Duration::from_secs(90),
-            self.create_snapshot_router.call(
+        self.create_snapshot_router
+            .call(
                 &self.network_sender,
                 node_id,
                 CreateSnapshotRequest {
                     partition_id,
                     min_target_lsn,
                 },
-            ),
-        )
-        .await?;
-        let create_snapshot_response = response?.into_body();
-        create_snapshot_response
+            )
+            .await?
+            .into_body()
             .result
             .map_err(|e| anyhow!("Failed to create snapshot: {:?}", e))
     }

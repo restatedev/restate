@@ -175,7 +175,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .controller_handle
             .create_partition_snapshot(
                 partition_id,
-                request.min_target_lsn.map(Lsn::new),
+                request.min_target_lsn.map(Into::into),
                 request.trim_log,
             )
             .await
