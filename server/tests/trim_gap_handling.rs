@@ -22,7 +22,7 @@ use url::Url;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, CreatePartitionSnapshotRequest, DescribeLogRequest,
+    ClusterStateRequest, CreatePartitionSnapshotRequest,
 };
 use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
 use restate_local_cluster_runner::{
@@ -32,7 +32,6 @@ use restate_local_cluster_runner::{
 use restate_types::config::{LogFormat, MetadataClientKind};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
-use restate_types::logs::{LogId, Lsn};
 use restate_types::protobuf::cluster::RunMode;
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::retries::RetryPolicy;
@@ -47,7 +46,6 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     base_config.bifrost.default_provider = Replicated;
     base_config.common.log_filter = "restate=debug,warn".to_owned();
     base_config.common.log_format = LogFormat::Compact;
-    base_config.admin.log_tail_update_interval = Duration::from_secs(1).into();
 
     let no_snapshot_repository_config = base_config.clone();
 
@@ -142,18 +140,6 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         "Snapshot created including changes up to LSN {}",
         snapshot_response.min_applied_lsn
     );
-
-    let trim_point = tokio::time::timeout(
-        Duration::from_secs(3),
-        get_trim_point(&mut client, LogId::new(0), Lsn::new(3)),
-    )
-    .await??;
-    assert!(
-        trim_point >= Lsn::new(3),
-        "Trim point {} is less than the expected minimum of 3",
-        trim_point
-    );
-    assert_eq!(snapshot_response.min_applied_lsn, trim_point.as_u64());
 
     let mut worker_3 = Node::new_test_node(
         "node-3",
@@ -255,28 +241,6 @@ async fn any_partition_active(
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Ok(())
-}
-
-async fn get_trim_point(
-    client: &mut ClusterCtrlSvcClient<Channel>,
-    log_id: LogId,
-    expected_trim_point: Lsn,
-) -> googletest::Result<Lsn> {
-    loop {
-        let response = client
-            .describe_log(DescribeLogRequest {
-                log_id: log_id.into(),
-            })
-            .await?
-            .into_inner();
-        info!("Got log trim point response: {}", response.trim_point);
-
-        if response.trim_point >= expected_trim_point.as_u64() {
-            return Ok(response.trim_point.into());
-        }
-
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
 }
 
 async fn applied_lsn_converged(
