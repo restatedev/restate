@@ -23,6 +23,7 @@ pub mod partition_processor_rpc_client;
 pub mod protobuf;
 pub mod rpc_router;
 mod server_builder;
+pub mod streams;
 pub mod tonic_service_filter;
 pub mod transport_connector;
 mod types;
