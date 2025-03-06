@@ -1149,7 +1149,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             {
                 // We need to apply a corner case fix here.
                 // We don't know yet what's the protocol version being used, but we know the status is either invoker or suspended.
-                // To sort this out, we write a field in invocation status to
+                // To sort this out, we write a field in invocation status to make sure that after pinning the deployment, we run the cancellation.
+                // See OnPinnedDeploymentCommand for more info.
                 trace!(
                     "Storing hotfix for cancellation when invocation doesn't have a pinned service protocol, but is invoked/suspended"
                 );

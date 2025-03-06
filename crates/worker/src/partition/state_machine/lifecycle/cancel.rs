@@ -229,7 +229,7 @@ mod tests {
             }))
             .await;
 
-        // assert that inboxed invocation is in invocation_status
+        // assert that scheduled invocation is in invocation_status
         let current_invocation_status = test_env
             .storage()
             .get_invocation_status(&invocation_id)
