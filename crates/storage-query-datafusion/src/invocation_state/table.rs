@@ -21,11 +21,11 @@ use tokio::sync::mpsc::Sender;
 
 use restate_invoker_api::{InvocationStatusReport, StatusHandle};
 use restate_partition_store::PartitionStoreManager;
-use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::{PartitionId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::invocation_state::row::append_invocation_state_row;
-use crate::invocation_state::schema::{SysInvocationStateBuilder, sys_invocation_state_sort_order};
+use crate::invocation_state::schema::SysInvocationStateBuilder;
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::table_util::Builder;
@@ -57,7 +57,7 @@ pub(crate) fn register_self(
     let status_table = PartitionedTableProvider::new(
         partition_selector,
         SysInvocationStateBuilder::schema(),
-        sys_invocation_state_sort_order(),
+        vec![],
         ctx.create_distributed_scanner(NAME, local_partition_scanner),
         FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
     );
@@ -118,9 +118,6 @@ async fn for_each_state<'a, I>(
 {
     let mut builder = SysInvocationStateBuilder::new(schema.clone());
     let mut temp = String::new();
-    let mut rows = rows.collect::<Vec<_>>();
-    // need to be ordered by partition key for symmetric joins
-    rows.sort_unstable_by_key(|row| row.invocation_id().partition_key());
     for row in rows {
         append_invocation_state_row(&mut builder, &mut temp, row);
         if builder.full() {

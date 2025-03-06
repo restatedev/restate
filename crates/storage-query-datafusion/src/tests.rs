@@ -113,4 +113,83 @@ async fn query_sys_invocation() {
             }
         ))
     );
+
+    let records = engine
+        .execute(
+            "SELECT
+                id,
+                target_service_name,
+                target_handler_name,
+                last_failure,
+                last_failure_related_entry_index,
+                last_failure_related_entry_name,
+                last_failure_related_entry_type,
+                last_attempt_server
+            FROM sys_invocation
+            ORDER BY last_failure_related_entry_index
+            LIMIT 1",
+        )
+        .await
+        .unwrap()
+        .collect::<Vec<Result<RecordBatch, _>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "id" => LargeStringArray: eq(invocation_id.to_string()),
+                "target_service_name" => LargeStringArray: eq(invocation_target.service_name().to_string()),
+                "target_handler_name" => LargeStringArray: eq(invocation_target.handler_name().to_string()),
+                "last_failure" => LargeStringArray: eq(invocation_error.to_string()),
+                "last_failure_related_entry_index" => UInt64Array: eq(1),
+                "last_failure_related_entry_name" => LargeStringArray: eq("my-side-effect"),
+                "last_failure_related_entry_type" => LargeStringArray: eq(EntryType::Run.to_string()),
+                "last_attempt_server" => LargeStringArray: eq("restate-sdk-java/0.8.0"),
+            }
+        ))
+    );
+
+    let records = engine
+        .execute(format!(
+            "SELECT
+                id,
+                target_service_name,
+                target_handler_name,
+                last_failure,
+                last_failure_related_entry_index,
+                last_failure_related_entry_name,
+                last_failure_related_entry_type,
+                last_attempt_server
+            FROM sys_invocation
+            WHERE id = '{}'
+            LIMIT 1",
+            invocation_id
+        ))
+        .await
+        .unwrap()
+        .collect::<Vec<Result<RecordBatch, _>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "id" => LargeStringArray: eq(invocation_id.to_string()),
+                "target_service_name" => LargeStringArray: eq(invocation_target.service_name().to_string()),
+                "target_handler_name" => LargeStringArray: eq(invocation_target.handler_name().to_string()),
+                "last_failure" => LargeStringArray: eq(invocation_error.to_string()),
+                "last_failure_related_entry_index" => UInt64Array: eq(1),
+                "last_failure_related_entry_name" => LargeStringArray: eq("my-side-effect"),
+                "last_failure_related_entry_type" => LargeStringArray: eq(EntryType::Run.to_string()),
+                "last_attempt_server" => LargeStringArray: eq("restate-sdk-java/0.8.0"),
+            }
+        ))
+    );
 }

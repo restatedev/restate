@@ -209,9 +209,9 @@ impl MockQueryEngine {
 
     pub async fn execute(
         &self,
-        sql: &str,
+        sql: impl AsRef<str> + Send,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        self.2.execute(sql).await
+        self.2.execute(sql.as_ref()).await
     }
 }
 
