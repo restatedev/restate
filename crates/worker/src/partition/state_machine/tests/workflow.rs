@@ -47,7 +47,7 @@ async fn start_workflow_method() {
         }))
     );
 
-    // Assert service is locked only if we enable the idempotency table
+    // Assert we don't write virtual object status anymore for locking.
     assert_that!(
         test_env
             .storage()

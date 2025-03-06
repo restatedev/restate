@@ -55,7 +55,7 @@ async fn start_and_complete_idempotent_invocation() {
         }))
     );
 
-    // Assert idempotency key mapping exists only with idempotency table writes enabled
+    // Assert we don't write idempotency metadata, the table is deprecated
     assert_that!(
         test_env
             .storage()
@@ -144,7 +144,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
         }))
     );
 
-    // Assert idempotency key mapping exists only with idempotency table writes enabled
+    // Assert we don't write idempotency metadata, the table is deprecated
     assert_that!(
         test_env
             .storage()
