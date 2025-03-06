@@ -1,0 +1,20 @@
+replicaCount: 3
+
+env:
+  - name: POD_IP
+    valueFrom:
+      fieldRef:
+        fieldPath: "status.podIP"
+  - name: RESTATE_ADVERTISED_ADDRESS
+    value: "http://$(POD_IP):5122"
+  - name: RESTATE_ROLES
+    value: '["metadata-server", "admin", "worker", "log-server"]'
+  - name: RESTATE_CLUSTER_NAME
+    value: helm-replicated
+  - name: RESTATE_METADATA_CLIENT__ADDRESSES
+    value: '["http://restate:5122"]'
+  - name: RESTATE_METADATA_SERVER__TYPE
+    value: "replicated"
+  - name: RESTATE_AUTO_PROVISION
+    # provision with `kubectl exec -it restate-0 -- restatectl provision --log-provider replicated --log-replication 2`
+    value: "false"

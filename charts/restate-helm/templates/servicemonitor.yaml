@@ -12,7 +12,7 @@ metadata:
   {{- end }}
 spec:
   endpoints:
-    - port: metrics
+    - port: node
     {{- with .Values.serviceMonitor.interval }}
       interval: {{ . }}
     {{- end }}
