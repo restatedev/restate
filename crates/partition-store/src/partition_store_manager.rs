@@ -13,7 +13,6 @@ use std::ops::RangeInclusive;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::anyhow;
 use rocksdb::ExportImportFilesMetaData;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -22,8 +21,6 @@ use restate_core::worker_api::SnapshotError;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
-use restate_storage_api::StorageError;
-use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_types::config::{RocksDbOptions, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::{BoxedLiveLoad, LiveLoad};
@@ -226,35 +223,9 @@ impl PartitionStoreManager {
             .cloned()
             .ok_or(SnapshotError::PartitionNotFound(partition_id))?;
 
-        if let Some(min_target_lsn) = min_target_lsn {
-            let applied_lsn = partition_store
-                .get_applied_lsn()
-                .await
-                .map_err(|e| SnapshotError::SnapshotExport(partition_id, anyhow!(e)))?
-                .ok_or(SnapshotError::SnapshotExport(
-                    partition_id,
-                    anyhow!(StorageError::DataIntegrityError),
-                ))?;
-
-            if applied_lsn < min_target_lsn {
-                return Err(SnapshotError::MinimumTargetLsnNotMet {
-                    partition_id,
-                    min_target_lsn,
-                    applied_lsn,
-                });
-            }
-        };
-
-        // RocksDB will create the snapshot directory but the parent must exist first:
-        tokio::fs::create_dir_all(snapshot_base_path)
-            .await
-            .map_err(|e| SnapshotError::SnapshotIo(partition_id, e))?;
-        let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
-
         partition_store
-            .create_snapshot(snapshot_dir)
+            .create_snapshot(snapshot_base_path, min_target_lsn, snapshot_id)
             .await
-            .map_err(|e| SnapshotError::SnapshotExport(partition_id, e.into()))
     }
 
     pub async fn drop_partition(&self, partition_id: PartitionId) {
