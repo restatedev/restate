@@ -15,7 +15,7 @@ use std::ops::RangeInclusive;
 
 // Range of supported service protocol versions by this server
 pub const MIN_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V1;
-pub const MAX_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V4;
+pub const MAX_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V5;
 
 pub const MAX_SERVICE_PROTOCOL_VERSION_VALUE: i32 = i32::MAX;
 

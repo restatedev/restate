@@ -151,13 +151,13 @@ pub async fn mock_start_invocation(state_machine: &mut TestEnv) -> InvocationId 
     .await
 }
 
-pub async fn mock_pinned_deployment_v4(state_machine: &mut TestEnv, invocation_id: InvocationId) {
+pub async fn mock_pinned_deployment_v5(state_machine: &mut TestEnv, invocation_id: InvocationId) {
     let _ = state_machine
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
             kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                 deployment_id: DeploymentId::default(),
-                service_protocol_version: ServiceProtocolVersion::V4,
+                service_protocol_version: ServiceProtocolVersion::V5,
             }),
         }))
         .await;

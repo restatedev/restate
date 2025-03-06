@@ -78,7 +78,7 @@ mod tests {
         let invocation_id =
             fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone())
                 .await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
         // Mock some state
         let mut txn = test_env.storage.transaction();

@@ -70,6 +70,10 @@ const SERVICE_PROTOCOL_VERSION_V4: HeaderValue =
     HeaderValue::from_static("application/vnd.restate.invocation.v4");
 
 #[allow(clippy::declare_interior_mutable_const)]
+const SERVICE_PROTOCOL_VERSION_V5: HeaderValue =
+    HeaderValue::from_static("application/vnd.restate.invocation.v5");
+
+#[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
 pub(super) struct InvocationTaskOutput {
@@ -415,6 +419,7 @@ fn service_protocol_version_to_header_value(
         ServiceProtocolVersion::V2 => SERVICE_PROTOCOL_VERSION_V2,
         ServiceProtocolVersion::V3 => SERVICE_PROTOCOL_VERSION_V3,
         ServiceProtocolVersion::V4 => SERVICE_PROTOCOL_VERSION_V4,
+        ServiceProtocolVersion::V5 => SERVICE_PROTOCOL_VERSION_V5,
     }
 }
 

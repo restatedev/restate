@@ -109,7 +109,7 @@ mod tests {
     async fn sleep_then_suspend_then_resume() {
         let mut test_env = TestEnv::create().await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
         let completion_id = 1;
         let wake_up_time: MillisSinceEpoch = (SystemTime::now() + Duration::from_secs(60)).into();
@@ -161,7 +161,7 @@ mod tests {
     async fn suspend_with_already_completed_notifications() {
         let mut test_env = TestEnv::create().await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
         let completion_id = 1;
         let wake_up_time: MillisSinceEpoch = (SystemTime::now() + Duration::from_secs(60)).into();

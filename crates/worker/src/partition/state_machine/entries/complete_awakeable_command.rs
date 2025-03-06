@@ -76,7 +76,7 @@ mod tests {
     async fn complete_old_awakeable() {
         let mut test_env = TestEnv::create().await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
         let callee_invocation_id = InvocationId::mock_random();
         let callee_entry_index = 10;
@@ -112,7 +112,7 @@ mod tests {
     async fn complete_new_awakeable() {
         let mut test_env = TestEnv::create().await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
         let callee_invocation_id = InvocationId::mock_random();
         let callee_signal_index = 10;
