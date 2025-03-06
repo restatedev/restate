@@ -41,10 +41,8 @@ spec:
               name: admin
             - containerPort: 8080
               name: ingress
-            - containerPort: 9071
-              name: storage
             - containerPort: 5122
-              name: metrics
+              name: node
           env:
             - name: RUST_LOG
               value: {{ .Values.logging.env_filter }}
@@ -53,8 +51,8 @@ spec:
             {{- end }}
           readinessProbe:
             httpGet:
-              path: /health
-              port: admin
+              path: /restate/health
+              port: ingress
             initialDelaySeconds: 5
             periodSeconds: 5
           volumeMounts:
@@ -79,4 +77,3 @@ spec:
         resources:
           requests:
             storage: {{ .Values.storage.size | quote }}
-

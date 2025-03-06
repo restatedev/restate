@@ -16,9 +16,7 @@ spec:
       name: admin
     - port: 8080
       name: ingress
-    - port: 9071
-      name: storage
     - port: 5122
-      name: metrics
+      name: node
   selector:
     app: {{ include "restate.fullname" . }}
