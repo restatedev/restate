@@ -79,7 +79,7 @@ mod tests {
     async fn notify_signal() {
         let mut test_env = TestEnv::create().await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
         // Send signal notification
         let signal = Signal::new(SignalId::for_index(17), SignalResult::Void);

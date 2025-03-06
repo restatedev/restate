@@ -166,7 +166,7 @@ mod tests {
     async fn call_with_headers() {
         let mut test_env = TestEnv::create().await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
         let invocation_id_completion_id = 1;
         let result_completion_id = 2;
@@ -256,7 +256,7 @@ mod tests {
     async fn one_way_call(#[case] add_invoke_time: bool) {
         let mut test_env = TestEnv::create().await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-        fixtures::mock_pinned_deployment_v4(&mut test_env, invocation_id).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
         let invocation_id_completion_id = 1;
         let callee_service_id = ServiceId::mock_random();
