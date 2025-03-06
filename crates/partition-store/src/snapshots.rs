@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::hex::Hex;
 use serde_with::{DeserializeAs, SerializeAs, serde_as};
 
+use restate_core::worker_api::SnapshotCreated;
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 
@@ -75,6 +76,17 @@ pub struct PartitionSnapshotMetadata {
 impl PartitionSnapshotMetadata {
     pub fn get_log_id(&self) -> LogId {
         self.log_id.unwrap_or(LogId::from(self.partition_id))
+    }
+}
+
+impl From<&PartitionSnapshotMetadata> for SnapshotCreated {
+    fn from(metadata: &PartitionSnapshotMetadata) -> SnapshotCreated {
+        SnapshotCreated {
+            snapshot_id: metadata.snapshot_id,
+            log_id: metadata.get_log_id(),
+            min_applied_lsn: metadata.min_applied_lsn,
+            partition_id: metadata.partition_id,
+        }
     }
 }
 
