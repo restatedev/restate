@@ -89,6 +89,6 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run_cluster(cluster: &StartedCluster) -> anyhow::Result<Never> {
-    cluster.wait_healthy(Duration::from_secs(5)).await?;
+    cluster.wait_healthy(Duration::from_secs(10)).await?;
     futures::future::pending().await
 }
