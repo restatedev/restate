@@ -54,7 +54,7 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
@@ -103,7 +103,7 @@ pub enum RetryPolicy {
         /// # Factor
         ///
         /// The factor to use to compute the next retry attempt.
-        factor: f32,
+        factor: ExponentiationFactor,
 
         /// # Max attempts
         ///
@@ -143,7 +143,7 @@ impl RetryPolicy {
         // y = \sum_{n=0}^{x} \min \left( max_interval,\ initial_interval \cdot factor x \right)
         Self::Exponential {
             initial_interval: initial_interval.into(),
-            factor,
+            factor: factor.into(),
             max_attempts: max_attempts.map(|m| NonZeroUsize::new(m).expect("non-zero")),
             max_interval: max_interval.map(Into::into),
         }
@@ -283,7 +283,7 @@ impl Iterator for RetryIter<'_> {
                     None
                 } else if self.last_retry.is_some() {
                     let new_retry = cmp::min(
-                        self.last_retry.unwrap().mul_f32(*factor),
+                        self.last_retry.unwrap().mul_f32(factor.0),
                         max_interval.map(Into::into).unwrap_or(Duration::MAX),
                     );
                     self.last_retry = Some(new_retry);
@@ -331,6 +331,24 @@ pub fn with_jitter(duration: Duration, max_multiplier: f32) -> Duration {
 }
 
 impl ExactSizeIterator for RetryIter<'_> {}
+
+#[derive(
+    Debug, Copy, Clone, derive_more::Into, derive_more::From, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct ExponentiationFactor(f32);
+
+impl PartialEq for ExponentiationFactor {
+    fn eq(&self, other: &Self) -> bool {
+        if self.0.is_nan() && other.0.is_nan() {
+            true
+        } else {
+            self.0 == other.0
+        }
+    }
+}
+
+impl Eq for ExponentiationFactor {}
 
 #[cfg(test)]
 mod tests {
