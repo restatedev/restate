@@ -389,6 +389,8 @@ pub struct SnapshotsOptions {
 
     #[serde(flatten)]
     pub object_store: ObjectStoreOptions,
+
+    pub object_store_retry_policy: RetryPolicy,
 }
 
 fn is_default_snapshots_options(opts: &SnapshotsOptions) -> bool {

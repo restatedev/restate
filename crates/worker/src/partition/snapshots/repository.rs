@@ -153,9 +153,12 @@ impl SnapshotRepository {
         destination.set_query(None);
 
         let prefix = destination.path().to_string();
-        let object_store =
-            create_object_store_client(destination.clone(), &snapshots_options.object_store)
-                .await?;
+        let object_store = create_object_store_client(
+            destination.clone(),
+            &snapshots_options.object_store,
+            &snapshots_options.object_store_retry_policy,
+        )
+        .await?;
 
         Ok(Some(SnapshotRepository {
             object_store,
@@ -667,6 +670,7 @@ mod tests {
     use bytes::Bytes;
     use object_store::ObjectStore;
     use restate_object_store_util::create_object_store_client;
+    use restate_types::retries::RetryPolicy;
     use std::time::SystemTime;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
@@ -771,9 +775,12 @@ mod tests {
         let latest_path = ObjectPath::from(destination_url.path().to_string())
             .child(PartitionId::MIN.to_string())
             .child("latest.json");
-        let object_store =
-            create_object_store_client(destination_url.clone(), &ObjectStoreOptions::default())
-                .await?;
+        let object_store = create_object_store_client(
+            destination_url.clone(),
+            &ObjectStoreOptions::default(),
+            &RetryPolicy::None,
+        )
+        .await?;
 
         let latest = object_store.get(&latest_path).await;
         assert!(matches!(latest, Err(object_store::Error::NotFound { .. })));

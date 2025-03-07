@@ -13,9 +13,11 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use object_store::path::{Path, PathPart};
 use object_store::{Error, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
-use restate_object_store_util::create_object_store_client;
 use tracing::info;
 use url::Url;
+
+use restate_object_store_util::create_object_store_client;
+use restate_types::retries::RetryPolicy;
 
 use crate::metadata_store::providers::objstore::version_repository::{
     Tag, TaggedValue, VersionRepository, VersionRepositoryError,
@@ -47,7 +49,7 @@ impl ObjectStoreVersionRepository {
         }
         let prefix = Path::from(url.path());
 
-        let object_store = create_object_store_client(url, &object_store)
+        let object_store = create_object_store_client(url, &object_store, &RetryPolicy::None)
             .await
             .map_err(|e| anyhow::anyhow!("Unable to build an S3 object store: {}", e))?;
 
