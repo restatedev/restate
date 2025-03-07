@@ -41,7 +41,7 @@ impl MessageHandler for PartitionProcessorManagerMessageHandler {
             "create-snapshot-request-rpc",
             async move {
                 let create_snapshot_result = processors_manager_handle
-                    .create_snapshot(msg.body().partition_id)
+                    .create_snapshot(msg.body().partition_id, msg.body().min_target_lsn)
                     .await;
 
                 match create_snapshot_result.as_ref() {

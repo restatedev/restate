@@ -10,10 +10,9 @@
 
 use std::ops::RangeInclusive;
 use std::time::SystemTime;
+
 use tempfile::tempdir;
 
-use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
-use crate::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_types::config::WorkerOptions;
@@ -22,15 +21,20 @@ use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn};
 use restate_types::time::MillisSinceEpoch;
 
+use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
+use crate::{PartitionStore, PartitionStoreManager};
+
 pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_store: PartitionStore) {
     insert_test_data(&mut partition_store).await;
 
     let snapshots_dir = tempdir().unwrap();
 
     let partition_id = partition_store.partition_id();
-    let path_buf = snapshots_dir.path().to_path_buf().join("sn1");
 
-    let snapshot = partition_store.create_snapshot(path_buf).await.unwrap();
+    let snapshot = partition_store
+        .create_snapshot(snapshots_dir.path(), None, SnapshotId::new())
+        .await
+        .unwrap();
 
     let key_range = partition_store.partition_key_range().clone();
     let snapshot_meta = PartitionSnapshotMetadata {

@@ -17,10 +17,6 @@ use rocksdb::ExportImportFilesMetaData;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::DB;
-use crate::PartitionStore;
-use crate::cf_options;
-use crate::snapshots::LocalPartitionSnapshot;
 use restate_core::worker_api::SnapshotError;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
@@ -28,6 +24,12 @@ use restate_rocksdb::{
 use restate_types::config::{RocksDbOptions, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::{BoxedLiveLoad, LiveLoad};
+use restate_types::logs::Lsn;
+
+use crate::DB;
+use crate::PartitionStore;
+use crate::cf_options;
+use crate::snapshots::LocalPartitionSnapshot;
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -210,6 +212,7 @@ impl PartitionStoreManager {
     pub async fn export_partition_snapshot(
         &self,
         partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
         snapshot_base_path: &Path,
     ) -> Result<LocalPartitionSnapshot, SnapshotError> {
@@ -220,16 +223,9 @@ impl PartitionStoreManager {
             .cloned()
             .ok_or(SnapshotError::PartitionNotFound(partition_id))?;
 
-        // RocksDB will create the snapshot directory but the parent must exist first:
-        tokio::fs::create_dir_all(snapshot_base_path)
-            .await
-            .map_err(|e| SnapshotError::SnapshotIo(partition_id, e))?;
-        let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
-
         partition_store
-            .create_snapshot(snapshot_dir)
+            .create_snapshot(snapshot_base_path, min_target_lsn, snapshot_id)
             .await
-            .map_err(|e| SnapshotError::SnapshotExport(partition_id, e.into()))
     }
 
     pub async fn drop_partition(&self, partition_id: PartitionId) {

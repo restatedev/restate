@@ -173,6 +173,7 @@ enum ClusterControllerCommand {
     },
     CreateSnapshot {
         partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
         response_tx: oneshot::Sender<anyhow::Result<Snapshot>>,
     },
     UpdateClusterConfiguration {
@@ -225,18 +226,36 @@ impl ClusterControllerHandle {
     pub async fn create_partition_snapshot(
         &self,
         partition_id: PartitionId,
-    ) -> Result<Result<Snapshot, anyhow::Error>, ShutdownError> {
+        min_target_lsn: Option<Lsn>,
+        trim_log: bool,
+    ) -> Result<anyhow::Result<Snapshot>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         let _ = self
             .tx
             .send(ClusterControllerCommand::CreateSnapshot {
                 partition_id,
+                min_target_lsn,
                 response_tx,
             })
             .await;
 
-        response_rx.await.map_err(|_| ShutdownError)
+        let create_snapshot_response = response_rx.await.map_err(|_| ShutdownError)?;
+
+        if let (Ok(snapshot), true) = (&create_snapshot_response, trim_log) {
+            // todo(pavel): this is currently as safe as the cluster auto-trim safety check
+            // at this point, we know that we have successfully archived the to-be-trimmed LSN
+            // to the snapshot repository; what we are missing here and in cluster auto-trim
+            // is closing the loop on the new snapshot being visible to other cluster members.
+            if let Err(trim_error) = self
+                .trim_log(LogId::from(partition_id), snapshot.min_applied_lsn)
+                .await?
+            {
+                return Ok(Err(trim_error));
+            }
+        }
+
+        Ok(create_snapshot_response)
     }
 
     pub async fn update_cluster_configuration(
@@ -373,6 +392,7 @@ impl<T: TransportConnect> Service<T> {
     async fn create_partition_snapshot(
         &self,
         partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
         response_tx: oneshot::Sender<anyhow::Result<Snapshot>>,
     ) {
         let cluster_state = self.cluster_state_refresher.get_cluster_state();
@@ -406,7 +426,11 @@ impl<T: TransportConnect> Service<T> {
                     async move {
                         let _ = response_tx.send(
                             node_rpc_client
-                                .create_snapshot(node.generational_node_id, partition_id)
+                                .create_snapshot(
+                                    node.generational_node_id,
+                                    partition_id,
+                                    min_target_lsn,
+                                )
                                 .await,
                         );
                         Ok(())
@@ -543,16 +567,17 @@ impl<T: TransportConnect> Service<T> {
                 info!(
                     ?log_id,
                     trim_point_inclusive = ?trim_point,
-                    "Manual trim log command received");
+                    "Trim log command received");
                 let result = self.bifrost.admin().trim(log_id, trim_point).await;
                 let _ = response_tx.send(result.map_err(Into::into));
             }
             ClusterControllerCommand::CreateSnapshot {
                 partition_id,
+                min_target_lsn,
                 response_tx,
             } => {
                 info!(?partition_id, "Create snapshot command received");
-                self.create_partition_snapshot(partition_id, response_tx)
+                self.create_partition_snapshot(partition_id, min_target_lsn, response_tx)
                     .await;
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
@@ -650,19 +675,19 @@ where
         &mut self,
         node_id: GenerationalNodeId,
         partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
     ) -> anyhow::Result<Snapshot> {
-        // todo(pavel): make snapshot RPC timeout configurable, especially if this includes remote upload in the future
-        let response = tokio::time::timeout(
-            Duration::from_secs(90),
-            self.create_snapshot_router.call(
+        self.create_snapshot_router
+            .call(
                 &self.network_sender,
                 node_id,
-                CreateSnapshotRequest { partition_id },
-            ),
-        )
-        .await?;
-        let create_snapshot_response = response?.into_body();
-        create_snapshot_response
+                CreateSnapshotRequest {
+                    partition_id,
+                    min_target_lsn,
+                },
+            )
+            .await?
+            .into_body()
             .result
             .map_err(|e| anyhow!("Failed to create snapshot: {:?}", e))
     }

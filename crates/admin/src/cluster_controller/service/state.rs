@@ -437,6 +437,9 @@ impl TrimMode {
 
         let mut safe_trim_points = BTreeMap::new();
         match self {
+            // todo(pavel): revisit this logic with a stronger signal from the rest of the cluster
+            // we are currently relying on a single node reporting the archived LSN, which does
+            // not guarantee that the new snapshot is visible to other cluster members.
             TrimMode::ArchivedLsn { partition_status } => {
                 for (partition_id, processor_status) in partition_status.iter() {
                     let log_id = LogId::from(*partition_id);

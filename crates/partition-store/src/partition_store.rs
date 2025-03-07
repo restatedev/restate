@@ -8,16 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+use std::path::Path;
+use std::slice;
+use std::sync::Arc;
+
 use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
 use codederror::CodedError;
 use enum_map::Enum;
-use restate_rocksdb::CfName;
-use restate_rocksdb::IoMode;
-use restate_rocksdb::Priority;
-use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_types::config::Configuration;
 use rocksdb::DBCompressionType;
 use rocksdb::DBPinnableSlice;
 use rocksdb::DBRawIteratorWithThreadMode;
@@ -25,15 +25,22 @@ use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::{BoundColumnFamily, SliceTransform};
 use static_assertions::const_assert_eq;
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::slice;
-use std::sync::Arc;
 use tracing::trace;
 
 use restate_core::ShutdownError;
+use restate_core::worker_api::SnapshotError;
+use restate_rocksdb::CfName;
+use restate_rocksdb::IoMode;
+use restate_rocksdb::Priority;
 use restate_rocksdb::{RocksDb, RocksError};
+use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::{Storage, StorageError, Transaction};
+use restate_types::config::Configuration;
+use restate_types::identifiers::SnapshotId;
+use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::logs::LogId;
+use restate_types::logs::Lsn;
+use restate_types::storage::StorageCodec;
 
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
@@ -41,9 +48,6 @@ use crate::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper}
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::LocalPartitionSnapshot;
-use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::logs::LogId;
-use restate_types::storage::StorageCodec;
 
 pub type DB = rocksdb::DB;
 
@@ -445,18 +449,40 @@ impl PartitionStore {
     /// See [rocksdb::checkpoint::Checkpoint::export_column_family] for additional implementation details.
     pub async fn create_snapshot(
         &mut self,
-        snapshot_dir: PathBuf,
-    ) -> Result<LocalPartitionSnapshot> {
+        snapshot_base_path: &Path,
+        min_target_lsn: Option<Lsn>,
+        snapshot_id: SnapshotId,
+    ) -> std::result::Result<LocalPartitionSnapshot, SnapshotError> {
         let applied_lsn = self
             .get_applied_lsn()
-            .await?
-            .ok_or(StorageError::DataIntegrityError)?;
+            .await
+            .map_err(|e| SnapshotError::SnapshotExport(self.partition_id, anyhow!(e)))?
+            .ok_or(SnapshotError::SnapshotExport(
+                self.partition_id,
+                anyhow!(StorageError::DataIntegrityError),
+            ))?;
+
+        if let Some(min_target_lsn) = min_target_lsn {
+            if applied_lsn < min_target_lsn {
+                return Err(SnapshotError::MinimumTargetLsnNotMet {
+                    partition_id: self.partition_id,
+                    min_target_lsn,
+                    applied_lsn,
+                });
+            }
+        };
+
+        // RocksDB will create the snapshot directory but the parent must exist first:
+        tokio::fs::create_dir_all(snapshot_base_path)
+            .await
+            .map_err(|e| SnapshotError::SnapshotIo(self.partition_id, e))?;
+        let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
 
         let metadata = self
             .rocksdb
             .export_cf(self.data_cf_name.clone(), snapshot_dir.clone())
             .await
-            .map_err(|err| StorageError::Generic(err.into()))?;
+            .map_err(|err| SnapshotError::SnapshotExport(self.partition_id, err.into()))?;
 
         trace!(
             cf_name = ?self.data_cf_name,

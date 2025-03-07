@@ -23,7 +23,11 @@ use crate::ShutdownError;
 
 #[derive(Debug)]
 pub enum ProcessorsManagerCommand {
-    CreateSnapshot(PartitionId, oneshot::Sender<SnapshotResult>),
+    CreateSnapshot {
+        partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
+        tx: oneshot::Sender<SnapshotResult>,
+    },
     GetState(oneshot::Sender<BTreeMap<PartitionId, PartitionProcessorStatus>>),
 }
 
@@ -35,10 +39,18 @@ impl ProcessorsManagerHandle {
         Self(sender)
     }
 
-    pub async fn create_snapshot(&self, partition_id: PartitionId) -> SnapshotResult {
+    pub async fn create_snapshot(
+        &self,
+        partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
+    ) -> SnapshotResult {
         let (tx, rx) = oneshot::channel();
         self.0
-            .send(ProcessorsManagerCommand::CreateSnapshot(partition_id, tx))
+            .send(ProcessorsManagerCommand::CreateSnapshot {
+                partition_id,
+                min_target_lsn,
+                tx,
+            })
             .await
             .map_err(|_| {
                 SnapshotError::Internal(
@@ -78,6 +90,12 @@ pub struct SnapshotCreated {
 pub enum SnapshotError {
     #[error("Partition {0} not found")]
     PartitionNotFound(PartitionId),
+    #[error("Snapshot target LSN {min_target_lsn} < applied LSN {applied_lsn}")]
+    MinimumTargetLsnNotMet {
+        partition_id: PartitionId,
+        min_target_lsn: Lsn,
+        applied_lsn: Lsn,
+    },
     #[error("Snapshot creation already in progress")]
     SnapshotInProgress(PartitionId),
     /// Partition Processor is not fully caught up.
@@ -100,6 +118,7 @@ impl SnapshotError {
     pub fn partition_id(&self) -> PartitionId {
         match self {
             SnapshotError::PartitionNotFound(partition_id) => *partition_id,
+            SnapshotError::MinimumTargetLsnNotMet { partition_id, .. } => *partition_id,
             SnapshotError::SnapshotInProgress(partition_id) => *partition_id,
             SnapshotError::InvalidState(partition_id) => *partition_id,
             SnapshotError::RepositoryNotConfigured(partition_id) => *partition_id,

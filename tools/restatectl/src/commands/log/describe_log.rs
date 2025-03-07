@@ -8,18 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Context;
 use cling::prelude::*;
 use itertools::Itertools;
 use log::render_loglet_params;
 
+use restate_admin::cluster_controller::protobuf::DescribeLogRequest;
+use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::Versioned;
 use restate_types::logs::LogId;
 use restate_types::logs::metadata::{Logs, ProviderKind, Segment, SegmentIndex};
-use restate_types::nodes_config::NodesConfiguration;
+use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
+use tonic::codec::CompressionEncoding;
 
 use crate::commands::log;
 use crate::connection::ConnectionInfo;
@@ -81,7 +85,7 @@ async fn describe_logs(
 
     for range in log_ids {
         for log_id in range.iter() {
-            describe_log(opts, &nodes_config, &logs, log_id.into()).await?;
+            describe_log(opts, &nodes_config, &logs, log_id.into(), connection).await?;
         }
     }
 
@@ -93,12 +97,32 @@ async fn describe_log(
     nodes_configuration: &NodesConfiguration,
     logs: &Logs,
     log_id: LogId,
+    connection: &ConnectionInfo,
 ) -> anyhow::Result<()> {
     let chain = logs
         .chain(&log_id)
         .ok_or_else(|| anyhow::anyhow!("Failed to get log chain"))?;
 
     c_println!("Log Id: {} ({})", log_id, logs.version());
+
+    if opts.extra {
+        let describe_log_request = DescribeLogRequest {
+            log_id: log_id.into(),
+        };
+
+        let describe_log_response = connection
+            .try_each(Some(Role::Admin), |channel| async {
+                let mut client =
+                    ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
+
+                client.describe_log(describe_log_request).await
+            })
+            .await
+            .with_context(|| "failed to send describe log request")?
+            .into_inner();
+
+        c_println!("Trim Point LSN: {}", describe_log_response.trim_point)
+    };
 
     let mut chain_table = Table::new_styled();
     let mut header_row = vec![
