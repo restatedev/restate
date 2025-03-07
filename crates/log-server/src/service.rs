@@ -14,7 +14,7 @@ use anyhow::Context;
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, instrument, warn};
 
-use restate_core::metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
+use restate_core::metadata_store::{ReadWriteError, RetryError};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
@@ -248,8 +248,10 @@ impl LogServerService {
             .clone();
         let mut first_attempt = true;
 
-        let nodes_config = match retry_on_retryable_error(retry_policy, || {
-            metadata_writer.metadata_store_client().read_modify_write(
+        let nodes_config = match metadata_writer
+            .metadata_store_client()
+            .with_retries(retry_policy)
+            .read_modify_write(
                 NODES_CONFIG_KEY.clone(),
                 move |nodes_config: Option<NodesConfiguration>| {
                     let mut nodes_config =
@@ -288,9 +290,8 @@ impl LogServerService {
                     Ok(nodes_config)
                 },
             )
-        })
-        .await
-        .map_err(|e| e.map(|err| err.transpose()))
+            .await
+            .map_err(|e| e.map(|err| err.transpose()))
         {
             Ok(nodes_config) => nodes_config,
             Err(RetryError::NotRetryable(StorageStateUpdateError::PreviousAttemptSucceeded(
