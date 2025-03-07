@@ -72,12 +72,7 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
                     .output_rules
                     .infer_content_type(response_payload.is_empty())
                 {
-                    response_builder = response_builder.header(
-                        header::CONTENT_TYPE,
-                        // TODO we need this to_str().unwrap() because these two HeaderValue come from two different http crates
-                        //  We can remove it once https://github.com/restatedev/restate/issues/96 is done
-                        ct.to_str().unwrap(),
-                    )
+                    response_builder = response_builder.header(header::CONTENT_TYPE, ct)
                 }
 
                 Ok(response_builder.body(Full::new(response_payload)).unwrap())
