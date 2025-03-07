@@ -102,13 +102,23 @@ pub async fn create_object_store_client(
         } else {
             builder
         };
-        let builder = if let Some(endpoint_url) = &options.aws_endpoint_url {
+        let env_endpoint_url = std::env::var("AWS_ENDPOINT_URL_S3")
+            .ok()
+            .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok());
+        let builder = if let Some(endpoint_url) = options
+            .aws_endpoint_url
+            .as_ref()
+            .or(env_endpoint_url.as_ref())
+        {
             builder.with_endpoint(endpoint_url)
         } else {
             builder
         };
-        let builder = if let Some(allow_http) = &options.aws_allow_http {
-            builder.with_allow_http(*allow_http)
+        let env_allow_http = std::env::var("AWS_ALLOW_HTTP")
+            .ok()
+            .map(|s| s.trim().eq_ignore_ascii_case("true"));
+        let builder = if let Some(allow_http) = options.aws_allow_http.or(env_allow_http) {
+            builder.with_allow_http(allow_http)
         } else {
             builder
         };
