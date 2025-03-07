@@ -132,7 +132,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         .create_partition_snapshot(CreatePartitionSnapshotRequest {
             partition_id: 0,
             min_target_lsn: Some(3),
-            trim_log: Some(true),
+            trim_log: true,
         })
         .await?
         .into_inner();

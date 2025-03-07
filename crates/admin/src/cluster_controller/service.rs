@@ -227,7 +227,7 @@ impl ClusterControllerHandle {
         &self,
         partition_id: PartitionId,
         min_target_lsn: Option<Lsn>,
-        trim_log: Option<bool>,
+        trim_log: bool,
     ) -> Result<anyhow::Result<Snapshot>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -242,7 +242,7 @@ impl ClusterControllerHandle {
 
         let create_snapshot_response = response_rx.await.map_err(|_| ShutdownError)?;
 
-        if let (Ok(snapshot), Some(true)) = (&create_snapshot_response, trim_log) {
+        if let (Ok(snapshot), true) = (&create_snapshot_response, trim_log) {
             // todo(pavel): this is currently as safe as the cluster auto-trim safety check
             // at this point, we know that we have successfully archived the to-be-trimmed LSN
             // to the snapshot repository; what we are missing here and in cluster auto-trim

@@ -92,7 +92,7 @@ async fn inner_create_snapshot(
     let request = CreatePartitionSnapshotRequest {
         partition_id: partition_id.into(),
         min_target_lsn: opts.min_lsn,
-        trim_log: Some(opts.trim_log),
+        trim_log: opts.trim_log,
     };
 
     let response = connection

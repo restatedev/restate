@@ -95,8 +95,8 @@ message CreatePartitionSnapshotRequest {
   // requirement and the operation will return an error if it cannot be met
   optional uint64 min_target_lsn = 2;
   // Optionally, also trim the log to the archived LSN; trim only occurs after a successful snapshot
-  // and so will honor the min_target_lsn requirement, if set
-  optional bool trim_log = 3;
+  // and so will honor the min_target_lsn requirement, if set to true
+  bool trim_log = 3;
 }
 
 message CreatePartitionSnapshotResponse {
