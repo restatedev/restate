@@ -139,7 +139,7 @@ impl RocksDbManager {
         &'static self,
         mut updateable_opts: BoxedLiveLoad<RocksDbOptions>,
         mut db_spec: DbSpec,
-    ) -> Result<Arc<rocksdb::DB>, RocksError> {
+    ) -> Result<Arc<RocksDb>, RocksError> {
         if self
             .shutting_down
             .load(std::sync::atomic::Ordering::Acquire)
@@ -161,8 +161,7 @@ impl RocksDbManager {
 
         let path = db_spec.path.clone();
         let wrapper = Arc::new(RocksDb::new(self, db_spec, db.clone()));
-
-        self.dbs.write().insert(name.clone(), wrapper);
+        self.dbs.write().insert(name.clone(), wrapper.clone());
 
         if let Err(e) = self
             .watchdog_tx
@@ -185,7 +184,7 @@ impl RocksDbManager {
             path = %path.display(),
             "Opened rocksdb database"
         );
-        Ok(db)
+        Ok(wrapper)
     }
 
     #[cfg(any(test, feature = "test-util"))]
