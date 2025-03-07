@@ -16,7 +16,7 @@ mod os_env {
         _marker: std::marker::PhantomData<&'a ()>,
     }
 
-    impl<'a> OsEnv<'a> {
+    impl OsEnv<'_> {
         // Retrieves a environment variable from the os or from a table if in testing mode
         #[inline]
         pub fn get<K: AsRef<str>>(&self, key: K) -> Option<String> {
