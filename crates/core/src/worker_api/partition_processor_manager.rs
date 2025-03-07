@@ -90,7 +90,7 @@ pub struct SnapshotCreated {
 pub enum SnapshotError {
     #[error("Partition {0} not found")]
     PartitionNotFound(PartitionId),
-    #[error("Snapshot target LSN {min_target_lsn} < applied LSN {applied_lsn}")]
+    #[error("Snapshot target LSN {min_target_lsn} > applied LSN {applied_lsn}")]
     MinimumTargetLsnNotMet {
         partition_id: PartitionId,
         min_target_lsn: Lsn,
