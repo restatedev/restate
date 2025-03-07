@@ -13,6 +13,7 @@ mod connection_manager;
 mod error;
 pub mod grpc;
 mod handshake;
+mod io;
 mod message_router;
 pub(crate) mod metric_definitions;
 mod multiplex;
