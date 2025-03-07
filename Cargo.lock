@@ -9099,6 +9099,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+ "zstd 0.13.2",
 ]
 
 [[package]]
@@ -10251,6 +10252,8 @@ dependencies = [
  "uuid",
  "zerocopy 0.7.35",
  "zeroize",
+ "zstd 0.13.2",
+ "zstd-safe 7.2.1",
  "zstd-sys",
 ]
 
