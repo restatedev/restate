@@ -317,6 +317,10 @@ impl Node {
                 .write_all(config_dump.as_bytes())
                 .await
                 .map_err(NodeStartError::CreateConfig)?;
+            config_file
+                .flush()
+                .await
+                .map_err(NodeStartError::CreateConfig)?;
         }
 
         let node_log_filename = node_base_dir.join("restate.log");
