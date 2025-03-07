@@ -17,12 +17,12 @@ use googletest::fail;
 use tempfile::TempDir;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use url::Url;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, CreatePartitionSnapshotRequest, DescribeLogRequest, TrimLogRequest,
+    ClusterStateRequest, CreatePartitionSnapshotRequest,
 };
 use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
 use restate_local_cluster_runner::{
@@ -32,7 +32,6 @@ use restate_local_cluster_runner::{
 use restate_types::config::{LogFormat, MetadataClientKind};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
-use restate_types::logs::{LogId, Lsn};
 use restate_types::protobuf::cluster::RunMode;
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::retries::RetryPolicy;
@@ -130,23 +129,17 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     }
 
     let snapshot_response = client
-        .create_partition_snapshot(CreatePartitionSnapshotRequest { partition_id: 0 })
+        .create_partition_snapshot(CreatePartitionSnapshotRequest {
+            partition_id: 0,
+            min_target_lsn: Some(3),
+            trim_log: true,
+        })
         .await?
         .into_inner();
     info!(
         "Snapshot created including changes up to LSN {}",
         snapshot_response.min_applied_lsn
     );
-
-    tokio::time::timeout(
-        Duration::from_secs(3),
-        trim_log(
-            &mut client,
-            LogId::new(0),
-            Lsn::new(snapshot_response.min_applied_lsn),
-        ),
-    )
-    .await??;
 
     let mut worker_3 = Node::new_test_node(
         "node-3",
@@ -245,39 +238,6 @@ async fn any_partition_active(
         }) {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    Ok(())
-}
-
-async fn trim_log(
-    client: &mut ClusterCtrlSvcClient<Channel>,
-    log_id: LogId,
-    trim_point: Lsn,
-) -> googletest::Result<()> {
-    loop {
-        // We have to keep retrying the trim operation as the admin node may decide to no-op it if
-        // the trim point is after the known global tail.
-        client
-            .trim_log(TrimLogRequest {
-                log_id: log_id.into(),
-                trim_point: trim_point.as_u64(),
-            })
-            .await?;
-
-        let response = client
-            .describe_log(DescribeLogRequest {
-                log_id: log_id.into(),
-            })
-            .await?
-            .into_inner();
-        debug!("Got trim log response: {:?}", response);
-
-        if response.trim_point >= trim_point.as_u64() {
-            info!("Log trimmed to LSN {}", response.trim_point);
-            break;
-        }
-
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Ok(())

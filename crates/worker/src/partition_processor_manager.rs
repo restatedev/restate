@@ -105,6 +105,7 @@ pub struct PartitionProcessorManager {
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
+    latest_snapshots: HashMap<PartitionId, SnapshotCreated>,
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
     snapshot_repository: Option<SnapshotRepository>,
     fast_forward_on_startup: HashMap<PartitionId, Lsn>,
@@ -205,6 +206,7 @@ impl PartitionProcessorManager {
             asynchronous_operations: JoinSet::default(),
             snapshot_export_tasks: FuturesUnordered::default(),
             pending_snapshots: HashMap::default(),
+            latest_snapshots: HashMap::default(),
             snapshot_repository,
             fast_forward_on_startup: HashMap::default(),
         }
@@ -698,11 +700,15 @@ impl PartitionProcessorManager {
 
     fn on_command(&mut self, command: ProcessorsManagerCommand) {
         match command {
-            ProcessorsManagerCommand::CreateSnapshot(partition_id, sender) => {
-                self.on_create_snapshot(partition_id, sender);
-            }
             ProcessorsManagerCommand::GetState(sender) => {
                 let _ = sender.send(self.get_state());
+            }
+            ProcessorsManagerCommand::CreateSnapshot {
+                partition_id,
+                min_target_lsn,
+                tx,
+            } => {
+                self.on_create_snapshot(partition_id, min_target_lsn, tx);
             }
         }
     }
@@ -749,6 +755,8 @@ impl PartitionProcessorManager {
                 if self.pending_snapshots.contains_key(&partition_id) {
                     info!(%partition_id, "Partition processor stop requested with snapshot task result outstanding");
                 }
+                self.archived_lsns.remove(&partition_id);
+                self.latest_snapshots.remove(&partition_id);
             }
             ProcessorCommand::Follower | ProcessorCommand::Leader => {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
@@ -813,6 +821,7 @@ impl PartitionProcessorManager {
     fn on_create_snapshot(
         &mut self,
         partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
         sender: oneshot::Sender<SnapshotResult>,
     ) {
         let processor_state = match self.processor_states.get(&partition_id) {
@@ -834,7 +843,12 @@ impl PartitionProcessorManager {
             return;
         }
 
-        self.spawn_create_snapshot_task(partition_id, snapshot_repository, Some(sender));
+        self.spawn_create_snapshot_task(
+            partition_id,
+            min_target_lsn,
+            snapshot_repository,
+            Some(sender),
+        );
     }
 
     fn on_create_snapshot_task_completed(&mut self, result: SnapshotResultInternal) {
@@ -843,15 +857,17 @@ impl PartitionProcessorManager {
                 self.archived_lsns
                     .insert(metadata.partition_id, metadata.min_applied_lsn);
 
-                (
-                    metadata.partition_id,
-                    Ok(SnapshotCreated {
-                        snapshot_id: metadata.snapshot_id,
-                        log_id: metadata.get_log_id(),
-                        min_applied_lsn: metadata.min_applied_lsn,
-                        partition_id: metadata.partition_id,
-                    }),
-                )
+                let response = SnapshotCreated::from(&metadata);
+                self.latest_snapshots
+                    .entry(metadata.partition_id)
+                    .and_modify(|e| {
+                        if response.min_applied_lsn > e.min_applied_lsn {
+                            *e = response.clone();
+                        }
+                    })
+                    .or_insert_with(|| response.clone());
+
+                (metadata.partition_id, Ok(response))
             }
             Err(snapshot_error) => (snapshot_error.partition_id(), Err(snapshot_error)),
         };
@@ -911,18 +927,42 @@ impl PartitionProcessorManager {
                 last_applied_lsn = %status.last_applied_log_lsn.unwrap_or(SequenceNumber::INVALID),
                 "Requesting partition snapshot",
             );
-            self.spawn_create_snapshot_task(partition_id, snapshot_repository.clone(), None);
+            self.spawn_create_snapshot_task(partition_id, None, snapshot_repository.clone(), None);
         }
     }
 
     /// Spawn a task to create a snapshot of the given partition. Optionally, a sender will be
-    /// notified of the result on completion.
+    /// notified of the result on completion. If the minimum requested snapshot LSN is already
+    /// met by the last known snapshot, it will be immediately returned to the sender instead of
+    /// creating a new snapshot.
     fn spawn_create_snapshot_task(
         &mut self,
         partition_id: PartitionId,
+        min_target_lsn: Option<Lsn>,
         snapshot_repository: SnapshotRepository,
         sender: Option<oneshot::Sender<SnapshotResult>>,
     ) {
+        if let Some(snapshot) = self.latest_snapshots.get(&partition_id) {
+            if min_target_lsn.is_some_and(|target_lsn| snapshot.min_applied_lsn >= target_lsn) {
+                if let Some(sender) = sender {
+                    sender
+                        .send(Ok(snapshot.clone()))
+                        .inspect_err(|err| {
+                            debug!(
+                                ?min_target_lsn,
+                                snapshot_id = ?snapshot.snapshot_id,
+                                latest_snapshot_min_applied_lsn = ?snapshot.min_applied_lsn,
+                                "New snapshot was not created because the target LSN was already covered by existing snapshot. \
+                                However, we failed to notify the request sender: {:?}",
+                                err
+                            )
+                        })
+                        .ok();
+                }
+                return;
+            }
+        }
+
         match self.pending_snapshots.entry(partition_id) {
             Entry::Vacant(entry) => {
                 let config = self.updateable_config.live_load();
@@ -933,6 +973,7 @@ impl PartitionProcessorManager {
                 let create_snapshot_task = SnapshotPartitionTask {
                     snapshot_id,
                     partition_id,
+                    min_target_lsn,
                     snapshot_base_path,
                     partition_store_manager: self.partition_store_manager.clone(),
                     cluster_name: config.common.cluster_name().into(),
@@ -962,7 +1003,7 @@ impl PartitionProcessorManager {
                 }
             }
             Entry::Occupied(pending) => {
-                info!(
+                debug!(
                     %partition_id,
                     snapshot_id = %pending.get().snapshot_id,
                     "A snapshot export is already in progress, refusing to start a new export"

@@ -85,11 +85,24 @@ message TrimLogRequest {
   uint64 trim_point = 2;
 }
 
-message CreatePartitionSnapshotRequest { uint32 partition_id = 1; }
+// Requests a partition snapshot to be archived. Optionally, a minimum
+// target LSN for the snapshot may be set and the log can be trimmed to the
+// archived LSN at the same time. It is safe to retry this operation on
+// error with the same inputs.
+message CreatePartitionSnapshotRequest {
+  uint32 partition_id = 1;
+  // Minimum LSN (inclusive) which must be covered by the snapshot; if set it is treated as a hard
+  // requirement and the operation will return an error if it cannot be met
+  optional uint64 min_target_lsn = 2;
+  // Optionally, also trim the log to the archived LSN; trim only occurs after a successful snapshot
+  // and so will honor the min_target_lsn requirement, if set to true
+  bool trim_log = 3;
+}
 
 message CreatePartitionSnapshotResponse {
   string snapshot_id = 1;
   uint32 log_id = 2;
+  // Minimum LSN (inclusive) which is guaranteed to be covered by the snapshot
   uint64 min_applied_lsn = 3;
 }
 
@@ -126,6 +139,7 @@ message SealedSegment {
   // tail offset lsn
   uint64 tail_offset = 3;
 }
+
 message SealAndExtendChainResponse {
   uint32 new_segment_index = 1;
   SealedSegment sealed_segment = 2;

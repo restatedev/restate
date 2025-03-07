@@ -71,6 +71,7 @@ define_rpc! {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSnapshotRequest {
     pub partition_id: PartitionId,
+    pub min_target_lsn: Option<Lsn>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
