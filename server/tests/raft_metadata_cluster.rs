@@ -13,7 +13,7 @@ use enumset::enum_set;
 use googletest::prelude::err;
 use googletest::{IntoTestResult, assert_that, pat};
 use rand::seq::IndexedMutRandom;
-use restate_core::metadata_store::WriteError;
+use restate_core::metadata_store::{WriteError, retry_on_retryable_error};
 use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_local_cluster_runner::cluster::Cluster;
 use restate_local_cluster_runner::node::{BinarySource, HealthCheck, Node};
@@ -25,6 +25,7 @@ use restate_types::config::{
 };
 use restate_types::metadata::Precondition;
 use restate_types::nodes_config::Role;
+use restate_types::retries::RetryPolicy;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tracing::info;
@@ -67,14 +68,22 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
     let value = Value::new(42);
     let value_version = value.version();
     let key = ByteString::from_static("my-key");
-    client
-        .put(key.clone(), &value, Precondition::DoesNotExist)
-        .await?;
 
-    let stored_value = client.get::<Value>(key.clone()).await?;
+    let retry_policy = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(10));
+    // While all metadata servers are members of the cluster, not every server might have fully caught up and
+    // therefore does not know about the current leader. In this case, the request can fail and requires
+    // a retry.
+    retry_on_retryable_error(retry_policy.clone(), || {
+        client.put(key.clone(), &value, Precondition::DoesNotExist)
+    })
+    .await?;
+
+    let stored_value =
+        retry_on_retryable_error(retry_policy.clone(), || client.get::<Value>(key.clone())).await?;
     assert_eq!(stored_value, Some(value));
 
-    let stored_value_version = client.get_version(key.clone()).await?;
+    let stored_value_version =
+        retry_on_retryable_error(retry_policy.clone(), || client.get_version(key.clone())).await?;
     assert_eq!(stored_value_version, Some(value_version));
 
     let new_value = Value::new(1337);
@@ -90,25 +99,31 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
         err(pat!(WriteError::FailedPrecondition(_)))
     );
     assert_that!(
-        client
-            .put(key.clone(), &new_value, Precondition::DoesNotExist)
-            .await,
+        retry_on_retryable_error(retry_policy.clone(), || client.put(
+            key.clone(),
+            &new_value,
+            Precondition::DoesNotExist
+        ))
+        .await
+        .map_err(|err| err.into_inner()),
         err(pat!(WriteError::FailedPrecondition(_)))
     );
 
-    client
-        .put(
+    retry_on_retryable_error(retry_policy.clone(), || {
+        client.put(
             key.clone(),
             &new_value,
             Precondition::MatchesVersion(value_version),
         )
-        .await?;
+    })
+    .await?;
     let stored_new_value = client.get::<Value>(key.clone()).await?;
     assert_eq!(stored_new_value, Some(new_value));
 
-    client
-        .delete(key.clone(), Precondition::MatchesVersion(new_value_version))
-        .await?;
+    retry_on_retryable_error(retry_policy.clone(), || {
+        client.delete(key.clone(), Precondition::MatchesVersion(new_value_version))
+    })
+    .await?;
     assert!(client.get::<Value>(key.clone()).await?.is_none());
 
     cluster.graceful_shutdown(Duration::from_secs(3)).await?;
