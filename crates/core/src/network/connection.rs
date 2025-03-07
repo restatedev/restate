@@ -267,11 +267,9 @@ pub mod test_util {
     use restate_types::net::codec::MessageBodyExt;
     use restate_types::net::codec::Targeted;
     use restate_types::net::codec::WireEncode;
-    use restate_types::nodes_config::NodesConfiguration;
     use restate_types::protobuf::node::Header;
     use restate_types::protobuf::node::Hello;
     use restate_types::protobuf::node::Message;
-    use restate_types::protobuf::node::Welcome;
     use restate_types::protobuf::node::message;
     use restate_types::protobuf::node::message::BinaryMessage;
     use restate_types::protobuf::node::message::Body;
@@ -288,9 +286,6 @@ pub mod test_util {
     use crate::network::MessageRouterBuilder;
     use crate::network::NetworkError;
     use crate::network::PeerMetadataVersion;
-    use crate::network::ProtocolError;
-    use crate::network::handshake::negotiate_protocol_version;
-    use crate::network::handshake::wait_for_hello;
     use crate::network::io::DropEgressStream;
     use crate::network::io::EgressStream;
 
@@ -497,86 +492,86 @@ pub mod test_util {
             self.process_with_message_router(handler)
         }
     }
-
-    // Prepresents a partially connected peer connection in test environment. A connection must be
-    // handshaken in order to be converted into MockPeerConnection.
     //
-    // This is used to represent an outgoing connection from (`peer` to `my_node_id`)
-    #[derive(derive_more::Debug)]
-    pub struct PartialPeerConnection {
-        /// The Id of the node that this connection represents
-        pub my_node_id: GenerationalNodeId,
-        /// The Id of the node id that started this connection
-        pub(crate) peer: GenerationalNodeId,
-        #[debug(skip)]
-        pub(crate) sender: EgressSender,
-        pub created: Instant,
-
-        #[debug(skip)]
-        pub recv_stream: BoxStream<'static, Message>,
-        #[debug(skip)]
-        pub(crate) drop_egress: DropEgressStream,
-    }
-
-    impl PartialPeerConnection {
-        // todo(asoli): replace implementation with body of accept_incoming_connection to unify
-        // handshake validations
-        pub async fn handshake(
-            self,
-            nodes_config: &NodesConfiguration,
-        ) -> anyhow::Result<MockPeerConnection> {
-            let Self {
-                my_node_id,
-                peer,
-                sender,
-                created,
-                mut recv_stream,
-                drop_egress,
-            } = self;
-            let temp_stream = recv_stream.by_ref();
-            let (header, hello) = wait_for_hello(
-                &mut temp_stream.map(Ok),
-                std::time::Duration::from_millis(500),
-            )
-            .await?;
-
-            // NodeId **must** be generational at this layer
-            let _peer_node_id = hello.my_node_id.ok_or(ProtocolError::HandshakeFailed(
-                "NodeId is not set in the Hello message",
-            ))?;
-
-            // Are we both from the same cluster?
-            if hello.cluster_name != nodes_config.cluster_name() {
-                return Err(ProtocolError::HandshakeFailed("cluster name mismatch").into());
-            }
-
-            let selected_protocol_version = negotiate_protocol_version(&hello)?;
-
-            // Enqueue the welcome message
-            let welcome = Welcome::new(my_node_id, selected_protocol_version);
-
-            let header = Header::new(
-                nodes_config.version(),
-                None,
-                None,
-                None,
-                crate::network::generate_msg_id(),
-                Some(header.msg_id),
-            );
-            sender.try_send(EgressMessage::Message(header, welcome.into()))?;
-
-            Ok(MockPeerConnection {
-                my_node_id,
-                peer,
-                protocol_version: selected_protocol_version,
-                sender,
-                created,
-                recv_stream,
-                drop_egress,
-            })
-        }
-    }
-
+    //     // Prepresents a partially connected peer connection in test environment. A connection must be
+    //     // handshaken in order to be converted into MockPeerConnection.
+    //     //
+    //     // This is used to represent an outgoing connection from (`peer` to `my_node_id`)
+    //     #[derive(derive_more::Debug)]
+    //     pub struct PartialPeerConnection {
+    //         /// The Id of the node that this connection represents
+    //         pub my_node_id: GenerationalNodeId,
+    //         /// The Id of the node id that started this connection
+    //         pub(crate) peer: GenerationalNodeId,
+    //         #[debug(skip)]
+    //         pub(crate) sender: EgressSender,
+    //         pub created: Instant,
+    //
+    //         #[debug(skip)]
+    //         pub recv_stream: BoxStream<'static, Message>,
+    //         #[debug(skip)]
+    //         pub(crate) drop_egress: DropEgressStream,
+    //     }
+    //
+    //     impl PartialPeerConnection {
+    //         // todo(asoli): replace implementation with body of accept_incoming_connection to unify
+    //         // handshake validations
+    //         pub async fn handshake(
+    //             self,
+    //             nodes_config: &NodesConfiguration,
+    //         ) -> anyhow::Result<MockPeerConnection> {
+    //             let Self {
+    //                 my_node_id,
+    //                 peer,
+    //                 sender,
+    //                 created,
+    //                 mut recv_stream,
+    //                 drop_egress,
+    //             } = self;
+    //             let temp_stream = recv_stream.by_ref();
+    //             let (header, hello) = wait_for_hello(
+    //                 &mut temp_stream.map(Ok),
+    //                 std::time::Duration::from_millis(500),
+    //             )
+    //             .await?;
+    //
+    //             // NodeId **must** be generational at this layer
+    //             let _peer_node_id = hello.my_node_id.ok_or(ProtocolError::HandshakeFailed(
+    //                 "NodeId is not set in the Hello message",
+    //             ))?;
+    //
+    //             // Are we both from the same cluster?
+    //             if hello.cluster_name != nodes_config.cluster_name() {
+    //                 return Err(ProtocolError::HandshakeFailed("cluster name mismatch").into());
+    //             }
+    //
+    //             let selected_protocol_version = negotiate_protocol_version(&hello)?;
+    //
+    //             // Enqueue the welcome message
+    //             let welcome = Welcome::new(my_node_id, selected_protocol_version);
+    //
+    //             let header = Header::new(
+    //                 nodes_config.version(),
+    //                 None,
+    //                 None,
+    //                 None,
+    //                 crate::network::generate_msg_id(),
+    //                 Some(header.msg_id),
+    //             );
+    //             sender.try_send(EgressMessage::Message(header, welcome.into()))?;
+    //
+    //             Ok(MockPeerConnection {
+    //                 my_node_id,
+    //                 peer,
+    //                 protocol_version: selected_protocol_version,
+    //                 sender,
+    //                 created,
+    //                 recv_stream,
+    //                 drop_egress,
+    //             })
+    //         }
+    //     }
+    //
     pub struct ForwardingHandler {
         my_node_id: GenerationalNodeId,
         inner_sender: mpsc::Sender<(GenerationalNodeId, Incoming<BinaryMessage>)>,
