@@ -29,7 +29,6 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Result as StorageResult;
 use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::invocation_status_table::{
@@ -107,9 +106,6 @@ use utils::SpanExt;
 
 #[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
 pub enum ExperimentalFeature {
-    /// This is used to disable writing to idempotency table/virtual object status table for idempotent invocations/workflow invocations.
-    /// From Restate 1.2 invocation ids are generated deterministically, so this additional index is not needed.
-    DisableIdempotencyTable,
     /// If true, kill should wait for end signal from invoker, in order to implement the restart functionality.
     /// This is enabled by experimental_feature_kill_and_restart.
     InvocationStatusKilled,
@@ -656,38 +652,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.is_leader,
                 "First time we see this invocation id, invocation will be processed"
             );
-
-            // Store the invocation id mapping if we have to and continue the processing
-            // TODO get rid of this code when we remove the usage of the virtual object table for workflows
-            if is_workflow_run
-                && !self
-                    .experimental_features
-                    .contains(ExperimentalFeature::DisableIdempotencyTable)
-            {
-                self.storage
-                        .put_virtual_object_status(
-                            &service_invocation
-                                .invocation_target
-                                .as_keyed_service_id()
-                                .expect("When the handler type is Workflow, the invocation target must have a key"),
-                            &VirtualObjectStatus::Locked(invocation_id),
-                        )
-                        .await.map_err(Error::Storage)?;
-            }
-            // TODO get rid of this code when we remove the idempotency table
-            if has_idempotency_key
-                && !self
-                    .experimental_features
-                    .contains(ExperimentalFeature::DisableIdempotencyTable)
-            {
-                self.do_store_idempotency_id(
-                    service_invocation
-                        .compute_idempotency_id()
-                        .expect("Idempotency key must be present"),
-                    service_invocation.invocation_id,
-                )
-                .await?;
-            }
             return Ok(Some(service_invocation));
         }
 
@@ -4135,29 +4099,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_invocation_status(&invocation_id, &previous_invocation_status)
-            .await
-            .map_err(Error::Storage)?;
-
-        Ok(())
-    }
-
-    async fn do_store_idempotency_id(
-        &mut self,
-        idempotency_id: IdempotencyId,
-        invocation_id: InvocationId,
-    ) -> Result<(), Error>
-    where
-        S: IdempotencyTable,
-    {
-        debug_if_leader!(
-            self.is_leader,
-            restate.invocation.id = %invocation_id,
-            "Effect: Store idempotency id {:?}",
-            idempotency_id
-        );
-
-        self.storage
-            .put_idempotency_metadata(&idempotency_id, &IdempotencyMetadata { invocation_id })
             .await
             .map_err(Error::Storage)?;
 

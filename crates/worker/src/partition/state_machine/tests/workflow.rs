@@ -16,15 +16,11 @@ use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
 };
-use rstest::*;
 use std::time::Duration;
 
-#[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn start_workflow_method(#[case] experimental_features: EnumSet<ExperimentalFeature>) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn start_workflow_method() {
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
@@ -51,26 +47,15 @@ async fn start_workflow_method(#[case] experimental_features: EnumSet<Experiment
         }))
     );
 
-    // Assert service is locked only if we enable the idempotency table
-    if experimental_features.contains(ExperimentalFeature::DisableIdempotencyTable) {
-        assert_that!(
-            test_env
-                .storage()
-                .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
-                .await
-                .unwrap(),
-            eq(VirtualObjectStatus::Unlocked)
-        );
-    } else {
-        assert_that!(
-            test_env
-                .storage()
-                .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
-                .await
-                .unwrap(),
-            eq(VirtualObjectStatus::Locked(invocation_id))
-        );
-    }
+    // Assert we don't write virtual object status anymore for locking.
+    assert_that!(
+        test_env
+            .storage()
+            .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
+            .await
+            .unwrap(),
+        eq(VirtualObjectStatus::Unlocked)
+    );
 
     // Sending another invocation won't re-execute
     let actions = test_env
@@ -183,12 +168,9 @@ async fn start_workflow_method(#[case] experimental_features: EnumSet<Experiment
     test_env.shutdown().await;
 }
 
-#[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn attach_by_workflow_key(#[case] experimental_features: EnumSet<ExperimentalFeature>) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn attach_by_workflow_key() {
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
@@ -321,12 +303,9 @@ async fn attach_by_workflow_key(#[case] experimental_features: EnumSet<Experimen
     test_env.shutdown().await;
 }
 
-#[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn purge_completed_workflow(#[case] experimental_features: EnumSet<ExperimentalFeature>) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn purge_completed_workflow() {
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_random();
