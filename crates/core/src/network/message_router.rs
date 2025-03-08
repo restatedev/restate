@@ -18,12 +18,11 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{trace, warn};
 
-use restate_types::net::CodecError;
 use restate_types::net::ProtocolVersion;
 use restate_types::net::TargetName;
 use restate_types::net::codec::{Targeted, WireDecode};
-use restate_types::protobuf::node::message::BinaryMessage;
 
+use super::protobuf::network::message::BinaryMessage;
 use super::{Incoming, RouterError};
 use crate::TaskCenter;
 
@@ -117,7 +116,7 @@ pub struct MessageRouter(Arc<MessageRouterInner>);
 
 #[derive(Default)]
 struct MessageRouterInner {
-    handlers: HashMap<TargetName, Box<dyn Handler<Error = CodecError> + Send + Sync>>,
+    handlers: HashMap<TargetName, Box<dyn Handler<Error = anyhow::Error> + Send + Sync>>,
 }
 
 #[async_trait]
@@ -140,7 +139,7 @@ impl Handler for MessageRouter {
 
 #[derive(Default)]
 pub struct MessageRouterBuilder {
-    handlers: HashMap<TargetName, Box<dyn Handler<Error = CodecError> + Send + Sync>>,
+    handlers: HashMap<TargetName, Box<dyn Handler<Error = anyhow::Error> + Send + Sync>>,
 }
 
 impl MessageRouterBuilder {
@@ -164,7 +163,7 @@ impl MessageRouterBuilder {
     pub fn add_raw_handler(
         &mut self,
         target: TargetName,
-        handler: Box<dyn Handler<Error = CodecError> + Send + Sync>,
+        handler: Box<dyn Handler<Error = anyhow::Error> + Send + Sync>,
     ) -> &mut Self {
         if self.handlers.insert(target, handler).is_some() {
             panic!("Handler for target {target} has been registered already!");
@@ -208,7 +207,7 @@ impl<H> Handler for MessageHandlerWrapper<H>
 where
     H: MessageHandler + Send + Sync + 'static,
 {
-    type Error = CodecError;
+    type Error = anyhow::Error;
     /// Process the request and return the response asynchronously.
     async fn call(
         &self,
@@ -248,7 +247,7 @@ impl<M> Handler for StreamHandlerWrapper<M>
 where
     M: WireDecode + Targeted + Send + Sync + 'static,
 {
-    type Error = CodecError;
+    type Error = anyhow::Error;
     /// Process the request and return the response asynchronously.
     async fn call(
         &self,

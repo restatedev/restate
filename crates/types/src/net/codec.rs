@@ -10,16 +10,13 @@
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use bytes::Buf;
-use bytes::Bytes;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::net::CodecError;
 use crate::protobuf::common::ProtocolVersion;
 use crate::protobuf::common::TargetName;
-use crate::protobuf::node::message;
-use crate::protobuf::node::message::BinaryMessage;
 
 pub trait Targeted {
     const TARGET: TargetName;
@@ -70,11 +67,11 @@ where
 }
 
 pub trait WireEncode {
-    fn encode(self, protocol_version: ProtocolVersion) -> Result<message::Body, CodecError>;
+    fn encode_to_vec(self, protocol_version: ProtocolVersion) -> Vec<u8>;
 }
 
 pub trait WireDecode {
-    fn decode(buf: impl Buf, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+    fn decode(buf: impl Buf, protocol_version: ProtocolVersion) -> anyhow::Result<Self>
     where
         Self: Sized;
 }
@@ -83,8 +80,8 @@ impl<T> WireEncode for Box<T>
 where
     T: WireEncode,
 {
-    fn encode(self, protocol_version: ProtocolVersion) -> Result<message::Body, CodecError> {
-        (*self).encode(protocol_version)
+    fn encode_to_vec(self, protocol_version: ProtocolVersion) -> Vec<u8> {
+        (*self).encode_to_vec(protocol_version)
     }
 }
 
@@ -92,7 +89,7 @@ impl<T> WireDecode for Box<T>
 where
     T: WireDecode,
 {
-    fn decode(buf: impl Buf, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+    fn decode(buf: impl Buf, protocol_version: ProtocolVersion) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
@@ -104,7 +101,7 @@ impl<T> WireDecode for Arc<T>
 where
     T: WireDecode,
 {
-    fn decode(buf: impl Buf, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+    fn decode(buf: impl Buf, protocol_version: ProtocolVersion) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
@@ -115,14 +112,11 @@ where
 /// Utility method to raw-encode a [`Serialize`] type as flexbuffers using serde without adding
 /// version tag. This must be decoded with `decode_from_untagged_flexbuffers`. This is used as the default
 /// encoding for network messages since networking has its own protocol versioning.
-pub fn encode_default<T: Serialize>(
-    value: T,
-    protocol_version: ProtocolVersion,
-) -> Result<Bytes, CodecError> {
+pub fn encode_default<T: Serialize>(value: T, protocol_version: ProtocolVersion) -> Vec<u8> {
     match protocol_version {
-        ProtocolVersion::V1 => Ok(Bytes::from(
-            flexbuffers::to_vec(value).map_err(|err| CodecError::Encode(err.into()))?,
-        )),
+        ProtocolVersion::V1 => {
+            flexbuffers::to_vec(value).expect("network message serde can't fail")
+        }
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
         }
@@ -134,41 +128,12 @@ pub fn encode_default<T: Serialize>(
 pub fn decode_default<T: DeserializeOwned>(
     buf: impl Buf,
     protocol_version: ProtocolVersion,
-) -> Result<T, CodecError> {
+) -> anyhow::Result<T> {
     match protocol_version {
-        ProtocolVersion::V1 => {
-            flexbuffers::from_slice(buf.chunk()).map_err(|err| CodecError::Decode(err.into()))
-        }
+        ProtocolVersion::V1 => flexbuffers::from_slice(buf.chunk())
+            .context("failed decoding V1 (flexbuffers) network message"),
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
         }
-    }
-}
-
-pub trait MessageBodyExt {
-    fn try_as_binary_body(
-        self,
-        protocol_version: ProtocolVersion,
-    ) -> Result<BinaryMessage, CodecError>;
-
-    fn try_decode<T: WireDecode>(self, protocol_version: ProtocolVersion) -> Result<T, CodecError>;
-}
-
-impl MessageBodyExt for crate::protobuf::node::message::Body {
-    fn try_as_binary_body(
-        self,
-        _protocol_version: ProtocolVersion,
-    ) -> Result<BinaryMessage, CodecError> {
-        let message::Body::Encoded(binary) = self else {
-            return Err(CodecError::Decode(
-                "Cannot deserialize message, message is not of type BinaryMessage".into(),
-            ));
-        };
-        Ok(binary)
-    }
-
-    fn try_decode<T: WireDecode>(self, protocol_version: ProtocolVersion) -> Result<T, CodecError> {
-        let mut binary_message = self.try_as_binary_body(protocol_version)?;
-        <T as WireDecode>::decode(&mut binary_message.payload, protocol_version)
     }
 }

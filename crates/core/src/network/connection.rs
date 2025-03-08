@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
 
+use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::Instant;
@@ -20,11 +21,13 @@ use restate_types::GenerationalNodeId;
 use restate_types::net::ProtocolVersion;
 use restate_types::net::codec::Targeted;
 use restate_types::net::codec::WireEncode;
-use restate_types::protobuf::node::Header;
 
 use super::NetworkError;
 use super::Outgoing;
 use super::io::{CloseReason, EgressMessage, EgressSender};
+use super::protobuf::network::Header;
+use super::protobuf::network::message;
+use super::protobuf::network::message::Body;
 
 pub struct OwnedSendPermit<M> {
     _protocol_version: ProtocolVersion,
@@ -53,10 +56,10 @@ where
             ..Default::default()
         };
 
-        let body = message
-            .into_body()
-            .encode(self.protocol_version)
-            .expect("message encoding infallible");
+        let target = M::TARGET.into();
+        let payload = Bytes::from(message.into_body().encode_to_vec(self.protocol_version));
+
+        let body = Body::Encoded(message::BinaryMessage { target, payload });
         self.permit.send(EgressMessage::Message(header, body));
     }
 }
@@ -262,17 +265,9 @@ pub mod test_util {
     use tracing::info;
     use tracing::warn;
 
-    use restate_types::net::CodecError;
     use restate_types::net::ProtocolVersion;
-    use restate_types::net::codec::MessageBodyExt;
     use restate_types::net::codec::Targeted;
     use restate_types::net::codec::WireEncode;
-    use restate_types::protobuf::node::Header;
-    use restate_types::protobuf::node::Hello;
-    use restate_types::protobuf::node::Message;
-    use restate_types::protobuf::node::message;
-    use restate_types::protobuf::node::message::BinaryMessage;
-    use restate_types::protobuf::node::message::Body;
     use restate_types::{GenerationalNodeId, Version};
 
     use crate::TaskCenter;
@@ -288,6 +283,12 @@ pub mod test_util {
     use crate::network::PeerMetadataVersion;
     use crate::network::io::DropEgressStream;
     use crate::network::io::EgressStream;
+    use crate::network::protobuf::network::Header;
+    use crate::network::protobuf::network::Hello;
+    use crate::network::protobuf::network::Message;
+    use crate::network::protobuf::network::message;
+    use crate::network::protobuf::network::message::BinaryMessage;
+    use crate::network::protobuf::network::message::Body;
 
     // For testing
     //
@@ -367,13 +368,13 @@ pub mod test_util {
         where
             M: WireEncode + Targeted,
         {
+            let target = M::TARGET.into();
+            let payload = Bytes::from(message.encode_to_vec(self.protocol_version));
+            let body = Body::Encoded(message::BinaryMessage { target, payload });
+
             let message = Message {
                 header: Some(header),
-                body: Some(
-                    message
-                        .encode(self.protocol_version)
-                        .expect("serde infallible"),
-                ),
+                body: Some(body),
             };
 
             self.sender.send(EgressMessage::RawMessage(message)).await?;
@@ -591,7 +592,7 @@ pub mod test_util {
 
     #[async_trait]
     impl Handler for ForwardingHandler {
-        type Error = CodecError;
+        type Error = anyhow::Error;
 
         async fn call(
             &self,

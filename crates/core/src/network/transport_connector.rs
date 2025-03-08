@@ -13,8 +13,8 @@ use std::future::Future;
 use futures::Stream;
 
 use restate_types::net::AdvertisedAddress;
-use restate_types::protobuf::node::Message;
 
+use super::protobuf::network::Message;
 use super::{NetworkError, ProtocolError};
 
 pub trait TransportConnect: Clone + Send + Sync + 'static {
