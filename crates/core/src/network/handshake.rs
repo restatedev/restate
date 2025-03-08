@@ -11,11 +11,12 @@
 use std::time::Duration;
 
 use futures::Stream;
-use restate_types::net::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
-use restate_types::protobuf::node::{Header, Hello, Message, Welcome, message};
 use tokio_stream::StreamExt;
 
+use restate_types::net::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
+
 use super::error::ProtocolError;
+use super::protobuf::network::{Header, Hello, Message, Welcome, message};
 
 pub async fn wait_for_hello<S>(
     incoming: &mut S,

@@ -19,11 +19,11 @@ use tonic::transport::channel::Channel;
 
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::net::AdvertisedAddress;
-use restate_types::protobuf::node::Message;
 use tonic::transport::Endpoint;
 
 use super::MAX_MESSAGE_SIZE;
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
+use crate::network::protobuf::network::Message;
 use crate::network::{NetworkError, ProtocolError, TransportConnect};
 use crate::{TaskCenter, TaskKind};
 

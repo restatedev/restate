@@ -625,7 +625,6 @@ mod tests {
     use restate_types::live::Live;
     use restate_types::logs::{KeyFilter, Keys, Record, RecordCache};
     use restate_types::net::CURRENT_PROTOCOL_VERSION;
-    use restate_types::net::codec::MessageBodyExt;
 
     use crate::metadata::LogletStateMap;
     use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};

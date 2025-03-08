@@ -16,8 +16,8 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::network::protobuf::core_node_svc::core_node_svc_server::{
     CoreNodeSvc, CoreNodeSvcServer,
 };
+use crate::network::protobuf::network::Message;
 use crate::network::{ConnectionManager, ProtocolError};
-use restate_types::protobuf::node::Message;
 
 use super::MAX_MESSAGE_SIZE;
 

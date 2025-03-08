@@ -177,15 +177,11 @@ macro_rules! define_message {
         }
 
         impl $crate::net::codec::WireEncode for $message {
-            fn encode(
+            fn encode_to_vec(
                 self,
                 protocol_version: $crate::net::ProtocolVersion,
-            ) -> Result<$crate::protobuf::node::message::Body, $crate::net::CodecError> {
-                let payload = $crate::net::codec::encode_default(self, protocol_version)?;
-                let target = <$message as $crate::net::Targeted>::TARGET.into();
-                Ok($crate::protobuf::node::message::Body::Encoded(
-                    crate::protobuf::node::message::BinaryMessage { target, payload },
-                ))
+            ) -> ::std::vec::Vec<u8> {
+                $crate::net::codec::encode_default(self, protocol_version)
             }
         }
 
