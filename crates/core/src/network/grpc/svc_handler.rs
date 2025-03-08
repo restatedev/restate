@@ -16,8 +16,8 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::network::protobuf::core_node_svc::core_node_svc_server::{
     CoreNodeSvc, CoreNodeSvcServer,
 };
+use crate::network::protobuf::network::Message;
 use crate::network::{ConnectionManager, ProtocolError};
-use restate_types::protobuf::node::Message;
 
 use super::MAX_MESSAGE_SIZE;
 
@@ -34,7 +34,10 @@ impl CoreNodeSvcHandler {
         CoreNodeSvcServer::new(self)
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
             .max_encoding_message_size(MAX_MESSAGE_SIZE)
+            // note: the order of those calls defines the priority
+            .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Zstd)
             .send_compressed(CompressionEncoding::Gzip)
     }
 }

@@ -9,13 +9,13 @@
 
 syntax = "proto3";
 
-import "restate/node.proto";
+import "restate/network.proto";
 
 package restate.core_node_svc;
 
 // Service which is only accessible on nodes that are alive.
 service CoreNodeSvc {
   // Create a bidirectional node-to-node stream
-  rpc CreateConnection(stream restate.node.Message)
-      returns (stream restate.node.Message);
+  rpc CreateConnection(stream restate.network.Message)
+      returns (stream restate.network.Message);
 }

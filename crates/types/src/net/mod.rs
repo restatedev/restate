@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 pub mod codec;
-mod error;
 pub mod log_server;
 pub mod metadata;
 pub mod node;
@@ -19,8 +18,6 @@ pub mod remote_query_scanner;
 pub mod replicated_loglet;
 
 use anyhow::{Context, Error};
-// re-exports for convenience
-pub use error::*;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
@@ -177,15 +174,11 @@ macro_rules! define_message {
         }
 
         impl $crate::net::codec::WireEncode for $message {
-            fn encode(
+            fn encode_to_vec(
                 self,
                 protocol_version: $crate::net::ProtocolVersion,
-            ) -> Result<$crate::protobuf::node::message::Body, $crate::net::CodecError> {
-                let payload = $crate::net::codec::encode_default(self, protocol_version)?;
-                let target = <$message as $crate::net::Targeted>::TARGET.into();
-                Ok($crate::protobuf::node::message::Body::Encoded(
-                    crate::protobuf::node::message::BinaryMessage { target, payload },
-                ))
+            ) -> ::std::vec::Vec<u8> {
+                $crate::net::codec::encode_default(self, protocol_version)
             }
         }
 
@@ -193,7 +186,7 @@ macro_rules! define_message {
             fn decode(
                 buf: impl bytes::Buf,
                 protocol_version: $crate::net::ProtocolVersion,
-            ) -> Result<Self, $crate::net::CodecError>
+            ) -> ::anyhow::Result<Self>
             where
                 Self: Sized,
             {

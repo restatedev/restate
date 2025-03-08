@@ -13,6 +13,7 @@ package restate.common;
 
 enum ProtocolVersion {
   ProtocolVersion_UNKNOWN = 0;
+  // Released in v1.2
   V1 = 1;
 }
 
