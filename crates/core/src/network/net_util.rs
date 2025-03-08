@@ -189,6 +189,7 @@ where
     let mut configuration = Configuration::updateable();
     let mut shutdown = std::pin::pin!(cancellation_watcher());
     let graceful_shutdown = GracefulShutdown::new();
+    let task_name: Arc<str> = Arc::from(format!("{}-socket", server_name));
     loop {
         tokio::select! {
             biased;
@@ -215,7 +216,7 @@ where
                 let connection = graceful_shutdown.watch(builder
                     .serve_connection(io, service.clone()).into_owned());
 
-                TaskCenter::spawn(TaskKind::SocketHandler, server_name, async move {
+                TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
                     debug!("New connection accepted");
                     if let Err(e) = connection.await {
                         if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
