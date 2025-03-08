@@ -89,10 +89,7 @@ impl RocksDbLogStore {
             .ensure_column_families(cfs)
             .build()
             .expect("valid spec");
-        let db_name = db_spec.name().clone();
-        // todo: use the returned rocksdb object when open_db returns Arc<RocksDb>
-        let _ = db_manager.open_db(updateable_options, db_spec).await?;
-        let rocksdb = db_manager.get_db(db_name).unwrap();
+        let rocksdb = db_manager.open_db(updateable_options, db_spec).await?;
         Ok(Self { rocksdb })
     }
 

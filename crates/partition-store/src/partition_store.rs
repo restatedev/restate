@@ -197,7 +197,6 @@ pub enum BuildError {
 }
 
 pub struct PartitionStore {
-    raw_db: Arc<DB>,
     rocksdb: Arc<RocksDb>,
     partition_id: PartitionId,
     data_cf_name: CfName,
@@ -209,7 +208,6 @@ pub struct PartitionStore {
 impl std::fmt::Debug for PartitionStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PartitionStore")
-            .field("db", &self.raw_db)
             .field("partition_id", &self.partition_id)
             .field("cf", &self.data_cf_name)
             .field("key_buffer", &self.key_buffer.len())
@@ -221,7 +219,6 @@ impl std::fmt::Debug for PartitionStore {
 impl Clone for PartitionStore {
     fn clone(&self) -> Self {
         PartitionStore {
-            raw_db: self.raw_db.clone(),
             rocksdb: self.rocksdb.clone(),
             partition_id: self.partition_id,
             data_cf_name: self.data_cf_name.clone(),
@@ -278,21 +275,13 @@ fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize)
 }
 
 impl PartitionStore {
-    /// Returns the raw rocksdb handle, this should only be used for server operations that
-    /// require direct access to rocksdb.
-    pub fn inner(&self) -> Arc<DB> {
-        self.raw_db.clone()
-    }
-
     pub(crate) fn new(
-        raw_db: Arc<DB>,
         rocksdb: Arc<RocksDb>,
         data_cf_name: CfName,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
         Self {
-            raw_db,
             rocksdb,
             partition_id,
             data_cf_name,
@@ -336,7 +325,11 @@ impl PartitionStore {
         opts.set_iterate_range(PrefixRange(prefix.clone()));
         opts.set_async_io(true);
         opts.set_total_order_seek(false);
-        let mut it = self.raw_db.raw_iterator_cf_opt(&table, opts);
+        let mut it = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(&table, opts);
         it.seek(prefix);
         Ok(it)
     }
@@ -357,7 +350,11 @@ impl PartitionStore {
         opts.set_iterate_range(from.clone()..to);
         opts.set_async_io(true);
 
-        let mut it = self.raw_db.raw_iterator_cf_opt(&table, opts);
+        let mut it = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(&table, opts);
         it.seek(from);
         Ok(it)
     }
@@ -420,7 +417,6 @@ impl PartitionStore {
 
         PartitionStoreTransaction {
             write_batch_with_index: rocksdb::WriteBatchWithIndex::new(0, true),
-            raw_db: self.raw_db.as_ref(),
             data_cf_handle,
             rocksdb,
             key_buffer: &mut self.key_buffer,
@@ -553,7 +549,9 @@ impl StorageAccess for PartitionStore {
     #[inline]
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
         let table = self.table_handle(table)?;
-        self.raw_db
+        self.rocksdb
+            .inner()
+            .as_raw_db()
             .get_pinned_cf(&table, key)
             .map_err(|error| StorageError::Generic(error.into()))
     }
@@ -566,7 +564,9 @@ impl StorageAccess for PartitionStore {
         value: impl AsRef<[u8]>,
     ) -> Result<()> {
         let table = self.table_handle(table)?;
-        self.raw_db
+        self.rocksdb
+            .inner()
+            .as_raw_db()
             .put_cf(&table, key, value)
             .map_err(|error| StorageError::Generic(error.into()))
     }
@@ -574,7 +574,9 @@ impl StorageAccess for PartitionStore {
     #[inline]
     fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) -> Result<()> {
         let table = self.table_handle(table)?;
-        self.raw_db
+        self.rocksdb
+            .inner()
+            .as_raw_db()
             .delete_cf(&table, key)
             .map_err(|error| StorageError::Generic(error.into()))
     }
@@ -594,7 +596,6 @@ pub struct PartitionStoreTransaction<'a> {
     partition_id: PartitionId,
     partition_key_range: &'a RangeInclusive<PartitionKey>,
     write_batch_with_index: rocksdb::WriteBatchWithIndex,
-    raw_db: &'a DB,
     rocksdb: Arc<RocksDb>,
     data_cf_handle: Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
@@ -614,7 +615,11 @@ impl PartitionStoreTransaction<'_> {
         opts.set_prefix_same_as_start(true);
         opts.set_total_order_seek(false);
 
-        let it = self.raw_db.raw_iterator_cf_opt(table, opts);
+        let it = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(table, opts);
         let mut it = self.write_batch_with_index.iterator_with_base_cf(it, table);
         it.seek(prefix);
         Ok(it)
@@ -635,7 +640,11 @@ impl PartitionStoreTransaction<'_> {
         opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
         opts.set_iterate_range(from.clone()..to);
 
-        let it = self.raw_db.raw_iterator_cf_opt(table, opts);
+        let it = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(table, opts);
         let mut it = self.write_batch_with_index.iterator_with_base_cf(it, table);
         it.seek(from);
         Ok(it)
@@ -769,7 +778,7 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
         let table = self.table_handle(table);
         self.write_batch_with_index
             .get_pinned_from_batch_and_db_cf(
-                self.raw_db,
+                self.rocksdb.inner().as_raw_db(),
                 table,
                 key,
                 &rocksdb::ReadOptions::default(),
