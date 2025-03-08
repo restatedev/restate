@@ -569,7 +569,7 @@ where
                             .and_then(|t| u16::try_from(t).ok())
                             .and_then(|idx| MessageType::try_from(idx).ok())
                             .and_then(|mt| EntryType::try_from(mt).ok()),
-                        entry_was_commited: e
+                        entry_was_committed: e
                             .related_entry_index
                             .is_some_and(|entry_idx| entry_idx < self.next_journal_index),
                     }),

@@ -979,7 +979,7 @@ where
                     .and_then(|t| u16::try_from(t).ok())
                     .and_then(|idx| MessageType::try_from(idx).ok())
                     .and_then(|mt| mt.entry_type()),
-                command_was_commited: error
+                command_was_committed: error
                     .related_command_index
                     .is_some_and(|entry_idx| entry_idx < self.command_index),
             }),
