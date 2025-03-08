@@ -27,8 +27,7 @@ use restate_types::schema::invocation_target::{
 };
 use restate_types::schema::service::{HandlerSchemas, ServiceLocation, ServiceSchemas};
 use restate_types::schema::subscriptions::{
-    EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Source, Subscription,
-    SubscriptionValidator,
+    EventInvocationTargetTemplate, Sink, Source, Subscription, SubscriptionValidator,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -43,18 +42,13 @@ use tracing::{debug, info, warn};
 pub struct SchemaUpdater {
     schema_information: Schema,
     modified: bool,
-    experimental_feature_kafka_ingress_next: bool,
 }
 
 impl SchemaUpdater {
-    pub(crate) fn new(
-        schema_information: Schema,
-        experimental_feature_kafka_ingress_next: bool,
-    ) -> Self {
+    pub(crate) fn new(schema_information: Schema) -> Self {
         Self {
             schema_information,
             modified: false,
-            experimental_feature_kafka_ingress_next,
         }
     }
 }
@@ -559,56 +553,27 @@ impl SchemaUpdater {
                         ))
                     })?;
 
-                if self.experimental_feature_kafka_ingress_next {
-                    Sink::Invocation {
-                        event_invocation_target_template: match handler_schemas
-                            .target_meta
-                            .target_ty
-                        {
-                            InvocationTargetType::Service => {
-                                EventInvocationTargetTemplate::Service {
-                                    name: service_name.to_owned(),
-                                    handler: handler_name.to_owned(),
-                                }
-                            }
-                            InvocationTargetType::VirtualObject(handler_ty) => {
-                                EventInvocationTargetTemplate::VirtualObject {
-                                    name: service_name.to_owned(),
-                                    handler: handler_name.to_owned(),
-                                    handler_ty,
-                                }
-                            }
-                            InvocationTargetType::Workflow(handler_ty) => {
-                                EventInvocationTargetTemplate::Workflow {
-                                    name: service_name.to_owned(),
-                                    handler: handler_name.to_owned(),
-                                    handler_ty,
-                                }
-                            }
+                Sink::Invocation {
+                    event_invocation_target_template: match handler_schemas.target_meta.target_ty {
+                        InvocationTargetType::Service => EventInvocationTargetTemplate::Service {
+                            name: service_name.to_owned(),
+                            handler: handler_name.to_owned(),
                         },
-                    }
-                } else {
-                    let ty = match handler_schemas.target_meta.target_ty {
-                        InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) => {
-                            EventReceiverServiceType::Workflow
+                        InvocationTargetType::VirtualObject(handler_ty) => {
+                            EventInvocationTargetTemplate::VirtualObject {
+                                name: service_name.to_owned(),
+                                handler: handler_name.to_owned(),
+                                handler_ty,
+                            }
                         }
-                        InvocationTargetType::VirtualObject(
-                            VirtualObjectHandlerType::Exclusive,
-                        ) => EventReceiverServiceType::VirtualObject,
-                        InvocationTargetType::Workflow(_)
-                        | InvocationTargetType::VirtualObject(_) => {
-                            return Err(SchemaError::Subscription(
-                                SubscriptionError::InvalidSinkSharedHandler(sink),
-                            ));
+                        InvocationTargetType::Workflow(handler_ty) => {
+                            EventInvocationTargetTemplate::Workflow {
+                                name: service_name.to_owned(),
+                                handler: handler_name.to_owned(),
+                                handler_ty,
+                            }
                         }
-                        InvocationTargetType::Service => EventReceiverServiceType::Service,
-                    };
-
-                    Sink::DeprecatedService {
-                        name: service_name.to_owned(),
-                        handler: handler_name.to_owned(),
-                        ty,
-                    }
+                    },
                 }
             }
             _ => {
@@ -978,7 +943,7 @@ mod tests {
     fn register_new_deployment() {
         let schema_information = Schema::default();
         let initial_version = schema_information.version();
-        let mut updater = SchemaUpdater::new(schema_information, false);
+        let mut updater = SchemaUpdater::new(schema_information);
 
         let mut deployment = Deployment::mock();
         deployment.id = updater
@@ -1018,7 +983,7 @@ mod tests {
                 .is_none()
         );
 
-        updater = SchemaUpdater::new(schemas, false);
+        updater = SchemaUpdater::new(schemas);
         deployment_2.id = updater
             .add_deployment(
                 deployment_2.metadata.clone(),
@@ -1053,7 +1018,7 @@ mod tests {
         );
 
         let version_before_modification = schemas.version();
-        updater = SchemaUpdater::new(schemas, false);
+        updater = SchemaUpdater::new(schemas);
         updater.modify_service(
             GREETER_SERVICE_NAME.to_owned(),
             vec![ModifyServiceChange::Public(false)],
@@ -1068,7 +1033,7 @@ mod tests {
                 .public
         );
 
-        updater = SchemaUpdater::new(schemas, false);
+        updater = SchemaUpdater::new(schemas);
         deployment.id =
             updater.add_deployment(deployment.metadata.clone(), vec![greeter_service()], true)?;
 
@@ -1107,7 +1072,7 @@ mod tests {
 
             schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
 
-            let compute_result = SchemaUpdater::new(schemas, false).add_deployment(
+            let compute_result = SchemaUpdater::new(schemas).add_deployment(
                 deployment_2.metadata,
                 vec![greeter_virtual_object()],
                 false,
@@ -1136,7 +1101,7 @@ mod tests {
         schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
         schemas.assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment.id);
 
-        updater = SchemaUpdater::new(schemas, false);
+        updater = SchemaUpdater::new(schemas);
         assert_eq!(
             updater
                 .add_deployment(deployment.metadata.clone(), vec![greeter_service()], true,)
@@ -1199,7 +1164,7 @@ mod tests {
         schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
 
         let version_before_removal = schemas.version();
-        updater = SchemaUpdater::new(schemas, false);
+        updater = SchemaUpdater::new(schemas);
         updater.remove_deployment(deployment_1.id);
         let schemas = updater.into_inner();
 
@@ -1277,7 +1242,7 @@ mod tests {
             let schemas = updater.into_inner();
             schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
 
-            updater = SchemaUpdater::new(schemas, false);
+            updater = SchemaUpdater::new(schemas);
             let rejection = updater
                 .add_deployment(deployment_2.metadata, vec![greeter_v2_service()], false)
                 .unwrap_err();
@@ -1768,7 +1733,7 @@ mod tests {
         );
 
         let version_before_modification = schemas.version();
-        updater = SchemaUpdater::new(schemas, false);
+        updater = SchemaUpdater::new(schemas);
         updater.modify_service(
             GREETER_SERVICE_NAME.to_owned(),
             vec![ModifyServiceChange::Public(false)],
@@ -1784,7 +1749,7 @@ mod tests {
                 .public
         );
 
-        updater = SchemaUpdater::new(schemas, false);
+        updater = SchemaUpdater::new(schemas);
         updater.update_deployment(
             deployment.id,
             deployment.metadata.clone(),

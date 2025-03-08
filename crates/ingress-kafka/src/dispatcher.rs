@@ -14,9 +14,7 @@ use restate_bifrost::Bifrost;
 use restate_core::{Metadata, my_node_id};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::GenerationalNodeId;
-use restate_types::identifiers::{
-    InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey, partitioner,
-};
+use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey, partitioner};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, SpanRelation, VirtualObjectHandlerType,
     WorkflowHandlerType,
@@ -50,7 +48,6 @@ impl KafkaIngressEvent {
         deduplication_id: KafkaDeduplicationId,
         deduplication_index: MessageIndex,
         headers: Vec<restate_types::invocation::Header>,
-        experimental_feature_kafka_ingress_next: bool,
     ) -> Result<Self, anyhow::Error> {
         // Check if we need to proxy or not
         let proxying_partition_key = if KafkaDeduplicationId::requires_proxying(subscription) {
@@ -123,11 +120,7 @@ impl KafkaIngressEvent {
         let mut service_invocation = ServiceInvocation::initialize(
             invocation_id,
             invocation_target,
-            if experimental_feature_kafka_ingress_next {
-                restate_types::invocation::Source::Subscription(subscription.id())
-            } else {
-                restate_types::invocation::Source::Ingress(PartitionProcessorRpcRequestId::new())
-            },
+            restate_types::invocation::Source::Subscription(subscription.id()),
         );
         service_invocation.with_related_span(related_span);
         service_invocation.argument = payload;

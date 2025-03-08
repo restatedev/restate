@@ -48,13 +48,6 @@ pub struct IngressOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub experimental_feature_enable_separate_ingress_role: bool,
 
-    /// Cluster of new features for the kafka ingress, including:
-    ///
-    /// * New Source::Subscription
-    /// * Shared handlers can now receive events https://github.com/restatedev/restate/issues/2100
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    experimental_feature_kafka_ingress_next: bool,
-
     /// # Ingress endpoint
     ///
     /// Ingress endpoint that the Web UI should use to interact with.
@@ -89,10 +82,6 @@ impl IngressOptions {
         )
     }
 
-    pub fn experimental_feature_kafka_ingress_next(&self) -> bool {
-        self.experimental_feature_kafka_ingress_next
-    }
-
     /// set derived values if they are not configured to reduce verbose configurations
     pub fn set_derived_values(&mut self) {
         // Only derive bind_address if it is not explicitly set
@@ -123,7 +112,6 @@ impl Default for IngressOptions {
             concurrent_api_requests_limit: None,
             kafka_clusters: Default::default(),
             experimental_feature_enable_separate_ingress_role: false,
-            experimental_feature_kafka_ingress_next: false,
             advertised_ingress_endpoint: None,
         }
     }
