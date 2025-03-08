@@ -154,6 +154,28 @@ impl Node {
         let is_provisioned =
             cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
+        // If MetadataServerKind::Local and Role::MetadataServer are configured,
+        // we use an in-memory client, ignoring the rest of the client config.
+        // Client kind defaults to MetadataClientKind::Replicated, so we turn a
+        // blind eye to that, but reject other values (etcd, object-store) to
+        // avoid confusion. This disparity will disappear once we remove the
+        // local metadata server as an option.
+        if !matches!(
+            &config.common.metadata_client.kind,
+            restate_types::config::MetadataClientKind::Replicated { .. }
+        ) && config.has_role(Role::MetadataServer)
+        {
+            return Err(BuildError::InvalidConfiguration(anyhow::anyhow!(
+                "Detected possible misconfiguration. This node runs a \"{}\" metadata \
+                server but is configured to use the \"{}\" metadata client. If you \
+                don't want to run a metadata server, remove the metadata-server role. If you \
+                want to use the Restate metadata store, then set \
+                metadata-client.type = \"replicated\" or leave it unset",
+                config.metadata_server.kind(),
+                config.common.metadata_client.kind,
+            )));
+        };
+
         let (metadata_store_role, metadata_store_client) = if config.has_role(Role::MetadataServer)
         {
             restate_metadata_server::create_metadata_server_and_client(
