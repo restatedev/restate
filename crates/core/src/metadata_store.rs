@@ -11,7 +11,8 @@
 pub mod providers;
 mod test_util;
 
-use std::future::Future;
+use std::borrow::Cow;
+use std::fmt::{Debug, Display};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -270,6 +271,14 @@ impl MetadataStoreClient {
 
     pub fn inner(&self) -> Arc<dyn MetadataStore + Send + Sync> {
         Arc::clone(&self.inner)
+    }
+
+    /// Wraps this metadata store client with a retry policy for retryable errors.
+    pub fn with_retries(&self, retry_policy: RetryPolicy) -> RetryingMetadataStoreClient<'_> {
+        RetryingMetadataStoreClient {
+            inner: Cow::Borrowed(self),
+            retry_policy,
+        }
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -579,6 +588,123 @@ impl From<WriteError> for ReadWriteError {
 
 static_assertions::assert_impl_all!(MetadataStoreClient: Send, Sync, Clone);
 
+/// Metadata store client which automatically retries retryable metadata store errors (e.g. network
+/// problems).
+#[derive(Clone)]
+pub struct RetryingMetadataStoreClient<'a> {
+    inner: Cow<'a, MetadataStoreClient>,
+    retry_policy: RetryPolicy,
+}
+
+impl RetryingMetadataStoreClient<'_> {
+    pub fn new(inner: MetadataStoreClient, retry_policy: RetryPolicy) -> Self {
+        RetryingMetadataStoreClient {
+            inner: Cow::Owned(inner),
+            retry_policy,
+        }
+    }
+
+    /// Gets the value and its current version for the given key. If key-value pair is not present,
+    /// then return [`None`].
+    pub async fn get<T: Versioned + StorageDecode + Send>(
+        &self,
+        key: ByteString,
+    ) -> Result<Option<T>, RetryError<ReadError>> {
+        retry_on_retryable_error(self.retry_policy.clone(), || self.inner.get(key.clone())).await
+    }
+
+    /// Gets the current version for the given key. If key-value pair is not present, then return
+    /// [`None`].
+    pub async fn get_version(
+        &self,
+        key: ByteString,
+    ) -> Result<Option<Version>, RetryError<ReadError>> {
+        retry_on_retryable_error(self.retry_policy.clone(), || {
+            self.inner.get_version(key.clone())
+        })
+        .await
+    }
+
+    /// Puts the versioned value under the given key following the provided precondition. If the
+    /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
+    pub async fn put<T>(
+        &self,
+        key: ByteString,
+        value: &T,
+        precondition: Precondition,
+    ) -> Result<(), RetryError<WriteError>>
+    where
+        T: Versioned + StorageEncode,
+    {
+        retry_on_retryable_error(self.retry_policy.clone(), || {
+            self.inner.put(key.clone(), value, precondition)
+        })
+        .await
+    }
+
+    /// Deletes the key-value pair for the given key following the provided precondition. If the
+    /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
+    pub async fn delete(
+        &self,
+        key: ByteString,
+        precondition: Precondition,
+    ) -> Result<(), RetryError<WriteError>> {
+        retry_on_retryable_error(self.retry_policy.clone(), || {
+            self.inner.delete(key.clone(), precondition)
+        })
+        .await
+    }
+
+    /// Gets the value under the specified key or inserts a new value if it is not present into the
+    /// metadata store.
+    ///
+    /// This method won't overwrite an existing value that is stored in the metadata store.
+    pub async fn get_or_insert<T, F>(
+        &self,
+        key: ByteString,
+        init: F,
+    ) -> Result<T, RetryError<ReadWriteError>>
+    where
+        T: Versioned + StorageEncode + StorageDecode,
+        F: FnMut() -> T + Clone,
+    {
+        retry_on_retryable_error(self.retry_policy.clone(), || {
+            self.inner.get_or_insert(key.clone(), init.clone())
+        })
+        .await
+    }
+
+    /// Reads the value under the given key from the metadata store, then modifies it and writes
+    /// the result back to the metadata store. The write only succeeds if the stored value has not
+    /// been modified in the meantime. If this should happen, then the read-modify-write cycle is
+    /// retried.
+    pub async fn read_modify_write<T, F, E>(
+        &self,
+        key: ByteString,
+        modify: F,
+    ) -> Result<T, RetryError<ReadModifyWriteError<E>>>
+    where
+        T: Versioned + StorageEncode + StorageDecode,
+        F: FnMut(Option<T>) -> Result<T, E> + Clone,
+        E: Debug + Display + 'static,
+    {
+        retry_on_retryable_error(self.retry_policy.clone(), || {
+            self.inner.read_modify_write(key.clone(), modify.clone())
+        })
+        .await
+    }
+
+    pub async fn provision(
+        &self,
+        nodes_configuration: &NodesConfiguration,
+    ) -> Result<bool, RetryError<ProvisionError>> {
+        retry_on_retryable_error(self.retry_policy.clone(), || {
+            self.inner.provision(nodes_configuration)
+        })
+        .await
+    }
+}
+
 pub async fn retry_on_retryable_error<Fn, Fut, T, E, P>(
     retry_policy: P,
     mut action: Fn,
@@ -620,6 +746,13 @@ pub enum RetryError<E> {
 
 impl<E> RetryError<E> {
     pub fn into_inner(self) -> E {
+        match self {
+            RetryError::RetriesExhausted(err) => err,
+            RetryError::NotRetryable(err) => err,
+        }
+    }
+
+    pub fn as_inner(&self) -> &E {
         match self {
             RetryError::RetriesExhausted(err) => err,
             RetryError::NotRetryable(err) => err,
