@@ -9,29 +9,30 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use ahash::HashMap;
 use enum_map::EnumMap;
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use metrics::{counter, histogram};
 use opentelemetry::global;
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
-use tokio::time::Instant;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::time::{Instant, timeout};
 use tracing::{Instrument, Span, debug, info, instrument, trace, warn};
 
+use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::config::Configuration;
 use restate_types::net::codec::MessageBodyExt;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::protobuf::node::message::{self, ConnectionControl};
+use restate_types::protobuf::node::message::{Body, Signal};
 use restate_types::protobuf::node::{Header, Hello, Message, Welcome};
 use restate_types::{GenerationalNodeId, Merge, NodeId, PlainNodeId, Version};
 
 use super::connection::{OwnedConnection, WeakConnection};
 use super::error::{NetworkError, ProtocolError};
 use super::handshake::wait_for_welcome;
+use super::io::{CloseReason, DropEgressStream, EgressMessage, EgressStream};
 use super::metric_definitions::{
     self, CONNECTION_DROPPED, INCOMING_CONNECTION, OUTGOING_CONNECTION,
 };
@@ -148,7 +149,7 @@ impl ConnectionManager {
     pub async fn accept_incoming_connection<S>(
         &self,
         mut incoming: S,
-    ) -> Result<impl Stream<Item = Message> + Unpin + Send + 'static, NetworkError>
+    ) -> Result<EgressStream, NetworkError>
     where
         S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
     {
@@ -175,6 +176,7 @@ impl ConnectionManager {
         // window) to avoid dangling resources by misbehaving peers or under sever load conditions.
         // The client can retry with an exponential backoff on handshake timeout.
         debug!("Accepting incoming connection");
+
         let (header, hello) = wait_for_hello(
             &mut incoming,
             Configuration::pinned().networking.handshake_timeout.into(),
@@ -225,38 +227,26 @@ impl ConnectionManager {
 
         self.verify_node_id(peer_node_id, &header, &nodes_config, &metadata)?;
 
-        let (tx, output_stream) = mpsc::channel(
+        let (sender, egress, drop_egress) = EgressStream::create(
             Configuration::pinned()
                 .networking
                 .outbound_queue_length
                 .get(),
         );
-        let output_stream = ReceiverStream::new(output_stream);
         // Enqueue the welcome message
         let welcome = Welcome::new(my_node_id, selected_protocol_version);
-
-        let welcome = Message::new(
-            Header::new(
-                nodes_config.version(),
-                None,
-                None,
-                None,
-                crate::network::generate_msg_id(),
-                Some(header.msg_id),
-            ),
-            welcome,
-        );
-
-        tx.try_send(welcome)
-            .expect("channel accept Welcome message");
-        let connection = OwnedConnection::new(peer_node_id, selected_protocol_version, tx);
+        sender
+            .send(EgressMessage::Message(Header::default(), welcome.into()))
+            .await
+            .unwrap();
+        let connection = OwnedConnection::new(peer_node_id, selected_protocol_version, sender);
 
         INCOMING_CONNECTION.increment(1);
         // Register the connection.
-        let _ = self.start_connection_reactor(connection, incoming)?;
+        let _ = self.start_connection_reactor(connection, incoming, drop_egress)?;
 
         // Our output stream, i.e. responses.
-        Ok(output_stream)
+        Ok(egress)
     }
 
     /// Gets an existing connection or creates a new one if no active connection exists. If
@@ -327,34 +317,23 @@ impl ConnectionManager {
         let nodes_config = metadata.nodes_config_snapshot();
         let cluster_name = nodes_config.cluster_name().to_owned();
 
-        let (tx, output_stream) = mpsc::channel(
+        let (tx, egress, drop_egress) = EgressStream::create(
             Configuration::pinned()
                 .networking
                 .outbound_queue_length
                 .get(),
         );
-        let output_stream = ReceiverStream::new(output_stream);
-        let hello = Hello::new(my_node_id, cluster_name);
 
         // perform handshake.
-        let hello = Message::new(
-            Header::new(
-                metadata.nodes_config_version(),
-                None,
-                None,
-                None,
-                super::generate_msg_id(),
-                None,
-            ),
-            hello,
-        );
-
+        let hello = Hello::new(my_node_id, cluster_name);
         // Prime the channel with the hello message before connecting.
-        tx.send(hello).await.expect("Channel accept hello message");
+        tx.send(EgressMessage::Message(Header::default(), hello.into()))
+            .await
+            .unwrap();
 
         // Establish the connection
         let mut incoming = transport_connector
-            .connect(node_id, &nodes_config, output_stream)
+            .connect(node_id, &nodes_config, egress)
             .await?;
         // finish the handshake
         let (_header, welcome) = wait_for_welcome(
@@ -390,12 +369,14 @@ impl ConnectionManager {
         let connection = OwnedConnection::new(peer_node_id, protocol_version, tx);
 
         OUTGOING_CONNECTION.increment(1);
-        self.start_connection_reactor(connection, incoming)
+        self.start_connection_reactor(connection, incoming, drop_egress)
     }
 
     #[instrument(skip_all)]
     fn connect_loopback(&self) -> Result<Arc<OwnedConnection>, NetworkError> {
-        let (tx, rx) = mpsc::channel(
+        trace!("Creating an express path connection to self");
+        // todo: for loopback we should avoid the additional buffering to reduce latency and avoid memory bloat.
+        let (tx, egress, drop_egress) = EgressStream::create(
             Configuration::pinned()
                 .networking
                 .outbound_queue_length
@@ -407,8 +388,7 @@ impl ConnectionManager {
             tx,
         );
 
-        let incoming = ReceiverStream::new(rx).map(Ok);
-        self.start_connection_reactor(connection, incoming)
+        self.start_connection_reactor(connection, egress.map(Ok), drop_egress)
     }
 
     fn verify_node_id(
@@ -459,6 +439,7 @@ impl ConnectionManager {
         &self,
         connection: OwnedConnection,
         incoming: S,
+        drop_egress: DropEgressStream,
     ) -> Result<Arc<OwnedConnection>, NetworkError>
     where
         S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
@@ -510,6 +491,7 @@ impl ConnectionManager {
         let connection_weak = Arc::downgrade(&connection);
         let span = tracing::error_span!(parent: None, "network-reactor",
             task_id = tracing::field::Empty,
+            cid = tracing::field::Empty,
             peer = %peer_node_id,
         );
         let router = guard.router.clone();
@@ -517,7 +499,14 @@ impl ConnectionManager {
         let task_id = TaskCenter::spawn_child(
             TaskKind::ConnectionReactor,
             "network-connection-reactor",
-            run_reactor(self.inner.clone(), connection.clone(), router, incoming).instrument(span),
+            run_reactor(
+                self.inner.clone(),
+                connection.clone(),
+                router,
+                incoming,
+                drop_egress,
+            )
+            .instrument(span),
         )?;
         if peer_node_id != my_node_id() {
             debug!(
@@ -546,6 +535,7 @@ async fn run_reactor<S>(
     connection: Arc<OwnedConnection>,
     router: MessageRouter,
     mut incoming: S,
+    drop_egress: DropEgressStream,
 ) -> anyhow::Result<()>
 where
     S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send,
@@ -553,11 +543,13 @@ where
     let current_task = TaskContext::current();
     let metadata = Metadata::current();
     Span::current().record("task_id", tracing::field::display(current_task.id()));
+    Span::current().record("cid", connection.id());
     let mut cancellation = std::pin::pin!(current_task.cancellation_token().cancelled());
     let mut seen_versions = MetadataVersions::default();
 
     let mut needs_drain = false;
     let mut is_peer_shutting_down = false;
+    let mut drop_egress = std::pin::pin!(drop_egress);
     // Receive loop
     loop {
         // read a message from the stream
@@ -567,14 +559,22 @@ where
                 if TaskCenter::is_shutdown_requested() {
                     // We want to make the distinction between whether we are terminating the
                     // connection, or whether the node is shutting down.
-                    connection.send_control_frame(ConnectionControl::shutdown());
+                    connection.close(CloseReason::Shutdown);
                 } else {
-                    connection.send_control_frame(ConnectionControl::connection_reset());
+                    connection.close(CloseReason::ConnectionDrain);
                 }
                 // we only drain the connection if we were the initiators of the termination
                 needs_drain = true;
                 break;
             },
+            _ = &mut drop_egress => {
+                // egress stream has been dropped, we should terminate the connection.
+                // since this has been triggered externally, we'll assume that it's impossible to
+                // respond to requests on this channel, so we'll simply drop everything to floor
+                debug!("Stopping connection reactor due to egress stream drop");
+                needs_drain = false;
+                break;
+            }
             msg = incoming.next() => {
                 match msg {
                     Some(Ok(msg)) => { msg }
@@ -586,6 +586,7 @@ where
                     None => {
                         // peer terminated the connection
                         // stream has terminated cleanly.
+                        connection.close(CloseReason::ConnectionDrain);
                         break;
                     }
                 }
@@ -596,28 +597,31 @@ where
 
         // body are not allowed to be empty.
         let Some(body) = msg.body else {
-            connection
-                .send_control_frame(ConnectionControl::codec_error("Body is missing on message"));
+            connection.close(CloseReason::CodecError(
+                "Body is missing on message".to_owned(),
+            ));
             break;
         };
 
         // Welcome and hello are not allowed after handshake
         if body.is_welcome() || body.is_hello() {
-            connection.send_control_frame(ConnectionControl::codec_error(
-                "Hello/Welcome are not allowed after handshake",
+            connection.close(CloseReason::CodecError(
+                "Hello/Welcome are not allowed after handshake".to_owned(),
             ));
+            connection.close(CloseReason::ConnectionDrain);
             break;
         };
 
         // if it's a control signal, handle it, otherwise, route with message router.
-        if let message::Body::ConnectionControl(ctrl_msg) = &body {
+        if let Body::ConnectionControl(ctrl_msg) = &body {
             // do something
             info!(
                 "Terminating connection based on signal from {}: {}",
                 connection.peer(),
                 ctrl_msg.message
             );
-            if ctrl_msg.signal() == message::Signal::Shutdown {
+            if ctrl_msg.signal() == Signal::Shutdown {
+                connection.close(CloseReason::ConnectionDrain);
                 is_peer_shutting_down = true;
             }
             break;
@@ -625,8 +629,8 @@ where
 
         //  header is required on all messages
         let Some(header) = msg.header else {
-            connection.send_control_frame(ConnectionControl::codec_error(
-                "Header is missing on message",
+            connection.close(CloseReason::CodecError(
+                "Header is missing on message".to_owned(),
             ));
             break;
         };
@@ -697,7 +701,7 @@ where
             Err(status) => {
                 // terminate the stream
                 warn!("Error processing message, reporting error to peer: {status}",);
-                connection.send_control_frame(ConnectionControl::codec_error(status.to_string()));
+                connection.close(CloseReason::CodecError(status.to_string()));
                 break;
             }
         }
@@ -708,15 +712,13 @@ where
     let protocol_version = connection.protocol_version;
     let peer_node_id = connection.peer;
     let connection_created_at = connection.created;
-    // dropping the connection since it's the owner of sender stream.
-    drop(connection);
 
     let drain_start = std::time::Instant::now();
     let mut drain_counter = 0;
     if needs_drain {
         debug!("Draining connection");
         // Draining of incoming queue
-        while let Some(Some(Ok(msg))) = incoming.next().now_or_never() {
+        while let Some(Ok(msg)) = incoming.next().await {
             // ignore malformed messages
             let Some(header) = msg.header else {
                 continue;
@@ -754,8 +756,24 @@ where
         }
     }
 
-    // We should also terminate response stream. This happens automatically when
-    // the sender is dropped
+    // Wait for egress to fully drain
+    if timeout(
+        Duration::from_secs(5),
+        drop_egress
+            .log_slow_after(
+                Duration::from_secs(2),
+                tracing::Level::INFO,
+                "Waiting for connection's egress to drain",
+            )
+            .with_overdue(Duration::from_secs(3), tracing::Level::WARN),
+    )
+    .await
+    .is_err()
+    {
+        info!("Connection's egress has taken too long to drain, will drop");
+    }
+    // dropping the connection since it's the owner of sender stream.
+    drop(connection);
     on_connection_terminated(&connection_manager);
     CONNECTION_DROPPED.increment(1);
     debug!(
@@ -852,6 +870,7 @@ impl MetadataVersions {
 mod tests {
     use super::*;
 
+    use futures::stream;
     use googletest::prelude::*;
     use restate_types::config::NetworkingOptions;
     use restate_types::locality::NodeLocation;
@@ -873,6 +892,7 @@ mod tests {
     };
     use restate_types::protobuf::node::message::Body;
     use restate_types::protobuf::node::{Header, Hello};
+    use tokio_stream::wrappers::ReceiverStream;
 
     use crate::network::MockPeerConnection;
     use crate::{self as restate_core, TestCoreEnv, TestCoreEnvBuilder};
@@ -901,12 +921,12 @@ mod tests {
     async fn test_hello_welcome_timeout() -> Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let net_opts = NetworkingOptions::default();
-        let (_tx, rx) = mpsc::channel(1);
         let connections = ConnectionManager::default();
 
         let start = tokio::time::Instant::now();
-        let incoming = ReceiverStream::new(rx);
-        let resp = connections.accept_incoming_connection(incoming).await;
+        let resp = connections
+            .accept_incoming_connection(stream::pending())
+            .await;
         assert!(resp.is_err());
         assert!(matches!(
             resp,

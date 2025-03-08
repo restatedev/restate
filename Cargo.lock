@@ -6589,6 +6589,7 @@ dependencies = [
  "prost-types",
  "rand 0.9.0",
  "restate-core-derive",
+ "restate-futures-util",
  "restate-object-store-util",
  "restate-test-util",
  "restate-types",
