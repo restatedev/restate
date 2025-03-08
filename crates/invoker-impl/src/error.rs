@@ -305,7 +305,7 @@ impl fmt::Display for SdkInvocationError {
         writeln!(f, "[{}] {}.", self.error.code(), self.error.message())?;
 
         if let Some(related_entry) = &self.related_entry {
-            if related_entry.entry_was_commited {
+            if related_entry.entry_was_committed {
                 write!(f, "> This error originated after executing {related_entry}")?;
             } else {
                 write!(
@@ -341,7 +341,7 @@ pub(crate) struct InvocationErrorRelatedEntry {
     pub(crate) related_entry_index: Option<EntryIndex>,
     pub(crate) related_entry_name: Option<String>,
     pub(crate) related_entry_type: Option<EntryType>,
-    pub(crate) entry_was_commited: bool,
+    pub(crate) entry_was_committed: bool,
 }
 
 impl fmt::Display for InvocationErrorRelatedEntry {
@@ -398,7 +398,7 @@ impl fmt::Display for SdkInvocationErrorV2 {
         writeln!(f, "[{}] {}.", self.error.code(), self.error.message())?;
 
         if let Some(related_command) = &self.related_command {
-            if related_command.command_was_commited {
+            if related_command.command_was_committed {
                 write!(
                     f,
                     "> This error originated after executing {related_command}"
@@ -437,7 +437,7 @@ pub(crate) struct InvocationErrorRelatedCommandV2 {
     pub(crate) related_command_index: Option<EntryIndex>,
     pub(crate) related_command_name: Option<String>,
     pub(crate) related_entry_type: Option<journal_v2::EntryType>,
-    pub(crate) command_was_commited: bool,
+    pub(crate) command_was_committed: bool,
 }
 
 impl InvocationErrorRelatedCommandV2 {
@@ -476,7 +476,7 @@ impl InvocationErrorRelatedCommandV2 {
                 )) => Some(EntryType::GetStateKeys),
                 _ => None,
             },
-            entry_was_commited: self.command_was_commited,
+            entry_was_committed: self.command_was_committed,
         }
     }
 }

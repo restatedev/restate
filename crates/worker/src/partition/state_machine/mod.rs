@@ -281,8 +281,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         Span::current().record_invocation_id(invocation_id);
         let status = self.storage.get_invocation_status(invocation_id).await?;
 
-        if let Some(invocation_traget) = status.invocation_target() {
-            Span::current().record_invocation_target(invocation_traget);
+        if let Some(invocation_target) = status.invocation_target() {
+            Span::current().record_invocation_target(invocation_target);
         }
         Ok(status)
     }
