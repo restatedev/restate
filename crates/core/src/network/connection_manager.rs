@@ -316,6 +316,7 @@ impl ConnectionManager {
         let my_node_id = metadata.my_node_id();
         let nodes_config = metadata.nodes_config_snapshot();
         let cluster_name = nodes_config.cluster_name().to_owned();
+        let address = nodes_config.find_node_by_id(node_id)?.address.clone();
 
         let (tx, egress, drop_egress) = EgressStream::create(
             Configuration::pinned()
@@ -331,10 +332,9 @@ impl ConnectionManager {
             .await
             .unwrap();
 
+        trace!("Attempting to connect to node {} at {}", node_id, address);
         // Establish the connection
-        let mut incoming = transport_connector
-            .connect(node_id, &nodes_config, egress)
-            .await?;
+        let mut incoming = transport_connector.connect(address, egress).await?;
         // finish the handshake
         let (_header, welcome) = wait_for_welcome(
             &mut incoming,
