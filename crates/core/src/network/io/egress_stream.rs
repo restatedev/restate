@@ -21,13 +21,13 @@ use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
-use restate_types::protobuf::node::message::ConnectionControl;
-use restate_types::protobuf::node::{Header, Message, message::Body};
 use restate_types::schema::Schema;
 
 use super::EgressSender;
 use super::egress_sender::SendNotifier;
 use crate::Metadata;
+use crate::network::protobuf::network::message::ConnectionControl;
+use crate::network::protobuf::network::{Header, Message, message::Body};
 
 /// A handle to drop the egress stream remotely, or to be notified if the egress stream has been
 /// terminated via other means.
