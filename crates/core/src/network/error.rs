@@ -19,6 +19,10 @@ use restate_types::nodes_config::NodesConfigError;
 use crate::{ShutdownError, SyncError};
 
 #[derive(Debug, thiserror::Error)]
+#[error("connection closed")]
+pub struct ConnectionClosed;
+
+#[derive(Debug, thiserror::Error)]
 pub enum RouterError {
     #[error("codec error: {0}")]
     CodecError(#[from] CodecError),

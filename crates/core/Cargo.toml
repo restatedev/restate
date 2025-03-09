@@ -15,9 +15,10 @@ options_schema = ["dep:schemars"]
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
-restate-types = { workspace = true }
 restate-core-derive = { workspace = true, optional = true }
+restate-futures-util = { workspace = true }
 restate-object-store-util = { workspace = true }
+restate-types = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
@@ -60,7 +61,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["tracing"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true, features = ["net"] }
-tonic = { workspace = true, features = [ "transport", "codegen", "prost", "gzip", ] }
+tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip", "zstd"] }
 tonic-reflection = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true, features = ["trace"] }

@@ -134,7 +134,11 @@ impl TaskCenter {
 
     /// Launch a new task
     #[track_caller]
-    pub fn spawn<F>(kind: TaskKind, name: &'static str, future: F) -> Result<TaskId, ShutdownError>
+    pub fn spawn<F>(
+        kind: TaskKind,
+        name: impl Into<SharedString>,
+        future: F,
+    ) -> Result<TaskId, ShutdownError>
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
