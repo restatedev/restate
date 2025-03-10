@@ -81,3 +81,12 @@ impl From<NetworkError> for OperationError {
         }
     }
 }
+
+impl MaybeRetryableError for OperationError {
+    fn retryable(&self) -> bool {
+        match self {
+            OperationError::Shutdown(_) => false,
+            OperationError::Other(err) => err.retryable(),
+        }
+    }
+}

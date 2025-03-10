@@ -19,14 +19,15 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_stream::StreamExt;
 use tracing::info;
 
+use super::Loglet;
+use crate::loglet::{AppendError, FindTailOptions};
+use crate::loglet_wrapper::LogletWrapper;
+use restate_core::metadata_store::retry_on_retryable_error;
 use restate_core::{TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind};
 use restate_test_util::let_assert;
 use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber, TailState};
-
-use super::Loglet;
-use crate::loglet::{AppendError, FindTailOptions};
-use crate::loglet_wrapper::LogletWrapper;
+use restate_types::retries::RetryPolicy;
 
 async fn wait_for_trim(loglet: &LogletWrapper, required_trim_point: Lsn) -> anyhow::Result<()> {
     for _ in 0..3 {
@@ -641,7 +642,13 @@ pub async fn seal_empty(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
         assert!(!tail.is_sealed());
     }
 
-    loglet.seal().await?;
+    let retry_policy = RetryPolicy::exponential(
+        Duration::from_millis(100),
+        2.0,
+        Some(10),
+        Some(Duration::from_secs(1)),
+    );
+    retry_on_retryable_error(retry_policy, || loglet.seal()).await?;
     let tail = loglet.find_tail(FindTailOptions::default()).await?;
     assert_eq!(Lsn::OLDEST, tail.offset());
     assert!(tail.is_sealed());
