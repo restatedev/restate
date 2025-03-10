@@ -764,7 +764,7 @@ impl StartedNode {
         }
     }
 
-    /// Check to see if the logserver is provisioned. Returns false if this node has no logserver role.
+    /// Check to see if the logserver is provisioned.
     pub async fn logserver_provisioned(&self) -> bool {
         let metadata_client = self
             .metadata_client()
@@ -786,7 +786,9 @@ impl StartedNode {
             return false;
         };
 
-        !nodes_config.get_log_server_storage_state(&node_id).empty()
+        !nodes_config
+            .get_log_server_storage_state(&node_id)
+            .is_provisioning()
     }
 
     /// Check to see if the metadata server has joined the metadata cluster.
