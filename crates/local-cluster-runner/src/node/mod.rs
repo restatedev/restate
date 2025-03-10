@@ -376,10 +376,12 @@ impl Node {
         let stdout = child.stdout.take().expect("child to have a stdout pipe");
         let stderr = child.stderr.take().expect("child to have a stderr pipe");
 
-        info!(
-            "To connect to node {} using restate CLI:\nexport RESTATE_ADMIN_URL=http://{admin_address}",
-            base_config.node_name()
-        );
+        if self.config().has_role(Role::Admin) {
+            info!(
+                "To connect to node {} using restate CLI:\nexport RESTATE_ADMIN_URL=http://{admin_address}",
+                base_config.node_name()
+            );
+        }
 
         let stdout_reader =
             stream::try_unfold(BufReader::new(stdout).lines(), |mut lines| async move {
