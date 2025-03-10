@@ -212,7 +212,7 @@ fn from_retry_policy(retry_policy: &RetryPolicy) -> RetryConfig {
                 max_backoff: max_interval
                     .unwrap_or_else(|| Duration::from_secs(15).into())
                     .into(),
-                base: f64::from(f32::from(*factor)),
+                base: f64::from(*factor),
             },
             retry_timeout: max_interval
                 .map(|interval| interval.into())
