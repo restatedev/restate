@@ -122,7 +122,7 @@ run *flags: (_target-installed target)
 test: (_target-installed target)
     # remove possible old test ports
     rm -rf {{RESTATE_TEST_PORTS_POOL}}
-    cargo nextest run {{ _target-option }} --all-features --target-dir target/tests
+    RUST_LOG=restate=debug,restate_bifrost=trace RESTATE_LOG_FILTER=restate=debug,restate_bifrost=trace,restate_log_server=trace cargo nextest run {{ _target-option }} --all-features --target-dir target/tests
 
 test-package package *flags:
     cargo nextest run --all-features --no-capture --package {{ package }} --target-dir target/tests {{ flags }}
