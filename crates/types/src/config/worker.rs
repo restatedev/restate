@@ -62,7 +62,6 @@ pub struct WorkerOptions {
     ///
     /// Snapshots provide a mechanism for safely trimming the log and efficient bootstrapping of new
     /// worker nodes.
-    #[serde(skip_serializing_if = "is_default_snapshots_options")]
     #[serde(default)]
     pub snapshots: SnapshotsOptions,
 }
@@ -362,7 +361,7 @@ impl Default for StorageOptions {
 /// `snapshot-interval-num-records` to enable snapshotting. For a complete example, see
 /// [Snapshots](https://docs.restate.dev/operate/snapshots).
 #[serde_as]
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "SnapshotsOptions", default))]
 #[serde(rename_all = "kebab-case")]
@@ -390,14 +389,31 @@ pub struct SnapshotsOptions {
     #[serde(flatten)]
     pub object_store: ObjectStoreOptions,
 
+    #[serde(default = "SnapshotsOptions::default_retry_policy")]
     pub object_store_retry_policy: RetryPolicy,
 }
 
-fn is_default_snapshots_options(opts: &SnapshotsOptions) -> bool {
-    opts == &SnapshotsOptions::default()
+impl Default for SnapshotsOptions {
+    fn default() -> Self {
+        Self {
+            destination: None,
+            snapshot_interval_num_records: None,
+            object_store: Default::default(),
+            object_store_retry_policy: Self::default_retry_policy(),
+        }
+    }
 }
 
 impl SnapshotsOptions {
+    fn default_retry_policy() -> RetryPolicy {
+        RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.,
+            Some(10),
+            Some(Duration::from_secs(10)),
+        )
+    }
+
     pub fn snapshots_base_dir(&self) -> PathBuf {
         super::data_dir("db-snapshots")
     }
