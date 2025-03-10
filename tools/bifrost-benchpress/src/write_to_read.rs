@@ -47,7 +47,7 @@ pub struct WriteToReadOpts {
 
 pub async fn run(_common_args: &Arguments, args: &WriteToReadOpts, bifrost: Bifrost) -> Result<()> {
     let clock = quanta::Clock::new();
-    // Create two tasks, one that writes to the log continously and another one that reads from the
+    // Create two tasks, one that writes to the log continuously and another one that reads from the
     // log and measures the latency. Collect latencies in a histogram and print the histogram
     // before the test ends.
     let reader_task: TaskHandle<Result<_>> =

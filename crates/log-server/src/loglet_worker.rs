@@ -1213,7 +1213,7 @@ mod tests {
         }
 
         // Apply memory limits (2 bytes) should always see the first real record.
-        // We expect to see [FILTERED(5), 10]. (11 is not returend due to budget)
+        // We expect to see [FILTERED(5), 10]. (11 is not returned due to budget)
         worker
             .enqueue_get_records(Incoming::for_testing(
                 connection.downgrade(),

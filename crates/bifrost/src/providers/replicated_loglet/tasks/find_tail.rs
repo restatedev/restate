@@ -541,7 +541,7 @@ impl<'a> FindTailOnNode<'a> {
                             },
                         );
                     }
-                    // retyrable errors
+                    // retryable errors
                     Status::Sealing | Status::Disabled | Status::Dropped => {
                         // fall-through for retries
                     }
@@ -632,7 +632,7 @@ impl WaitForTailOnNode {
                                 },
                             );
                         }
-                        // retyrable errors
+                        // retryable errors
                         Status::Sealing | Status::Disabled | Status::Dropped => {
                             // fall-through for retries
                         }

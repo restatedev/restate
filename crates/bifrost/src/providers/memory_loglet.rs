@@ -133,7 +133,7 @@ pub struct MemoryLoglet {
     trim_point_offset: AtomicU32,
     last_committed_offset: AtomicU32,
     sealed: AtomicBool,
-    // watches the tail state of ths loglet
+    // watches the tail state of this loglet
     #[debug(skip)]
     tail_watch: TailOffsetWatch,
 }

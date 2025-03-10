@@ -73,7 +73,7 @@ message IdentResponse {
 }
 
 message GetMetadataRequest {
-  // If set, we'll first sync with metadata store to esnure we are returning the
+  // If set, we'll first sync with metadata store to ensure we are returning the
   // latest value. Otherwise, we'll return the local value on this node.
   bool sync = 1;
   restate.common.MetadataKind kind = 2;

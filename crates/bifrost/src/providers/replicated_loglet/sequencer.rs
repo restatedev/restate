@@ -327,7 +327,7 @@ impl<T: TransportConnect> Sequencer<T> {
             .in_flight_appends
             .track_future(appender.run(self.cancellation_token.child_token()));
         // Why not managed tasks, because managed tasks are not designed to manage a potentially
-        // very large number of tasks, they also require a lock acquistion on start and that might
+        // very large number of tasks, they also require a lock acquisition on start and that might
         // be a contention point.
         //
         // Therefore, those tasks should not crash. We need to make sure that they have solid handling of errors.

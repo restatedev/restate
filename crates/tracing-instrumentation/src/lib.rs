@@ -317,7 +317,7 @@ impl TracingGuard {
     }
 
     pub fn on_config_update(&self) {
-        // can boost tracing performance by up to ~20% dependending on how many subscribers are
+        // can boost tracing performance by up to ~20% depending on how many subscribers are
         // enabled.
         //
         // Note: This isn't a realfix for the slow-start of tracing, but it helps if there was an

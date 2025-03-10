@@ -34,7 +34,7 @@ struct TrimError;
 /// Sends a trim request to as many log-servers in the nodeset.
 ///
 /// We broadcast the trim to all nodes that we can, but only wait for write-quorum
-/// responses before acknowleding the trim.
+/// responses before acknowledging the trim.
 ///
 /// The trim operation is idempotent. It's safe to trim a loglet if it's already partially or fully
 /// trimmed and if it's sealed.

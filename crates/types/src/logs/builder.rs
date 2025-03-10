@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(Lsn::from(530), chain.head().base_lsn);
         assert_eq!(Lsn::from(550), chain.tail().base_lsn);
 
-        // 1 deleteable segment behind 600 point
+        // 1 deletable segment behind 600 point
         chain.trim_prefix(Lsn::new(600));
         assert_eq!(1, chain.num_segments());
         assert_eq!(Lsn::from(550), chain.tail().base_lsn);

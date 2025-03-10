@@ -95,7 +95,7 @@ impl TaskCenterBuilder {
         }
 
         if cfg!(any(test, feature = "test-util")) {
-            eprintln!("!!!! Runnning with test-util enabled !!!!");
+            eprintln!("!!!! Running with test-util enabled !!!!");
         }
         Ok(OwnedHandle::new(TaskCenterInner::new(
             self.default_runtime_handle.unwrap(),

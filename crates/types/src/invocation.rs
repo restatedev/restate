@@ -1003,7 +1003,7 @@ mod serde_hacks {
         pub response_sink: Option<ServiceInvocationResponseSink>,
         pub submit_notification_sink: Option<SubmitNotificationSink>,
 
-        // TODO(slinkydeveloper) this field is here because serde doesn't like much when I change the shape of an enum variant from empty to tuple/named fiels
+        // TODO(slinkydeveloper) this field is here because serde doesn't like much when I change the shape of an enum variant from empty to tuple/named fields
         pub source_ingress_rpc_id: Option<PartitionProcessorRpcRequestId>,
     }
 
