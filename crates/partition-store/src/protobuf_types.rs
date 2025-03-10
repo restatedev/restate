@@ -1861,7 +1861,7 @@ pub mod v1 {
                     .ok_or(ConversionError::missing_field("notification_sink"))?
                 {
                     submit_notification_sink::NotificationSink::Ingress(
-                        submit_notification_sink::Ingress { request_id },
+                        submit_notification_sink::Ingress { request_id, .. },
                     ) => restate_types::invocation::SubmitNotificationSink::Ingress {
                         request_id:
                             restate_types::identifiers::PartitionProcessorRpcRequestId::from_slice(
@@ -1878,13 +1878,16 @@ pub mod v1 {
         impl From<restate_types::invocation::SubmitNotificationSink> for SubmitNotificationSink {
             fn from(value: restate_types::invocation::SubmitNotificationSink) -> Self {
                 let notification_sink = match value {
-                    restate_types::invocation::SubmitNotificationSink::Ingress { request_id } => {
-                        submit_notification_sink::NotificationSink::Ingress(
-                            submit_notification_sink::Ingress {
-                                request_id: Bytes::copy_from_slice(&request_id.to_bytes()),
-                            },
-                        )
-                    }
+                    restate_types::invocation::SubmitNotificationSink::Ingress {
+                        request_id,
+                        ..
+                    } => submit_notification_sink::NotificationSink::Ingress(
+                        submit_notification_sink::Ingress {
+                            //  In 1.1 the node number is always 1, and the generation is used to fence off responses to old process restarts. Remove in 1.3
+                            unused: Some(GenerationalNodeId::new(1, 1).into()),
+                            request_id: Bytes::copy_from_slice(&request_id.to_bytes()),
+                        },
+                    ),
                 };
 
                 SubmitNotificationSink {
@@ -2243,6 +2246,8 @@ pub mod v1 {
                     }),
                     Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress {  request_id }) => {
                         ResponseSink::Ingress(Ingress {
+                            //  In 1.1 the node number is always 1, and the generation is used to fence off responses to old process restarts. Remove in 1.3
+                            unused: Some(GenerationalNodeId::new(1, 1).into()),
                             request_id: Bytes::copy_from_slice(&request_id.to_bytes())
                         })
                     },
