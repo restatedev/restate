@@ -103,12 +103,18 @@ where
                 .try_send(network_message)
                 .map_err(|_err| TrySendError::Send(message))?;
         } else if let Some(address) = self.addresses.get(&target) {
-            if let Some(task_handle) = self.connection_attempts.remove(&target) {
-                if !task_handle.is_finished() {
+            if let Entry::Occupied(occupied) = self.connection_attempts.entry(target) {
+                if !occupied.get().is_finished() {
                     return Err(TrySendError::Connecting(message));
                 } else {
-                    match task_handle.now_or_never().expect("should be finished") {
-                        Ok(result) => match result {
+                    match occupied.remove().now_or_never() {
+                        None => {
+                            trace!(
+                                "Previous connection attempt to '{target}' finished. Polling the final \
+                                result failed because we most likely depleted our cooperative task budget."
+                            );
+                        }
+                        Some(Ok(result)) => match result {
                             Ok(_) => trace!(
                                 "Previous connection attempt to '{target}' succeeded but connection was closed in meantime."
                             ),
@@ -116,10 +122,9 @@ where
                                 trace!("Previous connection attempt to '{target}' failed: {}", err)
                             }
                         },
-                        Err(err) => {
+                        Some(Err(_)) => {
                             trace!(
-                                "Previous connection attempt to '{target}' panicked: {}",
-                                err
+                                "Previous connection attempt to '{target}' panicked. The panic is swallowed by the TaskHandle abstraction.",
                             )
                         }
                     }
