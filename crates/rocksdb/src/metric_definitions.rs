@@ -70,7 +70,7 @@ pub fn describe_metrics() {
     describe_counter!(
         STORAGE_IO_OP,
         Unit::Count,
-        "Number of forground rocksdb operations, label 'disposition' defines how IO was actually handled. Options are 'maybe-blocking', 'non-blocking', 'moved-to-bg'"
+        "Number of foreground rocksdb operations, label 'disposition' defines how IO was actually handled. Options are 'maybe-blocking', 'non-blocking', 'moved-to-bg'"
     );
 
     describe_counter!(

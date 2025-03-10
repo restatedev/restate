@@ -204,7 +204,7 @@ async fn alive_node_status(
         }
 
         if replicated_loglet_params.sequencer != node_id {
-            // sequencer fot this log is not running here
+            // sequencer for this log is not running here
             continue;
         }
 

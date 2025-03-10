@@ -25,7 +25,7 @@ allow = [
     "MPL-2.0",
     "CC0-1.0",
     "Zlib",
-    "Unicode-3.0"
+    "Unicode-3.0",
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
@@ -103,27 +103,27 @@ skip = [
     # Clash between tonic clap dependency (outdated) and hyper-rustls and prost-reflect
     { name = "base64" },
 
-    # The following is an internal dependecy needed by librocksdb-sys
+    # The following is an internal dependency needed by librocksdb-sys
     { name = "syn" },
 
-    # The following is a dev and build dependecy used by tempfile but clashes with open telemetry.
-    { name = "redox_syscall"},
+    # The following is a dev and build dependency used by tempfile but clashes with open telemetry.
+    { name = "redox_syscall" },
 
     # Clash between criterion dependency and datafusion dependency
     { name = "half" },
 
     # Clash between datafusion async-compression dependency and datafusion zstd dependency
-    { name = "zstd-safe"},
-    { name = "zstd"},
+    { name = "zstd-safe" },
+    { name = "zstd" },
 
     # Clash between datafusion and arrow
-    { name = "hashbrown"},
+    { name = "hashbrown" },
 
     # Clash between datafusion and invoker
-    { name = "tokio-rustls"},
+    { name = "tokio-rustls" },
 
     # Clash between rocksdb bindgen and prost-build
-    { name = "prettyplease"},
+    { name = "prettyplease" },
 
     # Clash between our own and opentelemetry-otlp's Tonic dependency :-(
     { name = "tonic" },
@@ -138,29 +138,29 @@ skip = [
     { name = "itertools" },
 
     # Clash between datafusion-expr and arrow
-    { name = "strum"},
-    { name = "strum_macros"},
+    { name = "strum" },
+    { name = "strum_macros" },
 
     # Clash between pgwire and arrow
-    {name = "time"},
+    { name = "time" },
 
     # clash between datafusion and arrow
-    {name = "wasi"},
+    { name = "wasi" },
 
     # clash between rdkafka and many other libraries
-    {name = "indexmap"},
+    { name = "indexmap" },
 
     # clash between prost and otel libraries
-    {name = "prost"},
-    {name = "prost-derive"},
+    { name = "prost" },
+    { name = "prost-derive" },
 
     # clash between aws-config and datafusion
-    {name = "fastrand"},
+    { name = "fastrand" },
 
     # clash between aws-config and pgwire
-    {name = "untrusted"},
-    {name = "spin"},
-    {name = "ring"}
+    { name = "untrusted" },
+    { name = "spin" },
+    { name = "ring" },
 ]
 
 [sources]

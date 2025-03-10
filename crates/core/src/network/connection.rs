@@ -553,7 +553,7 @@ pub mod test_util {
         }
     }
 
-    // Prepresents a partially connected peer connection in test environment. A connection must be
+    // Represents a partially connected peer connection in test environment. A connection must be
     // handshaken in order to be converted into MockPeerConnection.
     //
     // This is used to represent an outgoing connection from (`peer` to `my_node_id`)

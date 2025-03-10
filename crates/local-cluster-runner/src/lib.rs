@@ -23,7 +23,7 @@ use tracing::info;
 pub mod cluster;
 pub mod node;
 
-/// Used to store marker files of "used" ports to avoid confilcts
+/// Used to store marker files of "used" ports to avoid conflicts
 ///
 /// Please make sure the path `$TMP_DIR/restate_test_ports` is deleted
 /// before starting tests
@@ -60,7 +60,7 @@ pub fn random_socket_address() -> io::Result<SocketAddr> {
     loop {
         attempts += 1;
         if attempts > MAX_ALLOCATION_ATTEMPTS {
-            return Err(io::Error::other("Max allocation attempts exahusted"));
+            return Err(io::Error::other("Max allocation attempts exhausted"));
         }
 
         let port = rng.random_range(10000..30000);

@@ -31,7 +31,7 @@ use super::util::Disposition;
 /// Sends a seal request to as many log-servers in the nodeset
 ///
 /// We broadcast the seal to all nodes that we can, but only wait for f-majority
-/// responses before acknowleding the seal. The rest of the seal requests are dropped if they
+/// responses before acknowledging the seal. The rest of the seal requests are dropped if they
 /// weren't completed by that time.
 ///
 /// The seal operation is idempotent. It's safe to seal a loglet if it's already partially or fully

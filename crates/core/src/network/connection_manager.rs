@@ -1126,7 +1126,7 @@ mod tests {
             .await
             .into_test_result()?;
 
-        // we expect the request to go throught he existing open connection to my node
+        // we expect the request to go through he existing open connection to my node
         let message = connection.recv_stream.next().await.expect("some message");
         assert_get_metadata_request(
             message,

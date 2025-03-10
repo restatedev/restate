@@ -734,7 +734,7 @@ pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletPa
         #[cfg(any(test, feature = "memory-loglet"))]
         ProviderKind::InMemory => LogletParams::from(loglet_id),
         ProviderKind::Replicated => panic!(
-            "replicated-loglet is still in development and cannot be used as default-provider in this version. Pleae use 'local' instead."
+            "replicated-loglet is still in development and cannot be used as default-provider in this version. Please use 'local' instead."
         ),
     }
 }

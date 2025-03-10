@@ -126,7 +126,7 @@ impl NodeSet {
         self.0.shift_remove(&node.into())
     }
 
-    /// Scans through the nodeset and removes all nodes that satisfy the predicate while maintaing
+    /// Scans through the nodeset and removes all nodes that satisfy the predicate while maintaining
     /// the order of the remaining nodes.
     pub fn retain<F>(&mut self, keep: F)
     where

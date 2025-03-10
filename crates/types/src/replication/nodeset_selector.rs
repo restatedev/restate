@@ -212,7 +212,7 @@ impl NodeSetSelectorOptions<'_> {
 /// E.g. if a zone is unwritable, we'll pick a nodeset as if that zone didn't exist,
 /// then add a few nodes from the zone, ending up with a nodeset bigger than [`NodeSetSelectorOptions::target_size`].
 ///
-/// Picking unwritable nodes is needed to allow these node to particpate in the cluster after
+/// Picking unwritable nodes is needed to allow these node to participate in the cluster after
 /// coming back and becoming writeable again. Picking a full-size nodeset of writable nodes is still
 /// needed to make sure the data distribution is good until the unwritable nodes become writable
 /// again
@@ -231,7 +231,7 @@ impl NodeSetSelectorOptions<'_> {
 pub struct DomainAwareNodeSetSelector;
 
 impl DomainAwareNodeSetSelector {
-    /// Note: determinisim of nodeset generation depends on all inputs, including the
+    /// Note: determinism of nodeset generation depends on all inputs, including the
     /// nodes_configuration, and all options in [`NodeSetSelectorOptions`]. If the list of
     /// preferred_nodes was changed, the output of generation will be different.
     pub fn select(
@@ -958,7 +958,7 @@ pub mod tests {
         assert_eq!(nodeset2.get(0), Some(PlainNodeId::from(12)));
         assert_eq!(nodeset2.len(), 45);
         // the only difference is the first node N12, in fact the set of the nodeset should _near_
-        // identitical order of nodes.
+        // identical order of nodes.
         let delta: NodeSet = nodeset2.difference(&nodeset1).collect();
         assert_eq!(delta, NodeSet::from_single(12));
     }

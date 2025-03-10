@@ -70,7 +70,7 @@ impl<T> Live<T, ()> {
         Self::from(Arc::new(ArcSwap::from_pointee(value)))
     }
     /// Potentially fast access to a snapshot, should be used if using live_load()
-    /// isn't possible (requires mutablility to call load()).
+    /// isn't possible (requires mutability to call load()).
     ///
     /// Pinned doesn't track updates.
     ///
