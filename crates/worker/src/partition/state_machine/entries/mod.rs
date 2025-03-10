@@ -61,7 +61,7 @@ use restate_types::journal_v2::{
     Command, CommandMetadata, Completion, Entry, EntryMetadata, EntryType,
 };
 use std::collections::VecDeque;
-use tracing::info;
+use tracing::debug;
 
 pub(super) struct OnJournalEntryCommand {
     pub(super) invocation_id: InvocationId,
@@ -111,7 +111,7 @@ where
         if !matches!(self.invocation_status, InvocationStatus::Invoked(_))
             && !matches!(self.invocation_status, InvocationStatus::Suspended { .. })
         {
-            info!(
+            debug!(
                 "Received entry for invocation that is not invoked nor suspended. Ignoring the effect."
             );
             return Ok(());
