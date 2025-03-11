@@ -616,16 +616,18 @@ mod tests {
 
     use super::*;
     use googletest::prelude::*;
+    use restate_types::net::codec::WireDecode;
     use test_log::test;
 
     use restate_core::network::OwnedConnection;
+    use restate_core::network::protobuf::network::message;
     use restate_core::{MetadataBuilder, TaskCenter};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::Live;
     use restate_types::logs::{KeyFilter, Keys, Record, RecordCache};
     use restate_types::net::CURRENT_PROTOCOL_VERSION;
-    use restate_types::net::codec::MessageBodyExt;
+    use restate_types::net::ProtocolVersion;
 
     use crate::metadata::LogletStateMap;
     use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};
@@ -648,6 +650,19 @@ mod tests {
         )
         .await?;
         Ok(builder.start(Default::default()).await?)
+    }
+
+    fn decode<T: WireDecode>(
+        message: message::Body,
+        protocol_version: ProtocolVersion,
+    ) -> Result<T> {
+        let mut binary_message = message
+            .try_as_binary_body(protocol_version)
+            .into_test_result()?;
+        Ok(<T as WireDecode>::decode(
+            &mut binary_message.payload,
+            protocol_version,
+        ))
     }
 
     #[test(restate_core::test(start_paused = true))]
@@ -702,10 +717,7 @@ mod tests {
         let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg1_id));
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let stored: Stored = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(stored.status, eq(Status::Ok));
         assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
 
@@ -713,10 +725,7 @@ mod tests {
         let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg2_id));
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let stored: Stored = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(stored.status, eq(Status::Ok));
         assert_that!(stored.local_tail, eq(LogletOffset::new(5)));
 
@@ -790,10 +799,7 @@ mod tests {
         let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg1_id));
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let stored: Stored = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(stored.status, eq(Status::Ok));
         assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
         worker.enqueue_seal(seal1).unwrap();
@@ -806,10 +812,7 @@ mod tests {
         let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg2_id));
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let stored: Stored = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(stored.status, eq(Status::Sealing));
         assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
         // seal responses can come at any order, but we'll consume waiters queue before we process
@@ -818,10 +821,7 @@ mod tests {
         let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), any!(eq(seal1_id), eq(seal2_id)));
-        let sealed: Sealed = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let sealed: Sealed = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(sealed.status, eq(Status::Ok));
         assert_that!(sealed.local_tail, eq(LogletOffset::new(3)));
 
@@ -829,10 +829,7 @@ mod tests {
         let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), any!(eq(seal1_id), eq(seal2_id)));
-        let sealed: Sealed = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let sealed: Sealed = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(sealed.status, eq(Status::Ok));
         assert_that!(sealed.local_tail, eq(LogletOffset::new(3)));
 
@@ -852,10 +849,7 @@ mod tests {
         let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg3_id));
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let stored: Stored = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(stored.status, eq(Status::Sealed));
         assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
 
@@ -871,10 +865,7 @@ mod tests {
         let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg_id));
-        let info: LogletInfo = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let info: LogletInfo = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(info.status, eq(Status::Ok));
         assert_that!(info.local_tail, eq(LogletOffset::new(3)));
         assert_that!(info.trim_point, eq(LogletOffset::INVALID));
@@ -973,20 +964,14 @@ mod tests {
         worker.enqueue_store(msg2).unwrap();
         // first store is successful
         let response = net_rx.next().await.unwrap();
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let stored: Stored = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(stored.status, eq(Status::Ok));
         assert_that!(stored.sealed, eq(false));
         assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
 
         // 10, 11
         let response = net_rx.next().await.unwrap();
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let stored: Stored = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(stored.status, eq(Status::Ok));
         assert_that!(stored.sealed, eq(false));
         assert_that!(stored.local_tail, eq(LogletOffset::new(12)));
@@ -996,29 +981,20 @@ mod tests {
         // store messages.
         // sealed
         let response = net_rx.next().await.unwrap();
-        let sealed: Sealed = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let sealed: Sealed = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(sealed.status, eq(Status::Ok));
         assert_that!(sealed.local_tail, eq(LogletOffset::new(12)));
 
         // repair store (before local tail, local tail won't move)
         worker.enqueue_store(repair1).unwrap();
         let response = peer_net_rx.next().await.unwrap();
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let stored: Stored = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(stored.status, eq(Status::Ok));
         assert_that!(stored.local_tail, eq(LogletOffset::new(12)));
 
         worker.enqueue_store(repair2).unwrap();
         let response = peer_net_rx.next().await.unwrap();
-        let stored: Stored = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let stored: Stored = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(stored.status, eq(Status::Ok));
         assert_that!(stored.local_tail, eq(LogletOffset::new(18)));
 
@@ -1034,10 +1010,7 @@ mod tests {
         let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg_id));
-        let info: LogletInfo = response
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let info: LogletInfo = decode(response.body.unwrap(), connection.protocol_version())?;
         assert_that!(info.status, eq(Status::Ok));
         assert_that!(info.local_tail, eq(LogletOffset::new(18)));
         assert_that!(info.trim_point, eq(LogletOffset::INVALID));
@@ -1114,13 +1087,10 @@ mod tests {
 
         // Wait for stores to complete.
         for _ in 0..3 {
-            let stored: Stored = net_rx
-                .next()
-                .await
-                .unwrap()
-                .body
-                .unwrap()
-                .try_decode(connection.protocol_version())?;
+            let stored: Stored = decode(
+                net_rx.next().await.unwrap().body.unwrap(),
+                connection.protocol_version(),
+            )?;
             assert_that!(stored.status, eq(Status::Ok));
         }
 
@@ -1141,13 +1111,10 @@ mod tests {
             ))
             .unwrap();
 
-        let mut records: Records = net_rx
-            .next()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let mut records: Records = decode(
+            net_rx.next().await.unwrap().body.unwrap(),
+            connection.protocol_version(),
+        )?;
         assert_that!(records.status, eq(Status::Ok));
         assert_that!(records.local_tail, eq(LogletOffset::new(12)));
         assert_that!(records.sealed, eq(false));
@@ -1181,13 +1148,10 @@ mod tests {
             ))
             .unwrap();
 
-        let mut records: Records = net_rx
-            .next()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let mut records: Records = decode(
+            net_rx.next().await.unwrap().body.unwrap(),
+            connection.protocol_version(),
+        )?;
         assert_that!(records.status, eq(Status::Ok));
         assert_that!(records.local_tail, eq(LogletOffset::new(12)));
         assert_that!(records.next_offset, eq(LogletOffset::new(12)));
@@ -1229,13 +1193,10 @@ mod tests {
             ))
             .unwrap();
 
-        let mut records: Records = net_rx
-            .next()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let mut records: Records = decode(
+            net_rx.next().await.unwrap().body.unwrap(),
+            connection.protocol_version(),
+        )?;
         assert_that!(records.status, eq(Status::Ok));
         assert_that!(records.local_tail, eq(LogletOffset::new(12)));
         assert_that!(records.next_offset, eq(LogletOffset::new(11)));
@@ -1290,13 +1251,10 @@ mod tests {
             ))
             .unwrap();
 
-        let trimmed: Trimmed = net_rx
-            .next()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let trimmed: Trimmed = decode(
+            net_rx.next().await.unwrap().body.unwrap(),
+            connection.protocol_version(),
+        )?;
         assert_that!(trimmed.status, eq(Status::Malformed));
         assert_that!(trimmed.local_tail, eq(LogletOffset::OLDEST));
         assert_that!(trimmed.sealed, eq(false));
@@ -1314,13 +1272,10 @@ mod tests {
             ))
             .unwrap();
 
-        let trimmed: Trimmed = net_rx
-            .next()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let trimmed: Trimmed = decode(
+            net_rx.next().await.unwrap().body.unwrap(),
+            connection.protocol_version(),
+        )?;
         assert_that!(trimmed.status, eq(Status::Ok));
         assert_that!(trimmed.local_tail, eq(LogletOffset::OLDEST));
         assert_that!(trimmed.sealed, eq(false));
@@ -1342,13 +1297,10 @@ mod tests {
                 None,
             ))
             .unwrap();
-        let stored: Stored = net_rx
-            .next()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let stored: Stored = decode(
+            net_rx.next().await.unwrap().body.unwrap(),
+            connection.protocol_version(),
+        )?;
         assert_that!(stored.status, eq(Status::Ok));
         assert_that!(stored.local_tail, eq(LogletOffset::new(7)));
 
@@ -1364,13 +1316,10 @@ mod tests {
             ))
             .unwrap();
 
-        let trimmed: Trimmed = net_rx
-            .next()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let trimmed: Trimmed = decode(
+            net_rx.next().await.unwrap().body.unwrap(),
+            connection.protocol_version(),
+        )?;
         assert_that!(trimmed.status, eq(Status::Ok));
         assert_that!(trimmed.local_tail, eq(LogletOffset::new(7)));
         assert_that!(trimmed.sealed, eq(false));
@@ -1391,13 +1340,10 @@ mod tests {
             ))
             .unwrap();
 
-        let mut records: Records = net_rx
-            .next()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let mut records: Records = decode(
+            net_rx.next().await.unwrap().body.unwrap(),
+            connection.protocol_version(),
+        )?;
         assert_that!(records.status, eq(Status::Ok));
         assert_that!(records.local_tail, eq(LogletOffset::new(7)));
         assert_that!(records.next_offset, eq(LogletOffset::new(7)));
@@ -1432,13 +1378,10 @@ mod tests {
             ))
             .unwrap();
 
-        let trimmed: Trimmed = net_rx
-            .next()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let trimmed: Trimmed = decode(
+            net_rx.next().await.unwrap().body.unwrap(),
+            connection.protocol_version(),
+        )?;
         assert_that!(trimmed.status, eq(Status::Ok));
         assert_that!(trimmed.local_tail, eq(LogletOffset::new(7)));
         assert_that!(trimmed.sealed, eq(false));
@@ -1459,13 +1402,10 @@ mod tests {
             ))
             .unwrap();
 
-        let mut records: Records = net_rx
-            .next()
-            .await
-            .unwrap()
-            .body
-            .unwrap()
-            .try_decode(connection.protocol_version())?;
+        let mut records: Records = decode(
+            net_rx.next().await.unwrap().body.unwrap(),
+            connection.protocol_version(),
+        )?;
         assert_that!(records.status, eq(Status::Ok));
         assert_that!(records.local_tail, eq(LogletOffset::new(7)));
         assert_that!(records.next_offset, eq(LogletOffset::new(7)));
