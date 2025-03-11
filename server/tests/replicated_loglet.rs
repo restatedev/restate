@@ -226,12 +226,12 @@ mod tests {
 
 
                 let mut appenders: JoinSet<googletest::Result<_>> = JoinSet::new();
-                let cancel_appenders = CancellationToken::new();
+                let stop_signal = CancellationToken::new();
 
                 for appender_id in 0..CONCURRENT_APPENDERS {
                     appenders.spawn({
                         let bifrost = test_env.bifrost.clone();
-                        let cancel_appenders = cancel_appenders.clone();
+                        let cancel_appenders = stop_signal.clone();
                         async move {
                             let mut i = 1;
                             let mut committed = Vec::new();
@@ -253,13 +253,14 @@ mod tests {
 
                 let mut sealer_handle: JoinHandle<googletest::Result<()>> = tokio::task::spawn({
                     let bifrost = test_env.bifrost.clone();
+                    let stop_signal = stop_signal.clone();
                     async move {
 
                         let mut chain = metadata.updateable_logs_metadata().map(|logs| logs.chain(&log_id).expect("a chain to exist"));
 
                         let mut last_loglet_id = None;
 
-                        loop {
+                        while !stop_signal.is_cancelled() {
                             tokio::time::sleep(SEAL_PERIOD).await;
 
                             let mut params = ReplicatedLogletParams::deserialize_from(
@@ -283,6 +284,8 @@ mod tests {
                                 )
                                 .await?;
                         }
+
+                        Ok(())
                     }.in_current_tc()
                 });
 
@@ -298,15 +301,10 @@ mod tests {
                     }
                 }
 
-                // stop appending
-                cancel_appenders.cancel();
-                // stop sealing
-                sealer_handle.abort();
+                // stop appending and sealing
+                stop_signal.cancel();
 
-                match sealer_handle.await {
-                    Err(err) if err.is_cancelled() => {}
-                    res => fail!("unexpected error from sealer handle: {res:?}")?,
-                }
+                sealer_handle.await??;
 
                 let mut all_committed = BTreeSet::new();
                 while let Some(handle) = appenders.join_next().await {
