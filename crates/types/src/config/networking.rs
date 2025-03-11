@@ -94,7 +94,7 @@ impl Default for NetworkingOptions {
             http2_keep_alive_interval: Duration::from_secs(5).into(),
             http2_keep_alive_timeout: Duration::from_secs(5).into(),
             http2_adaptive_window: true,
-            num_concurrent_connections: NonZeroUsize::new(13).unwrap(),
+            num_concurrent_connections: NonZeroUsize::new(1).unwrap(),
         }
     }
 }
