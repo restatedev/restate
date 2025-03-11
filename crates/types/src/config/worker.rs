@@ -367,7 +367,10 @@ impl Default for StorageOptions {
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct SnapshotsOptions {
+    /// # Snapshot destination URL
+    ///
     /// Base URL for cluster snapshots. Supports `s3://` and `file://` protocol scheme.
+    /// S3-compatible object stores must support ETag-based conditional writes.
     ///
     /// Default: `None`
     pub destination: Option<String>,
@@ -383,12 +386,13 @@ pub struct SnapshotsOptions {
     ///
     /// This setting does not influence explicitly requested snapshots triggered using `restatectl`.
     ///
-    /// Default: `None` - automatic snapshots are disabled by default
+    /// Default: `None` - automatic snapshots are disabled
     pub snapshot_interval_num_records: Option<NonZeroU64>,
 
     #[serde(flatten)]
     pub object_store: ObjectStoreOptions,
 
+    /// # Error retry policy
     #[serde(default = "SnapshotsOptions::default_retry_policy")]
     pub object_store_retry_policy: RetryPolicy,
 }
