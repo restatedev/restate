@@ -41,6 +41,7 @@ prefixed_ids! {
     /// follow the same encoding scheme according to the [default] version.
     #[derive(Debug, Clone, Copy, Eq, PartialEq)]
     pub enum IdResourceType {
+        Cluster("restate"),
         Invocation("inv"),
         Deployment("dp"),
         Subscription("sub"),

@@ -16,6 +16,7 @@ use restate_core::{
 use restate_types::PlainNodeId;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::MaybeRetryableError;
+use restate_types::identifiers::ClusterId;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{
@@ -244,6 +245,15 @@ impl<'a> NodeInit<'a> {
                             expected_cluster_name: common_opts.cluster_name().to_owned(),
                             actual_cluster_name: nodes_config.cluster_name().to_owned(),
                         });
+                    }
+
+                    // it is only safe to write this if all current and future cluster nodes
+                    // run a version that is cluster id aware; older versions may clobber the id
+                    // on joining, creating a huge mess!
+                    if common_opts.experimental_feature_enable_cluster_ids && nodes_config.cluster_id().is_none() {
+                        let cluster_id = ClusterId::new();
+                        debug!("Initializing cluster id: {cluster_id}");
+                        nodes_config.set_cluster_id(cluster_id);
                     }
 
                     // check whether we have registered before
