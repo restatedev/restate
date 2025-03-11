@@ -648,6 +648,8 @@ enum MetadataClientKindShadow {
         path: String,
         #[serde(flatten)]
         object_store: ObjectStoreOptions,
+        #[serde(default = "MetadataClientKind::default_object_store_retry_policy")]
+        object_store_retry_policy: RetryPolicy,
     },
     // Fallback to support not having to specify the type field
     #[serde(untagged)]
@@ -662,10 +664,14 @@ impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
     type Error = &'static str;
     fn try_from(value: MetadataClientKindShadow) -> Result<Self, Self::Error> {
         let result = match value {
-            MetadataClientKindShadow::ObjectStore { path, object_store } => Self::ObjectStore {
+            MetadataClientKindShadow::ObjectStore {
                 path,
                 object_store,
-                object_store_retry_policy: RetryPolicy::None,
+                object_store_retry_policy,
+            } => Self::ObjectStore {
+                path,
+                object_store,
+                object_store_retry_policy,
             },
             MetadataClientKindShadow::Etcd { addresses } => Self::Etcd { addresses },
             MetadataClientKindShadow::Replicated { address, addresses }
