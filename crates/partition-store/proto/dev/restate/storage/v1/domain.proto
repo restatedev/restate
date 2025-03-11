@@ -261,8 +261,7 @@ message ServiceInvocationResponseSink {
   }
 
   message Ingress {
-    // We just need to fill it in order to go back :(
-    GenerationalNodeId unused = 1;
+    reserved 1;
     bytes request_id = 2;
   }
 
@@ -712,8 +711,7 @@ message IdempotencyMetadata {
 
 message SubmitNotificationSink {
   message Ingress {
-    // We just need to fill it in order to go back :(
-    GenerationalNodeId unused = 1;
+    reserved 1;
     bytes request_id = 2;
   }
 
