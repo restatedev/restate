@@ -12,7 +12,6 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use std::usize;
 
 use anyhow::Context;
 use aws_config::default_provider::region::DefaultRegionChain;
@@ -189,13 +188,7 @@ fn from_retry_policy(retry_policy: &RetryPolicy) -> RetryConfig {
                 max_backoff: (*interval).into(),
                 base: 1.,
             },
-            retry_timeout: Into::<std::time::Duration>::into(*interval)
-                * u32::try_from(
-                    max_attempts
-                        .unwrap_or(NonZeroUsize::new(10).expect("non-zero"))
-                        .get(),
-                )
-                .expect("explicit max attempts fits in u32"),
+            retry_timeout: Duration::MAX,
         },
         RetryPolicy::Exponential {
             initial_interval,
@@ -208,20 +201,10 @@ fn from_retry_policy(retry_policy: &RetryPolicy) -> RetryConfig {
                 .into(),
             backoff: BackoffConfig {
                 init_backoff: (*initial_interval).into(),
-                max_backoff: max_interval
-                    .unwrap_or_else(|| Duration::from_secs(10).into())
-                    .into(),
+                max_backoff: max_interval.unwrap_or(Duration::MAX.into()).into(),
                 base: f64::from(*factor),
             },
-            retry_timeout: max_interval
-                .map(|interval| interval.into())
-                .unwrap_or_else(|| Duration::from_secs(10))
-                * u32::try_from(
-                    max_attempts
-                        .unwrap_or(NonZeroUsize::new(usize::MAX).expect("non-zero"))
-                        .get(),
-                )
-                .expect("explicit max attempts fits in u32"),
+            retry_timeout: Duration::MAX,
         },
     }
 }
