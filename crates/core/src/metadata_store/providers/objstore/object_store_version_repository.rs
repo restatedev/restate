@@ -17,7 +17,6 @@ use tracing::info;
 use url::Url;
 
 use restate_object_store_util::create_object_store_client;
-use restate_types::retries::RetryPolicy;
 
 use crate::metadata_store::providers::objstore::version_repository::{
     Tag, TaggedValue, VersionRepository, VersionRepositoryError,
@@ -34,7 +33,12 @@ impl ObjectStoreVersionRepository {
     pub(crate) async fn from_configuration(
         configuration: MetadataClientKind,
     ) -> anyhow::Result<Self> {
-        let MetadataClientKind::ObjectStore { path, object_store } = configuration else {
+        let MetadataClientKind::ObjectStore {
+            path,
+            object_store,
+            object_store_retry_policy,
+        } = configuration
+        else {
             anyhow::bail!("unexpected configuration value");
         };
 
@@ -49,9 +53,10 @@ impl ObjectStoreVersionRepository {
         }
         let prefix = Path::from(url.path());
 
-        let object_store = create_object_store_client(url, &object_store, &RetryPolicy::None)
-            .await
-            .map_err(|e| anyhow::anyhow!("Unable to build an S3 object store: {}", e))?;
+        let object_store =
+            create_object_store_client(url, &object_store, &object_store_retry_policy)
+                .await
+                .map_err(|e| anyhow::anyhow!("Unable to build an S3 object store: {}", e))?;
 
         Ok(Self {
             object_store: Box::new(object_store),
