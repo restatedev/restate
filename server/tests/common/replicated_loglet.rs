@@ -125,7 +125,7 @@ where
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 
     let loglet_params = ReplicatedLogletParams {
-        loglet_id: LogletId::new(LogId::from(1u32), SegmentIndex::OLDEST),
+        loglet_id: LogletId::new(LogId::MIN, SegmentIndex::OLDEST),
         sequencer,
         replication,
         // all nodes are log-servers

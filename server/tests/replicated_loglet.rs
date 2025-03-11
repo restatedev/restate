@@ -21,10 +21,6 @@ mod tests {
 
     use futures_util::StreamExt;
     use googletest::prelude::*;
-    use test_log::test;
-    use tokio::task::{JoinHandle, JoinSet};
-    use tokio_util::sync::CancellationToken;
-
     use restate_bifrost::{
         ErrorRecoveryStrategy,
         loglet::{AppendError, FindTailOptions},
@@ -42,6 +38,10 @@ mod tests {
         storage::PolyBytes,
         time::NanosSinceEpoch,
     };
+    use test_log::test;
+    use tokio::task::{JoinHandle, JoinSet};
+    use tokio_util::sync::CancellationToken;
+    use tracing::info;
 
     use super::common::replicated_loglet::run_in_test_env;
 
@@ -269,7 +269,7 @@ mod tests {
                                 fail!("Could not seal as metadata has not caught up from the last seal (version={})", metadata.logs_version())?;
                             }
                             last_loglet_id = Some(params.loglet_id);
-                            eprintln!("Sealing loglet {} and creating new loglet {}", params.loglet_id, params.loglet_id.next());
+                            info!("Sealing loglet {} and creating new loglet {}", params.loglet_id, params.loglet_id.next());
                             params.loglet_id = params.loglet_id.next();
 
                             bifrost
@@ -294,7 +294,7 @@ mod tests {
                         fail!("sealer exited early: {res:?}")?;
                     }
                     _ = tokio::time::sleep(TEST_DURATION) => {
-                        eprintln!("cancelling appenders and running validation")
+                        info!("cancelling appenders and running validation")
                     }
                 }
 
@@ -314,7 +314,7 @@ mod tests {
                     let committed_len = committed.len();
                     assert_that!(committed_len, ge(0));
                     let tail_record = committed.last().unwrap();
-                    println!(
+                    info!(
                         "Committed len={committed_len}, last appended={tail_record}"
                     );
                     // ensure that all committed records are unique
@@ -342,7 +342,7 @@ mod tests {
 
                 // every record committed must be observed exactly once in readstream
                 assert!(all_committed.eq(&records));
-                eprintln!("Validated {} committed records", all_committed.len());
+                info!("Validated {} committed records", all_committed.len());
 
                 Ok(())
             },
