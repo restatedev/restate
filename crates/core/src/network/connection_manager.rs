@@ -24,11 +24,8 @@ use tracing::{Instrument, Span, debug, info, instrument, trace, warn};
 
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::config::Configuration;
-use restate_types::net::codec::MessageBodyExt;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::protobuf::node::message::{Body, Signal};
-use restate_types::protobuf::node::{Header, Hello, Message, Welcome};
 use restate_types::{GenerationalNodeId, Merge, NodeId, PlainNodeId, Version};
 
 use super::connection::{OwnedConnection, WeakConnection};
@@ -40,6 +37,7 @@ use super::io::{
 use super::metric_definitions::{
     self, CONNECTION_DROPPED, INCOMING_CONNECTION, OUTGOING_CONNECTION,
 };
+use super::protobuf::network::{Header, Hello, Message, Welcome, message::Body, message::Signal};
 use super::transport_connector::TransportConnect;
 use super::{Handler, MessageRouter};
 use crate::metadata::Urgency;
@@ -923,15 +921,16 @@ mod tests {
     use super::*;
 
     use futures::stream;
+    use googletest::IntoTestResult;
     use googletest::prelude::*;
-    use restate_types::config::NetworkingOptions;
-    use restate_types::locality::NodeLocation;
     use test_log::test;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
 
     use restate_test_util::{assert_eq, let_assert};
     use restate_types::Version;
+    use restate_types::config::NetworkingOptions;
+    use restate_types::locality::NodeLocation;
     use restate_types::net::codec::WireDecode;
     use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage};
     use restate_types::net::node::GetNodeState;
@@ -943,10 +942,10 @@ mod tests {
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfigError, NodesConfiguration,
         Role,
     };
-    use restate_types::protobuf::node::message::Body;
-    use restate_types::protobuf::node::{Header, Hello};
 
     use crate::network::MockPeerConnection;
+    use crate::network::protobuf::network::message::Body;
+    use crate::network::protobuf::network::{Header, Hello};
     use crate::{self as restate_core, TestCoreEnv, TestCoreEnvBuilder};
 
     // Test handshake with a client
@@ -1216,8 +1215,7 @@ mod tests {
         metadata_kind: MetadataKind,
         version: Version,
     ) {
-        let metadata_message =
-            decode_metadata_message(message, protocol_version).expect("valid message");
+        let metadata_message = decode_metadata_message(message, protocol_version);
         assert_that!(
             metadata_message,
             pat!(MetadataMessage::GetMetadataRequest(pat!(
@@ -1232,11 +1230,9 @@ mod tests {
     fn decode_metadata_message(
         message: Message,
         protocol_version: ProtocolVersion,
-    ) -> Result<MetadataMessage> {
+    ) -> MetadataMessage {
         let_assert!(Some(Body::Encoded(mut binary_message)) = message.body);
 
-        let metadata_message =
-            MetadataMessage::decode(&mut binary_message.payload, protocol_version)?;
-        Ok(metadata_message)
+        MetadataMessage::decode(&mut binary_message.payload, protocol_version)
     }
 }

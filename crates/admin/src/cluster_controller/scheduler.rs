@@ -582,6 +582,7 @@ impl Drop for TargetPartitionPlacementState<'_> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::convert::Infallible;
     use std::iter;
     use std::num::NonZero;
     use std::time::Duration;
@@ -727,10 +728,10 @@ mod tests {
                 if message.body().target() == TargetName::ControlProcessors {
                     let message = message
                         .try_map(|mut m| {
-                            ControlProcessors::decode(
+                            Ok::<_, Infallible>(ControlProcessors::decode(
                                 &mut m.payload,
                                 restate_types::net::CURRENT_PROTOCOL_VERSION,
-                            )
+                            ))
                         })
                         .unwrap();
                     Some((node_id, message))
