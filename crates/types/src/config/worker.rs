@@ -393,7 +393,8 @@ pub struct SnapshotsOptions {
     pub object_store: ObjectStoreOptions,
 
     /// # Error retry policy
-    #[serde(default = "SnapshotsOptions::default_retry_policy")]
+    ///
+    /// A retry policy for dealing with retryable object store errors.
     pub object_store_retry_policy: RetryPolicy,
 }
 
