@@ -101,7 +101,7 @@ impl Bifrost {
         bifrost_svc
             .start()
             .await
-            .expect("in memory loglet must start");
+            .expect("local loglet must start");
         bifrost
     }
 
