@@ -87,8 +87,8 @@ async fn list_nodes_configuration(
     let mut header = vec!["NODE", "GEN", "NAME", "ADDRESS", "ROLES"];
     if opts.extra {
         header.extend(vec![
-            "UPTIME", "STATUS", "ADMIN", "WORKER", "LOG-SVR", "META", "NODES", "LOGS", "SCHEMA",
-            "PRTNS",
+            "VER", "UPTIME", "STATUS", "ADMIN", "WORKER", "LOG-SVR", "META", "NODES", "LOGS",
+            "SCHEMA", "PRTNS",
         ]);
     }
     nodes_table.set_styled_header(header);
@@ -190,6 +190,14 @@ where
 
 fn render_ident_extras(ident_response: &IdentResponse) -> Vec<Cell> {
     vec![
+        format!(
+            "{}",
+            if ident_response.server_version.is_empty() {
+                "<1.2.2"
+            } else {
+                &ident_response.server_version
+            }
+        ),
         duration_to_human_rough(
             TimeDelta::seconds(ident_response.age_s as i64),
             Tense::Present,

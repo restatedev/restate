@@ -42,6 +42,7 @@ pub struct Identification {
     pub logs_version: Version,
     pub schema_version: Version,
     pub partition_table_version: Version,
+    pub server_version: String,
 }
 
 fn enum_set_to_vec(roles: &EnumSet<Role>) -> Vec<String> {
@@ -81,6 +82,7 @@ impl Identification {
             logs_version: metadata.logs_version(),
             schema_version: metadata.schema_version(),
             partition_table_version: metadata.partition_table_version(),
+            server_version: env!("CARGO_PKG_VERSION").into(),
         }
     }
 }
