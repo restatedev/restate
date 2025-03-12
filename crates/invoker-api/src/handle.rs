@@ -69,8 +69,6 @@ pub trait InvokerHandle<SR> {
         &mut self,
         partition_leader_epoch: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        // If true, acknowledge the abort. This will generate a Failed effect
-        acknowledge: bool,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
     fn register_partition(

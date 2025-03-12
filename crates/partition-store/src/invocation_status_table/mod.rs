@@ -19,7 +19,7 @@ use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
-    InvokedOrKilledInvocationStatusLite, ReadOnlyInvocationStatusTable,
+    InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
@@ -189,10 +189,10 @@ fn delete_invocation_status<S: StorageAccess>(
     storage.delete_key(&create_invocation_status_key(invocation_id))
 }
 
-fn invoked_or_killed_invocations<S: StorageAccess>(
+fn invoked_invocations<S: StorageAccess>(
     storage: &mut S,
     partition_key_range: RangeInclusive<PartitionKey>,
-) -> Result<Vec<Result<InvokedOrKilledInvocationStatusLite>>> {
+) -> Result<Vec<Result<InvokedInvocationStatusLite>>> {
     let _x = RocksDbPerfGuard::new("invoked-invocations");
     let mut invocations = storage.for_each_key_value_in_place(
         FullScanPartitionKeyRange::<InvocationStatusKeyV1>(partition_key_range.clone()),
@@ -208,7 +208,7 @@ fn invoked_or_killed_invocations<S: StorageAccess>(
     invocations.extend(storage.for_each_key_value_in_place(
         FullScanPartitionKeyRange::<InvocationStatusKey>(partition_key_range),
         |mut k, mut v| {
-            let result = read_invoked_or_killed_status_lite(&mut k, &mut v).transpose();
+            let result = read_invoked_full_invocation_id(&mut k, &mut v).transpose();
             if let Some(res) = result {
                 TableScanIterationDecision::Emit(res)
             } else {
@@ -260,37 +260,29 @@ fn all_invocation_status<S: StorageAccess>(
 fn read_invoked_v1_full_invocation_id(
     mut k: &mut &[u8],
     v: &mut &[u8],
-) -> Result<Option<InvokedOrKilledInvocationStatusLite>> {
+) -> Result<Option<InvokedInvocationStatusLite>> {
     let invocation_id = invocation_id_from_v1_key_bytes(&mut k)?;
     let invocation_status = InvocationStatusV1::decode(v)?;
     if let InvocationStatus::Invoked(invocation_meta) = invocation_status.0 {
-        Ok(Some(InvokedOrKilledInvocationStatusLite {
+        Ok(Some(InvokedInvocationStatusLite {
             invocation_id,
             invocation_target: invocation_meta.invocation_target,
-            is_invoked: true,
         }))
     } else {
         Ok(None)
     }
 }
 
-fn read_invoked_or_killed_status_lite(
+fn read_invoked_full_invocation_id(
     mut k: &mut &[u8],
     v: &mut &[u8],
-) -> Result<Option<InvokedOrKilledInvocationStatusLite>> {
+) -> Result<Option<InvokedInvocationStatusLite>> {
     let invocation_id = invocation_id_from_key_bytes(&mut k)?;
     let invocation_status = InvocationLite::decode(v)?;
     if let InvocationStatusDiscriminants::Invoked = invocation_status.status {
-        Ok(Some(InvokedOrKilledInvocationStatusLite {
+        Ok(Some(InvokedInvocationStatusLite {
             invocation_id,
             invocation_target: invocation_status.invocation_target,
-            is_invoked: true,
-        }))
-    } else if let InvocationStatusDiscriminants::Killed = invocation_status.status {
-        Ok(Some(InvokedOrKilledInvocationStatusLite {
-            invocation_id,
-            invocation_target: invocation_status.invocation_target,
-            is_invoked: false,
         }))
     } else {
         Ok(None)
@@ -306,10 +298,10 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
         get_invocation_status(self, invocation_id)
     }
 
-    fn all_invoked_or_killed_invocations(
+    fn all_invoked_invocations(
         &mut self,
-    ) -> Result<impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send> {
-        Ok(stream::iter(invoked_or_killed_invocations(
+    ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
+        Ok(stream::iter(invoked_invocations(
             self,
             self.partition_key_range().clone(),
         )?))
@@ -332,10 +324,10 @@ impl ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'_> {
         try_migrate_and_get_invocation_status(self, invocation_id)
     }
 
-    fn all_invoked_or_killed_invocations(
+    fn all_invoked_invocations(
         &mut self,
-    ) -> Result<impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send> {
-        Ok(stream::iter(invoked_or_killed_invocations(
+    ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
+        Ok(stream::iter(invoked_invocations(
             self,
             self.partition_key_range().clone(),
         )?))

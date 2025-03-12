@@ -63,7 +63,6 @@ pub use input_command::InvokerHandle;
 use restate_invoker_api::journal_reader::JournalEntry;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::deployment::PinnedDeployment;
-use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2;
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader, RawNotification};
@@ -375,8 +374,8 @@ where
                         self.handle_register_partition(partition, partition_key_range,
                                 storage_reader, sender);
                     },
-                    InputCommand::Abort { partition, invocation_id,  acknowledge } => {
-                        self.handle_abort_invocation(partition, invocation_id, acknowledge).await;
+                    InputCommand::Abort { partition, invocation_id } => {
+                        self.handle_abort_invocation(partition, invocation_id);
                     }
                     InputCommand::AbortAllPartition { partition } => {
                         self.handle_abort_partition(partition);
@@ -1030,13 +1029,12 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    async fn handle_abort_invocation(
+    fn handle_abort_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        acknowledge: bool,
     ) {
-        if let Some((tx, _, mut ism)) = self
+        if let Some((_, _, mut ism)) = self
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
@@ -1046,14 +1044,6 @@ where
             ism.abort();
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
-            if acknowledge {
-                let _ = tx
-                    .send(Effect {
-                        invocation_id,
-                        kind: EffectKind::Failed(KILLED_INVOCATION_ERROR),
-                    })
-                    .await;
-            }
         } else {
             trace!("Ignoring Abort command because there is no matching partition/invocation");
         }
@@ -1675,9 +1665,7 @@ mod tests {
         assert_eq!(*available_slots, 1);
 
         // Abort the invocation
-        service_inner
-            .handle_abort_invocation(MOCK_PARTITION, invocation_id, false)
-            .await;
+        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id);
 
         // Check the quota
         let_assert!(InvokerConcurrencyQuota::Limited { available_slots } = &service_inner.quota);

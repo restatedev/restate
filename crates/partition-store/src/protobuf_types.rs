@@ -549,29 +549,6 @@ pub mod v1 {
                                 .collect(),
                         },
                     ),
-                    invocation_status_v2::Status::Killed => {
-                        Ok(restate_storage_api::invocation_status_table::InvocationStatus::Killed(
-                            restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
-                                response_sinks,
-                                timestamps,
-                                invocation_target,
-                                journal_metadata: restate_storage_api::invocation_status_table::JournalMetadata {
-                                    length: journal_length,
-                                    span_context: expect_or_fail!(span_context)?.try_into()?,
-                                },
-                                pinned_deployment: derive_pinned_deployment(
-                                    deployment_id,
-                                    service_protocol_version,
-                                )?,
-                                source,
-                                completion_retention_duration: completion_retention_duration
-                                    .unwrap_or_default()
-                                    .try_into()?,
-                                idempotency_key: idempotency_key.map(ByteString::from),
-                                hotfix_apply_cancellation_after_deployment_is_pinned
-                            },
-                        ))
-                    }
                     invocation_status_v2::Status::Completed => {
                         Ok(restate_storage_api::invocation_status_table::InvocationStatus::Completed(
                             restate_storage_api::invocation_status_table::CompletedInvocation {
@@ -861,72 +838,6 @@ pub mod v1 {
                             hotfix_apply_cancellation_after_deployment_is_pinned
                         }
                     }
-                    restate_storage_api::invocation_status_table::InvocationStatus::Killed(
-                        restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
-                            invocation_target,
-                            journal_metadata,
-                            pinned_deployment,
-                            response_sinks,
-                            timestamps,
-                            source,
-                            completion_retention_duration,
-                            idempotency_key, hotfix_apply_cancellation_after_deployment_is_pinned,
-                        },
-                    ) => {
-                        let (deployment_id, service_protocol_version) = match pinned_deployment {
-                            None => (None, None),
-                            Some(pinned_deployment) => (
-                                Some(pinned_deployment.deployment_id.to_string()),
-                                Some(pinned_deployment.service_protocol_version.as_repr()),
-                            ),
-                        };
-
-                        InvocationStatusV2 {
-                            status: invocation_status_v2::Status::Killed.into(),
-                            invocation_target: Some(invocation_target.into()),
-                            source: Some(source.into()),
-                            span_context: Some(journal_metadata.span_context.into()),
-                            // SAFETY: We're only mapping data types here
-                            creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                            modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                            inboxed_transition_time: unsafe {
-                                timestamps.inboxed_transition_time()
-                            }
-                            .map(|t| t.as_u64()),
-                            scheduled_transition_time: unsafe {
-                                timestamps.scheduled_transition_time()
-                            }
-                            .map(|t| t.as_u64()),
-                            running_transition_time: unsafe {
-                                timestamps.running_transition_time()
-                            }
-                            .map(|t| t.as_u64()),
-                            completed_transition_time: unsafe {
-                                timestamps.completed_transition_time()
-                            }
-                            .map(|t| t.as_u64()),
-                            response_sinks: response_sinks
-                                .into_iter()
-                                .map(|s| ServiceInvocationResponseSink::from(Some(s)))
-                                .collect(),
-                            argument: None,
-                            headers: vec![],
-                            execution_time: None,
-                            completion_retention_duration: Some(
-                                completion_retention_duration.into(),
-                            ),
-                            idempotency_key: idempotency_key.map(|key| key.to_string()),
-                            inbox_sequence_number: None,
-                            journal_length: journal_metadata.length,
-                            deployment_id,
-                            service_protocol_version,
-                            waiting_for_completions: vec![],
-                            waiting_for_signal_indexes: vec![],
-                            waiting_for_signal_names: vec![],
-                            result: None,
-                            hotfix_apply_cancellation_after_deployment_is_pinned
-                        }
-                    }
                     restate_storage_api::invocation_status_table::InvocationStatus::Completed(
                         restate_storage_api::invocation_status_table::CompletedInvocation {
                             invocation_target,
@@ -1002,9 +913,6 @@ pub mod v1 {
                     }
                     invocation_status_v2::Status::Suspended => {
                         restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Suspended
-                    }
-                    invocation_status_v2::Status::Killed => {
-                        restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Killed
                     }
                     invocation_status_v2::Status::Completed => {
                         restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Completed
@@ -1126,11 +1034,6 @@ pub mod v1 {
                     ) => {
                         panic!(
                             "Unexpected conversion to old InvocationStatus when using Scheduled variant. This is a bug in the table implementation."
-                        )
-                    }
-                    restate_storage_api::invocation_status_table::InvocationStatus::Killed(_) => {
-                        panic!(
-                            "Unexpected conversion to old InvocationStatus when using Killed variant. This is a bug in the table implementation."
                         )
                     }
                 };

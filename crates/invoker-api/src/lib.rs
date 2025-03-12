@@ -138,7 +138,6 @@ pub mod test_util {
             &mut self,
             _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-            _acknowledge: bool,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }

@@ -390,11 +390,8 @@ impl LeaderState {
                 .notify_completion(partition_leader_epoch, invocation_id, completion)
                 .await
                 .map_err(Error::Invoker)?,
-            Action::AbortInvocation {
-                invocation_id,
-                acknowledge,
-            } => invoker_tx
-                .abort_invocation(partition_leader_epoch, invocation_id, acknowledge)
+            Action::AbortInvocation { invocation_id } => invoker_tx
+                .abort_invocation(partition_leader_epoch, invocation_id)
                 .await
                 .map_err(Error::Invoker)?,
             Action::IngressResponse {

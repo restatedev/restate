@@ -118,12 +118,12 @@ message Source {
 message InvocationStatusV2 {
 
   enum Status {
+    reserved 6;
     UNKNOWN_STATUS = 0;
     SCHEDULED = 1;
     INBOXED = 2;
     INVOKED = 3;
     SUSPENDED = 4;
-    KILLED = 6;
     COMPLETED = 5;
   }
 

@@ -43,7 +43,6 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::{StorageError, Transaction};
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::config::WorkerOptions;
-use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -95,7 +94,6 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     pub partition_key_range: RangeInclusive<PartitionKey>,
 
     num_timers_in_memory_limit: Option<usize>,
-    invocation_status_killed: bool,
     cleanup_interval: Duration,
     channel_size: usize,
     max_command_batch_size: usize,
@@ -128,7 +126,6 @@ where
             partition_key_range,
             status,
             num_timers_in_memory_limit: options.num_timers_in_memory_limit(),
-            invocation_status_killed: options.experimental_feature_invocation_status_killed(),
             cleanup_interval: options.cleanup_interval(),
             channel_size: options.internal_queue_length(),
             max_command_batch_size: options.max_command_batch_size(),
@@ -149,7 +146,6 @@ where
             partition_key_range,
             num_timers_in_memory_limit,
             cleanup_interval,
-            invocation_status_killed,
             channel_size,
             max_command_batch_size,
             invoker_tx,
@@ -163,7 +159,6 @@ where
         let state_machine = Self::create_state_machine(
             &mut partition_store,
             partition_key_range.clone(),
-            invocation_status_killed,
         )
         .await?;
 
@@ -206,16 +201,12 @@ where
     async fn create_state_machine(
         partition_store: &mut PartitionStore,
         partition_key_range: RangeInclusive<PartitionKey>,
-        invocation_status_killed: bool,
     ) -> Result<StateMachine, StorageError> {
         let inbox_seq_number = partition_store.get_inbox_seq_number().await?;
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
 
         let mut experimental_features = EnumSet::empty();
-        if invocation_status_killed {
-            experimental_features |= ExperimentalFeature::InvocationStatusKilled;
-        }
 
         let state_machine = StateMachine::new(
             inbox_seq_number,
@@ -757,14 +748,6 @@ where
                     },
                     invocation_id: Some(invocation_id),
                     completion_expiry_time,
-                }))
-            }
-            InvocationStatus::Killed(_) => {
-                Ok(PartitionProcessorRpcResponse::Output(InvocationOutput {
-                    request_id,
-                    response: IngressResponseResult::Failure(KILLED_INVOCATION_ERROR),
-                    invocation_id: Some(invocation_id),
-                    completion_expiry_time: None,
                 }))
             }
             _ => Ok(PartitionProcessorRpcResponse::NotReady),

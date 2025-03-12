@@ -172,7 +172,7 @@ mod tests {
     use restate_storage_api::StorageError;
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
-        InvokedOrKilledInvocationStatusLite,
+        InvokedInvocationStatusLite,
     };
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
@@ -193,10 +193,10 @@ mod tests {
             std::future::pending()
         }
 
-        fn all_invoked_or_killed_invocations(
+        fn all_invoked_invocations(
             &mut self,
         ) -> std::result::Result<
-            impl Stream<Item = restate_storage_api::Result<InvokedOrKilledInvocationStatusLite>> + Send,
+            impl Stream<Item = restate_storage_api::Result<InvokedInvocationStatusLite>> + Send,
             StorageError,
         > {
             todo!();
