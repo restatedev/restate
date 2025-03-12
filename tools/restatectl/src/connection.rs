@@ -15,7 +15,12 @@ use std::{cmp::Ordering, fmt::Display, sync::Arc};
 use cling::{Collect, prelude::Parser};
 use itertools::{Either, Itertools, Position};
 use rand::{rng, seq::SliceRandom};
+use restate_core::protobuf::metadata_proxy_svc::GetRequest;
+use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_client::MetadataProxySvcClient;
 use restate_metadata_server::ReadModifyWriteError;
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
+};
 use tokio::sync::{Mutex, MutexGuard};
 use tonic::{Code, Status, codec::CompressionEncoding, transport::Channel};
 use tracing::{debug, info};
@@ -32,7 +37,7 @@ use restate_types::{
     storage::{StorageCodec, StorageDecode, StorageDecodeError},
 };
 
-use crate::util::grpc_channel;
+use crate::util::{grpc_channel, print_outdated_client_warning};
 
 #[derive(Clone, Parser, Collect, Debug)]
 pub struct ConnectionInfo {
@@ -82,19 +87,24 @@ impl ConnectionInfo {
             return Err(ConnectionInfoError::NoAvailableNodes(NoRoleError(None)));
         }
 
-        let guard = self.nodes_configuration.lock().await;
-        if guard.is_some() {
+        let mut guard = self.nodes_configuration.lock().await;
+
+        if let Some(ref meta) = *guard {
             debug!("Using cached nodes configuration");
+            return Ok(meta.clone());
         }
 
-        self.get_latest_metadata(
-            self.address.iter(),
-            self.address.len(),
-            MetadataKind::NodesConfiguration,
-            guard,
-            |ident| Version::from(ident.nodes_config_version),
-        )
-        .await
+        let nodes_config: NodesConfiguration = self
+            .get_latest_metadata(
+                self.address.iter(),
+                self.address.len(),
+                MetadataKind::NodesConfiguration,
+                |ident| Version::from(ident.nodes_config_version),
+            )
+            .await?;
+
+        *guard = Some(nodes_config.clone());
+        Ok(nodes_config)
     }
 
     /// Gets Logs object.
@@ -104,7 +114,11 @@ impl ConnectionInfo {
     pub async fn get_logs(&self) -> Result<Logs, ConnectionInfoError> {
         let nodes_config = self.get_nodes_configuration().await?;
 
-        let guard = self.logs.lock().await;
+        let mut guard = self.logs.lock().await;
+
+        if let Some(ref logs) = *guard {
+            return Ok(logs.clone());
+        }
 
         let mut nodes_addresses = nodes_config
             .iter()
@@ -135,14 +149,17 @@ impl ConnectionInfo {
             )
             .collect::<Vec<_>>();
 
-        self.get_latest_metadata(
-            logs_source_nodes.into_iter(),
-            (cluster_size / 2) + 1,
-            MetadataKind::Logs,
-            guard,
-            |ident| Version::from(ident.logs_version),
-        )
-        .await
+        let logs: Logs = self
+            .get_latest_metadata(
+                logs_source_nodes.into_iter(),
+                (cluster_size / 2) + 1,
+                MetadataKind::Logs,
+                |ident| Version::from(ident.logs_version),
+            )
+            .await?;
+
+        *guard = Some(logs.clone());
+        Ok(logs)
     }
 
     /// Gets the latest metadata value. Stops after `stop_after_responses` nodes
@@ -152,17 +169,12 @@ impl ConnectionInfo {
         addresses: impl Iterator<Item = &AdvertisedAddress>,
         mut stop_after_responses: usize,
         kind: MetadataKind,
-        mut guard: MutexGuard<'_, Option<T>>,
         extract_version: M,
     ) -> Result<T, ConnectionInfoError>
     where
         T: StorageDecode + Versioned + Clone,
         M: Fn(&IdentResponse) -> Version,
     {
-        if let Some(meta) = &*guard {
-            return Ok(meta.clone());
-        }
-
         let mut latest_value: Option<T> = None;
         let mut ident_responses = HashMap::new();
         let mut any_node_responded = false;
@@ -184,7 +196,7 @@ impl ConnectionInfo {
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip);
 
-            let response = match client.get_ident(()).await {
+            let ident_response = match client.get_ident(()).await {
                 Ok(response) => response.into_inner(),
                 Err(status) => {
                     errors.error(address.clone(), status);
@@ -192,17 +204,40 @@ impl ConnectionInfo {
                     continue;
                 }
             };
-            ident_responses.insert(address.clone(), response.clone());
+
+            print_outdated_client_warning(&ident_response);
+
+            ident_responses.insert(address.clone(), ident_response.clone());
+
+            if Self::metadata_proxy_supported(&ident_response) {
+                // short circuit to reading directly from the proxy
+                match self.metadata_proxy_get(channel.clone(), kind).await {
+                    Err(status) => {
+                        errors.error(address.clone(), status);
+                        continue;
+                    }
+                    Ok(Some(value)) => return Ok(value),
+                    Ok(None) => {
+                        // we don't need to try again if value does not exist
+                        return Err(ConnectionInfoError::MetadataValueNotAvailable {
+                            contacted_nodes: ident_responses,
+                        });
+                    }
+                }
+            }
+
+            // if metadata proxy is not supported, we can
+            // continue with the majority read approach
 
             any_node_responded = true;
-            if response.status != NodeStatus::Alive as i32 {
+            if ident_response.status != NodeStatus::Alive as i32 {
                 debug!(
                     "Node {address} responded to GetIdent but it is not reporting itself as alive, and will be skipped"
                 );
                 continue;
             }
 
-            let response_version = extract_version(&response);
+            let response_version = extract_version(&ident_response);
             match response_version.cmp(
                 &latest_value
                     .as_ref()
@@ -253,10 +288,43 @@ impl ConnectionInfo {
             return Err(ConnectionInfoError::NodesErrors(errors));
         }
 
-        *guard = latest_value.clone();
         latest_value.ok_or(ConnectionInfoError::MetadataValueNotAvailable {
             contacted_nodes: ident_responses,
         })
+    }
+
+    async fn metadata_proxy_get<T>(
+        &self,
+        channel: Channel,
+        kind: MetadataKind,
+    ) -> Result<Option<T>, Status>
+    where
+        T: StorageDecode + Versioned,
+    {
+        let mut client = MetadataProxySvcClient::new(channel)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip);
+
+        let key = match kind {
+            MetadataKind::Unknown => unreachable!("Invalid metadata kind"),
+            MetadataKind::NodesConfiguration => &NODES_CONFIG_KEY,
+            MetadataKind::Logs => &BIFROST_CONFIG_KEY,
+            MetadataKind::PartitionTable => &PARTITION_TABLE_KEY,
+            MetadataKind::Schema => &SCHEMA_INFORMATION_KEY,
+        };
+
+        let result = client
+            .get(GetRequest {
+                key: key.to_string(),
+            })
+            .await?
+            .into_inner();
+
+        result
+            .value
+            .map(|mut versioned_value| StorageCodec::decode(&mut versioned_value.bytes))
+            .transpose()
+            .map_err(|err| Status::internal(format!("Failed to decode metadata: {err}")))
     }
 
     /// Attempts to contact each node in the cluster that matches the specified role
@@ -378,6 +446,12 @@ impl ConnectionInfo {
                 })
                 .clone(),
         )
+    }
+
+    // metadata proxy ctrl svc was only supported starting from version 1.2.2
+    fn metadata_proxy_supported(ident: &IdentResponse) -> bool {
+        let supported_version = semver::Version::new(1, 2, 1);
+        semver::Version::parse(&ident.server_version).is_ok_and(|v| v > supported_version)
     }
 }
 

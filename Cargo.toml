@@ -184,6 +184,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_with = "3.8"
 serde_yaml = "0.9"
+semver = { version = "1.0", features = ["serde"] }
 sha2 = "0.10.8"
 smartstring = { version = "1.0.1" }
 static_assertions = { version = "1.1.0" }

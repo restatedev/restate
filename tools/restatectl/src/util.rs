@@ -13,14 +13,22 @@ use std::{
     num::ParseIntError,
     ops::RangeInclusive,
     str::FromStr,
+    sync::Once,
 };
 
 use cling::{Collect, prelude::Parser};
 use tonic::transport::Channel;
+use tracing::debug;
 
-use restate_cli_util::CliContext;
-use restate_core::network::net_util::create_tonic_channel;
+use restate_cli_util::{CliContext, c_warn};
+use restate_core::{
+    network::net_util::create_tonic_channel, protobuf::node_ctl_svc::IdentResponse,
+};
 use restate_types::{logs::metadata::ProviderConfiguration, net::AdvertisedAddress};
+
+use crate::VERSION;
+
+static UPDATE_WARN: Once = Once::new();
 
 pub fn grpc_channel(address: AdvertisedAddress) -> Channel {
     let ctx = CliContext::get();
@@ -150,4 +158,26 @@ pub enum RangeParamError {
     InvalidSyntax(String),
     #[error(transparent)]
     ParseError(#[from] ParseIntError),
+}
+
+pub fn print_outdated_client_warning(ident: &IdentResponse) {
+    let remote_version = match semver::Version::parse(&ident.server_version) {
+        Ok(remote_version) => remote_version,
+        Err(err) => {
+            debug!(
+                "Failed to parse remote server version {}: {err}",
+                ident.server_version
+            );
+            return;
+        }
+    };
+
+    if remote_version > *VERSION {
+        UPDATE_WARN.call_once(|| {
+            c_warn!(
+                "Running restatectl version {ctl} against restate-server version {remote_version}.\nPlease consider updating to latest restatectl!",
+                ctl = *VERSION
+            );
+        });
+    }
 }

@@ -11,7 +11,14 @@
 mod app;
 pub(crate) mod commands;
 pub(crate) mod util;
+use std::sync::LazyLock;
+
 pub use app::CliApp;
+use semver::Version;
 mod build_info;
 pub(crate) mod connection;
 pub(crate) mod environment;
+
+pub static VERSION: LazyLock<Version> = LazyLock::new(|| {
+    Version::parse(env!("CARGO_PKG_VERSION")).expect("CARGO_PKG_VERSION is a valid semver")
+});

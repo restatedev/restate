@@ -10,6 +10,7 @@
 
 use axum::Json;
 use axum::routing::{MethodFilter, get, on};
+use restate_core::grpc::ApiVersionLayer;
 use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::MetadataProxySvcServer;
 use tonic::codec::CompressionEncoding;
 
@@ -23,6 +24,7 @@ use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::CommonOptions;
 use restate_types::protobuf::common::NodeStatus;
+use tower::ServiceBuilder;
 
 use super::grpc_svc_handler::{MetadataProxySvcHandler, NodeCtlSvcHandler};
 use super::pprof;
@@ -78,9 +80,15 @@ impl NetworkServer {
         );
 
         server_builder.register_grpc_service(
-            MetadataProxySvcServer::new(MetadataProxySvcHandler::new(metadata_store_client))
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
+            ServiceBuilder::new()
+                .layer(ApiVersionLayer::default())
+                .service(
+                    MetadataProxySvcServer::new(MetadataProxySvcHandler::new(
+                        metadata_store_client,
+                    ))
+                    .accept_compressed(CompressionEncoding::Gzip)
+                    .send_compressed(CompressionEncoding::Gzip),
+                ),
             restate_core::protobuf::metadata_proxy_svc::FILE_DESCRIPTOR_SET,
         );
 

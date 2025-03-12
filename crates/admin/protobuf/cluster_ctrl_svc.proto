@@ -18,7 +18,9 @@ package restate.cluster_ctrl;
 service ClusterCtrlSvc {
   rpc GetClusterState(ClusterStateRequest) returns (ClusterStateResponse);
 
-  rpc ListLogs(ListLogsRequest) returns (ListLogsResponse);
+  rpc ListLogs(ListLogsRequest) returns (ListLogsResponse) {
+    option deprecated = true;
+  }
 
   rpc DescribeLog(DescribeLogRequest) returns (DescribeLogResponse);
 
