@@ -16,11 +16,13 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use codederror::CodedError;
 use futures::never::Never;
+use restate_core::grpc::ApiVersionLayer;
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
+use tower::ServiceBuilder;
 use tracing::{debug, info, trace, warn};
 
 use restate_metadata_server::ReadModifyWriteError;
@@ -112,18 +114,20 @@ where
 
         // Registering ClusterCtrlSvc grpc service to network server
         server_builder.register_grpc_service(
-            TonicServiceFilter::new(
-                ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(
-                    ClusterControllerHandle {
-                        tx: command_tx.clone(),
-                    },
-                    bifrost.clone(),
-                    metadata_writer.clone(),
-                ))
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
-                WaitForReady::new(health_status.clone(), AdminStatus::Ready),
-            ),
+            ServiceBuilder::new()
+                .layer(ApiVersionLayer::default())
+                .service(TonicServiceFilter::new(
+                    ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(
+                        ClusterControllerHandle {
+                            tx: command_tx.clone(),
+                        },
+                        bifrost.clone(),
+                        metadata_writer.clone(),
+                    ))
+                    .accept_compressed(CompressionEncoding::Gzip)
+                    .send_compressed(CompressionEncoding::Gzip),
+                    WaitForReady::new(health_status.clone(), AdminStatus::Ready),
+                )),
             crate::cluster_controller::protobuf::FILE_DESCRIPTOR_SET,
         );
 
