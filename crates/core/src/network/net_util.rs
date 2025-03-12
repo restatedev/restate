@@ -40,7 +40,7 @@ pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Si
             // dummy endpoint required to specify an uds connector, it is not used anywhere
             Endpoint::try_from("http://127.0.0.1").expect("/ should be a valid Uri")
         }
-        AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()),
+        AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
     };
 
     let endpoint = apply_options(endpoint, options);
@@ -189,6 +189,7 @@ where
     let mut configuration = Configuration::updateable();
     let mut shutdown = std::pin::pin!(cancellation_watcher());
     let graceful_shutdown = GracefulShutdown::new();
+    let task_name: Arc<str> = Arc::from(format!("{}-socket", server_name));
     loop {
         tokio::select! {
             biased;
@@ -215,7 +216,7 @@ where
                 let connection = graceful_shutdown.watch(builder
                     .serve_connection(io, service.clone()).into_owned());
 
-                TaskCenter::spawn(TaskKind::SocketHandler, server_name, async move {
+                TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
                     debug!("New connection accepted");
                     if let Err(e) = connection.await {
                         if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
@@ -240,7 +241,7 @@ where
             debug!("All connections completed gracefully");
 
         },
-        _ = tokio::time::sleep(Duration::from_secs(5)) => {
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
             info!("Some connections are taking longer to drain, dropping them");
         }
     }
