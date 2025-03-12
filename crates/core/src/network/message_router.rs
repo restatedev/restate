@@ -18,12 +18,11 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{trace, warn};
 
-use restate_types::net::CodecError;
 use restate_types::net::ProtocolVersion;
 use restate_types::net::TargetName;
 use restate_types::net::codec::{Targeted, WireDecode};
-use restate_types::protobuf::node::message::BinaryMessage;
 
+use super::protobuf::network::message::BinaryMessage;
 use super::{Incoming, RouterError};
 use crate::TaskCenter;
 
@@ -71,13 +70,12 @@ where
 /// A low-level handler trait.
 #[async_trait]
 pub trait Handler: Send {
-    type Error: std::fmt::Debug;
     /// Deserialize and process the message asynchronously.
     async fn call(
         &self,
         message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<(), RouterError>;
 }
 
 #[async_trait]
@@ -85,13 +83,11 @@ impl<T> Handler for Arc<T>
 where
     T: Handler + Send + Sync + 'static,
 {
-    type Error = T::Error;
-
     async fn call(
         &self,
         message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), RouterError> {
         (**self).call(message, protocol_version).await
     }
 }
@@ -101,13 +97,11 @@ impl<T> Handler for Box<T>
 where
     T: Handler + Send + Sync + 'static,
 {
-    type Error = T::Error;
-
     async fn call(
         &self,
         message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), RouterError> {
         (**self).call(message, protocol_version).await
     }
 }
@@ -117,18 +111,17 @@ pub struct MessageRouter(Arc<MessageRouterInner>);
 
 #[derive(Default)]
 struct MessageRouterInner {
-    handlers: HashMap<TargetName, Box<dyn Handler<Error = CodecError> + Send + Sync>>,
+    handlers: HashMap<TargetName, Box<dyn Handler + Send + Sync>>,
 }
 
 #[async_trait]
 impl Handler for MessageRouter {
-    type Error = RouterError;
     /// Process the request and return the response asynchronously.
     async fn call(
         &self,
         message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), RouterError> {
         let target = message.body().target();
         let Some(handler) = self.0.handlers.get(&target) else {
             return Err(RouterError::NotRegisteredTarget(target.to_string()));
@@ -140,7 +133,7 @@ impl Handler for MessageRouter {
 
 #[derive(Default)]
 pub struct MessageRouterBuilder {
-    handlers: HashMap<TargetName, Box<dyn Handler<Error = CodecError> + Send + Sync>>,
+    handlers: HashMap<TargetName, Box<dyn Handler + Send + Sync>>,
 }
 
 impl MessageRouterBuilder {
@@ -164,7 +157,7 @@ impl MessageRouterBuilder {
     pub fn add_raw_handler(
         &mut self,
         target: TargetName,
-        handler: Box<dyn Handler<Error = CodecError> + Send + Sync>,
+        handler: Box<dyn Handler + Send + Sync>,
     ) -> &mut Self {
         if self.handlers.insert(target, handler).is_some() {
             panic!("Handler for target {target} has been registered already!");
@@ -208,18 +201,18 @@ impl<H> Handler for MessageHandlerWrapper<H>
 where
     H: MessageHandler + Send + Sync + 'static,
 {
-    type Error = CodecError;
     /// Process the request and return the response asynchronously.
     async fn call(
         &self,
         message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), RouterError> {
         let message = message.try_map(|mut m| {
             #[cfg(debug_assertions)]
             let decode_start = tokio::time::Instant::now();
 
-            let res = <H::MessageType as WireDecode>::decode(&mut m.payload, protocol_version);
+            let res = <H::MessageType as WireDecode>::try_decode(&mut m.payload, protocol_version)
+                .map_err(|e| RouterError::Other(e.into()));
             #[cfg(debug_assertions)]
             {
                 use super::metric_definitions::NETWORK_MESSAGE_DECODE_DURATION;
@@ -248,15 +241,16 @@ impl<M> Handler for StreamHandlerWrapper<M>
 where
     M: WireDecode + Targeted + Send + Sync + 'static,
 {
-    type Error = CodecError;
     /// Process the request and return the response asynchronously.
     async fn call(
         &self,
         message: Incoming<BinaryMessage>,
         protocol_version: ProtocolVersion,
-    ) -> Result<(), Self::Error> {
-        let message =
-            message.try_map(|mut m| <M as WireDecode>::decode(&mut m.payload, protocol_version))?;
+    ) -> Result<(), RouterError> {
+        let message = message.try_map(|mut m| {
+            <M as WireDecode>::try_decode(&mut m.payload, protocol_version)
+                .map_err(|e| RouterError::Other(e.into()))
+        })?;
         if let Err(e) = self.sender.send(message).await {
             // Can be benign if we are shutting down
             if !TaskCenter::is_shutdown_requested() {

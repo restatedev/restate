@@ -19,10 +19,10 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use restate_types::net::RpcRequest;
 use restate_types::net::codec::{Targeted, WireEncode};
-use restate_types::protobuf::node::Header;
 use restate_types::{GenerationalNodeId, NodeId, Version};
 
 use super::connection::OwnedConnection;
+use super::protobuf::network::Header;
 use super::{NetworkError, NetworkSendError, WeakConnection};
 
 static NEXT_MSG_ID: AtomicU64 = const { AtomicU64::new(1) };
