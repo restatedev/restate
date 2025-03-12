@@ -98,10 +98,7 @@ impl Bifrost {
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
-        bifrost_svc
-            .start()
-            .await
-            .expect("local loglet must start");
+        bifrost_svc.start().await.expect("local loglet must start");
         bifrost
     }
 
