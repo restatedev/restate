@@ -102,23 +102,23 @@ pub async fn create_object_store_client(
         } else {
             builder
         };
-        let env_allow_http = std::env::var("AWS_ALLOW_HTTP")
+        let env_allow_http_fallback = std::env::var("AWS_ALLOW_HTTP")
             .ok()
             .map(|s| s.trim().eq_ignore_ascii_case("true"));
-        let allow_insecure_http = options.aws_allow_http.or(env_allow_http);
+        let allow_insecure_http = options.aws_allow_http.or(env_allow_http_fallback);
         let builder = if let Some(allow_http) = allow_insecure_http {
             builder.with_allow_http(allow_http)
         } else {
             builder
         };
-        let env_endpoint_url = std::env::var("AWS_ENDPOINT_URL_S3")
+        let env_endpoint_url_fallback = std::env::var("AWS_ENDPOINT_URL_S3")
             .ok()
             .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok());
         let s3_endpoint = options
             .aws_endpoint_url
             .as_ref()
-            .or(env_endpoint_url.as_ref());
-        if !env_allow_http.unwrap_or_default()
+            .or(env_endpoint_url_fallback.as_ref());
+        if !allow_insecure_http.unwrap_or_default()
             && s3_endpoint.is_some_and(|endpoint| {
                 Url::parse(endpoint).is_ok_and(|url| url.scheme().eq_ignore_ascii_case("http"))
             })
