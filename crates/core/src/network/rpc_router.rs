@@ -458,7 +458,7 @@ mod test {
     use restate_types::GenerationalNodeId;
     use restate_types::net::TargetName;
 
-    use crate::network::{PeerMetadataVersion, WeakConnection};
+    use crate::network::{Connection, PeerMetadataVersion};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestRequest {
@@ -540,7 +540,7 @@ mod test {
                 TestResponse {
                     text: "test".to_string(),
                 },
-                WeakConnection::new_closed(GenerationalNodeId::new(1, 1)),
+                Connection::new_closed(GenerationalNodeId::new(1, 1)),
                 1,
                 Some(42),
                 PeerMetadataVersion::default(),
@@ -553,7 +553,7 @@ mod test {
             TestResponse {
                 text: "test".to_string(),
             },
-            WeakConnection::new_closed(GenerationalNodeId::new(1, 1)),
+            Connection::new_closed(GenerationalNodeId::new(1, 1)),
             1,
             Some(42),
             PeerMetadataVersion::default(),
@@ -568,7 +568,7 @@ mod test {
                 TestResponse {
                     text: "a very real message".to_string(),
                 },
-                WeakConnection::new_closed(GenerationalNodeId::new(1, 1)),
+                Connection::new_closed(GenerationalNodeId::new(1, 1)),
                 1,
                 Some(1),
                 PeerMetadataVersion::default(),
@@ -609,7 +609,7 @@ mod test {
                     TestResponse {
                         text: format!("{idx}"),
                     },
-                    WeakConnection::new_closed(GenerationalNodeId::new(0, 0)),
+                    Connection::new_closed(GenerationalNodeId::new(0, 0)),
                     1,
                     Some(idx),
                     PeerMetadataVersion::default(),
