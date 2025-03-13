@@ -17,6 +17,9 @@ use rocksdb::ExportImportFilesMetaData;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use crate::PartitionStore;
+use crate::cf_options;
+use crate::snapshots::LocalPartitionSnapshot;
 use restate_core::worker_api::SnapshotError;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
@@ -25,11 +28,6 @@ use restate_types::config::{RocksDbOptions, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::{BoxedLiveLoad, LiveLoad};
 use restate_types::logs::Lsn;
-
-use crate::DB;
-use crate::PartitionStore;
-use crate::cf_options;
-use crate::snapshots::LocalPartitionSnapshot;
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -45,7 +43,6 @@ pub enum OpenMode {
 pub struct PartitionStoreManager {
     lookup: Arc<Mutex<PartitionLookup>>,
     rocksdb: Arc<RocksDb>,
-    raw_db: Arc<DB>,
 }
 
 #[derive(Default, Debug)]
@@ -77,12 +74,9 @@ impl PartitionStoreManager {
             .expect("valid spec");
 
         let manager = RocksDbManager::get();
-        let raw_db = manager.open_db(updateable_opts, db_spec).await?;
-
-        let rocksdb = manager.get_db(DbName::new(DB_NAME)).unwrap();
+        let rocksdb = manager.open_db(updateable_opts, db_spec).await?;
 
         Ok(Self {
-            raw_db,
             rocksdb,
             lookup: Arc::default(),
         })
@@ -128,7 +122,6 @@ impl PartitionStoreManager {
         }
 
         let partition_store = PartitionStore::new(
-            self.raw_db.clone(),
             self.rocksdb.clone(),
             cf_name,
             partition_id,
@@ -198,7 +191,6 @@ impl PartitionStoreManager {
 
         assert!(self.rocksdb.inner().cf_handle(&cf_name).is_some());
         let partition_store = PartitionStore::new(
-            self.raw_db.clone(),
             self.rocksdb.clone(),
             cf_name,
             partition_id,
@@ -230,7 +222,9 @@ impl PartitionStoreManager {
 
     pub async fn drop_partition(&self, partition_id: PartitionId) {
         let mut guard = self.lookup.lock().await;
-        self.raw_db
+        self.rocksdb
+            .inner()
+            .as_raw_db()
             .drop_cf(&cf_for_partition(partition_id))
             .unwrap();
 
