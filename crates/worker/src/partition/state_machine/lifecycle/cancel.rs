@@ -20,7 +20,7 @@ use restate_storage_api::promise_table::PromiseTable;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::TerminationFlavor;
+use restate_types::invocation::{InvocationEpoch, TerminationFlavor};
 use restate_types::journal_v2::CANCEL_SIGNAL;
 use tracing::{debug, trace};
 
@@ -83,7 +83,7 @@ where
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                ctx.send_abort_invocation_to_invoker(self.invocation_id);
+                ctx.send_abort_invocation_to_invoker(self.invocation_id, InvocationEpoch::MAX);
             }
         };
 
@@ -108,8 +108,8 @@ mod tests {
     use restate_types::errors::CANCELED_INVOCATION_ERROR;
     use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
     use restate_types::invocation::{
-        InvocationTarget, InvocationTermination, NotifySignalRequest, ResponseResult,
-        ServiceInvocation, ServiceInvocationResponseSink,
+        InvocationTarget, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
+        ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::CANCEL_SIGNAL;
     use restate_types::net::partition_processor::IngressResponseResult;
@@ -188,6 +188,7 @@ mod tests {
         let actions = test_env
             .apply(Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: DeploymentId::default(),
                     service_protocol_version: ServiceProtocolVersion::V4,
@@ -278,10 +279,9 @@ mod tests {
             .apply(Command::Invoke(ServiceInvocation {
                 invocation_id: inboxed_id,
                 invocation_target: inboxed_target,
-                response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
-                    caller: caller_id,
-                    entry_index: 0,
-                }),
+                response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor(
+                    JournalCompletionTarget::from_parts(caller_id, 0, 0),
+                )),
                 ..ServiceInvocation::mock()
             }))
             .await;

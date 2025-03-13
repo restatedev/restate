@@ -10,7 +10,7 @@
 
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
 use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::invocation::ServiceInvocation;
+use restate_types::invocation::{InvocationEpoch, ServiceInvocation};
 use restate_types::time::MillisSinceEpoch;
 use std::borrow::Borrow;
 use std::fmt;
@@ -32,9 +32,14 @@ impl TimerKeyValue {
         wake_up_time: MillisSinceEpoch,
         invocation_id: InvocationId,
         entry_index: EntryIndex,
+        invocation_epoch: InvocationEpoch,
     ) -> Self {
-        let (timer_key, value) =
-            Timer::complete_journal_entry(wake_up_time.as_u64(), invocation_id, entry_index);
+        let (timer_key, value) = Timer::complete_journal_entry(
+            wake_up_time.as_u64(),
+            invocation_id,
+            entry_index,
+            invocation_epoch,
+        );
 
         Self { timer_key, value }
     }

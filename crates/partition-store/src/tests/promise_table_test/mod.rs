@@ -20,7 +20,8 @@ use restate_storage_api::Transaction;
 use restate_storage_api::promise_table::{
     Promise, PromiseResult, PromiseState, PromiseTable, ReadOnlyPromiseTable,
 };
-use restate_types::identifiers::{InvocationId, InvocationUuid, JournalEntryId, ServiceId};
+use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
+use restate_types::invocation::JournalCompletionTarget;
 
 const SERVICE_ID_1: ServiceId = ServiceId::from_static(10, "MySvc", "a");
 const SERVICE_ID_2: ServiceId = ServiceId::from_static(11, "MySvc", "b");
@@ -39,13 +40,15 @@ async fn test_promise_table() {
 
     let promise_not_completed = Promise {
         state: PromiseState::NotCompleted(vec![
-            JournalEntryId::from_parts(
+            JournalCompletionTarget::from_parts(
                 InvocationId::from_parts(10, InvocationUuid::from_u128(12345678900001)),
                 1,
+                0,
             ),
-            JournalEntryId::from_parts(
+            JournalCompletionTarget::from_parts(
                 InvocationId::from_parts(11, InvocationUuid::from_u128(12345678900021)),
                 2,
+                1,
             ),
         ]),
     };

@@ -665,7 +665,7 @@ fn encode_invocation_id(
     buf
 }
 
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug)]
 pub struct JournalEntryId {
     invocation_id: InvocationId,
     journal_index: EntryIndex,

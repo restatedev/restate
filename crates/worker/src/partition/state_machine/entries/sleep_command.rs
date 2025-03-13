@@ -47,6 +47,7 @@ where
                 self.entry.wake_up_time,
                 self.invocation_id,
                 self.entry.completion_id,
+                invocation_metadata.current_invocation_epoch,
             ),
             invocation_metadata.journal_metadata.span_context.clone(),
         )

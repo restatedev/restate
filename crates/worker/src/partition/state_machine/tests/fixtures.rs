@@ -21,7 +21,7 @@ use restate_types::identifiers::{
     DeploymentId, InvocationId, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::invocation::{
-    InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext, Source,
+    InvocationEpoch, InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal::enriched::{
     CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
@@ -77,8 +77,17 @@ pub fn incomplete_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
 }
 
 pub fn invoker_entry_effect(invocation_id: InvocationId, entry: impl Into<Entry>) -> Command {
+    invoker_entry_effect_for_epoch(invocation_id, 0, entry)
+}
+
+pub fn invoker_entry_effect_for_epoch(
+    invocation_id: InvocationId,
+    invocation_epoch: InvocationEpoch,
+    entry: impl Into<Entry>,
+) -> Command {
     Command::InvokerEffect(InvokerEffect {
         invocation_id,
+        invocation_epoch,
         kind: InvokerEffectKind::JournalEntryV2 {
             entry: entry.into().encode::<ServiceProtocolV4Codec>(),
             command_index_to_ack: None,
@@ -92,6 +101,7 @@ pub fn invoker_suspended(
 ) -> Command {
     Command::InvokerEffect(InvokerEffect {
         invocation_id,
+        invocation_epoch: 0,
         kind: InvokerEffectKind::SuspendedV2 {
             waiting_for_notifications: waiting_for_notifications.into(),
         },
@@ -155,6 +165,7 @@ pub async fn mock_pinned_deployment_v5(state_machine: &mut TestEnv, invocation_i
     let _ = state_machine
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                 deployment_id: DeploymentId::default(),
                 service_protocol_version: ServiceProtocolVersion::V5,

@@ -65,10 +65,12 @@ message JournalEntryIndex {
   uint32 entry_index = 1;
 }
 
-message JournalEntryId {
+// Target of a completion sent from another Partition Processor.
+message JournalCompletionTarget {
   uint64 partition_key = 1;
   bytes invocation_uuid = 2;
   uint32 entry_index = 3;
+  uint32 caller_invocation_epoch = 4;
 }
 
 message EntryResult {
@@ -128,6 +130,11 @@ message InvocationStatusV2 {
     COMPLETED = 5;
   }
 
+  message JournalTrimPoint {
+    uint32 completion_id = 1;
+    uint32 invocation_epoch = 2;
+  }
+
   Status status = 1;
 
   // Common
@@ -160,6 +167,9 @@ message InvocationStatusV2 {
   optional string deployment_id = 15;
   optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
   bool hotfix_apply_cancellation_after_deployment_is_pinned = 25;
+  uint32 current_invocation_epoch = 27;
+  // Used to reconstruct the completion_range_epoch_map
+  repeated JournalTrimPoint trim_points = 28;
 
   // Suspended
   repeated uint32 waiting_for_completions = 17;
@@ -174,6 +184,7 @@ message InvocationStatusV2 {
 message InvocationV2Lite {
   InvocationStatusV2.Status status = 1;
   InvocationTarget invocation_target = 2;
+  uint32 current_invocation_epoch = 27;
 }
 
 // TODO remove this after 1.1
@@ -260,6 +271,7 @@ message ServiceInvocationResponseSink {
   message PartitionProcessor {
     bytes caller = 1;
     uint32 entry_index = 2;
+    uint32 caller_invocation_epoch = 3;
   }
 
   message Ingress {
@@ -604,6 +616,7 @@ message OutboxMessage {
     InvocationId invocation_id = 1;
     uint32 entry_index = 2;
     ResponseResult response_result = 3;
+    uint32 caller_invocation_epoch = 4;
   }
 
   message OutboxKill {
@@ -662,6 +675,7 @@ message Timer {
   message CompleteSleepEntry {
     InvocationId invocation_id = 1;
     uint32 entry_index = 2;
+    uint32 caller_invocation_epoch = 3;
   }
 
   message CleanInvocationStatus {
@@ -733,7 +747,7 @@ message Promise {
   }
 
   message NotCompletedState {
-    repeated JournalEntryId listening_journal_entries = 1;
+    repeated JournalCompletionTarget listening_journal_entries = 1;
   }
 
   oneof state {

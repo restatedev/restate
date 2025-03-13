@@ -149,7 +149,7 @@ where
             self.partition_processor_rpc_client
                 .append_invocation_response(request_id, invocation_response.clone())
         })
-        .instrument(debug_span!("send invocation response", %request_id, invocation_id = %invocation_response.id))
+        .instrument(debug_span!("send invocation response", %request_id, invocation_id = %invocation_response.target.caller_id))
         .await
     }
 
