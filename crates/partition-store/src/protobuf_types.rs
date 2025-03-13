@@ -122,6 +122,7 @@ pub mod v1 {
         use bytestring::ByteString;
         use opentelemetry::trace::TraceState;
         use prost::Message;
+        use restate_storage_api::invocation_status_table::CompletionRangeEpochMap;
         use restate_types::deployment::PinnedDeployment;
 
         use crate::protobuf_types::ConversionError;
@@ -135,6 +136,7 @@ pub mod v1 {
         use crate::protobuf_types::v1::invocation_status::{
             Completed, Free, Inboxed, Invoked, Suspended,
         };
+        use crate::protobuf_types::v1::invocation_status_v2::TrimPoint;
         use crate::protobuf_types::v1::journal_entry::completion_result::{
             Empty, Failure, Success,
         };
@@ -164,7 +166,9 @@ pub mod v1 {
         use restate_types::identifiers::{
             PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
         };
-        use restate_types::invocation::{InvocationTermination, TerminationFlavor};
+        use restate_types::invocation::{
+            InvocationTermination, JournalCompletionTarget, TerminationFlavor,
+        };
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::journal::raw::RawEntry;
         use restate_types::journal_v2::{EntryMetadata, NotificationId, NotificationType};
@@ -408,6 +412,8 @@ pub mod v1 {
                     journal_length,
                     deployment_id,
                     service_protocol_version,
+                    current_invocation_epoch,
+                    trim_points,
                     waiting_for_completions,
                     waiting_for_signal_indexes,
                     waiting_for_signal_names,
@@ -506,7 +512,11 @@ pub mod v1 {
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
-                                hotfix_apply_cancellation_after_deployment_is_pinned
+                                hotfix_apply_cancellation_after_deployment_is_pinned,
+                                current_invocation_epoch,
+                                completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points(
+                                    trim_points.into_iter().map(|trim_point|(trim_point.completion_id, trim_point.invocation_epoch))
+                                ),
                             },
                         ))
                     }
@@ -529,7 +539,11 @@ pub mod v1 {
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
-                                hotfix_apply_cancellation_after_deployment_is_pinned
+                                hotfix_apply_cancellation_after_deployment_is_pinned,
+                                current_invocation_epoch,
+                                completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points(
+                                    trim_points.into_iter().map(|trim_point|(trim_point.completion_id, trim_point.invocation_epoch))
+                                ),
                             },
                             waiting_for_notifications: waiting_for_completions
                                 .into_iter()
@@ -625,6 +639,8 @@ pub mod v1 {
                         deployment_id: None,
                         service_protocol_version: None,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                        current_invocation_epoch: 0,
+                        trim_points: vec![],
                         waiting_for_completions: vec![],
                         waiting_for_signal_indexes: vec![],
                         waiting_for_signal_names: vec![],
@@ -681,6 +697,8 @@ pub mod v1 {
                         deployment_id: None,
                         service_protocol_version: None,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                        current_invocation_epoch: 0,
+                        trim_points: vec![],
                         waiting_for_completions: vec![],
                         waiting_for_signal_indexes: vec![],
                         waiting_for_signal_names: vec![],
@@ -696,7 +714,7 @@ pub mod v1 {
                             source,
                             completion_retention_duration,
                             idempotency_key,
-                            hotfix_apply_cancellation_after_deployment_is_pinned
+                            hotfix_apply_cancellation_after_deployment_is_pinned, current_invocation_epoch, completion_range_epoch_map
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -750,7 +768,12 @@ pub mod v1 {
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
                             result: None,
-                            hotfix_apply_cancellation_after_deployment_is_pinned
+                            hotfix_apply_cancellation_after_deployment_is_pinned,
+                            current_invocation_epoch,
+                            trim_points: completion_range_epoch_map.into_trim_points().into_iter().map(|(completion_id, invocation_epoch)| TrimPoint {
+                                completion_id,
+                                invocation_epoch,
+                            }).collect(),
                         }
                     }
                     restate_storage_api::invocation_status_table::InvocationStatus::Suspended {
@@ -763,7 +786,7 @@ pub mod v1 {
                                 timestamps,
                                 source,
                                 completion_retention_duration,
-                                idempotency_key, hotfix_apply_cancellation_after_deployment_is_pinned,
+                                idempotency_key, hotfix_apply_cancellation_after_deployment_is_pinned, current_invocation_epoch, completion_range_epoch_map,
                             },
                         waiting_for_notifications,
                     } => {
@@ -835,7 +858,12 @@ pub mod v1 {
                             waiting_for_signal_indexes,
                             waiting_for_signal_names,
                             result: None,
-                            hotfix_apply_cancellation_after_deployment_is_pinned
+                            hotfix_apply_cancellation_after_deployment_is_pinned,
+                            current_invocation_epoch,
+                            trim_points: completion_range_epoch_map.into_trim_points().into_iter().map(|(completion_id, invocation_epoch)| TrimPoint {
+                                completion_id,
+                                invocation_epoch,
+                            }).collect(),
                         }
                     }
                     restate_storage_api::invocation_status_table::InvocationStatus::Completed(
@@ -879,6 +907,8 @@ pub mod v1 {
                         deployment_id: None,
                         service_protocol_version: None,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                        current_invocation_epoch: 0,
+                        trim_points: vec![],
                         waiting_for_completions: vec![],
                         waiting_for_signal_indexes: vec![],
                         waiting_for_signal_names: vec![],
@@ -1135,6 +1165,8 @@ pub mod v1 {
                         completion_retention_duration: completion_retention_time,
                         idempotency_key,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                        current_invocation_epoch: 0,
+                        completion_range_epoch_map: Default::default(),
                     },
                 )
             }
@@ -1252,6 +1284,8 @@ pub mod v1 {
                         completion_retention_duration: completion_retention_time,
                         idempotency_key,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                        current_invocation_epoch: 0,
+                        completion_range_epoch_map: Default::default(),
                     },
                     waiting_for_completed_entries,
                 ))
@@ -2106,10 +2140,13 @@ pub mod v1 {
                 {
                     ResponseSink::PartitionProcessor(partition_processor) => {
                         Some(
-                            restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor {
-                                caller: restate_types::identifiers::InvocationId::from_slice(&partition_processor.caller)?,
-                                entry_index: partition_processor.entry_index,
-                            },
+                            restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor(
+                                JournalCompletionTarget {
+                                    caller_id:  restate_types::identifiers::InvocationId::from_slice(&partition_processor.caller)?,
+                                    caller_completion_id: partition_processor.entry_index,
+                                    caller_invocation_epoch: partition_processor.caller_invocation_epoch,
+                                }
+                            ),
                         )
                     }
                     ResponseSink::Ingress(ingress) => {
@@ -2136,13 +2173,13 @@ pub mod v1 {
             ) -> Self {
                 let response_sink = match value {
                     Some(
-                        restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor {
-                            caller,
-                            entry_index,
-                        },
+                        restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor(JournalCompletionTarget {
+                                                                                                         caller_id, caller_completion_id, caller_invocation_epoch
+                                                                                                     }),
                     ) => ResponseSink::PartitionProcessor(PartitionProcessor {
-                        entry_index,
-                        caller: caller.into(),
+                        entry_index: caller_completion_id,
+                        caller: caller_id.into(),
+                        caller_invocation_epoch
                     }),
                     Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress {  request_id }) => {
                         ResponseSink::Ingress(Ingress {
@@ -3163,12 +3200,16 @@ pub mod v1 {
                         invocation_response,
                     ) => restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
                         restate_types::invocation::InvocationResponse {
-                            entry_index: invocation_response.entry_index,
-                            id: restate_types::identifiers::InvocationId::try_from(
-                                invocation_response
-                                    .invocation_id
-                                    .ok_or(ConversionError::missing_field("invocation_id"))?,
-                            )?,
+                            target: JournalCompletionTarget {
+                                caller_id: restate_types::identifiers::InvocationId::try_from(
+                                    invocation_response
+                                        .invocation_id
+                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                )?,
+                                caller_completion_id: invocation_response.entry_index,
+                                caller_invocation_epoch: invocation_response
+                                    .caller_invocation_epoch,
+                            },
                             result: restate_types::invocation::ResponseResult::try_from(
                                 invocation_response
                                     .response_result
@@ -3294,9 +3335,14 @@ pub mod v1 {
                         invocation_response,
                     ) => outbox_message::OutboxMessage::ServiceInvocationResponse(
                         OutboxServiceInvocationResponse {
-                            entry_index: invocation_response.entry_index,
-                            invocation_id: Some(InvocationId::from(invocation_response.id)),
+                            entry_index: invocation_response.target.caller_completion_id,
+                            invocation_id: Some(InvocationId::from(
+                                invocation_response.target.caller_id,
+                            )),
                             response_result: Some(ResponseResult::from(invocation_response.result)),
+                            caller_invocation_epoch: invocation_response
+                                .target
+                                .caller_invocation_epoch,
                         },
                     ),
                     restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
