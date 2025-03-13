@@ -3505,6 +3505,7 @@ pub mod v1 {
                                         .ok_or(ConversionError::missing_field("invocation_id"))?,
                                 )?,
                                 cse.entry_index,
+                                cse.caller_invocation_epoch,
                             )
                         }
                         timer::Value::Invoke(si) => {
@@ -3538,9 +3539,11 @@ pub mod v1 {
                         restate_storage_api::timer_table::Timer::CompleteJournalEntry(
                             invocation_id,
                             entry_index,
+                            caller_invocation_epoch,
                         ) => timer::Value::CompleteSleepEntry(timer::CompleteSleepEntry {
                             invocation_id: Some(InvocationId::from(invocation_id)),
                             entry_index,
+                            caller_invocation_epoch,
                         }),
                         restate_storage_api::timer_table::Timer::NeoInvoke(invocation_id) => {
                             timer::Value::ScheduledInvoke(InvocationId::from(invocation_id))
