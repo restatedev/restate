@@ -13,6 +13,7 @@ use super::*;
 mod delayed_send;
 pub mod fixtures;
 mod idempotency;
+mod invocation_epoch_awareness;
 mod kill_cancel;
 pub mod matchers;
 mod workflow;
@@ -197,6 +198,20 @@ impl TestEnv {
                 .unwrap_or_else(|_| panic!("entry index {i} can be decoded"))
         })
         .collect()
+    }
+
+    pub async fn modify_invocation_status(
+        &mut self,
+        invocation_id: InvocationId,
+        f: impl FnOnce(&mut InvocationStatus),
+    ) {
+        let mut tx = self.storage().transaction();
+        let mut status = tx.get_invocation_status(&invocation_id).await.unwrap();
+        f(&mut status);
+        tx.put_invocation_status(&invocation_id, &status)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
     }
 }
 
