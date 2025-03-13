@@ -519,6 +519,10 @@ impl CompletionRangeEpochMap {
         first_inclusive_completion_id_of_new_epoch: CompletionId,
         new_epoch: InvocationEpoch,
     ) {
+        if first_inclusive_completion_id_of_new_epoch == CompletionId::MAX {
+            // Nothing to do here
+            return;
+        }
         self.0.insert(
             first_inclusive_completion_id_of_new_epoch..=CompletionId::MAX,
             new_epoch,

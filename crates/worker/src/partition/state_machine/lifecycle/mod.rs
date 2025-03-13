@@ -17,6 +17,7 @@ mod notify_sleep_completion;
 mod pinned_deployment;
 mod resume;
 mod suspend;
+mod trim;
 
 pub(super) use cancel::OnCancelCommand;
 pub(super) use migrate_journal_table::VerifyOrMigrateJournalTableToV2Command;
@@ -27,3 +28,4 @@ pub(super) use notify_sleep_completion::OnNotifySleepCompletionCommand;
 pub(super) use pinned_deployment::OnPinnedDeploymentCommand;
 pub(super) use resume::ResumeInvocationCommand;
 pub(super) use suspend::OnSuspendCommand;
+pub(super) use trim::OnTrimCommand;

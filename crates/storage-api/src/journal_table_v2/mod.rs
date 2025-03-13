@@ -62,4 +62,30 @@ pub trait JournalTable: ReadOnlyJournalTable {
         invocation_id: InvocationId,
         length: EntryIndex,
     ) -> impl Future<Output = Result<()>> + Send;
+
+    /// This operation compacts the journal, while retaining the given `notifications_to_retain`.
+    /// It also cleanups the internal notification indexes by looking at the ids in `notification_ids_to_cleanup`.
+    ///
+    /// ## Arguments
+    ///
+    /// * `compaction_starting_point`: Starting point of the compaction, included. Everything before will be left untouched.
+    /// * `notifications_to_retain`: Notifications to retain. Invariant: Each entry index in this slice MUST be >= compaction_starting_point
+    /// * `notification_ids_to_forget`: Hint of notification ids to forget, including both notifications ids of notifications existing in the journal,
+    ///     and completion ids of completions not in the journal, for which we're cleaning the related command.
+    ///     This is needed to cleanup the internal notification indexes.
+    /// * `journal_length`: Total journal length when this operation is fired up.
+    ///
+    /// ## Example
+    ///
+    /// 1. Starting journal: `[0, 1, 2, 3, 4, 5]`
+    /// 2. Compact journal with `compaction_starting_point = 2` and `entries_to_retain = [3, 4]`
+    /// 3. Final journal: `[0, 1, 3, 4]`
+    fn compact_journal(
+        &mut self,
+        invocation_id: InvocationId,
+        compaction_starting_point: EntryIndex,
+        notifications_to_retain: &[EntryIndex],
+        notification_ids_to_forget: &[NotificationId],
+        journal_length: EntryIndex,
+    ) -> impl Future<Output = Result<()>> + Send;
 }

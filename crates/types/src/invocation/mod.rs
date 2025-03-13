@@ -832,6 +832,40 @@ impl SpanRelation {
     }
 }
 
+/// Flavor of the [`TrimInvocationRequest`].
+#[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TrimBy {
+    CommandEntryIndex {
+        /// Note: the index MUST correspond to a [`journal_v2::Command`], otherwise the command will be ignored.
+        entry_index: EntryIndex,
+    },
+}
+
+/// Trim an invocation and restart.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrimInvocationRequest {
+    pub invocation_id: InvocationId,
+    pub trim_by: TrimBy,
+}
+
+impl TrimInvocationRequest {
+    pub const fn by_command_entry_index(
+        invocation_id: InvocationId,
+        entry_index: EntryIndex,
+    ) -> Self {
+        Self {
+            invocation_id,
+            trim_by: TrimBy::CommandEntryIndex { entry_index },
+        }
+    }
+}
+
+impl WithInvocationId for TrimInvocationRequest {
+    fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
+    }
+}
+
 /// Message to terminate an invocation.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationTermination {

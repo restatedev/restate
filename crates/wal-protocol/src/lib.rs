@@ -13,6 +13,7 @@ use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPar
 use restate_types::invocation::{
     AttachInvocationRequest, GetInvocationOutputResponse, InvocationResponse,
     InvocationTermination, NotifySignalRequest, PurgeInvocationRequest, ServiceInvocation,
+    TrimInvocationRequest,
 };
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
@@ -139,6 +140,8 @@ pub enum Command {
     PatchState(ExternalStateMutation),
     /// Terminate an ongoing invocation
     TerminateInvocation(InvocationTermination),
+    /// Trim an ongoing invocation
+    TrimInvocation(TrimInvocationRequest),
     /// Purge a completed invocation
     PurgeInvocation(PurgeInvocationRequest),
     /// Start an invocation on this partition
@@ -216,6 +219,9 @@ impl HasRecordKeys for Envelope {
             Command::InvocationResponse(response) => Keys::Single(response.partition_key()),
             Command::NotifySignal(sig) => Keys::Single(sig.partition_key()),
             Command::NotifyGetInvocationOutputResponse(res) => Keys::Single(res.partition_key()),
+            Command::TrimInvocation(trim_invocation) => {
+                Keys::Single(trim_invocation.partition_key())
+            }
         }
     }
 }
