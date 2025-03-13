@@ -10,7 +10,7 @@
 
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::invocation::{InvocationResponse, ResponseResult};
+use restate_types::invocation::{InvocationResponse, JournalCompletionTarget, ResponseResult};
 use restate_wal_protocol::Command;
 
 pub(crate) type InvokerEffect = restate_invoker_api::Effect;
@@ -34,9 +34,13 @@ impl OutboxMessageExt for OutboxMessage {
         result: ResponseResult,
     ) -> OutboxMessage {
         OutboxMessage::ServiceResponse(InvocationResponse {
-            entry_index,
+            target: JournalCompletionTarget {
+                caller_id: invocation_id,
+                caller_completion_id: entry_index,
+                // Old Journal doesn't have invocation_epoch
+                caller_invocation_epoch: 0,
+            },
             result,
-            id: invocation_id,
         })
     }
 

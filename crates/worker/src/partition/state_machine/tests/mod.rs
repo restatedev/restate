@@ -266,8 +266,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     // Send completion first
     let _ = test_env
         .apply(Command::InvocationResponse(InvocationResponse {
-            id: invocation_id,
-            entry_index: 1,
+            target: JournalCompletionTarget::from_parts(invocation_id, 1, 0),
             result: ResponseResult::Success(Bytes::default()),
         }))
         .await;
@@ -289,6 +288,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::awakeable(None)),
@@ -327,8 +327,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
 
     let actions = test_env
         .apply(Command::InvocationResponse(InvocationResponse {
-            id: invocation_id,
-            entry_index: 1,
+            target: JournalCompletionTarget::from_parts(invocation_id, 1, 0),
             result: ResponseResult::Success(Bytes::default()),
         }))
         .await;
@@ -346,6 +345,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::Suspended {
                 waiting_for_completed_entries: HashSet::from([1]),
             },
@@ -381,6 +381,7 @@ async fn complete_awakeable_with_success() {
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry,
@@ -394,8 +395,10 @@ async fn complete_awakeable_with_success() {
             message: pat!(
                 restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(pat!(
                     restate_types::invocation::InvocationResponse {
-                        id: eq(callee_invocation_id),
-                        entry_index: eq(callee_entry_index),
+                        target: pat!(JournalCompletionTarget {
+                            caller_id: eq(callee_invocation_id),
+                            caller_completion_id: eq(callee_entry_index),
+                        }),
                         result: pat!(ResponseResult::Success { .. })
                     }
                 ))
@@ -424,6 +427,7 @@ async fn complete_awakeable_with_failure() {
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry,
@@ -437,8 +441,10 @@ async fn complete_awakeable_with_failure() {
             message: pat!(
                 restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(pat!(
                     restate_types::invocation::InvocationResponse {
-                        id: eq(callee_invocation_id),
-                        entry_index: eq(callee_entry_index),
+                        target: pat!(JournalCompletionTarget {
+                            caller_id: eq(callee_invocation_id),
+                            caller_completion_id: eq(callee_entry_index),
+                        }),
                         result: eq(ResponseResult::Failure(InvocationError::new(
                             codes::BAD_REQUEST,
                             "Some failure"
@@ -461,6 +467,7 @@ async fn invoke_with_headers() -> TestResult {
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::invoke(
@@ -548,6 +555,7 @@ async fn mutate_state() -> anyhow::Result<()> {
     test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::End,
         }))
         .await;
@@ -584,6 +592,7 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
     test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::clear_all_state()),
@@ -619,6 +628,7 @@ async fn get_state_keys() -> TestResult {
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::get_state_keys(None)),
@@ -672,6 +682,7 @@ async fn get_invocation_id_entry() {
         .apply_multiple(vec![
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 3,
                     entry: ProtobufRawEntryCodec::serialize_enriched(
@@ -681,6 +692,7 @@ async fn get_invocation_id_entry() {
             }),
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 4,
                     entry: ProtobufRawEntryCodec::serialize_enriched(
@@ -746,6 +758,7 @@ async fn attach_invocation_entry() {
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::AttachInvocation(
@@ -769,7 +782,8 @@ async fn attach_invocation_entry() {
                         block_on_inflight: eq(true),
                         response_sink: eq(ServiceInvocationResponseSink::partition_processor(
                             invocation_id,
-                            1
+                            1,
+                            0
                         )),
                     }
                 ))
@@ -790,6 +804,7 @@ async fn get_invocation_output_entry() {
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::GetInvocationOutput(
@@ -814,7 +829,8 @@ async fn get_invocation_output_entry() {
                         block_on_inflight: eq(false),
                         response_sink: eq(ServiceInvocationResponseSink::partition_processor(
                             invocation_id,
-                            1
+                            1,
+                            0
                         )),
                     }
                 ))
@@ -825,8 +841,7 @@ async fn get_invocation_output_entry() {
     // Let's try to complete it with not ready, this should forward empty
     let actions = test_env
         .apply(Command::InvocationResponse(InvocationResponse {
-            id: invocation_id,
-            entry_index: 1,
+            target: JournalCompletionTarget::from_parts(invocation_id, 1, 0),
             result: NOT_READY_INVOCATION_ERROR.into(),
         }))
         .await;
@@ -898,6 +913,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -913,6 +929,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::End,
         }))
         .await;
@@ -1071,6 +1088,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     let actions = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id: first_invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::End,
         }))
         .await;
@@ -1090,6 +1108,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     let _ = test_env
         .apply(Command::InvokerEffect(InvokerEffect {
             invocation_id: second_invocation_id,
+            invocation_epoch: 0,
             kind: InvokerEffectKind::End,
         }))
         .await;

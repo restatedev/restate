@@ -71,6 +71,7 @@ async fn start_and_complete_idempotent_invocation() {
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -80,6 +81,7 @@ async fn start_and_complete_idempotent_invocation() {
             }),
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
             }),
         ])
@@ -160,6 +162,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -169,6 +172,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
             }),
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
             }),
         ])
@@ -317,6 +321,7 @@ async fn attach_with_service_invocation_command_while_executing() {
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -326,6 +331,7 @@ async fn attach_with_service_invocation_command_while_executing() {
             }),
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
             }),
         ])
@@ -429,6 +435,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -438,6 +445,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
             }),
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
             }),
         ])
@@ -627,6 +635,7 @@ async fn attach_command() {
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -636,6 +645,7 @@ async fn attach_command() {
             }),
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
             }),
         ])
@@ -702,10 +712,9 @@ async fn attach_command_without_blocking_inflight() {
         .apply(Command::AttachInvocation(AttachInvocationRequest {
             invocation_query: InvocationQuery::Invocation(invocation_id),
             block_on_inflight: false,
-            response_sink: ServiceInvocationResponseSink::PartitionProcessor {
-                caller: caller_invocation_id,
-                entry_index: 1,
-            },
+            response_sink: ServiceInvocationResponseSink::PartitionProcessor(
+                JournalCompletionTarget::from_parts(caller_invocation_id, 1, 0),
+            ),
         }))
         .await;
     assert_that!(
