@@ -931,6 +931,7 @@ pub mod v1 {
                 let InvocationV2Lite {
                     status,
                     invocation_target,
+                    current_invocation_epoch,
                 } = value;
 
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
@@ -961,6 +962,7 @@ pub mod v1 {
                 Ok((crate::invocation_status_table::InvocationLite {
                     status,
                     invocation_target,
+                    current_invocation_epoch,
                 }))
             }
         }

@@ -182,6 +182,7 @@ message InvocationStatusV2 {
 message InvocationV2Lite {
   InvocationStatusV2.Status status = 1;
   InvocationTarget invocation_target = 2;
+  uint32 current_invocation_epoch = 26;
 }
 
 // TODO remove this after 1.1
