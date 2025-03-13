@@ -40,12 +40,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_build::configure()
         .bytes(["."])
+        .enum_attribute("Datagram", "#[derive(::derive_more::From)]")
+        .enum_attribute("Datagram.datagram", "#[derive(::derive_more::From)]")
+        .enum_attribute(
+            "Message.body",
+            "#[derive(::derive_more::IsVariant, ::derive_more::From)]",
+        )
+        .enum_attribute("Body", "#[derive(::derive_more::From)]")
         .file_descriptor_set_path(out_dir.join("core_node_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
+        .extern_path(".restate.common", "::restate_types::protobuf::common")
         .extern_path(".restate.node", "::restate_types::protobuf::node")
         .compile_protos(
-            &["./protobuf/core_node_svc.proto"],
+            &[
+                "./protobuf/restate/network.proto",
+                "./protobuf/core_node_svc.proto",
+            ],
             &["protobuf", "../types/protobuf"],
         )?;
 

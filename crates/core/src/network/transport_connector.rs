@@ -14,8 +14,8 @@ use futures::Stream;
 
 use restate_types::GenerationalNodeId;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::protobuf::node::Message;
 
+use super::protobuf::network::Message;
 use super::{NetworkError, ProtocolError};
 
 pub trait TransportConnect: Clone + Send + Sync + 'static {
@@ -62,11 +62,11 @@ pub mod test_util {
 
     use restate_types::GenerationalNodeId;
     use restate_types::nodes_config::NodesConfiguration;
-    use restate_types::protobuf::node::Message;
-    use restate_types::protobuf::node::message::BinaryMessage;
 
     use super::{NetworkError, ProtocolError};
     use crate::network::io::EgressStream;
+    use crate::network::protobuf::network::Message;
+    use crate::network::protobuf::network::message::BinaryMessage;
     use crate::network::{Incoming, MockPeerConnection, PartialPeerConnection, WeakConnection};
     use crate::{TaskCenter, TaskHandle, TaskKind, my_node_id};
 
