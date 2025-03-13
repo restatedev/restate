@@ -163,10 +163,12 @@ async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut 
             eq(InvokedInvocationStatusLite {
                 invocation_id: *INVOCATION_ID_1,
                 invocation_target: INVOCATION_TARGET_1.clone(),
+                current_invocation_epoch: 1,
             }),
             eq(InvokedInvocationStatusLite {
                 invocation_id: *INVOCATION_ID_2,
                 invocation_target: INVOCATION_TARGET_2.clone(),
+                current_invocation_epoch: 1,
             })
         ]
     );

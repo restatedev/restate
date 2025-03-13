@@ -647,6 +647,7 @@ impl CompletedInvocation {
 pub struct InvokedInvocationStatusLite {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
+    pub current_invocation_epoch: InvocationEpoch,
 }
 
 pub trait ReadOnlyInvocationStatusTable {
