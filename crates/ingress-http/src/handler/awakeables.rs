@@ -19,7 +19,7 @@ use http_body_util::BodyExt;
 use http_body_util::Full;
 use restate_types::errors::{InvocationError, codes};
 use restate_types::identifiers::{AwakeableIdentifier, ExternalSignalIdentifier, WithInvocationId};
-use restate_types::invocation::{InvocationResponse, ResponseResult};
+use restate_types::invocation::{InvocationResponse, JournalCompletionTarget, ResponseResult};
 use restate_types::journal_v2::{Signal, SignalResult};
 use std::str::FromStr;
 use tracing::{info, trace, warn};
@@ -98,8 +98,7 @@ where
             );
             self.dispatcher
                 .send_invocation_response(InvocationResponse {
-                    id: invocation_id,
-                    entry_index,
+                    target: JournalCompletionTarget::for_v3_completions(invocation_id, entry_index),
                     result,
                 })
                 .await
