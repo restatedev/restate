@@ -49,7 +49,7 @@ fn basic_writing_reading_benchmark(c: &mut Criterion) {
         .into_handle();
 
     let worker_options = WorkerOptions::default();
-    tc.run_sync(|| RocksDbManager::init(Constant::new(CommonOptions::default())));
+    tc.block_on(async { RocksDbManager::init(Constant::new(CommonOptions::default())) });
     let rocksdb = tc.block_on(async {
         //
         // setup
