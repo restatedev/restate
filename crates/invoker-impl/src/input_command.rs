@@ -11,7 +11,7 @@
 use restate_errors::NotRunningError;
 use restate_invoker_api::{Effect, InvocationStatusReport, InvokeInputJournal, StatusHandle};
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionLeaderEpoch};
-use restate_types::invocation::InvocationTarget;
+use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal::Completion;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawNotification;
@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 pub(crate) struct InvokeCommand {
     pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
+    pub(super) invocation_epoch: InvocationEpoch,
     pub(super) invocation_target: InvocationTarget,
     #[serde(skip)]
     pub(super) journal: InvokeInputJournal,
@@ -31,6 +32,7 @@ pub(crate) struct InvokeCommand {
 #[derive(Debug)]
 pub(crate) enum InputCommand<SR> {
     Invoke(InvokeCommand),
+    // TODO remove this when we remove journal v1
     Completion {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -39,11 +41,13 @@ pub(crate) enum InputCommand<SR> {
     Notification {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         notification: RawNotification,
     },
     StoredCommandAck {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         command_index: CommandIndex,
     },
 
@@ -51,6 +55,7 @@ pub(crate) enum InputCommand<SR> {
     Abort {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
     },
 
     /// Command used to clean up internal state when a partition leader is going away
@@ -79,6 +84,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
     ) -> Result<(), NotRunningError> {
@@ -86,6 +92,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .send(InputCommand::Invoke(InvokeCommand {
                 partition,
                 invocation_id,
+                invocation_epoch,
                 invocation_target,
                 journal,
             }))
@@ -111,12 +118,14 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         notification: RawNotification,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Notification {
                 partition,
                 invocation_id,
+                invocation_epoch,
                 notification,
             })
             .map_err(|_| NotRunningError)
@@ -126,12 +135,14 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         command_index: CommandIndex,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::StoredCommandAck {
                 partition,
                 invocation_id,
+                invocation_epoch,
                 command_index,
             })
             .map_err(|_| NotRunningError)
@@ -150,11 +161,13 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Abort {
                 partition,
                 invocation_id,
+                invocation_epoch,
             })
             .map_err(|_| NotRunningError)
     }
