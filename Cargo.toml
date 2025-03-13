@@ -216,6 +216,7 @@ tracing = { version = "0.1" }
 tracing-opentelemetry = { version = "0.28.0" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "parking_lot"] }
 tracing-test = { version = "0.2.5" }
+triomphe = { version = "0.1.14" }
 ulid = { version = "1.1.0" }
 url = { version = "2.5" }
 uuid = { version = "1.3.0", features = ["v7", "serde"] }
