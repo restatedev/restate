@@ -22,7 +22,10 @@ use std::collections::HashSet;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Effect {
     pub invocation_id: InvocationId,
-    #[serde(default, skip_serializing_if = "num_traits::Zero::is_zero")]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "num_traits::Zero::is_zero")
+    )]
     pub invocation_epoch: InvocationEpoch,
     pub kind: EffectKind,
 }
