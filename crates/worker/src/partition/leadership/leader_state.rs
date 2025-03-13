@@ -511,6 +511,16 @@ impl LeaderState {
                     )));
                 }
             }
+            Action::ForwardResetInvocationResponse {
+                request_id,
+                response,
+            } => {
+                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
+                    response_tx.send(Ok(PartitionProcessorRpcResponse::ResetInvocation(
+                        response.into(),
+                    )));
+                }
+            }
         }
 
         Ok(())

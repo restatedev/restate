@@ -195,6 +195,20 @@ impl_meta_api_error!(RestartInvocationMissingInputError: GONE "The invocation ca
 pub(crate) struct RestartInvocationNotStartedError(pub(crate) String);
 impl_meta_api_error!(RestartInvocationNotStartedError: TOO_EARLY "The invocation cannot be restarted because it's not running yet, meaning it might have been scheduled or inboxed.");
 
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Resetting the invocation '{0}' is not supported, because it was started using the old service protocol."
+)]
+pub(crate) struct ResetInvocationUnsupportedError(pub(crate) String);
+impl_meta_api_error!(ResetInvocationUnsupportedError: UNPROCESSABLE_ENTITY "Resetting the invocation is not supported, because it was started using the old service protocol.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "The invocation '{0}' cannot be reset because it's not running. For completed invocations, use restart instead."
+)]
+pub(crate) struct ResetInvocationNotRunningError(pub(crate) String);
+impl_meta_api_error!(ResetInvocationNotRunningError: TOO_EARLY "The invocation cannot be reset because it's not running. For completed invocations, use restart instead.");
+
 // --- Old Meta API errors. Please don't use these anymore.
 
 /// This error is used by handlers to propagate API errors,

@@ -52,7 +52,7 @@ use restate_types::invocation::{
     InvocationQuery, InvocationTarget, InvocationTargetType, InvocationTermination,
     NotifySignalRequest, PurgeInvocationRequest, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, SubmitNotificationSink, TerminationFlavor, WorkflowHandlerType,
-    restart,
+    reset, restart,
 };
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
@@ -840,6 +840,31 @@ where
                             response_sink: Some(InvocationMutationResponseSink::Ingress(
                                 IngressInvocationResponseSink { request_id },
                             )),
+                        }),
+                    )
+                    .await
+            }
+            PartitionProcessorRpcRequestInner::ResetInvocation {
+                invocation_id,
+                truncate_from,
+                previous_attempt_retention,
+                apply_to_child_calls,
+                apply_to_pinned_deployment,
+            } => {
+                self.leadership_state
+                    .handle_rpc_proposal_command(
+                        request_id,
+                        response_tx,
+                        invocation_id.partition_key(),
+                        Command::ResetInvocation(reset::Request {
+                            invocation_id,
+                            previous_attempt_retention,
+                            apply_to_child_calls,
+                            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                IngressInvocationResponseSink { request_id },
+                            )),
+                            truncate_from,
+                            apply_to_pinned_deployment,
                         }),
                     )
                     .await

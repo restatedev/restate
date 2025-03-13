@@ -107,6 +107,10 @@ where
             patch(openapi_handler!(invocations::restart_invocation)),
         )
         .route(
+            "/invocations/:invocation_id/reset",
+            patch(openapi_handler!(invocations::reset_invocation)),
+        )
+        .route(
             "/subscriptions",
             post(openapi_handler!(subscriptions::create_subscription)),
         )

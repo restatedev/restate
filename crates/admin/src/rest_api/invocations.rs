@@ -21,8 +21,10 @@ use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
     PurgeInvocationResponse,
 };
+use restate_types::invocation::reset::TruncateFrom;
 use restate_types::invocation::{
-    InvocationEpoch, InvocationTermination, PurgeInvocationRequest, TerminationFlavor, restart,
+    InvocationEpoch, InvocationTermination, PurgeInvocationRequest, TerminationFlavor, reset,
+    restart,
 };
 use restate_wal_protocol::{Command, Envelope};
 use serde::{Deserialize, Serialize};
@@ -511,6 +513,174 @@ where
         )?,
         client::RestartInvocationResponse::NotStarted => {
             Err(RestartInvocationNotStartedError(invocation_id.to_string()))?
+        }
+    }
+}
+
+#[derive(Default, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetInvocationApplyToChildInvocations {
+    Nothing,
+    /// Kill all the child invocations that have been created after the truncation point
+    #[default]
+    Kill,
+    /// Cancel all the child invocations that have been created after the truncation point
+    Cancel,
+}
+
+impl From<ResetInvocationApplyToChildInvocations> for reset::ApplyToChildInvocations {
+    fn from(value: ResetInvocationApplyToChildInvocations) -> Self {
+        match value {
+            ResetInvocationApplyToChildInvocations::Kill => reset::ApplyToChildInvocations::Kill,
+            ResetInvocationApplyToChildInvocations::Nothing => {
+                reset::ApplyToChildInvocations::Nothing
+            }
+            ResetInvocationApplyToChildInvocations::Cancel => {
+                reset::ApplyToChildInvocations::Cancel
+            }
+        }
+    }
+}
+
+#[derive(Default, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetInvocationApplyToPinnedDeployment {
+    #[default]
+    Keep,
+    /// Clear the pinned deployment.
+    ///
+    /// NOTE: If the new picked up deployment doesn't support the current service protocol version, the invocation will remain stuck in a retry loop. Use with caution!
+    Clear,
+}
+
+impl From<ResetInvocationApplyToPinnedDeployment> for reset::ApplyToPinnedDeployment {
+    fn from(value: ResetInvocationApplyToPinnedDeployment) -> Self {
+        match value {
+            ResetInvocationApplyToPinnedDeployment::Keep => reset::ApplyToPinnedDeployment::Keep,
+            ResetInvocationApplyToPinnedDeployment::Clear => reset::ApplyToPinnedDeployment::Clear,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct ResetInvocationParams {
+    pub truncate_from: Option<u32>,
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    #[schemars(with = "Option<String>")]
+    pub previous_attempt_retention: Option<Duration>,
+    pub apply_to_child_calls: Option<ResetInvocationApplyToChildInvocations>,
+    pub apply_to_pinned_deployment: Option<ResetInvocationApplyToPinnedDeployment>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ResetInvocationResponse {
+    /// The new invocation epoch of the invocation.
+    pub new_invocation_epoch: InvocationEpoch,
+}
+
+generate_meta_api_error!(ResetInvocationError: [
+    InvocationNotFoundError,
+    InvocationClientError,
+    InvalidFieldError,
+    ResetInvocationUnsupportedError,
+    ResetInvocationNotRunningError
+]);
+
+/// Reset an invocation
+#[openapi(
+    summary = "Reset an invocation",
+    description = "Reset the given invocation, truncating the progress from the given journal entry index onward and resuming afterward.",
+    operation_id = "reset_invocation",
+    tags = "invocation",
+    parameters(
+        path(
+            name = "invocation_id",
+            description = "Invocation identifier.",
+            schema = "std::string::String"
+        ),
+        query(
+            name = "truncate_from",
+            description = "Journal entry index to truncate from, inclusive. The index MUST correspond to a command entry or to a signal notification, and it cannot be zero, otherwise this operation will fail. If not provided, it defaults to 1 (after the first entry).",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = "u32",
+        ),
+        query(
+            name = "previous_attempt_retention",
+            description = "If set, it will override the configured completion_retention/journal_retention when the invocation was executed the first time. If none of the completion_retention/journal_retention are configured, and neither this previous_attempt_retention, then the previous attempt won't be retained at all. Can be configured using humantime format or ISO8601.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = String,
+        ),
+        query(
+            name = "apply_to_child_calls",
+            description = "What to do with children calls that have been created after the truncation point. By default, kills all the children calls. This doesn't apply to sends.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = ResetInvocationApplyToChildInvocations,
+        ),
+        query(
+            name = "apply_to_pinned_deployment",
+            description = "What to do with pinned deployment. By default, the current pinned deployment will be kept.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = ResetInvocationApplyToPinnedDeployment,
+        )
+    )
+)]
+pub async fn reset_invocation<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
+    Path(invocation_id): Path<String>,
+    Query(ResetInvocationParams {
+        truncate_from,
+        previous_attempt_retention,
+        apply_to_child_calls,
+        apply_to_pinned_deployment,
+    }): Query<ResetInvocationParams>,
+) -> Result<Json<ResetInvocationResponse>, ResetInvocationError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .reset_invocation(
+            PartitionProcessorRpcRequestId::new(),
+            invocation_id,
+            TruncateFrom::EntryIndex { entry_index: truncate_from.unwrap_or(1) },
+            previous_attempt_retention,
+            apply_to_child_calls.unwrap_or_default().into(),
+            apply_to_pinned_deployment.unwrap_or_default().into(),
+        )
+        .await
+        .map_err(InvocationClientError)?
+    {
+        client::ResetInvocationResponse::Ok { new_epoch } => Ok(ResetInvocationResponse {
+            new_invocation_epoch: new_epoch,
+        }
+            .into()),
+
+        client::ResetInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        client::ResetInvocationResponse::Unsupported => {
+            Err(ResetInvocationUnsupportedError(invocation_id.to_string()))?
+        }
+        client::ResetInvocationResponse::NotRunning => {
+            Err(   ResetInvocationNotRunningError(invocation_id.to_string()))?
+        }
+        client::ResetInvocationResponse::BadIndex => {
+            Err(InvalidFieldError("truncate_from", "The index MUST correspond to a command entry or to a signal notification, and it cannot be zero.".to_owned()))?
         }
     }
 }

@@ -193,7 +193,7 @@ pub struct ClearStateCommand {
 }
 impl_command_accessors!(ClearState -> [@metadata @from_entry @no_completion]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClearAllStateCommand {
     pub name: ByteString,
 }

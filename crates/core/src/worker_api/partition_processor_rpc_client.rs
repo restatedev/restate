@@ -21,7 +21,11 @@ use restate_types::identifiers::{
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PurgeInvocationResponse, RestartInvocationResponse, SubmittedInvocationNotification,
+    PurgeInvocationResponse, ResetInvocationResponse, RestartInvocationResponse,
+    SubmittedInvocationNotification,
+};
+use restate_types::invocation::reset::{
+    ApplyToChildInvocations, ApplyToPinnedDeployment, TruncateFrom,
 };
 use restate_types::invocation::restart::{ApplyToWorkflowRun, IfRunning};
 use restate_types::invocation::{
@@ -528,6 +532,38 @@ where
             }
             _ => {
                 panic!("Expecting RestartInvocation rpc response")
+            }
+        })
+    }
+
+    async fn reset_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+        truncate_from: TruncateFrom,
+        previous_attempt_retention: Option<Duration>,
+        apply_to_child_invocations: ApplyToChildInvocations,
+        apply_to_pinned_deployment: ApplyToPinnedDeployment,
+    ) -> Result<ResetInvocationResponse, InvocationClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::ResetInvocation {
+                    invocation_id,
+                    previous_attempt_retention,
+                    apply_to_child_calls: apply_to_child_invocations,
+                    apply_to_pinned_deployment,
+                    truncate_from,
+                },
+            )
+            .await?;
+
+        Ok(match response {
+            PartitionProcessorRpcResponse::ResetInvocation(reset_invocation_response) => {
+                reset_invocation_response.into()
+            }
+            _ => {
+                panic!("Expecting ResetInvocation rpc response")
             }
         })
     }

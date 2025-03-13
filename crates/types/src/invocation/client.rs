@@ -10,6 +10,7 @@
 
 use crate::errors::InvocationError;
 use crate::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+use crate::invocation::reset::{ApplyToChildInvocations, ApplyToPinnedDeployment, TruncateFrom};
 use crate::invocation::restart::{ApplyToWorkflowRun, IfRunning};
 use crate::invocation::{
     InvocationEpoch, InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget,
@@ -119,6 +120,15 @@ pub enum RestartInvocationResponse {
     NotStarted,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResetInvocationResponse {
+    Ok { new_epoch: InvocationEpoch },
+    NotFound,
+    Unsupported,
+    NotRunning,
+    BadIndex,
+}
+
 /// This trait provides the functionalities to interact with Restate invocations.
 pub trait InvocationClient {
     /// Append the invocation to the log, waiting for the PP to emit [`SubmittedInvocationNotification`] when the command is processed.
@@ -203,4 +213,15 @@ pub trait InvocationClient {
         previous_attempt_retention: Option<Duration>,
         apply_to_workflow_run: ApplyToWorkflowRun,
     ) -> impl Future<Output = Result<RestartInvocationResponse, InvocationClientError>> + Send;
+
+    /// See [`crate::invocation::reset::Request`].
+    fn reset_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+        truncate_from: TruncateFrom,
+        previous_attempt_retention: Option<Duration>,
+        apply_to_child_invocations: ApplyToChildInvocations,
+        apply_to_pinned_deployment: ApplyToPinnedDeployment,
+    ) -> impl Future<Output = Result<ResetInvocationResponse, InvocationClientError>> + Send;
 }

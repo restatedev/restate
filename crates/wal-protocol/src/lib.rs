@@ -13,7 +13,8 @@ use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, GetInvocationOutputResponse, InvocationResponse,
-    InvocationTermination, NotifySignalRequest, PurgeInvocationRequest, ServiceInvocation, restart,
+    InvocationTermination, NotifySignalRequest, PurgeInvocationRequest, ServiceInvocation, reset,
+    restart,
 };
 use restate_types::logs::{HasRecordKeys, Keys, MatchKeyQuery};
 use restate_types::message::MessageIndex;
@@ -150,6 +151,8 @@ pub enum Command {
     AttachInvocation(AttachInvocationRequest),
     /// Restart an invocation
     RestartInvocation(restart::Request),
+    /// Reset an ongoing invocation
+    ResetInvocation(reset::Request),
 
     // -- Partition processor events for PP
     /// Invoker is reporting effect(s) from an ongoing invocation.
@@ -219,6 +222,9 @@ impl HasRecordKeys for Envelope {
             Command::InvocationResponse(response) => Keys::Single(response.partition_key()),
             Command::NotifySignal(sig) => Keys::Single(sig.partition_key()),
             Command::NotifyGetInvocationOutputResponse(res) => Keys::Single(res.partition_key()),
+            Command::ResetInvocation(trim_invocation) => {
+                Keys::Single(trim_invocation.partition_key())
+            }
         }
     }
 }
@@ -320,6 +326,7 @@ mod envelope {
         NotifySignal = 14,                      // protobuf
         PurgeJournal = 15,                      // flexbuffers
         RestartInvocation = 16,                 // flexbuffers
+        ResetInvocation = 17,                   // flexbuffers
     }
 
     #[derive(bilrost::Message)]
@@ -449,6 +456,10 @@ mod envelope {
                 CommandKind::RestartInvocation,
                 Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
             ),
+            Command::ResetInvocation(value) => (
+                CommandKind::ResetInvocation,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
             Command::Invoke(value) => {
                 let value = protobuf::ServiceInvocation::from(value.clone());
                 (CommandKind::Invoke, Field::encode_protobuf(&value))
@@ -541,6 +552,10 @@ mod envelope {
             CommandKind::RestartInvocation => {
                 codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
                 Command::RestartInvocation(envelope.command.decode_serde()?)
+            }
+            CommandKind::ResetInvocation => {
+                codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
+                Command::ResetInvocation(envelope.command.decode_serde()?)
             }
             CommandKind::Invoke => {
                 codec_or_error!(envelope.command, StorageCodecKind::Protobuf);

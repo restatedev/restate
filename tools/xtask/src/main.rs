@@ -28,7 +28,11 @@ use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, S
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PurgeInvocationResponse, RestartInvocationResponse, SubmittedInvocationNotification,
+    PurgeInvocationResponse, ResetInvocationResponse, RestartInvocationResponse,
+    SubmittedInvocationNotification,
+};
+use restate_types::invocation::reset::{
+    ApplyToChildInvocations, ApplyToPinnedDeployment, TruncateFrom,
 };
 use restate_types::invocation::restart::{ApplyToWorkflowRun, IfRunning};
 use restate_types::invocation::{
@@ -197,6 +201,18 @@ impl InvocationClient for Mock {
         _: Option<Duration>,
         _: ApplyToWorkflowRun,
     ) -> impl Future<Output = Result<RestartInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn reset_invocation(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+        _: TruncateFrom,
+        _: Option<Duration>,
+        _: ApplyToChildInvocations,
+        _: ApplyToPinnedDeployment,
+    ) -> impl Future<Output = Result<ResetInvocationResponse, InvocationClientError>> + Send {
         pending()
     }
 }

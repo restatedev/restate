@@ -19,7 +19,7 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
-    JournalRetentionPolicy, StatusTimestamps,
+    StatusTimestamps,
 };
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
@@ -145,7 +145,7 @@ where
                 .await?;
 
                 // Send abort invocation to invoker
-                ctx.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+                ctx.send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
 
                 // Write output entry
                 let response_result = ResponseResult::Failure(RESTARTED_INVOCATION_ERROR);
@@ -188,14 +188,8 @@ where
 
                 // Prepare the completed status
                 let original_journal_length = metadata.journal_metadata.length;
-                let journal_retention_policy = if metadata.journal_retention_duration.is_zero() {
-                    JournalRetentionPolicy::Drop
-                } else {
-                    JournalRetentionPolicy::Retain
-                };
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     metadata,
-                    journal_retention_policy,
                     response_result,
                 );
 
@@ -284,7 +278,7 @@ where
 
         invocation
             .completion_range_epoch_map
-            .add_trim_point(0, new_epoch);
+            .add_truncation_point(0, new_epoch);
 
         let in_flight_invocation_metadata = InFlightInvocationMetadata {
             invocation_target: invocation.invocation_target,

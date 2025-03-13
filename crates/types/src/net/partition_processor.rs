@@ -13,8 +13,9 @@ use crate::identifiers::{
 };
 use crate::invocation::client::{
     CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PurgeInvocationResponse,
-    RestartInvocationResponse, SubmittedInvocationNotification,
+    ResetInvocationResponse, RestartInvocationResponse, SubmittedInvocationNotification,
 };
+use crate::invocation::reset::{ApplyToChildInvocations, ApplyToPinnedDeployment, TruncateFrom};
 use crate::invocation::restart::{ApplyToWorkflowRun, IfRunning};
 use crate::invocation::{InvocationEpoch, InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
@@ -90,6 +91,13 @@ pub enum PartitionProcessorRpcRequestInner {
         previous_attempt_retention: Option<Duration>,
         apply_to_workflow_run: ApplyToWorkflowRun,
     },
+    ResetInvocation {
+        invocation_id: InvocationId,
+        truncate_from: TruncateFrom,
+        previous_attempt_retention: Option<Duration>,
+        apply_to_child_calls: ApplyToChildInvocations,
+        apply_to_pinned_deployment: ApplyToPinnedDeployment,
+    },
 }
 
 impl WithPartitionKey for PartitionProcessorRpcRequestInner {
@@ -112,6 +120,9 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
                 invocation_id.partition_key()
             }
             PartitionProcessorRpcRequestInner::RestartInvocation { invocation_id, .. } => {
+                invocation_id.partition_key()
+            }
+            PartitionProcessorRpcRequestInner::ResetInvocation { invocation_id, .. } => {
                 invocation_id.partition_key()
             }
         }
@@ -269,6 +280,43 @@ impl From<RestartInvocationResponse> for RestartInvocationRpcResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResetInvocationRpcResponse {
+    Ok { new_epoch: InvocationEpoch },
+    NotFound,
+    Unsupported,
+    NotRunning,
+    BadIndex,
+}
+
+impl From<ResetInvocationRpcResponse> for ResetInvocationResponse {
+    fn from(value: ResetInvocationRpcResponse) -> Self {
+        match value {
+            ResetInvocationRpcResponse::Ok { new_epoch } => {
+                ResetInvocationResponse::Ok { new_epoch }
+            }
+            ResetInvocationRpcResponse::NotFound => ResetInvocationResponse::NotFound,
+            ResetInvocationRpcResponse::Unsupported => ResetInvocationResponse::Unsupported,
+            ResetInvocationRpcResponse::NotRunning => ResetInvocationResponse::NotRunning,
+            ResetInvocationRpcResponse::BadIndex => ResetInvocationResponse::BadIndex,
+        }
+    }
+}
+
+impl From<ResetInvocationResponse> for ResetInvocationRpcResponse {
+    fn from(value: ResetInvocationResponse) -> Self {
+        match value {
+            ResetInvocationResponse::Ok { new_epoch } => {
+                ResetInvocationRpcResponse::Ok { new_epoch }
+            }
+            ResetInvocationResponse::NotFound => ResetInvocationRpcResponse::NotFound,
+            ResetInvocationResponse::Unsupported => ResetInvocationRpcResponse::Unsupported,
+            ResetInvocationResponse::NotRunning => ResetInvocationRpcResponse::NotRunning,
+            ResetInvocationResponse::BadIndex => ResetInvocationRpcResponse::BadIndex,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
     Appended,
     NotFound,
@@ -281,4 +329,5 @@ pub enum PartitionProcessorRpcResponse {
     PurgeInvocation(PurgeInvocationRpcResponse),
     PurgeJournal(PurgeInvocationRpcResponse),
     RestartInvocation(RestartInvocationRpcResponse),
+    ResetInvocation(ResetInvocationRpcResponse),
 }

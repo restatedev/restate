@@ -33,7 +33,7 @@ use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempoten
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatusTable,
-    JournalRetentionPolicy, PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
+    PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_table::ReadOnlyJournalTable;
@@ -68,7 +68,7 @@ use restate_types::invocation::{
     InvocationTargetType, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
     ResponseResult, RestateVersion, ServiceInvocation, ServiceInvocationResponseSink,
     ServiceInvocationSpanContext, Source, SubmitNotificationSink, TerminationFlavor,
-    VirtualObjectHandlerType, WorkflowHandlerType,
+    VirtualObjectHandlerType, WorkflowHandlerType, reset,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
 use restate_types::journal::Completion;
@@ -395,23 +395,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         });
     }
 
-    fn send_abort_invocation_to_invoker(
-        &mut self,
-        invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
-    ) {
-        debug_if_leader!(
-            self.is_leader,
-            restate.invocation.id = %invocation_id,
-            "Send abort command to invoker"
-        );
-
-        self.action_collector.push(Action::AbortInvocation {
-            invocation_id,
-            invocation_epoch,
-        });
-    }
-
     async fn on_apply(&mut self, command: Command) -> Result<(), Error>
     where
         S: IdempotencyTable
@@ -533,6 +516,26 @@ impl<S> StateMachineApplyContext<'_, S> {
                 lifecycle::OnNotifyGetInvocationOutputResponse(get_invocation_output_response)
                     .apply(self)
                     .await?;
+                Ok(())
+            }
+            Command::ResetInvocation(trim_invocation_request) => {
+                let status = self
+                    .get_invocation_status(&trim_invocation_request.invocation_id)
+                    .await?;
+
+                let reset::TruncateFrom::EntryIndex { entry_index } =
+                    trim_invocation_request.truncate_from;
+                lifecycle::OnResetInvocationCommand {
+                    invocation_id: trim_invocation_request.invocation_id,
+                    invocation_status: status,
+                    truncation_point_entry_index: entry_index,
+                    previous_attempt_retention: trim_invocation_request.previous_attempt_retention,
+                    apply_to_child_calls: trim_invocation_request.apply_to_child_calls,
+                    apply_to_pinned_deployment: trim_invocation_request.apply_to_pinned_deployment,
+                    response_sink: trim_invocation_request.response_sink,
+                }
+                .apply(self)
+                .await?;
                 Ok(())
             }
         }
@@ -1120,7 +1123,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+                self.send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
                 self.reply_to_kill(response_sink, KillInvocationResponse::NotFound);
             }
         };
@@ -1262,7 +1265,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+                self.send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
                 self.reply_to_cancel(response_sink, CancelInvocationResponse::NotFound);
             }
         };
@@ -1409,7 +1412,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
-        self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+        self.send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
         Ok(())
     }
 
@@ -1438,7 +1441,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
-        self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+        self.send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
         Ok(())
     }
 
@@ -1802,7 +1805,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             trace!(
                 "Received invoker effect for invocation not in invoked status. Ignoring the effect."
             );
-            self.do_send_abort_invocation_to_invoker(invocation_id, effect_invocation_epoch);
+            self.send_abort_invocation_to_invoker(invocation_id, effect_invocation_epoch);
             return Ok(());
         }
 
@@ -1815,7 +1818,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 "Received invoker effect for invocation with different epoch. Current epoch {} != Invoker effect epoch {}. Ignoring the effect.",
                 current_invocation_epoch, effect_invocation_epoch
             );
-            self.do_send_abort_invocation_to_invoker(invocation_id, effect_invocation_epoch);
+            self.send_abort_invocation_to_invoker(invocation_id, effect_invocation_epoch);
             return Ok(());
         }
 
@@ -2017,11 +2020,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             if !completion_retention.is_zero() {
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
-                    if journal_retention.is_zero() {
-                        JournalRetentionPolicy::Drop
-                    } else {
-                        JournalRetentionPolicy::Retain
-                    },
                     response_result,
                 );
                 self.do_store_completed_invocation(invocation_id, completed_invocation)
@@ -4042,7 +4040,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    fn do_send_abort_invocation_to_invoker(
+    fn send_abort_invocation_to_invoker(
         &mut self,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,

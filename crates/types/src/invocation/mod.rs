@@ -1200,6 +1200,74 @@ pub mod restart {
     }
 }
 
+/// Reset invocation command. See [reset::Request]
+pub mod reset {
+    use super::*;
+
+    /// Reset an invocation.
+    ///
+    /// This will truncate the journal from the given starting point, and will resume the execution on a new invocation attempt.
+    #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct Request {
+        pub invocation_id: InvocationId,
+
+        // Where to truncate the journal from
+        pub truncate_from: TruncateFrom,
+
+        /// If set, it will override the configured completion_retention/journal_retention when the invocation was executed the first time.
+        /// If none of the completion_retention/journal_retention are configured, and neither this previous_attempt_retention, then the previous attempt won't be retained at all.
+        ///
+        /// To retain the previous attempt, the new attempt will take the invocation id of the previous attempt (the one used to trigger this reset),
+        /// and the old invocation id will take a new randomly generated invocation id.
+        pub previous_attempt_retention: Option<Duration>,
+
+        /// What to do with child calls. This doesn't apply to sends.
+        pub apply_to_child_calls: ApplyToChildInvocations,
+
+        /// What to do with pinned deployment
+        pub apply_to_pinned_deployment: ApplyToPinnedDeployment,
+
+        /// Where to send the response for this command
+        pub response_sink: Option<InvocationMutationResponseSink>,
+    }
+
+    impl WithInvocationId for Request {
+        fn invocation_id(&self) -> InvocationId {
+            self.invocation_id
+        }
+    }
+
+    /// Flavor of the [`Request`].
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub enum TruncateFrom {
+        EntryIndex {
+            /// Entry index **inclusive**.
+            ///
+            /// Note: the index MUST correspond to a [`journal_v2::Command`] or a [`journal_v2::Signal`],
+            /// otherwise the command will be ignored.
+            entry_index: EntryIndex,
+        },
+    }
+
+    #[derive(Default, Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub enum ApplyToChildInvocations {
+        Nothing,
+        #[default]
+        Kill,
+        Cancel,
+    }
+
+    #[derive(Default, Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub enum ApplyToPinnedDeployment {
+        #[default]
+        Keep,
+        /// Clear the pinned deployment.
+        ///
+        /// NOTE: If the new picked up deployment doesn't support the current service protocol version, the invocation will remain stuck in a retry loop.
+        Clear,
+    }
+}
+
 mod serde_hacks {
     //! Module where we hide all the hacks to make back-compat working!
 
