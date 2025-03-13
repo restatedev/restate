@@ -152,23 +152,22 @@ pub mod v1 {
             BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
             Entry, EntryResult, EpochSequenceNumber, Header, IdempotencyId, IdempotencyMetadata,
             InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
-            InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalEntry, JournalEntryId,
-            JournalEntryIndex, JournalMeta, KvPair, OutboxMessage, Promise, ResponseResult,
-            SequenceNumber, ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source,
-            SpanContext, SpanRelation, StateMutation, SubmitNotificationSink, Timer,
-            VirtualObjectStatus, enriched_entry_header, entry, entry_result, inbox_entry,
-            invocation_resolution_result, invocation_status, invocation_status_v2,
-            invocation_target, journal_entry, outbox_message, promise, response_result, source,
-            span_relation, submit_notification_sink, timer, virtual_object_status,
+            InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
+            JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage, Promise,
+            ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
+            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
+            SubmitNotificationSink, Timer, VirtualObjectStatus, enriched_entry_header, entry,
+            entry_result, inbox_entry, invocation_resolution_result, invocation_status,
+            invocation_status_v2, invocation_target, journal_entry, outbox_message, promise,
+            response_result, source, span_relation, submit_notification_sink, timer,
+            virtual_object_status,
         };
         use restate_storage_api::StorageError;
         use restate_types::errors::{IdDecodeError, InvocationError};
         use restate_types::identifiers::{
             PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
         };
-        use restate_types::invocation::{
-            InvocationTermination, JournalCompletionTarget, TerminationFlavor,
-        };
+        use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::journal::raw::RawEntry;
         use restate_types::journal_v2::{EntryMetadata, NotificationId, NotificationType};
@@ -267,9 +266,9 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_types::identifiers::JournalEntryId> for JournalEntryId {
-            fn from(value: restate_types::identifiers::JournalEntryId) -> Self {
-                JournalEntryId {
+        impl From<restate_types::invocation::JournalCompletionTarget> for JournalCompletionTarget {
+            fn from(value: restate_types::invocation::JournalCompletionTarget) -> Self {
+                Self {
                     partition_key: value.partition_key(),
                     invocation_uuid: value
                         .invocation_id()
@@ -277,22 +276,26 @@ pub mod v1 {
                         .to_bytes()
                         .to_vec()
                         .into(),
-                    entry_index: value.journal_index(),
+                    entry_index: value.caller_completion_id,
+                    caller_invocation_epoch: value.caller_invocation_epoch,
                 }
             }
         }
 
-        impl TryFrom<JournalEntryId> for restate_types::identifiers::JournalEntryId {
+        impl TryFrom<JournalCompletionTarget> for restate_types::invocation::JournalCompletionTarget {
             type Error = ConversionError;
 
-            fn try_from(value: JournalEntryId) -> Result<Self, ConversionError> {
-                Ok(restate_types::identifiers::JournalEntryId::from_parts(
-                    restate_types::identifiers::InvocationId::from_parts(
-                        value.partition_key,
-                        try_bytes_into_invocation_uuid(value.invocation_uuid)?,
+            fn try_from(value: JournalCompletionTarget) -> Result<Self, ConversionError> {
+                Ok(
+                    restate_types::invocation::JournalCompletionTarget::from_parts(
+                        restate_types::identifiers::InvocationId::from_parts(
+                            value.partition_key,
+                            try_bytes_into_invocation_uuid(value.invocation_uuid)?,
+                        ),
+                        value.entry_index,
+                        value.caller_invocation_epoch,
                     ),
-                    value.entry_index,
-                ))
+                )
             }
         }
 
@@ -2151,7 +2154,7 @@ pub mod v1 {
                     ResponseSink::PartitionProcessor(partition_processor) => {
                         Some(
                             restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor(
-                                JournalCompletionTarget {
+                                restate_types::invocation::JournalCompletionTarget {
                                     caller_id:  restate_types::identifiers::InvocationId::from_slice(&partition_processor.caller)?,
                                     caller_completion_id: partition_processor.entry_index,
                                     caller_invocation_epoch: partition_processor.caller_invocation_epoch,
@@ -2183,7 +2186,7 @@ pub mod v1 {
             ) -> Self {
                 let response_sink = match value {
                     Some(
-                        restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor(JournalCompletionTarget {
+                        restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor(restate_types::invocation::JournalCompletionTarget {
                                                                                                          caller_id, caller_completion_id, caller_invocation_epoch
                                                                                                      }),
                     ) => ResponseSink::PartitionProcessor(PartitionProcessor {
@@ -3210,7 +3213,7 @@ pub mod v1 {
                         invocation_response,
                     ) => restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
                         restate_types::invocation::InvocationResponse {
-                            target: JournalCompletionTarget {
+                            target: restate_types::invocation::JournalCompletionTarget {
                                 caller_id: restate_types::identifiers::InvocationId::try_from(
                                     invocation_response
                                         .invocation_id
