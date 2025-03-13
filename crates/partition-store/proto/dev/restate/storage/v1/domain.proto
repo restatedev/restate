@@ -65,10 +65,11 @@ message JournalEntryIndex {
   uint32 entry_index = 1;
 }
 
-message JournalEntryId {
+message JournalCompletionTarget {
   uint64 partition_key = 1;
   bytes invocation_uuid = 2;
   uint32 entry_index = 3;
+  uint32 caller_invocation_epoch = 4;
 }
 
 message EntryResult {
@@ -742,7 +743,7 @@ message Promise {
   }
 
   message NotCompletedState {
-    repeated JournalEntryId listening_journal_entries = 1;
+    repeated JournalCompletionTarget listening_journal_entries = 1;
   }
 
   oneof state {

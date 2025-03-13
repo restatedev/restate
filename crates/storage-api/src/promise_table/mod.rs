@@ -14,7 +14,8 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::Stream;
 use restate_types::errors::InvocationErrorCode;
-use restate_types::identifiers::{JournalEntryId, PartitionKey, ServiceId};
+use restate_types::identifiers::{PartitionKey, ServiceId};
+use restate_types::invocation::JournalCompletionTarget;
 use restate_types::journal::{CompletionResult, EntryResult};
 use restate_types::journal_v2::{
     CompletePromiseValue, Failure, GetPromiseResult, PeekPromiseResult,
@@ -82,7 +83,7 @@ pub enum PromiseState {
     Completed(PromiseResult),
     NotCompleted(
         // Journal entries listening for this promise to be completed
-        Vec<JournalEntryId>,
+        Vec<JournalCompletionTarget>,
     ),
 }
 

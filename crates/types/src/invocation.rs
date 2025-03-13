@@ -470,6 +470,18 @@ impl JournalCompletionTarget {
             caller_invocation_epoch: 0,
         }
     }
+
+    pub const fn from_parts(
+        caller_id: InvocationId,
+        caller_completion_id: CompletionId,
+        caller_invocation_epoch: InvocationEpoch,
+    ) -> Self {
+        Self {
+            caller_id,
+            caller_completion_id,
+            caller_invocation_epoch,
+        }
+    }
 }
 
 impl WithInvocationId for JournalCompletionTarget {
