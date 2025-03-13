@@ -672,6 +672,7 @@ message Timer {
   message CompleteSleepEntry {
     InvocationId invocation_id = 1;
     uint32 entry_index = 2;
+    uint32 caller_invocation_epoch = 3;
   }
 
   message CleanInvocationStatus {
