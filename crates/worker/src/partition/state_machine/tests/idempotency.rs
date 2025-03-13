@@ -24,14 +24,9 @@ use restate_types::invocation::{
 use rstest::*;
 use std::time::Duration;
 
-#[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn start_and_complete_idempotent_invocation(
-    #[case] experimental_features: EnumSet<ExperimentalFeature>,
-) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn start_and_complete_idempotent_invocation() {
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -60,29 +55,15 @@ async fn start_and_complete_idempotent_invocation(
         }))
     );
 
-    // Assert idempotency key mapping exists only with idempotency table writes enabled
-    if experimental_features.contains(ExperimentalFeature::DisableIdempotencyTable) {
-        assert_that!(
-            test_env
-                .storage()
-                .get_idempotency_metadata(&idempotency_id)
-                .await
-                .unwrap(),
-            none()
-        );
-    } else {
-        assert_that!(
-            test_env
-                .storage()
-                .get_idempotency_metadata(&idempotency_id)
-                .await
-                .unwrap()
-                .unwrap(),
-            pat!(IdempotencyMetadata {
-                invocation_id: eq(invocation_id),
-            })
-        );
-    }
+    // Assert we don't write idempotency metadata, the table is deprecated
+    assert_that!(
+        test_env
+            .storage()
+            .get_idempotency_metadata(&idempotency_id)
+            .await
+            .unwrap(),
+        none()
+    );
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");
@@ -132,14 +113,9 @@ async fn start_and_complete_idempotent_invocation(
     test_env.shutdown().await;
 }
 
-#[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn start_and_complete_idempotent_invocation_neo_table(
-    #[case] experimental_features: EnumSet<ExperimentalFeature>,
-) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn start_and_complete_idempotent_invocation_neo_table() {
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -168,29 +144,15 @@ async fn start_and_complete_idempotent_invocation_neo_table(
         }))
     );
 
-    // Assert idempotency key mapping exists only with idempotency table writes enabled
-    if experimental_features.contains(ExperimentalFeature::DisableIdempotencyTable) {
-        assert_that!(
-            test_env
-                .storage()
-                .get_idempotency_metadata(&idempotency_id)
-                .await
-                .unwrap(),
-            none()
-        );
-    } else {
-        assert_that!(
-            test_env
-                .storage()
-                .get_idempotency_metadata(&idempotency_id)
-                .await
-                .unwrap()
-                .unwrap(),
-            pat!(IdempotencyMetadata {
-                invocation_id: eq(invocation_id),
-            })
-        );
-    }
+    // Assert we don't write idempotency metadata, the table is deprecated
+    assert_that!(
+        test_env
+            .storage()
+            .get_idempotency_metadata(&idempotency_id)
+            .await
+            .unwrap(),
+        none()
+    );
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");
@@ -244,14 +206,9 @@ async fn start_and_complete_idempotent_invocation_neo_table(
     test_env.shutdown().await;
 }
 
-#[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn complete_already_completed_invocation(
-    #[case] experimental_features: EnumSet<ExperimentalFeature>,
-) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn complete_already_completed_invocation() {
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
@@ -307,14 +264,9 @@ async fn complete_already_completed_invocation(
     test_env.shutdown().await;
 }
 
-#[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn attach_with_service_invocation_command_while_executing(
-    #[case] experimental_features: EnumSet<ExperimentalFeature>,
-) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn attach_with_service_invocation_command_while_executing() {
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -405,16 +357,11 @@ async fn attach_with_service_invocation_command_while_executing(
 }
 
 #[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into(), true)]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into(), false)]
-#[case(EnumSet::empty(), true)]
-#[case(EnumSet::empty(), false)]
+#[case(true)]
+#[case(false)]
 #[restate_core::test]
-async fn attach_with_send_service_invocation(
-    #[case] experimental_features: EnumSet<ExperimentalFeature>,
-    #[case] use_same_request_id: bool,
-) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) {
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -530,14 +477,9 @@ async fn attach_with_send_service_invocation(
     test_env.shutdown().await;
 }
 
-#[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn attach_inboxed_with_send_service_invocation(
-    #[case] experimental_features: EnumSet<ExperimentalFeature>,
-) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn attach_inboxed_with_send_service_invocation() {
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let request_id_1 = PartitionProcessorRpcRequestId::default();
@@ -631,12 +573,9 @@ async fn attach_inboxed_with_send_service_invocation(
     test_env.shutdown().await;
 }
 
-#[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn attach_command(#[case] experimental_features: EnumSet<ExperimentalFeature>) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn attach_command() {
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let completion_retention = Duration::from_secs(60) * 60 * 24;
@@ -784,14 +723,9 @@ async fn attach_command_without_blocking_inflight() {
     test_env.shutdown().await;
 }
 
-#[rstest]
-#[case(ExperimentalFeature::DisableIdempotencyTable.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn purge_completed_idempotent_invocation(
-    #[case] experimental_features: EnumSet<ExperimentalFeature>,
-) {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn purge_completed_idempotent_invocation() {
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
