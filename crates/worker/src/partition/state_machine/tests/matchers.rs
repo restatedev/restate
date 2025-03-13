@@ -13,11 +13,10 @@ use bytestring::ByteString;
 use googletest::prelude::*;
 use restate_storage_api::timer_table::{TimerKey, TimerKeyKind};
 use restate_types::errors::codes;
-use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::{InvocationTermination, TerminationFlavor};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{Completion, CompletionResult};
-use restate_types::journal_v2::Entry;
+use restate_types::journal_v2::{Entry, EntryIndex};
 
 pub mod storage {
     use super::*;
