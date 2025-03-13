@@ -115,6 +115,7 @@ where
                 ServiceInvocationResponseSink::partition_processor(
                     self.caller_invocation_id,
                     notification_idx,
+                    caller_invocation_metadata.current_invocation_epoch,
                 )
             }),
             span_context: span_context.clone(),
@@ -151,7 +152,8 @@ mod tests {
     use googletest::{elements_are, property};
     use restate_types::identifiers::{InvocationId, ServiceId};
     use restate_types::invocation::{
-        Header, InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocationResponseSink,
+        Header, InvocationResponse, InvocationTarget, JournalCompletionTarget, ResponseResult,
+        ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::{
         CallCommand, CallCompletion, CallInvocationIdCompletion, CallRequest, CallResult,
@@ -189,8 +191,11 @@ mod tests {
             .apply_multiple([
                 invoker_entry_effect(invocation_id, call_command.clone()),
                 Command::InvocationResponse(InvocationResponse {
-                    id: invocation_id,
-                    entry_index: result_completion_id,
+                    target: JournalCompletionTarget::from_parts(
+                        invocation_id,
+                        result_completion_id,
+                        0,
+                    ),
                     result: ResponseResult::Success(success_result.clone()),
                 }),
             ])
@@ -217,7 +222,8 @@ mod tests {
                                 response_sink: eq(Some(
                                     ServiceInvocationResponseSink::partition_processor(
                                         invocation_id,
-                                        result_completion_id
+                                        result_completion_id,
+                                        0
                                     )
                                 ))
                             }

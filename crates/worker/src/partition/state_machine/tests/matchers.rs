@@ -186,7 +186,9 @@ pub mod outbox {
 
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::identifiers::InvocationId;
-    use restate_types::invocation::{InvocationResponse, NotifySignalRequest, ResponseResult};
+    use restate_types::invocation::{
+        InvocationResponse, JournalCompletionTarget, NotifySignalRequest, ResponseResult,
+    };
     use restate_types::journal_v2::Signal;
 
     pub fn invocation_response_to_partition_processor(
@@ -197,8 +199,10 @@ pub mod outbox {
         pat!(
             restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(pat!(
                 InvocationResponse {
-                    id: eq(caller_invocation_id),
-                    entry_index: eq(caller_entry_index),
+                    target: pat!(JournalCompletionTarget {
+                        caller_id: eq(caller_invocation_id),
+                        caller_completion_id: eq(caller_entry_index),
+                    }),
                     result: response_result_matcher
                 }
             ))
