@@ -656,8 +656,8 @@ mod tests {
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
-        let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        let (connection, _sender, mut net_rx, _egress_drop) =
+            OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
@@ -699,7 +699,7 @@ mod tests {
         worker.enqueue_store(msg1).unwrap();
         worker.enqueue_store(msg2).unwrap();
         // wait for response (in test-env, it's safe to assume that responses will arrive in order)
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg1_id));
         let stored: Stored = response
@@ -710,7 +710,7 @@ mod tests {
         assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
 
         // response 2
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg2_id));
         let stored: Stored = response
@@ -732,8 +732,8 @@ mod tests {
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
-        let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        let (connection, _sender, mut net_rx, _egress_drop) =
+            OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
@@ -787,7 +787,7 @@ mod tests {
 
         worker.enqueue_store(msg1).unwrap();
         // first store is successful
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg1_id));
         let stored: Stored = response
@@ -803,7 +803,7 @@ mod tests {
         // observe Status::Sealing
         worker.enqueue_store(msg2).unwrap();
         // sealing
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg2_id));
         let stored: Stored = response
@@ -815,7 +815,7 @@ mod tests {
         // seal responses can come at any order, but we'll consume waiters queue before we process
         // store messages.
         // sealed
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), any!(eq(seal1_id), eq(seal2_id)));
         let sealed: Sealed = response
@@ -826,7 +826,7 @@ mod tests {
         assert_that!(sealed.local_tail, eq(LogletOffset::new(3)));
 
         // sealed2
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), any!(eq(seal1_id), eq(seal2_id)));
         let sealed: Sealed = response
@@ -849,7 +849,7 @@ mod tests {
         let msg3 = Incoming::for_testing(connection.downgrade(), msg3, None);
         let msg3_id = msg3.msg_id();
         worker.enqueue_store(msg3).unwrap();
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg3_id));
         let stored: Stored = response
@@ -868,7 +868,7 @@ mod tests {
         let msg_id = msg.msg_id();
         worker.enqueue_get_loglet_info(msg).unwrap();
 
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg_id));
         let info: LogletInfo = response
@@ -892,12 +892,10 @@ mod tests {
         const PEER: GenerationalNodeId = GenerationalNodeId::new(2, 2);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
-        let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
-
-        let (peer_net_tx, mut peer_net_rx) = mpsc::channel(10);
-        let repair_connection =
-            OwnedConnection::new_fake(PEER, CURRENT_PROTOCOL_VERSION, peer_net_tx);
+        let (connection, _sender, mut net_rx, _egress_drop) =
+            OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
+        let (repair_connection, _repair_sender, mut peer_net_rx, _egress_drop2) =
+            OwnedConnection::new_fake(PEER, CURRENT_PROTOCOL_VERSION, 10);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
@@ -974,7 +972,7 @@ mod tests {
         worker.enqueue_store(msg1).unwrap();
         worker.enqueue_store(msg2).unwrap();
         // first store is successful
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let stored: Stored = response
             .body
             .unwrap()
@@ -984,7 +982,7 @@ mod tests {
         assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
 
         // 10, 11
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let stored: Stored = response
             .body
             .unwrap()
@@ -997,7 +995,7 @@ mod tests {
         // seal responses can come at any order, but we'll consume waiters queue before we process
         // store messages.
         // sealed
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let sealed: Sealed = response
             .body
             .unwrap()
@@ -1007,7 +1005,7 @@ mod tests {
 
         // repair store (before local tail, local tail won't move)
         worker.enqueue_store(repair1).unwrap();
-        let response = peer_net_rx.recv().await.unwrap();
+        let response = peer_net_rx.next().await.unwrap();
         let stored: Stored = response
             .body
             .unwrap()
@@ -1016,7 +1014,7 @@ mod tests {
         assert_that!(stored.local_tail, eq(LogletOffset::new(12)));
 
         worker.enqueue_store(repair2).unwrap();
-        let response = peer_net_rx.recv().await.unwrap();
+        let response = peer_net_rx.next().await.unwrap();
         let stored: Stored = response
             .body
             .unwrap()
@@ -1033,7 +1031,7 @@ mod tests {
         let msg_id = msg.msg_id();
         worker.enqueue_get_loglet_info(msg).unwrap();
 
-        let response = net_rx.recv().await.unwrap();
+        let response = net_rx.next().await.unwrap();
         let header = response.header.unwrap();
         assert_that!(header.in_response_to(), eq(msg_id));
         let info: LogletInfo = response
@@ -1055,8 +1053,8 @@ mod tests {
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
-        let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        let (connection, _sender, mut net_rx, _egress_drop) =
+            OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
@@ -1117,7 +1115,7 @@ mod tests {
         // Wait for stores to complete.
         for _ in 0..3 {
             let stored: Stored = net_rx
-                .recv()
+                .next()
                 .await
                 .unwrap()
                 .body
@@ -1144,7 +1142,7 @@ mod tests {
             .unwrap();
 
         let mut records: Records = net_rx
-            .recv()
+            .next()
             .await
             .unwrap()
             .body
@@ -1184,7 +1182,7 @@ mod tests {
             .unwrap();
 
         let mut records: Records = net_rx
-            .recv()
+            .next()
             .await
             .unwrap()
             .body
@@ -1232,7 +1230,7 @@ mod tests {
             .unwrap();
 
         let mut records: Records = net_rx
-            .recv()
+            .next()
             .await
             .unwrap()
             .body
@@ -1272,8 +1270,8 @@ mod tests {
         const SEQUENCER: GenerationalNodeId = GenerationalNodeId::new(1, 1);
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
-        let (net_tx, mut net_rx) = mpsc::channel(10);
-        let connection = OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, net_tx);
+        let (connection, _sender, mut net_rx, _egress_drop) =
+            OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(LOGLET, log_store.clone(), loglet_state.clone())?;
@@ -1293,7 +1291,7 @@ mod tests {
             .unwrap();
 
         let trimmed: Trimmed = net_rx
-            .recv()
+            .next()
             .await
             .unwrap()
             .body
@@ -1317,7 +1315,7 @@ mod tests {
             .unwrap();
 
         let trimmed: Trimmed = net_rx
-            .recv()
+            .next()
             .await
             .unwrap()
             .body
@@ -1345,7 +1343,7 @@ mod tests {
             ))
             .unwrap();
         let stored: Stored = net_rx
-            .recv()
+            .next()
             .await
             .unwrap()
             .body
@@ -1367,7 +1365,7 @@ mod tests {
             .unwrap();
 
         let trimmed: Trimmed = net_rx
-            .recv()
+            .next()
             .await
             .unwrap()
             .body
@@ -1394,7 +1392,7 @@ mod tests {
             .unwrap();
 
         let mut records: Records = net_rx
-            .recv()
+            .next()
             .await
             .unwrap()
             .body
@@ -1435,7 +1433,7 @@ mod tests {
             .unwrap();
 
         let trimmed: Trimmed = net_rx
-            .recv()
+            .next()
             .await
             .unwrap()
             .body
@@ -1462,7 +1460,7 @@ mod tests {
             .unwrap();
 
         let mut records: Records = net_rx
-            .recv()
+            .next()
             .await
             .unwrap()
             .body
