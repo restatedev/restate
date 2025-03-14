@@ -1131,6 +1131,7 @@ mod tests {
     use restate_bifrost::BifrostService;
     use restate_bifrost::providers::memory_loglet;
     use restate_core::network::MockPeerConnection;
+    use restate_core::network::protobuf::network::Header;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
@@ -1146,7 +1147,6 @@ mod tests {
     use restate_types::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
     };
-    use restate_types::protobuf::node::Header;
     use restate_types::{GenerationalNodeId, Version};
     use std::time::Duration;
     use test_log::test;
