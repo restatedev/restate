@@ -72,7 +72,7 @@ use crate::metric_definitions::{
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
-use crate::partition::state_machine::{ActionCollector, ExperimentalFeature, StateMachine};
+use crate::partition::state_machine::{ActionCollector, StateMachine};
 
 mod cleaner;
 pub mod invoker_storage_reader;
@@ -156,11 +156,8 @@ where
             ..
         } = self;
 
-        let state_machine = Self::create_state_machine(
-            &mut partition_store,
-            partition_key_range.clone(),
-        )
-        .await?;
+        let state_machine =
+            Self::create_state_machine(&mut partition_store, partition_key_range.clone()).await?;
 
         let last_seen_leader_epoch = partition_store
             .get_dedup_sequence_number(&ProducerId::self_producer())
@@ -206,14 +203,12 @@ where
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
 
-        let mut experimental_features = EnumSet::empty();
-
         let state_machine = StateMachine::new(
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
             partition_key_range,
-            experimental_features,
+            EnumSet::empty(),
         );
 
         Ok(state_machine)

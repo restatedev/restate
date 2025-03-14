@@ -73,15 +73,6 @@ const INVOCATION_TARGET_4: InvocationTarget = InvocationTarget::VirtualObject {
 static INVOCATION_ID_4: LazyLock<InvocationId> =
     LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_4));
 
-const INVOCATION_TARGET_5: InvocationTarget = InvocationTarget::VirtualObject {
-    name: ByteString::from_static("abc"),
-    key: ByteString::from_static("5"),
-    handler: ByteString::from_static("myhandler"),
-    handler_ty: VirtualObjectHandlerType::Exclusive,
-};
-static INVOCATION_ID_5: LazyLock<InvocationId> =
-    LazyLock::new(|| InvocationId::mock_generate(&INVOCATION_TARGET_5));
-
 static RPC_REQUEST_ID: LazyLock<PartitionProcessorRpcRequestId> =
     LazyLock::new(PartitionProcessorRpcRequestId::new);
 
@@ -140,14 +131,7 @@ async fn populate_data<T: InvocationStatusTable>(txn: &mut T) {
 
     txn.put_invocation_status(
         &INVOCATION_ID_4,
-        &invoked_status(INVOCATION_TARGET_4.clone()),
-    )
-    .await
-    .unwrap();
-
-    txn.put_invocation_status(
-        &INVOCATION_ID_5,
-        &suspended_status(INVOCATION_TARGET_5.clone()),
+        &suspended_status(INVOCATION_TARGET_4.clone()),
     )
     .await
     .unwrap();
@@ -159,13 +143,6 @@ async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
             .await
             .expect("should not fail"),
         invoked_status(INVOCATION_TARGET_1.clone())
-    );
-
-    assert_eq!(
-        txn.get_invocation_status(&INVOCATION_ID_4)
-            .await
-            .expect("should not fail"),
-        invoked_status(INVOCATION_TARGET_4.clone())
     );
 }
 
@@ -186,11 +163,7 @@ async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut 
             eq(InvokedInvocationStatusLite {
                 invocation_id: *INVOCATION_ID_2,
                 invocation_target: INVOCATION_TARGET_2.clone(),
-            }),
-            eq(InvokedInvocationStatusLite {
-                invocation_id: *INVOCATION_ID_4,
-                invocation_target: INVOCATION_TARGET_4.clone(),
-            }),
+            })
         ]
     );
 }

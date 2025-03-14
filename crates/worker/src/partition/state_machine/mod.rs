@@ -105,8 +105,7 @@ use tracing::error;
 use utils::SpanExt;
 
 #[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
-pub enum ExperimentalFeature {
-}
+pub enum ExperimentalFeature {}
 
 pub struct StateMachine {
     // initialized from persistent storage
@@ -221,6 +220,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
     partition_key_range: RangeInclusive<PartitionKey>,
     invoker_apply_latency: &'a Histogram,
+    #[allow(dead_code)]
     experimental_features: &'a EnumSet<ExperimentalFeature>,
     is_leader: bool,
 }
