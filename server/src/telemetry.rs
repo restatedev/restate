@@ -17,9 +17,7 @@ use restate_types::config::CommonOptions;
 use tokio::time::Instant;
 use tracing::debug;
 
-use crate::build_info::{
-    RESTATE_SERVER_DEBUG, RESTATE_SERVER_TARGET_TRIPLE, RESTATE_SERVER_VERSION,
-};
+use crate::build_info::{RESTATE_SERVER_TARGET_TRIPLE, RESTATE_SERVER_VERSION, is_debug};
 
 static TELEMETRY_URI: &str = "https://restate.gateway.scarf.sh/restate-server/";
 const TELEMETRY_PERIOD: Duration = Duration::from_secs(3600 * 24);
@@ -88,8 +86,9 @@ impl TelemetryEnabled {
             (Instant::now().duration_since(self.start_time).as_secs() / 3600).to_string();
         let session_id = self.session_id.as_str();
 
+        let is_debug = is_debug();
         let uri = Uri::from_str(&format!(
-            "{TELEMETRY_URI}?target={RESTATE_SERVER_TARGET_TRIPLE}&version={RESTATE_SERVER_VERSION}&debug={RESTATE_SERVER_DEBUG}&uptime={uptime_hours}&session={session_id}"
+            "{TELEMETRY_URI}?target={RESTATE_SERVER_TARGET_TRIPLE}&version={RESTATE_SERVER_VERSION}&debug={is_debug}&uptime={uptime_hours}&session={session_id}",
         )).expect("uri must parse");
 
         debug!(%uri, "Sending telemetry data");
