@@ -15,9 +15,10 @@ options_schema = ["dep:schemars"]
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
-restate-types = { workspace = true }
 restate-core-derive = { workspace = true, optional = true }
+restate-futures-util = { workspace = true }
 restate-object-store-util = { workspace = true }
+restate-types = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
@@ -45,6 +46,7 @@ hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["server-graceful", "server"] }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }

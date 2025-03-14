@@ -63,6 +63,10 @@ message Message {
     // Connection will be dropped
     DRAIN_CONNECTION = 2;
     CODEC_ERROR = 3;
+    // no more requests will be sent over this stream
+    REQUEST_STREAM_DRAINED = 4;
+    // no more responses will be sent over this stream
+    RESPONSE_STREAM_DRAINED = 5;
   }
   message ConnectionControl {
     Signal signal = 1;
