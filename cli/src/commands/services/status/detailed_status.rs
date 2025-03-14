@@ -55,7 +55,12 @@ pub async fn run_detailed_status(
         let locked_keys = get_locked_keys_status(&sql_client, vec![service_name]).await?;
         if !locked_keys.is_empty() {
             c_title!("📨", "Active Keys");
-            render_locked_keys(locked_keys, opts.locked_keys_limit).await?;
+            render_locked_keys(
+                locked_keys,
+                opts.locked_keys_limit,
+                opts.locked_key_held_threshold_second,
+            )
+            .await?;
         }
     }
 
