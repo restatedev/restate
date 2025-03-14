@@ -10,6 +10,9 @@
 
 mod egress_sender;
 mod egress_stream;
+mod reactor;
 
 pub use egress_sender::{EgressSender, UnboundedEgressSender};
 pub use egress_stream::{DrainReason, DropEgressStream, EgressMessage, EgressStream};
+pub use reactor::ConnectionReactor;
+
