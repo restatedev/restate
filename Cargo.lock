@@ -994,7 +994,7 @@ checksum = "8c3c1a368f70d6cf7302d78f8f7093da241fb8e8807c05cc9e51a125895a6d5b"
 
 [[package]]
 name = "bifrost-benchpress"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "codederror"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "codederror-derive",
  "thiserror 2.0.11",
@@ -4515,7 +4515,7 @@ dependencies = [
 
 [[package]]
 name = "mock-service-endpoint"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "assert2",
  "async-stream",
@@ -6289,7 +6289,7 @@ dependencies = [
 
 [[package]]
 name = "restate-admin"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6352,7 +6352,7 @@ dependencies = [
 
 [[package]]
 name = "restate-admin-rest-model"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "bytes",
  "derive_more",
@@ -6371,7 +6371,7 @@ dependencies = [
 
 [[package]]
 name = "restate-base64-util"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "base64 0.22.1",
  "workspace-hack",
@@ -6379,7 +6379,7 @@ dependencies = [
 
 [[package]]
 name = "restate-benchmarks"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "criterion",
@@ -6406,7 +6406,7 @@ dependencies = [
 
 [[package]]
 name = "restate-bifrost"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "ahash 0.8.11",
  "anyhow",
@@ -6461,7 +6461,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cli"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6529,7 +6529,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cli-util"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6553,7 +6553,7 @@ dependencies = [
 
 [[package]]
 name = "restate-core"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "ahash 0.8.11",
  "anyhow",
@@ -6628,7 +6628,7 @@ dependencies = [
 
 [[package]]
 name = "restate-errors"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "codederror",
  "paste",
@@ -6641,7 +6641,7 @@ dependencies = [
 
 [[package]]
 name = "restate-fs-util"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "tokio",
  "tracing",
@@ -6651,7 +6651,7 @@ dependencies = [
 
 [[package]]
 name = "restate-futures-util"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "futures",
@@ -6669,7 +6669,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-http"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "assert2",
@@ -6716,7 +6716,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-kafka"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6747,7 +6747,7 @@ dependencies = [
 
 [[package]]
 name = "restate-invoker-api"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "bytes",
@@ -6764,7 +6764,7 @@ dependencies = [
 
 [[package]]
 name = "restate-invoker-impl"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "assert2",
@@ -6806,7 +6806,7 @@ dependencies = [
 
 [[package]]
 name = "restate-local-cluster-runner"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6841,7 +6841,7 @@ dependencies = [
 
 [[package]]
 name = "restate-log-server"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6887,7 +6887,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-server"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6935,7 +6935,7 @@ dependencies = [
 
 [[package]]
 name = "restate-node"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6983,7 +6983,7 @@ dependencies = [
 
 [[package]]
 name = "restate-object-store-util"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -7001,7 +7001,7 @@ dependencies = [
 
 [[package]]
 name = "restate-partition-store"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7047,7 +7047,7 @@ dependencies = [
 
 [[package]]
 name = "restate-queue"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "bincode",
  "criterion",
@@ -7061,7 +7061,7 @@ dependencies = [
 
 [[package]]
 name = "restate-rocksdb"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7092,7 +7092,7 @@ dependencies = [
 
 [[package]]
 name = "restate-serde-util"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "bytes",
  "bytesize",
@@ -7110,7 +7110,7 @@ dependencies = [
 
 [[package]]
 name = "restate-server"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7172,7 +7172,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-client"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "arc-swap",
  "aws-config",
@@ -7218,7 +7218,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-protocol"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "bytes",
  "bytes-utils",
@@ -7249,7 +7249,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-protocol-v4"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "assert2",
  "bytes",
@@ -7276,7 +7276,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-api"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7292,7 +7292,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-query-datafusion"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "ahash 0.8.11",
  "anyhow",
@@ -7329,7 +7329,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-query-postgres"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7360,7 +7360,7 @@ dependencies = [
 
 [[package]]
 name = "restate-test-util"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "assert2",
  "googletest",
@@ -7372,7 +7372,7 @@ dependencies = [
 
 [[package]]
 name = "restate-timer"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "ahash 0.8.11",
  "derive_builder",
@@ -7395,7 +7395,7 @@ dependencies = [
 
 [[package]]
 name = "restate-timer-queue"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "futures",
  "tokio",
@@ -7404,7 +7404,7 @@ dependencies = [
 
 [[package]]
 name = "restate-tracing-instrumentation"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "arc-swap",
  "console-subscriber",
@@ -7435,7 +7435,7 @@ dependencies = [
 
 [[package]]
 name = "restate-types"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "ahash 0.8.11",
  "anyhow",
@@ -7514,7 +7514,7 @@ dependencies = [
 
 [[package]]
 name = "restate-utoipa"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "assert-json-diff",
  "indexmap 2.7.1",
@@ -7526,7 +7526,7 @@ dependencies = [
 
 [[package]]
 name = "restate-wal-protocol"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "assert2",
@@ -7559,7 +7559,7 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "include_dir",
  "workspace-hack",
@@ -7568,7 +7568,7 @@ dependencies = [
 
 [[package]]
 name = "restate-worker"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "assert2",
@@ -7636,7 +7636,7 @@ dependencies = [
 
 [[package]]
 name = "restatectl"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "bytes",
@@ -8219,7 +8219,7 @@ dependencies = [
 
 [[package]]
 name = "service-protocol-wireshark-dissector"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "bytes",
  "mlua",
@@ -10282,7 +10282,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "1.2.3-dev"
+version = "1.3.0-dev"
 dependencies = [
  "anyhow",
  "reqwest",
