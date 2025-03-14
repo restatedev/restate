@@ -63,6 +63,8 @@ RUN --mount=type=cache,target=/var/cache/sccache \
 
 FROM builder AS upload-true
 RUN --mount=type=secret,id=parca --mount=type=cache,target=/var/cache/sccache \
+    # useful so that binaries can tell if they actually were compiled with debug symbols
+    export DEBUG_STRIPPED="true" && \
     if [ "$BUILD_INDIVIDUALLY" = "true" ]; then \
     just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-cli && \
     just arch=$TARGETARCH libc=gnu features=$RESTATE_FEATURES build --release -p restate-server && \

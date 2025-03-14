@@ -26,17 +26,18 @@ pub const RESTATE_SERVER_COMMIT_DATE: &str = env!("VERGEN_GIT_COMMIT_DATE");
 pub const RESTATE_SERVER_BRANCH: &str = env!("VERGEN_GIT_BRANCH");
 // The target triple.
 pub const RESTATE_SERVER_TARGET_TRIPLE: &str = env!("VERGEN_CARGO_TARGET_TRIPLE");
-/// The profile used in build.
-pub const RESTATE_SERVER_DEBUG: &str = env!("VERGEN_CARGO_DEBUG");
 
 /// Returns build information, e.g: 0.5.0-dev (debug) (2ba1491 aarch64-apple-darwin 2023-11-21)
 pub fn build_info() -> String {
     format!(
         "{RESTATE_SERVER_VERSION}{} ({RESTATE_SERVER_COMMIT_SHA} {RESTATE_SERVER_TARGET_TRIPLE} {RESTATE_SERVER_BUILD_DATE})",
-        if RESTATE_SERVER_DEBUG == "true" {
-            " (debug)"
-        } else {
-            ""
-        }
+        if is_debug() { " (debug)" } else { "" }
     )
+}
+
+const RESTATE_SERVER_DEBUG_STRIPPED: Option<&str> = option_env!("DEBUG_STRIPPED");
+const RESTATE_SERVER_DEBUG: &str = env!("VERGEN_CARGO_DEBUG");
+/// Was the binary compiled with debug symbols
+pub fn is_debug() -> bool {
+    RESTATE_SERVER_DEBUG == "true" && RESTATE_SERVER_DEBUG_STRIPPED != Some("true")
 }

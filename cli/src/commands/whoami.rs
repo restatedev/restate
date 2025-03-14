@@ -123,7 +123,7 @@ pub async fn run(State(env): State<CliEnv>) {
     table.load_preset(comfy_table::presets::NOTHING);
     table.add_row(vec!["Version", build_info::RESTATE_CLI_VERSION]);
     table.add_row(vec!["Target", build_info::RESTATE_CLI_TARGET_TRIPLE]);
-    table.add_row(vec!["Debug Build?", build_info::RESTATE_CLI_DEBUG]);
+    table.add_row(vec!["Debug Build?", &format!("{}", build_info::is_debug())]);
     table.add_row(vec!["Build Time", build_info::RESTATE_CLI_BUILD_TIME]);
     table.add_row(vec![
         "Build Features",
