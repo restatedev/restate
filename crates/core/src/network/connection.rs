@@ -12,34 +12,33 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
 
-use enum_map::{EnumMap, enum_map};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::Instant;
-use tracing::{debug, trace};
+use tracing::Span;
 
+use restate_types::GenerationalNodeId;
 use restate_types::net::ProtocolVersion;
 use restate_types::net::codec::Targeted;
 use restate_types::net::codec::WireEncode;
-use restate_types::net::metadata::MetadataKind;
-use restate_types::protobuf::node::Header;
-use restate_types::protobuf::node::Message;
-use restate_types::protobuf::node::message;
-use restate_types::{GenerationalNodeId, Version};
 
+use super::ConnectionClosed;
 use super::NetworkError;
 use super::Outgoing;
-use crate::Metadata;
+use super::io::{DrainReason, EgressMessage, EgressSender};
+use super::protobuf::network::Header;
+use super::protobuf::network::message;
+use super::protobuf::network::message::Body;
 
 pub struct OwnedSendPermit<M> {
     _protocol_version: ProtocolVersion,
-    _permit: mpsc::OwnedPermit<Message>,
+    _permit: mpsc::OwnedPermit<EgressMessage>,
     _phantom: std::marker::PhantomData<M>,
 }
 
 pub struct SendPermit<'a, M> {
     protocol_version: ProtocolVersion,
-    permit: mpsc::Permit<'a, Message>,
+    permit: mpsc::Permit<'a, EgressMessage>,
     _phantom: std::marker::PhantomData<M>,
 }
 
@@ -51,40 +50,19 @@ where
     ///
     /// Note that sending messages over this permit won't use the peer information nor the connection
     /// associated with the message.
-    pub fn send<S>(self, message: Outgoing<M, S>, metadata: &Metadata) {
-        let metadata_versions = HeaderMetadataVersions::from_metadata(metadata);
-        self.send_with_versions(message, metadata_versions);
-    }
+    pub fn send<S>(self, message: Outgoing<M, S>) {
+        let header = Header {
+            msg_id: message.msg_id(),
+            in_response_to: message.in_response_to(),
+            ..Default::default()
+        };
 
-    fn send_with_versions<S>(
-        self,
-        message: Outgoing<M, S>,
-        metadata_versions: HeaderMetadataVersions,
-    ) {
-        let header = Header::new(
-            metadata_versions[MetadataKind::NodesConfiguration]
-                .expect("nodes configuration version must be set"),
-            metadata_versions[MetadataKind::Logs],
-            metadata_versions[MetadataKind::Schema],
-            metadata_versions[MetadataKind::PartitionTable],
-            message.msg_id(),
-            message.in_response_to(),
-        );
-        let body = message
-            .into_body()
-            .encode(self.protocol_version)
-            .expect("message encoding infallible");
-        self.send_raw(Message::new(header, body));
-    }
-}
+        let target = M::TARGET.into();
+        let payload = message.into_body().encode_to_bytes(self.protocol_version);
 
-impl<M> SendPermit<'_, M> {
-    /// Sends a raw pre-serialized message over this permit.
-    ///
-    /// Note that sending messages over this permit won't use the peer information nor the connection
-    /// associated with the message.
-    pub(crate) fn send_raw(self, raw_message: Message) {
-        self.permit.send(raw_message);
+        let body = Body::Encoded(message::BinaryMessage { target, payload });
+        self.permit
+            .send(EgressMessage::Message(header, body, Some(Span::current())));
     }
 }
 
@@ -98,7 +76,7 @@ impl<M> SendPermit<'_, M> {
 pub struct OwnedConnection {
     pub(crate) peer: GenerationalNodeId,
     pub(crate) protocol_version: ProtocolVersion,
-    pub(crate) sender: mpsc::Sender<Message>,
+    pub(crate) sender: EgressSender,
     pub(crate) created: Instant,
 }
 
@@ -106,7 +84,7 @@ impl OwnedConnection {
     pub(crate) fn new(
         peer: GenerationalNodeId,
         protocol_version: ProtocolVersion,
-        sender: mpsc::Sender<Message>,
+        sender: EgressSender,
     ) -> Self {
         Self {
             peer,
@@ -120,9 +98,22 @@ impl OwnedConnection {
     pub fn new_fake(
         peer: GenerationalNodeId,
         protocol_version: ProtocolVersion,
-        sender: mpsc::Sender<Message>,
-    ) -> Arc<Self> {
-        Arc::new(Self::new(peer, protocol_version, sender))
+        capacity: usize,
+    ) -> (
+        Arc<Self>,
+        super::io::UnboundedEgressSender,
+        super::io::EgressStream,
+        super::io::DropEgressStream,
+    ) {
+        use super::io::EgressStream;
+
+        let (sender, unbounded_sender, egress, drop_egress) = EgressStream::create(capacity);
+        (
+            Arc::new(Self::new(peer, protocol_version, sender)),
+            unbounded_sender,
+            egress,
+            drop_egress,
+        )
     }
 
     /// The node id at the other end of this connection
@@ -145,18 +136,12 @@ impl OwnedConnection {
         async move { sender.closed().await }
     }
 
-    /// Best-effort delivery of signals on the connection.
-    pub fn send_control_frame(&self, control: message::ConnectionControl) {
-        let signal = control.signal();
-        let msg = Message {
-            header: None,
-            body: Some(control.into()),
-        };
-
-        debug!(?msg, "Sending control frame to peer");
-        if self.sender.try_send(msg).is_ok() {
-            trace!(?signal, "Control frame was written to connection");
-        }
+    /// Starts a drain of this stream. Enqueued messages will be sent before
+    /// terminating but no new messages will be accepted after the connection processes
+    /// the drain reason signal. Returns `ConnectionClosed` if the connection is draining
+    /// or if it has already been closed.
+    pub async fn drain(self, reason: DrainReason) -> Result<(), ConnectionClosed> {
+        self.sender.close(reason).await
     }
 
     /// A handle that sends messages through that connection. This hides the
@@ -223,37 +208,6 @@ impl OwnedConnection {
     }
 }
 
-#[derive(derive_more::Index)]
-pub(crate) struct HeaderMetadataVersions {
-    #[index]
-    versions: EnumMap<MetadataKind, Option<Version>>,
-}
-
-impl Default for HeaderMetadataVersions {
-    // Used primarily in tests
-    fn default() -> Self {
-        let versions = enum_map! {
-            MetadataKind::NodesConfiguration => Some(Version::MIN),
-            MetadataKind::Schema => None,
-            MetadataKind::Logs => None,
-            MetadataKind::PartitionTable => None,
-        };
-        Self { versions }
-    }
-}
-
-impl HeaderMetadataVersions {
-    pub fn from_metadata(metadata: &Metadata) -> Self {
-        let versions = enum_map! {
-            MetadataKind::NodesConfiguration => Some(metadata.nodes_config_version()),
-            MetadataKind::Schema => Some(metadata.schema_version()),
-            MetadataKind::Logs => Some(metadata.logs_version()),
-            MetadataKind::PartitionTable => Some(metadata.partition_table_version()),
-        };
-        Self { versions }
-    }
-}
-
 impl PartialEq for OwnedConnection {
     fn eq(&self, other: &Self) -> bool {
         self.sender.same_channel(&other.sender)
@@ -281,13 +235,6 @@ impl WeakConnection {
     /// The node id at the other end of this connection
     pub fn peer(&self) -> GenerationalNodeId {
         self.peer
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.connection
-            .upgrade()
-            .map(|c| c.is_closed())
-            .unwrap_or(true)
     }
 
     /// Resolves when the connection is closed
@@ -319,24 +266,13 @@ pub mod test_util {
     use futures::stream::BoxStream;
     use tokio::sync::mpsc;
     use tokio::sync::mpsc::error::TrySendError;
-    use tokio_stream::wrappers::ReceiverStream;
     use tracing::info;
     use tracing::warn;
 
-    use restate_types::net::CodecError;
     use restate_types::net::ProtocolVersion;
-    use restate_types::net::codec::MessageBodyExt;
     use restate_types::net::codec::Targeted;
     use restate_types::net::codec::WireEncode;
     use restate_types::nodes_config::NodesConfiguration;
-    use restate_types::protobuf::node::Header;
-    use restate_types::protobuf::node::Hello;
-    use restate_types::protobuf::node::Message;
-    use restate_types::protobuf::node::Welcome;
-    use restate_types::protobuf::node::message;
-    use restate_types::protobuf::node::message::BinaryMessage;
-    use restate_types::protobuf::node::message::Body;
-    use restate_types::protobuf::node::message::ConnectionControl;
     use restate_types::{GenerationalNodeId, Version};
 
     use crate::TaskCenter;
@@ -351,8 +287,19 @@ pub mod test_util {
     use crate::network::NetworkError;
     use crate::network::PeerMetadataVersion;
     use crate::network::ProtocolError;
+    use crate::network::RouterError;
     use crate::network::handshake::negotiate_protocol_version;
     use crate::network::handshake::wait_for_hello;
+    use crate::network::io::DropEgressStream;
+    use crate::network::io::EgressStream;
+    use crate::network::io::UnboundedEgressSender;
+    use crate::network::protobuf::network::Header;
+    use crate::network::protobuf::network::Hello;
+    use crate::network::protobuf::network::Message;
+    use crate::network::protobuf::network::Welcome;
+    use crate::network::protobuf::network::message;
+    use crate::network::protobuf::network::message::BinaryMessage;
+    use crate::network::protobuf::network::message::Body;
 
     // For testing
     //
@@ -368,11 +315,16 @@ pub mod test_util {
         /// The Id of the node we are connected to
         pub(crate) peer: GenerationalNodeId,
         pub protocol_version: ProtocolVersion,
-        pub sender: mpsc::Sender<Message>,
+        #[debug(skip)]
+        pub(crate) sender: EgressSender,
+        #[debug(skip)]
+        pub(crate) unbounded_sender: UnboundedEgressSender,
         pub created: Instant,
 
         #[debug(skip)]
         pub recv_stream: BoxStream<'static, Message>,
+        #[debug(skip)]
+        drop_egress: DropEgressStream,
     }
 
     impl MockPeerConnection {
@@ -384,22 +336,17 @@ pub mod test_util {
             connection_manager: &ConnectionManager,
             message_buffer: usize,
         ) -> anyhow::Result<Self> {
-            let (sender, rx) = mpsc::channel(message_buffer);
-            let incoming = ReceiverStream::new(rx).map(Ok);
+            let (sender, unbounded_sender, incoming, drop_egress) =
+                EgressStream::create(message_buffer);
+            let incoming = incoming.map(Ok);
 
             let hello = Hello::new(from_node_id, my_cluster_name);
-            let hello = Message::new(
-                Header::new(
-                    my_node_config_version,
-                    None,
-                    None,
-                    None,
-                    crate::network::generate_msg_id(),
-                    None,
-                ),
-                hello,
-            );
-            sender.send(hello).await?;
+            let header = Header {
+                my_nodes_config_version: Some(my_node_config_version.into()),
+                msg_id: crate::network::generate_msg_id(),
+                ..Default::default()
+            };
+            unbounded_sender.unbounded_send(EgressMessage::Message(header, hello.into(), None))?;
 
             let created = Instant::now();
             let mut recv_stream = connection_manager
@@ -422,8 +369,10 @@ pub mod test_util {
                 peer,
                 protocol_version: welcome.protocol_version(),
                 sender,
+                unbounded_sender,
                 recv_stream: Box::pin(recv_stream),
                 created,
+                drop_egress,
             })
         }
 
@@ -432,12 +381,16 @@ pub mod test_util {
         where
             M: WireEncode + Targeted,
         {
-            let body = message
-                .encode(self.protocol_version)
-                .expect("serde infallible");
-            let message = Message::new(header, body);
+            let target = M::TARGET.into();
+            let payload = message.encode_to_bytes(self.protocol_version);
+            let body = Body::Encoded(message::BinaryMessage { target, payload });
 
-            self.sender.send(message).await?;
+            let message = Message {
+                header: Some(header),
+                body: Some(body),
+            };
+
+            self.sender.send(EgressMessage::RawMessage(message)).await?;
 
             Ok(())
         }
@@ -513,8 +466,10 @@ pub mod test_util {
                 peer,
                 protocol_version,
                 sender,
+                unbounded_sender,
                 created,
                 recv_stream,
+                drop_egress,
             } = self;
 
             let connection = Arc::new(OwnedConnection {
@@ -529,12 +484,13 @@ pub mod test_util {
                 my_node_id,
                 router,
                 connection,
+                tx: unbounded_sender,
                 recv_stream,
             };
             let handle = TaskCenter::spawn_unmanaged(
                 TaskKind::ConnectionReactor,
                 "test-message-processor",
-                async move { message_processor.run().await },
+                async move { message_processor.run(drop_egress).await },
             )?;
             Ok((weak, handle))
         }
@@ -563,11 +519,16 @@ pub mod test_util {
         pub my_node_id: GenerationalNodeId,
         /// The Id of the node id that started this connection
         pub(crate) peer: GenerationalNodeId,
-        pub sender: mpsc::Sender<Message>,
+        #[debug(skip)]
+        pub(crate) sender: EgressSender,
+        #[debug(skip)]
+        pub(crate) unbounded_sender: UnboundedEgressSender,
         pub created: Instant,
 
         #[debug(skip)]
         pub recv_stream: BoxStream<'static, Message>,
+        #[debug(skip)]
+        pub(crate) drop_egress: DropEgressStream,
     }
 
     impl PartialPeerConnection {
@@ -581,8 +542,10 @@ pub mod test_util {
                 my_node_id,
                 peer,
                 sender,
+                unbounded_sender,
                 created,
                 mut recv_stream,
+                drop_egress,
             } = self;
             let temp_stream = recv_stream.by_ref();
             let (header, hello) = wait_for_hello(
@@ -606,26 +569,29 @@ pub mod test_util {
             // Enqueue the welcome message
             let welcome = Welcome::new(my_node_id, selected_protocol_version);
 
-            let welcome = Message::new(
-                Header::new(
-                    nodes_config.version(),
-                    None,
-                    None,
-                    None,
-                    crate::network::generate_msg_id(),
-                    Some(header.msg_id),
-                ),
-                welcome,
+            let header = Header::new(
+                nodes_config.version(),
+                None,
+                None,
+                None,
+                crate::network::generate_msg_id(),
+                Some(header.msg_id),
             );
-            sender.try_send(welcome)?;
+            unbounded_sender.unbounded_send(EgressMessage::Message(
+                header,
+                welcome.into(),
+                None,
+            ))?;
 
             Ok(MockPeerConnection {
                 my_node_id,
                 peer,
                 protocol_version: selected_protocol_version,
                 sender,
+                unbounded_sender,
                 created,
                 recv_stream,
+                drop_egress,
             })
         }
     }
@@ -649,13 +615,11 @@ pub mod test_util {
 
     #[async_trait]
     impl Handler for ForwardingHandler {
-        type Error = CodecError;
-
         async fn call(
             &self,
             message: Incoming<BinaryMessage>,
             _protocol_version: ProtocolVersion,
-        ) -> Result<(), Self::Error> {
+        ) -> Result<(), RouterError> {
             if self
                 .inner_sender
                 .send((self.my_node_id, message))
@@ -672,11 +636,12 @@ pub mod test_util {
         my_node_id: GenerationalNodeId,
         router: R,
         connection: Arc<OwnedConnection>,
+        tx: UnboundedEgressSender,
         recv_stream: BoxStream<'static, Message>,
     }
 
     impl<R: Handler> MessageProcessor<R> {
-        async fn run(mut self) -> anyhow::Result<()> {
+        async fn run(mut self, _drop_egress: DropEgressStream) -> anyhow::Result<()> {
             let mut cancel = std::pin::pin!(cancellation_watcher());
             loop {
                 tokio::select! {
@@ -691,23 +656,23 @@ pub mod test_util {
                         };
                         //  header is required on all messages
                         let Some(header) = msg.header else {
-                            self.connection.send_control_frame(ConnectionControl::codec_error(
-                                "Header is missing on message",
+                            self.tx.unbounded_drain(DrainReason::CodecError(
+                                "Header is missing on message".to_owned(),
                             ));
                             break;
                         };
 
                         // body are not allowed to be empty.
                         let Some(body) = msg.body else {
-                            self.connection
-                                .send_control_frame(ConnectionControl::codec_error("Body is missing on message"));
+                            self.tx
+                                .unbounded_drain(DrainReason::CodecError("Body is missing on message".to_owned()));
                             break;
                         };
 
                         // Welcome and hello are not allowed after handshake
                         if body.is_welcome() || body.is_hello() {
-                            self.connection.send_control_frame(ConnectionControl::codec_error(
-                                "Hello/Welcome are not allowed after handshake",
+                            self.tx.unbounded_drain(DrainReason::CodecError(
+                                "Hello/Welcome are not allowed after handshake".to_string(),
                             ));
                             break;
                         };
@@ -753,8 +718,8 @@ pub mod test_util {
                 Err(status) => {
                     // terminate the stream
                     info!("Error processing message, reporting error to peer: {status}");
-                    self.connection
-                        .send_control_frame(ConnectionControl::codec_error(status.to_string()));
+                    self.tx
+                        .unbounded_drain(DrainReason::CodecError(status.to_string()));
                 }
             }
             Ok(())

@@ -14,8 +14,8 @@ use futures::Stream;
 
 use restate_types::GenerationalNodeId;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::protobuf::node::Message;
 
+use super::protobuf::network::Message;
 use super::{NetworkError, ProtocolError};
 
 pub trait TransportConnect: Clone + Send + Sync + 'static {
@@ -58,15 +58,15 @@ pub mod test_util {
     use parking_lot::Mutex;
     use tokio::sync::mpsc;
     use tokio::time::Instant;
-    use tokio_stream::wrappers::ReceiverStream;
     use tracing::info;
 
     use restate_types::GenerationalNodeId;
     use restate_types::nodes_config::NodesConfiguration;
-    use restate_types::protobuf::node::Message;
-    use restate_types::protobuf::node::message::BinaryMessage;
 
     use super::{NetworkError, ProtocolError};
+    use crate::network::io::EgressStream;
+    use crate::network::protobuf::network::Message;
+    use crate::network::protobuf::network::message::BinaryMessage;
     use crate::network::{Incoming, MockPeerConnection, PartialPeerConnection, WeakConnection};
     use crate::{TaskCenter, TaskHandle, TaskKind, my_node_id};
 
@@ -107,14 +107,17 @@ pub mod test_util {
                 node_id, current_generation
             );
 
-            let (sender, rx) = mpsc::channel(self.sendbuf);
+            let (sender, unbounded_sender, egress, drop_egress) =
+                EgressStream::create(self.sendbuf);
 
             let peer_connection = PartialPeerConnection {
                 my_node_id: node_id,
                 peer: my_node_id(),
                 sender,
+                unbounded_sender,
                 recv_stream: output_stream.boxed(),
                 created: Instant::now(),
+                drop_egress,
             };
 
             let peer_connection = peer_connection.handshake(nodes_config).await.unwrap();
@@ -125,8 +128,7 @@ pub mod test_util {
                     "MockConnector has been terminated, cannot connect to {node_id}"
                 )));
             }
-            let incoming = ReceiverStream::new(rx).map(Ok);
-            Ok(incoming)
+            Ok(egress.map(Ok))
         }
     }
 

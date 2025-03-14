@@ -8,12 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::errors::GenericError;
+mod egress_sender;
+mod egress_stream;
 
-#[derive(Debug, thiserror::Error)]
-pub enum CodecError {
-    #[error("encode error: {0}")]
-    Encode(GenericError),
-    #[error("decode error: {0}")]
-    Decode(GenericError),
-}
+pub use egress_sender::{EgressSender, UnboundedEgressSender};
+pub use egress_stream::{DrainReason, DropEgressStream, EgressMessage, EgressStream};

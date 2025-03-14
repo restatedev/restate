@@ -11,7 +11,7 @@ syntax = "proto3";
 
 import "restate/common.proto";
 
-package restate.node;
+package restate.network;
 
 //
 // # Wire Protocol Of Streaming Connections
@@ -44,7 +44,8 @@ message Hello {
   restate.common.ProtocolVersion max_protocol_version = 2;
   string cluster_name = 3;
   // generational node id of sender (who am I)
-  // this is optional for future-proofing with anonymous clients using this protocol
+  // this is optional for future-proofing with anonymous clients using this
+  // protocol
   optional restate.common.GenerationalNodeId my_node_id = 4;
 }
 
@@ -63,6 +64,10 @@ message Message {
     // Connection will be dropped
     DRAIN_CONNECTION = 2;
     CODEC_ERROR = 3;
+    // no more requests will be sent over this stream
+    REQUEST_STREAM_DRAINED = 4;
+    // no more responses will be sent over this stream
+    RESPONSE_STREAM_DRAINED = 5;
   }
   message ConnectionControl {
     Signal signal = 1;

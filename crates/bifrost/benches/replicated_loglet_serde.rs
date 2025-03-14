@@ -21,6 +21,8 @@ use rand::distr::Alphanumeric;
 use rand::{Rng, random};
 
 use restate_bifrost::InputRecord;
+use restate_core::network::protobuf::network::Message;
+use restate_core::network::protobuf::network::message::{BinaryMessage, Body};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber, ProducerId};
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRpcRequestId};
@@ -28,10 +30,9 @@ use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext,
 };
 use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
-use restate_types::net::codec::{MessageBodyExt, WireDecode, WireEncode};
+use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
 use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
 use restate_types::net::replicated_loglet::{Append, CommonRequestHeader};
-use restate_types::protobuf::node::Message;
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::{Command, Destination, Envelope};
 
@@ -133,10 +134,13 @@ fn serialize_store_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> {
         known_archived: LogletOffset::INVALID,
     };
 
-    let body = store_message.encode(restate_types::net::ProtocolVersion::V1)?;
+    let body = Body::Encoded(BinaryMessage {
+        target: Store::TARGET.into(),
+        payload: store_message.encode_to_bytes(restate_types::net::ProtocolVersion::V1),
+    });
 
     let message = Message {
-        header: Some(restate_types::protobuf::node::Header {
+        header: Some(restate_core::network::protobuf::network::Header {
             my_nodes_config_version: Some(5),
             my_logs_version: None,
             my_schema_version: None,
@@ -160,10 +164,13 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
         payloads,
     };
 
-    let body = append_message.encode(restate_types::net::ProtocolVersion::V1)?;
+    let body = Body::Encoded(BinaryMessage {
+        target: Append::TARGET.into(),
+        payload: append_message.encode_to_bytes(restate_types::net::ProtocolVersion::V1),
+    });
 
     let message = Message {
-        header: Some(restate_types::protobuf::node::Header {
+        header: Some(restate_core::network::protobuf::network::Header {
             my_nodes_config_version: Some(5),
             my_logs_version: None,
             my_schema_version: None,
@@ -183,7 +190,7 @@ fn deserialize_append_message(serialized_message: Bytes) -> anyhow::Result<Appen
     let body = msg.body.unwrap();
     // we ignore non-deserializable messages (serde errors, or control signals in drain)
     let msg_body = body.try_as_binary_body(restate_types::net::ProtocolVersion::V1)?;
-    Ok(Append::decode(msg_body.payload, protocol_version)?)
+    Ok(Append::decode(msg_body.payload, protocol_version))
 }
 
 fn replicated_loglet_append_serde(c: &mut Criterion) {

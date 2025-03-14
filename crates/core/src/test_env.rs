@@ -27,11 +27,11 @@ use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
 };
 use restate_types::partition_table::PartitionTable;
-use restate_types::protobuf::node::Message;
 use restate_types::{GenerationalNodeId, Version};
 
 use crate::TaskCenter;
 use crate::metadata_store::MetadataStoreClient;
+use crate::network::protobuf::network::Message;
 use crate::network::{
     FailingConnector, Incoming, MessageHandler, MessageRouterBuilder, NetworkError, Networking,
     ProtocolError, TransportConnect,

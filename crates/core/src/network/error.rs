@@ -13,17 +13,21 @@ use std::time::Duration;
 use tonic::Code;
 
 use restate_types::GenerationalNodeId;
-use restate_types::net::{CodecError, MIN_SUPPORTED_PROTOCOL_VERSION};
+use restate_types::net::MIN_SUPPORTED_PROTOCOL_VERSION;
 use restate_types::nodes_config::NodesConfigError;
 
 use crate::{ShutdownError, SyncError};
 
 #[derive(Debug, thiserror::Error)]
+#[error("connection closed")]
+pub struct ConnectionClosed;
+
+#[derive(Debug, thiserror::Error)]
 pub enum RouterError {
-    #[error("codec error: {0}")]
-    CodecError(#[from] CodecError),
     #[error("target not registered: {0}")]
     NotRegisteredTarget(String),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -87,8 +91,6 @@ pub enum ProtocolError {
     HandshakeTimeout(&'static str),
     #[error("peer dropped connection")]
     PeerDropped,
-    #[error("codec error: {0}")]
-    Codec(#[from] CodecError),
     #[error("grpc error: {0}")]
     GrpcError(#[from] tonic::Status),
     #[error(
@@ -104,7 +106,6 @@ impl From<ProtocolError> for tonic::Status {
             ProtocolError::HandshakeFailed(e) => tonic::Status::invalid_argument(e),
             ProtocolError::HandshakeTimeout(e) => tonic::Status::deadline_exceeded(e),
             ProtocolError::PeerDropped => tonic::Status::cancelled("peer dropped"),
-            ProtocolError::Codec(e) => tonic::Status::internal(e.to_string()),
             ProtocolError::UnsupportedVersion(_) => {
                 tonic::Status::invalid_argument(value.to_string())
             }
