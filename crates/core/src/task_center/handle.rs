@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, instrument};
+use tracing::instrument;
 
 use restate_types::SharedString;
 use restate_types::health::{Health, NodeStatus};
@@ -143,7 +143,7 @@ impl Handle {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        self.inner.spawn_child(kind, name, future.in_current_span())
+        self.inner.spawn_child(kind, name, future)
     }
 
     pub fn spawn_unmanaged<F, T>(
@@ -157,8 +157,7 @@ impl Handle {
         T: Send + 'static,
     {
         let name = name.into();
-        self.inner
-            .spawn_unmanaged(kind, &name, future.in_current_span())
+        self.inner.spawn_unmanaged(kind, &name, future)
     }
 
     /// Must be called within a Localset-scoped task, not from a normal spawned task.
@@ -173,8 +172,7 @@ impl Handle {
         F: Future<Output = anyhow::Result<()>> + 'static,
     {
         let name = name.into();
-        self.inner
-            .spawn_local(kind, &name, future.in_current_span())
+        self.inner.spawn_local(kind, &name, future)
     }
 
     pub fn metadata(&self) -> Option<Metadata> {
