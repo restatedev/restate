@@ -219,28 +219,28 @@ impl Worker {
 
     pub async fn run(self) -> anyhow::Result<()> {
         // Postgres external server
-        TaskCenter::spawn_child(
+        TaskCenter::spawn(
             TaskKind::RpcServer,
             "postgres-query-server",
             self.storage_query_postgres.run(),
         )?;
 
         // Datafusion remote scanner
-        TaskCenter::spawn_child(
+        TaskCenter::spawn(
             TaskKind::SystemService,
             "datafusion-scan-server",
             self.datafusion_remote_scanner.run(),
         )?;
 
         // Kafka Ingress
-        TaskCenter::spawn_child(
+        TaskCenter::spawn(
             TaskKind::SystemService,
             "kafka-ingress",
             self.ingress_kafka
                 .run(self.updateable_config.clone().map(|c| &c.ingress)),
         )?;
 
-        TaskCenter::spawn_child(
+        TaskCenter::spawn(
             TaskKind::SystemService,
             "partition-processor-manager",
             self.partition_processor_manager.run(),

@@ -105,13 +105,13 @@ impl WorkerRole {
 
     pub async fn start(self) -> anyhow::Result<()> {
         // todo: only run subscriptions on node 0 once being distributed
-        TaskCenter::spawn_child(
+        TaskCenter::spawn(
             TaskKind::MetadataBackgroundSync,
             "subscription_controller",
             Self::watch_subscriptions(self.metadata, self.worker.subscription_controller_handle()),
         )?;
 
-        TaskCenter::spawn_child(TaskKind::RoleRunner, "worker-service", async {
+        TaskCenter::spawn(TaskKind::RoleRunner, "worker-service", async {
             self.worker.run().await
         })?;
 
