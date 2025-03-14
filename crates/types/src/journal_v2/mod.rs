@@ -61,6 +61,24 @@ pub enum EntryType {
     Event,
 }
 
+impl From<CommandType> for EntryType {
+    fn from(value: CommandType) -> Self {
+        Self::Command(value)
+    }
+}
+
+impl From<NotificationType> for EntryType {
+    fn from(value: NotificationType) -> Self {
+        Self::Notification(value)
+    }
+}
+
+impl From<CompletionType> for EntryType {
+    fn from(value: CompletionType) -> Self {
+        Self::Notification(NotificationType::Completion(value))
+    }
+}
+
 impl fmt::Display for EntryType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

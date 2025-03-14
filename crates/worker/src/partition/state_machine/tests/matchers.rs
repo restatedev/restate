@@ -20,10 +20,13 @@ use restate_types::journal_v2::{Entry, EntryIndex};
 
 pub mod storage {
     use super::*;
-    use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
+    use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
-    use restate_storage_api::invocation_status_table::InvocationStatus;
+    use restate_storage_api::invocation_status_table::{
+        InFlightInvocationMetadata, InvocationStatus, InvocationStatusDiscriminants,
+        JournalMetadata,
+    };
     use restate_storage_api::journal_table::JournalEntry;
     use restate_types::identifiers::InvocationId;
     use restate_types::invocation::InvocationTarget;
@@ -32,14 +35,29 @@ pub mod storage {
     pub fn has_journal_length(
         journal_length: EntryIndex,
     ) -> impl Matcher<ActualT = InvocationStatus> {
-        predicate(move |is: &InvocationStatus| {
-            is.get_journal_metadata()
-                .is_some_and(|jm| jm.length == journal_length)
-        })
-        .with_description(
-            format!("has journal length {}", journal_length),
-            format!("hasn't journal length {}", journal_length),
+        // Guilty!
+        property_matcher::internal::property_matcher(
+            |o: &InvocationStatus| o.get_journal_metadata().cloned(),
+            "get_journal_metadata()",
+            some(field!(JournalMetadata.length, eq(journal_length))),
         )
+    }
+
+    pub fn in_flight_meta(
+        inner: impl Matcher<ActualT = InFlightInvocationMetadata> + 'static,
+    ) -> impl Matcher<ActualT = InvocationStatus> {
+        // Guilty!
+        property_matcher::internal::property_matcher(
+            |o: &InvocationStatus| o.get_invocation_metadata().cloned(),
+            "get_invocation_metadata()",
+            some(inner),
+        )
+    }
+
+    pub fn status(
+        status: InvocationStatusDiscriminants,
+    ) -> impl Matcher<ActualT = InvocationStatus> {
+        property!(InvocationStatus.discriminant(), some(eq(status)))
     }
 
     pub fn has_commands(commands: EntryIndex) -> impl Matcher<ActualT = InvocationStatus> {
@@ -78,7 +96,7 @@ pub mod actions {
     use crate::partition::state_machine::Action;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_types::identifiers::InvocationId;
-    use restate_types::invocation::{InvocationTarget, ResponseResult};
+    use restate_types::invocation::{InvocationEpoch, InvocationTarget, ResponseResult};
     use restate_types::journal_v2::{Notification, Signal};
 
     pub fn invoke_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
@@ -94,6 +112,16 @@ pub mod actions {
         pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
             invocation_target: eq(invocation_target)
+        })
+    }
+
+    pub fn invoke_for_id_and_epoch(
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> impl Matcher<ActualT = Action> {
+        pat!(Action::Invoke {
+            invocation_id: eq(invocation_id),
+            invocation_epoch: eq(invocation_epoch)
         })
     }
 

@@ -71,8 +71,8 @@ pub trait JournalTable: ReadOnlyJournalTable {
     /// * `compaction_starting_point`: Starting point of the compaction, included. Everything before will be left untouched.
     /// * `notifications_to_retain`: Notifications to retain. Invariant: Each entry index in this slice MUST be >= compaction_starting_point
     /// * `notification_ids_to_forget`: Hint of notification ids to forget, including both notifications ids of notifications existing in the journal,
-    ///     and completion ids of completions not in the journal, for which we're cleaning the related command.
-    ///     This is needed to cleanup the internal notification indexes.
+    ///   and completion ids of completions not in the journal, for which we're cleaning the related command.
+    ///   This is needed to cleanup the internal notification indexes.
     /// * `journal_length`: Total journal length when this operation is fired up.
     ///
     /// ## Example

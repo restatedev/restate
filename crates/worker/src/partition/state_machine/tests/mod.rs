@@ -210,6 +210,28 @@ impl TestEnv {
             .unwrap();
         tx.commit().await.unwrap();
     }
+
+    pub async fn verify_journal_components(
+        &mut self,
+        invocation_id: InvocationId,
+        entry_types: impl IntoIterator<Item = journal_v2::EntryType>,
+    ) {
+        let expected_entry_types = entry_types.into_iter().collect::<Vec<_>>();
+        assert_that!(
+            self.storage.get_invocation_status(&invocation_id).await,
+            // [Input, SleepCommand, SleepCommand, SleepCompletion]
+            ok(matchers::storage::has_journal_length(
+                expected_entry_types.len() as u32
+            ))
+        );
+        let actual_entry_types = self
+            .read_journal_to_vec(invocation_id, expected_entry_types.len() as EntryIndex)
+            .await
+            .into_iter()
+            .map(|e| e.ty())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_entry_types, expected_entry_types);
+    }
 }
 
 type TestResult = Result<(), anyhow::Error>;

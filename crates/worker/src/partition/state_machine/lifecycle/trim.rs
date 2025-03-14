@@ -227,3 +227,246 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use googletest::{assert_that, prelude::*};
+    use restate_storage_api::invocation_status_table::{
+        CompletionRangeEpochMap, InFlightInvocationMetadata, InvocationStatusDiscriminants,
+        ReadOnlyInvocationStatusTable,
+    };
+    use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
+    use restate_types::invocation::{TrimBy, TrimInvocationRequest};
+    use restate_types::journal_v2::raw::RawCommand;
+    use restate_types::journal_v2::{
+        ClearAllStateCommand, CommandType, CompletionType, Entry, SleepCommand,
+    };
+    use restate_types::time::MillisSinceEpoch;
+    use restate_wal_protocol::timer::TimerKeyValue;
+
+    #[restate_core::test]
+    async fn trim_empty_journal() {
+        let mut test_env = TestEnv::create().await;
+
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+        for entry_index in 0..=2 {
+            // None of these should cause any trim to happen, because either is journal out of bound, or tries to trim input entry, which is special cased.
+            let actions = test_env
+                .apply(restate_wal_protocol::Command::TrimInvocation(
+                    TrimInvocationRequest {
+                        invocation_id,
+                        trim_by: TrimBy::CommandEntryIndex { entry_index },
+                    },
+                ))
+                .await;
+            assert_that!(actions, empty());
+        }
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn trim_with_non_completable_entries() {
+        let mut test_env = TestEnv::create().await;
+
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+        let _ = test_env
+            .apply_multiple([
+                fixtures::invoker_entry_effect_for_epoch(
+                    invocation_id,
+                    0,
+                    // Any command will do fine
+                    ClearAllStateCommand::default(),
+                ),
+                fixtures::invoker_entry_effect_for_epoch(
+                    invocation_id,
+                    0,
+                    // Any command will do fine
+                    ClearAllStateCommand::default(),
+                ),
+            ])
+            .await;
+        assert_that!(
+            test_env.storage.get_invocation_status(&invocation_id).await,
+            // [Input, ClearAllState, ClearAllState]
+            ok(matchers::storage::has_journal_length(3))
+        );
+
+        let actions = test_env
+            .apply(restate_wal_protocol::Command::TrimInvocation(
+                TrimInvocationRequest {
+                    invocation_id,
+                    trim_by: TrimBy::CommandEntryIndex { entry_index: 2 },
+                },
+            ))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::invoke_for_id_and_epoch(invocation_id, 1))
+        );
+        assert_that!(
+            test_env.storage.get_invocation_status(&invocation_id).await,
+            // Only Input entry and first clear state
+            ok(all!(
+                matchers::storage::status(InvocationStatusDiscriminants::Invoked),
+                matchers::storage::has_journal_length(2),
+                matchers::storage::in_flight_meta(pat!(InFlightInvocationMetadata {
+                    current_invocation_epoch: eq(1),
+                    // There were no completable entries among the trimmed ones, so this map should be unchanged.
+                    completion_range_epoch_map: eq(CompletionRangeEpochMap::default())
+                }))
+            ))
+        );
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 2).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                property!(
+                    Entry.ty(),
+                    eq(EntryType::Command(CommandType::ClearAllState))
+                ),
+            ]
+        );
+        assert_that!(
+            test_env.storage.get_journal_entry(invocation_id, 2).await,
+            ok(none())
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn trim_with_completable_entries() {
+        let mut test_env = TestEnv::create().await;
+
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+        let wake_up_time = MillisSinceEpoch::now();
+
+        let _ = test_env
+            .apply_multiple([
+                fixtures::invoker_entry_effect_for_epoch(
+                    invocation_id,
+                    0,
+                    SleepCommand {
+                        wake_up_time,
+                        completion_id: 1,
+                        name: Default::default(),
+                    },
+                ),
+                fixtures::invoker_entry_effect_for_epoch(
+                    invocation_id,
+                    0,
+                    SleepCommand {
+                        wake_up_time: wake_up_time + Duration::from_secs(60),
+                        completion_id: 2,
+                        name: Default::default(),
+                    },
+                ),
+            ])
+            .await;
+        assert_that!(
+            test_env.storage.get_invocation_status(&invocation_id).await,
+            // [Input, SleepCommand, SleepCommand]
+            ok(matchers::storage::has_journal_length(3))
+        );
+
+        // Let's complete one of the sleeps
+        let _ = test_env
+            .apply(restate_wal_protocol::Command::Timer(
+                TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, 1, 0),
+            ))
+            .await;
+        test_env
+            .verify_journal_components(
+                invocation_id,
+                [
+                    CommandType::Input.into(),
+                    CommandType::Sleep.into(),
+                    CommandType::Sleep.into(),
+                    CompletionType::Sleep.into(),
+                ],
+            )
+            .await;
+
+        let actions = test_env
+            .apply(restate_wal_protocol::Command::TrimInvocation(
+                TrimInvocationRequest {
+                    invocation_id,
+                    trim_by: TrimBy::CommandEntryIndex { entry_index: 2 },
+                },
+            ))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::invoke_for_id_and_epoch(invocation_id, 1))
+        );
+        assert_that!(
+            test_env.storage.get_invocation_status(&invocation_id).await,
+            // Only Input entry and first clear state
+            ok(all!(
+                matchers::storage::status(InvocationStatusDiscriminants::Invoked),
+                matchers::storage::in_flight_meta(pat!(InFlightInvocationMetadata {
+                    current_invocation_epoch: eq(1),
+                    // This should contain the trim point!
+                    completion_range_epoch_map: eq(CompletionRangeEpochMap::from_trim_points([(
+                        2, 1
+                    )]))
+                }))
+            ))
+        );
+        test_env
+            .verify_journal_components(
+                invocation_id,
+                [
+                    CommandType::Input.into(),
+                    CommandType::Sleep.into(),
+                    CompletionType::Sleep.into(),
+                ],
+            )
+            .await;
+        assert_that!(
+            test_env.storage.get_journal_entry(invocation_id, 3).await,
+            ok(none())
+        );
+        assert_that!(
+            test_env
+                .storage
+                .get_command_by_completion_id(invocation_id, 2)
+                .await,
+            // This was the second Sleep
+            ok(none())
+        );
+        assert_that!(
+            test_env
+                .storage
+                .get_command_by_completion_id(invocation_id, 1)
+                .await,
+            // This was the first
+            ok(some(property!(
+                RawCommand.ty(),
+                eq(EntryType::Command(CommandType::Sleep))
+            )))
+        );
+        assert_that!(
+            test_env
+                .storage
+                .get_notifications_index(invocation_id)
+                .await,
+            // First notification is there
+            ok(eq(HashMap::from([(NotificationId::CompletionId(1), 2u32)])))
+        );
+
+        test_env.shutdown().await;
+    }
+}
