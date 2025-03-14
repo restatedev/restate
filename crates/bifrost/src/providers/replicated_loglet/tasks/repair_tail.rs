@@ -149,19 +149,23 @@ impl<T: TransportConnect> RepairTail<T> {
                 from_offset: self.digests.start_offset(),
                 to_offset: self.digests.target_tail().prev(),
             };
-            get_digest_requests.spawn({
-                let networking = self.networking.clone();
-                let logservers_rpc = self.logservers_rpc.clone();
-                let peer = *node;
-                async move {
-                    logservers_rpc
-                        .get_digest
-                        .call(&networking, peer, msg.clone())
-                        .await
-                }
-                .in_current_tc()
-                .in_current_span()
-            });
+            get_digest_requests
+                .build_task()
+                .name("get-digest")
+                .spawn({
+                    let networking = self.networking.clone();
+                    let logservers_rpc = self.logservers_rpc.clone();
+                    let peer = *node;
+                    async move {
+                        logservers_rpc
+                            .get_digest
+                            .call(&networking, peer, msg.clone())
+                            .await
+                    }
+                    .in_current_tc()
+                    .in_current_span()
+                })
+                .expect("to spawn get digest task");
         }
 
         // # Digest Phase

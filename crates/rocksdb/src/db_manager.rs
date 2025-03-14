@@ -238,10 +238,14 @@ impl RocksDbManager {
         let start = Instant::now();
         let mut tasks = tokio::task::JoinSet::new();
         for (name, db) in self.dbs.write().drain() {
-            tasks.spawn(async move {
-                db.shutdown().await;
-                name.clone()
-            });
+            tasks
+                .build_task()
+                .name("rocksdb-shutdown")
+                .spawn(async move {
+                    db.shutdown().await;
+                    name.clone()
+                })
+                .expect("to spawn RocksDb shutdown task");
         }
         // wait for all tasks to complete
         while let Some(res) = tasks.join_next().await {

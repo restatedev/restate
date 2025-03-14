@@ -558,16 +558,20 @@ impl PartitionProcessorManager {
         partition_id: PartitionId,
         runtime_task_handle: RuntimeTaskHandle<Result<(), ProcessorError>>,
     ) {
-        self.asynchronous_operations.spawn(
-            async move {
-                let result = runtime_task_handle.await;
-                AsynchronousEvent {
-                    partition_id,
-                    inner: EventKind::Stopped(result),
+        self.asynchronous_operations
+            .build_task()
+            .name(&format!("runtime-result-{}", partition_id))
+            .spawn(
+                async move {
+                    let result = runtime_task_handle.await;
+                    AsynchronousEvent {
+                        partition_id,
+                        inner: EventKind::Stopped(result),
+                    }
                 }
-            }
-            .in_current_tc(),
-        );
+                .in_current_tc(),
+            )
+            .expect("to spawn await runtime task result");
     }
 
     /// A lightweight tail watcher that leverages the loglet watch tail implementation
@@ -602,15 +606,19 @@ impl PartitionProcessorManager {
         metadata_store_client: MetadataStoreClient,
         asynchronous_operations: &mut JoinSet<AsynchronousEvent>,
     ) {
-        asynchronous_operations.spawn(
-            Self::obtain_new_leader_epoch_task(
-                leader_epoch_token,
-                partition_id,
-                metadata_store_client,
-                my_node_id(),
+        asynchronous_operations
+            .build_task()
+            .name(&format!("obtain-leader-epoch-{}", partition_id))
+            .spawn(
+                Self::obtain_new_leader_epoch_task(
+                    leader_epoch_token,
+                    partition_id,
+                    metadata_store_client,
+                    my_node_id(),
+                )
+                .in_current_tc(),
             )
-            .in_current_tc(),
-        );
+            .expect("spawn obtain leader epoch task");
     }
 
     fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
@@ -785,16 +793,20 @@ impl PartitionProcessorManager {
                     let starting_task = self
                         .start_partition_processor_task(partition_id, partition_key_range.clone());
 
-                    self.asynchronous_operations.spawn(
-                        async move {
-                            let result = starting_task.run();
-                            AsynchronousEvent {
-                                partition_id,
-                                inner: EventKind::Started(result),
+                    self.asynchronous_operations
+                        .build_task()
+                        .name(&format!("start-pp-{}", partition_id))
+                        .spawn(
+                            async move {
+                                let result = starting_task.run();
+                                AsynchronousEvent {
+                                    partition_id,
+                                    inner: EventKind::Started(result),
+                                }
                             }
-                        }
-                        .in_current_tc(),
-                    );
+                            .in_current_tc(),
+                        )
+                        .expect("to spawn starting pp task");
 
                     self.processor_states.insert(
                         partition_id,

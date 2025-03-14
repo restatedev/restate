@@ -98,30 +98,34 @@ impl BifrostService {
         // Start all enabled providers.
         for (kind, factory) in self.factories {
             let watchdog = self.watchdog.sender();
-            tasks.spawn(
-                async move {
-                    trace!("Starting loglet provider {}", kind);
-                    match factory.create().await {
-                        Err(e) => {
-                            error!("Failed to start loglet provider {}: {}", kind, e);
-                            Err(anyhow::anyhow!(
-                                "Failed to start loglet provider {}: {}",
-                                kind,
-                                e
-                            ))
-                        }
-                        Ok(provider) => {
-                            // tell watchdog about it.
-                            // We can always send because we own both sender and receiver.
-                            watchdog
-                                .send(WatchdogCommand::WatchProvider(provider.clone()))
-                                .expect("watchdog sends always succeed");
-                            Ok((kind, provider))
+            tasks
+                .build_task()
+                .name(&format!("start-provider-{}", kind))
+                .spawn(
+                    async move {
+                        trace!("Starting loglet provider {}", kind);
+                        match factory.create().await {
+                            Err(e) => {
+                                error!("Failed to start loglet provider {}: {}", kind, e);
+                                Err(anyhow::anyhow!(
+                                    "Failed to start loglet provider {}: {}",
+                                    kind,
+                                    e
+                                ))
+                            }
+                            Ok(provider) => {
+                                // tell watchdog about it.
+                                // We can always send because we own both sender and receiver.
+                                watchdog
+                                    .send(WatchdogCommand::WatchProvider(provider.clone()))
+                                    .expect("watchdog sends always succeed");
+                                Ok((kind, provider))
+                            }
                         }
                     }
-                }
-                .in_current_tc_as_task(TaskKind::LogletProvider, "loglet-provider-start"),
-            );
+                    .in_current_tc_as_task(TaskKind::LogletProvider, "loglet-provider-start"),
+                )
+                .expect("to spawn start provider task");
         }
         let mut shutdown = std::pin::pin!(cancellation_watcher());
 
