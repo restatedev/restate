@@ -117,29 +117,33 @@ impl<'a> TrimTask<'a> {
                 trim_point,
             };
 
-            inflight_requests.spawn({
-                let networking = networking.clone();
-                let trim_rpc_router = self.logservers_rpc.trim.clone();
-                let known_global_tail = self.known_global_tail.clone();
+            inflight_requests
+                .build_task()
+                .name("trim")
+                .spawn({
+                    let networking = networking.clone();
+                    let trim_rpc_router = self.logservers_rpc.trim.clone();
+                    let known_global_tail = self.known_global_tail.clone();
 
-                async move {
-                    let task = RunOnSingleNode::new(
-                        node_id,
-                        request,
-                        &trim_rpc_router,
-                        &known_global_tail,
-                        Configuration::pinned()
-                            .bifrost
-                            .replicated_loglet
-                            .log_server_retry_policy
-                            .clone(),
-                    );
+                    async move {
+                        let task = RunOnSingleNode::new(
+                            node_id,
+                            request,
+                            &trim_rpc_router,
+                            &known_global_tail,
+                            Configuration::pinned()
+                                .bifrost
+                                .replicated_loglet
+                                .log_server_retry_policy
+                                .clone(),
+                        );
 
-                    (node_id, task.run(on_trim_response, &networking).await)
-                }
-                .in_current_tc()
-                .instrument(Span::current())
-            });
+                        (node_id, task.run(on_trim_response, &networking).await)
+                    }
+                    .in_current_tc()
+                    .instrument(Span::current())
+                })
+                .expect("to spawn trim task");
         }
 
         // Waiting for trim responses

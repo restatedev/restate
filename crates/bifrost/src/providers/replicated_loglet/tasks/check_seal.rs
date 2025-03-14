@@ -126,30 +126,34 @@ impl CheckSealTask {
                 ),
             };
 
-            inflight_requests.spawn({
-                let networking = networking.clone();
-                let rpc_router = get_loglet_info_rpc.clone();
-                let known_global_tail = known_global_tail.clone();
-                let local_tail = local_tails.get(&node_id).cloned();
+            inflight_requests
+                .build_task()
+                .name("check-seal")
+                .spawn({
+                    let networking = networking.clone();
+                    let rpc_router = get_loglet_info_rpc.clone();
+                    let known_global_tail = known_global_tail.clone();
+                    let local_tail = local_tails.get(&node_id).cloned();
 
-                async move {
-                    let task = RunOnSingleNode::new(
-                        node_id,
-                        request,
-                        &rpc_router,
-                        &known_global_tail,
-                        // do not retry
-                        RetryPolicy::None,
-                    );
+                    async move {
+                        let task = RunOnSingleNode::new(
+                            node_id,
+                            request,
+                            &rpc_router,
+                            &known_global_tail,
+                            // do not retry
+                            RetryPolicy::None,
+                        );
 
-                    (
-                        node_id,
-                        task.run(on_info_response(local_tail), &networking).await,
-                    )
-                }
-                .in_current_tc()
-                .in_current_span()
-            });
+                        (
+                            node_id,
+                            task.run(on_info_response(local_tail), &networking).await,
+                        )
+                    }
+                    .in_current_tc()
+                    .in_current_span()
+                })
+                .expect("to spawn check seal tasks");
         }
 
         // Waiting for GetLogletInfo responses
