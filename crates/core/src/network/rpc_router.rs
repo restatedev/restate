@@ -448,16 +448,17 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::network::{PeerMetadataVersion, WeakConnection};
-
     use super::*;
+
     use bytes::Bytes;
     use futures::future::join_all;
-    use restate_types::GenerationalNodeId;
-    use restate_types::net::{CodecError, TargetName};
-    use restate_types::protobuf::node::message;
     use serde::{Deserialize, Serialize};
     use tokio::sync::Barrier;
+
+    use restate_types::GenerationalNodeId;
+    use restate_types::net::TargetName;
+
+    use crate::network::{PeerMetadataVersion, WeakConnection};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestRequest {
@@ -488,23 +489,17 @@ mod test {
     }
 
     impl WireEncode for TestResponse {
-        fn encode(
-            self,
-            _protocol_version: restate_types::net::ProtocolVersion,
-        ) -> Result<message::Body, CodecError> {
-            let target = Self::TARGET;
-            Ok(message::Body::Encoded(message::BinaryMessage {
-                target: target.into(),
-                payload: Bytes::from(self.text),
-            }))
+        fn encode_to_bytes(self, _protocol_version: restate_types::net::ProtocolVersion) -> Bytes {
+            Bytes::from(self.text.into_bytes())
         }
     }
 
     impl WireDecode for TestResponse {
-        fn decode(
+        type Error = anyhow::Error;
+        fn try_decode(
             _: impl bytes::Buf,
             _: restate_types::net::ProtocolVersion,
-        ) -> Result<Self, CodecError>
+        ) -> anyhow::Result<Self>
         where
             Self: Sized,
         {
