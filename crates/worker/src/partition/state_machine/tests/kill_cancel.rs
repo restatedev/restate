@@ -14,7 +14,6 @@ use assert2::assert;
 use assert2::let_assert;
 use googletest::any;
 use prost::Message;
-use restate_storage_api::invocation_status_table::JournalMetadata;
 use restate_storage_api::journal_table::JournalTable;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
 use restate_types::deployment::PinnedDeployment;
@@ -26,14 +25,9 @@ use restate_types::service_protocol;
 use rstest::rstest;
 use test_log::test;
 
-#[rstest]
-#[case(ExperimentalFeature::InvocationStatusKilled.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn kill_inboxed_invocation(
-    #[case] experimental_features: EnumSet<ExperimentalFeature>,
-) -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn kill_inboxed_invocation() -> anyhow::Result<()> {
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
@@ -115,16 +109,13 @@ async fn kill_inboxed_invocation(
 }
 
 #[rstest]
-// No need to test Invocation status killed experimental feature with cancel, as it has no impact
-#[case(ExperimentalFeature::InvocationStatusKilled.into(), TerminationFlavor::Kill)]
-#[case(EnumSet::empty(), TerminationFlavor::Kill)]
-#[case(EnumSet::empty(), TerminationFlavor::Cancel)]
+#[case(TerminationFlavor::Kill)]
+#[case(TerminationFlavor::Cancel)]
 #[restate_core::test]
 async fn terminate_scheduled_invocation(
-    #[case] experimental_features: EnumSet<ExperimentalFeature>,
     #[case] termination_flavor: TerminationFlavor,
 ) -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+    let mut test_env = TestEnv::create().await;
 
     let invocation_id = InvocationId::mock_random();
     let rpc_id = PartitionProcessorRpcRequestId::new();
@@ -174,14 +165,9 @@ async fn terminate_scheduled_invocation(
     Ok(())
 }
 
-#[rstest]
-#[case(ExperimentalFeature::InvocationStatusKilled.into())]
-#[case(EnumSet::empty())]
 #[restate_core::test]
-async fn kill_call_tree(
-    #[case] experimental_features: EnumSet<ExperimentalFeature>,
-) -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create_with_experimental_features(experimental_features).await;
+async fn kill_call_tree() -> anyhow::Result<()> {
+    let mut test_env = TestEnv::create().await;
 
     let call_invocation_id = InvocationId::mock_random();
     let background_call_invocation_id = InvocationId::mock_random();
@@ -241,23 +227,12 @@ async fn kill_call_tree(
         )))
         .await;
 
-    let abort_command_matcher =
-        if experimental_features.contains(ExperimentalFeature::InvocationStatusKilled) {
-            pat!(Action::AbortInvocation {
-                invocation_id: eq(invocation_id),
-                acknowledge: eq(true)
-            })
-        } else {
-            pat!(Action::AbortInvocation {
-                invocation_id: eq(invocation_id),
-                acknowledge: eq(false)
-            })
-        };
-
     assert_that!(
         actions,
         all!(
-            contains(abort_command_matcher),
+            contains(pat!(Action::AbortInvocation {
+                invocation_id: eq(invocation_id),
+            })),
             contains(matchers::actions::terminate_invocation(
                 call_invocation_id,
                 TerminationFlavor::Kill
@@ -276,75 +251,15 @@ async fn kill_call_tree(
             })))
         )
     );
-    if experimental_features.contains(ExperimentalFeature::InvocationStatusKilled) {
-        // We don't pop the inbox yet, but only after invocation ends
-        assert_that!(
-            actions,
-            not(contains(matchers::actions::invoke_for_id_and_target(
-                enqueued_invocation_id_on_same_target,
-                invocation_target.clone(),
-            )))
-        )
-    } else {
-        // Inbox should have been popped
-        assert_that!(
-            actions,
-            contains(matchers::actions::invoke_for_id_and_target(
-                enqueued_invocation_id_on_same_target,
-                invocation_target.clone(),
-            ))
-        )
-    };
 
-    if experimental_features.contains(ExperimentalFeature::InvocationStatusKilled) {
-        // A couple of new expectations here:
-        // * the invocation status is now in killed state
-        assert_that!(
-            test_env
-                .storage
-                .get_invocation_status(&invocation_id)
-                .await?,
-            pat!(InvocationStatus::Killed { .. })
-        );
-
-        // * No new journal entries will be accepted!
-        let _ = test_env
-            .apply(Command::InvokerEffect(InvokerEffect {
-                invocation_id,
-                kind: InvokerEffectKind::JournalEntry {
-                    entry_index: 4,
-                    entry: ProtobufRawEntryCodec::serialize_enriched(Entry::ClearAllState),
-                },
-            }))
-            .await;
-        // Journal entry was ignored (journal length == 4)
-        assert_that!(
-            test_env
-                .storage
-                .get_invocation_status(&invocation_id)
-                .await?,
-            pat!(InvocationStatus::Killed(pat!(InFlightInvocationMetadata {
-                journal_metadata: pat!(JournalMetadata { length: eq(4) })
-            })))
-        );
-
-        // Now send the Failed invoker effect
-        let actions = test_env
-            .apply(Command::InvokerEffect(InvokerEffect {
-                invocation_id,
-                kind: InvokerEffectKind::Failed(KILLED_INVOCATION_ERROR),
-            }))
-            .await;
-
-        // The inbox is popped after the invoker sends failed
-        assert_that!(
-            actions,
-            contains(matchers::actions::invoke_for_id_and_target(
-                enqueued_invocation_id_on_same_target,
-                invocation_target
-            ))
-        );
-    }
+    // Inbox should have been popped
+    assert_that!(
+        actions,
+        contains(matchers::actions::invoke_for_id_and_target(
+            enqueued_invocation_id_on_same_target,
+            invocation_target.clone(),
+        ))
+    );
 
     // Invocation should be finally gone
     assert_that!(

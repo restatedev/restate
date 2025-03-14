@@ -29,7 +29,6 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContex
             }
             InvocationStatus::Scheduled(_)
             | InvocationStatus::Inboxed(_)
-            | InvocationStatus::Killed(_)
             | InvocationStatus::Completed(_)
             | InvocationStatus::Free => {
                 // Nothing to do here

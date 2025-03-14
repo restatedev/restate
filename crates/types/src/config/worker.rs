@@ -48,9 +48,6 @@ pub struct WorkerOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     cleanup_interval: humantime::Duration,
 
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    experimental_feature_invocation_status_killed: bool,
-
     pub storage: StorageOptions,
 
     pub invoker: InvokerOptions,
@@ -86,10 +83,6 @@ impl WorkerOptions {
     pub fn cleanup_interval(&self) -> Duration {
         self.cleanup_interval.into()
     }
-
-    pub fn experimental_feature_invocation_status_killed(&self) -> bool {
-        self.experimental_feature_invocation_status_killed
-    }
 }
 
 impl Default for WorkerOptions {
@@ -98,7 +91,6 @@ impl Default for WorkerOptions {
             internal_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
             num_timers_in_memory_limit: None,
             cleanup_interval: Duration::from_secs(60 * 60).into(),
-            experimental_feature_invocation_status_killed: false,
             storage: StorageOptions::default(),
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(4).expect("Non zero number"),

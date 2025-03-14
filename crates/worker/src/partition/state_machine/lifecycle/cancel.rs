@@ -66,14 +66,6 @@ where
                 )
                 .await?
             }
-            InvocationStatus::Killed(_) => {
-                trace!(
-                    "Received cancel command for an already killed invocation '{}'.",
-                    self.invocation_id
-                );
-                // Nothing to do here really, let's send again the abort signal to the invoker just in case
-                ctx.send_abort_invocation_to_invoker(self.invocation_id, true);
-            }
             InvocationStatus::Completed(_) => {
                 debug!(
                     "Received cancel command for completed invocation '{}'. To cleanup the invocation after it's been completed, use the purge invocation command.",
@@ -91,7 +83,7 @@ where
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                ctx.send_abort_invocation_to_invoker(self.invocation_id, false);
+                ctx.send_abort_invocation_to_invoker(self.invocation_id);
             }
         };
 

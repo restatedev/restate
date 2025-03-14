@@ -190,7 +190,6 @@ pub enum InvocationStatus {
         metadata: InFlightInvocationMetadata,
         waiting_for_notifications: HashSet<NotificationId>,
     },
-    Killed(InFlightInvocationMetadata),
     Completed(CompletedInvocation),
     /// Service instance is currently not invoked
     #[default]
@@ -205,7 +204,6 @@ impl InvocationStatus {
             InvocationStatus::Inboxed(metadata) => Some(&metadata.metadata.invocation_target),
             InvocationStatus::Invoked(metadata) => Some(&metadata.invocation_target),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.invocation_target),
-            InvocationStatus::Killed(metadata) => Some(&metadata.invocation_target),
             InvocationStatus::Completed(completed) => Some(&completed.invocation_target),
             _ => None,
         }
@@ -218,7 +216,6 @@ impl InvocationStatus {
             InvocationStatus::Inboxed(metadata) => Some(&metadata.metadata.source),
             InvocationStatus::Invoked(metadata) => Some(&metadata.source),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.source),
-            InvocationStatus::Killed(metadata) => Some(&metadata.source),
             InvocationStatus::Completed(completed) => Some(&completed.source),
             _ => None,
         }
@@ -240,7 +237,6 @@ impl InvocationStatus {
             InvocationStatus::Inboxed(metadata) => metadata.metadata.idempotency_key.as_ref(),
             InvocationStatus::Invoked(metadata) => metadata.idempotency_key.as_ref(),
             InvocationStatus::Suspended { metadata, .. } => metadata.idempotency_key.as_ref(),
-            InvocationStatus::Killed(metadata) => metadata.idempotency_key.as_ref(),
             InvocationStatus::Completed(completed) => completed.idempotency_key.as_ref(),
             _ => None,
         }
@@ -251,7 +247,6 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => Some(metadata.journal_metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(metadata.journal_metadata),
-            InvocationStatus::Killed(metadata) => Some(metadata.journal_metadata),
             _ => None,
         }
     }
@@ -261,7 +256,6 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => Some(&metadata.journal_metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.journal_metadata),
-            InvocationStatus::Killed(metadata) => Some(&metadata.journal_metadata),
             _ => None,
         }
     }
@@ -271,7 +265,6 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => Some(&mut metadata.journal_metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.journal_metadata),
-            InvocationStatus::Killed(metadata) => Some(&mut metadata.journal_metadata),
             _ => None,
         }
     }
@@ -281,7 +274,6 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => Some(metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(metadata),
-            InvocationStatus::Killed(metadata) => Some(metadata),
             _ => None,
         }
     }
@@ -291,7 +283,6 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => Some(metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(metadata),
-            InvocationStatus::Killed(metadata) => Some(metadata),
             _ => None,
         }
     }
@@ -301,7 +292,6 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => Some(metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(metadata),
-            InvocationStatus::Killed(metadata) => Some(metadata),
             _ => None,
         }
     }
@@ -315,7 +305,6 @@ impl InvocationStatus {
             InvocationStatus::Inboxed(metadata) => Some(&mut metadata.metadata.response_sinks),
             InvocationStatus::Invoked(metadata) => Some(&mut metadata.response_sinks),
             InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.response_sinks),
-            InvocationStatus::Killed(metadata) => Some(&mut metadata.response_sinks),
             _ => None,
         }
     }
@@ -327,7 +316,6 @@ impl InvocationStatus {
             InvocationStatus::Inboxed(metadata) => Some(&metadata.metadata.response_sinks),
             InvocationStatus::Invoked(metadata) => Some(&metadata.response_sinks),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.response_sinks),
-            InvocationStatus::Killed(metadata) => Some(&metadata.response_sinks),
             _ => None,
         }
     }
@@ -339,7 +327,6 @@ impl InvocationStatus {
             InvocationStatus::Inboxed(metadata) => Some(&metadata.metadata.timestamps),
             InvocationStatus::Invoked(metadata) => Some(&metadata.timestamps),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.timestamps),
-            InvocationStatus::Killed(metadata) => Some(&metadata.timestamps),
             InvocationStatus::Completed(completed) => Some(&completed.timestamps),
             _ => None,
         }
@@ -352,7 +339,6 @@ impl InvocationStatus {
             InvocationStatus::Inboxed(metadata) => Some(&mut metadata.metadata.timestamps),
             InvocationStatus::Invoked(metadata) => Some(&mut metadata.timestamps),
             InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.timestamps),
-            InvocationStatus::Killed(metadata) => Some(&mut metadata.timestamps),
             InvocationStatus::Completed(completed) => Some(&mut completed.timestamps),
             _ => None,
         }
@@ -579,11 +565,9 @@ impl CompletedInvocation {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct InvokedOrKilledInvocationStatusLite {
+pub struct InvokedInvocationStatusLite {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
-    /// If true, original status is Invoked, otherwise is Killed
-    pub is_invoked: bool,
 }
 
 pub trait ReadOnlyInvocationStatusTable {
@@ -592,9 +576,9 @@ pub trait ReadOnlyInvocationStatusTable {
         invocation_id: &InvocationId,
     ) -> impl Future<Output = Result<InvocationStatus>> + Send;
 
-    fn all_invoked_or_killed_invocations(
+    fn all_invoked_invocations(
         &mut self,
-    ) -> Result<impl Stream<Item = Result<InvokedOrKilledInvocationStatusLite>> + Send>;
+    ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
 
     fn all_invocation_statuses(
         &self,

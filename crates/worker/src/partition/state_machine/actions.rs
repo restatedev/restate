@@ -55,7 +55,6 @@ pub enum Action {
     },
     AbortInvocation {
         invocation_id: InvocationId,
-        acknowledge: bool,
     },
     IngressResponse {
         request_id: PartitionProcessorRpcRequestId,
