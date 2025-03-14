@@ -225,30 +225,21 @@ pub async fn create_metadata_server_and_client(
             RaftMetadataServer::create(rocksdb_options, health_status, server_builder)
                 .await
                 .map_err(anyhow::Error::from)
-                .and_then(|server| {
+                .map(|server| {
                     let metadata_client_options = config.common.metadata_client.clone();
                     let backoff_policy = metadata_client_options.backoff_policy.clone();
-
-                    let MetadataClientKind::Replicated { addresses } =
-                        config.common.metadata_client.kind.clone()
-                    else {
-                        anyhow::bail!(
-                            "Detected a possible misconfiguration of the cluster. The \
-                        cluster runs a replicated metadata server but not the replicated metadata \
-                        client. If you don't want to run a metadata server, then remove the \
-                        metadata-server role. If you want to run the replicated metadata server, \
-                        then configure metadata-client.type = \"replicated\""
-                        );
-                    };
-
-                    Ok((
+                    let_assert!(
+                        MetadataClientKind::Replicated { addresses } =
+                            config.common.metadata_client.kind.clone()
+                    );
+                    (
                         server.boxed(),
                         create_replicated_metadata_client(
                             addresses,
                             Some(backoff_policy),
                             Arc::new(metadata_client_options),
                         ),
-                    ))
+                    )
                 })
         }
     }
