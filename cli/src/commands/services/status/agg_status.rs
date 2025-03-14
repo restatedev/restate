@@ -62,7 +62,12 @@ pub async fn run_aggregated_status(
     // Render Locked Keys
     if !locked_keys.is_empty() {
         c_title!("📨", "Active Keys");
-        render_locked_keys(locked_keys, opts.locked_keys_limit).await?;
+        render_locked_keys(
+            locked_keys,
+            opts.locked_keys_limit,
+            opts.locked_key_held_threshold_second,
+        )
+        .await?;
     }
     Ok(())
 }

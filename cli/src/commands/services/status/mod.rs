@@ -38,6 +38,9 @@ pub struct Status {
     locked_keys_limit: usize,
 
     #[clap(long, default_value = "5")]
+    locked_key_held_threshold_second: i64,
+
+    #[clap(long, default_value = "5")]
     sample_invocations_limit: usize,
 
     /// Service name, prints all services if omitted
@@ -204,6 +207,7 @@ async fn render_handlers_status(
 async fn render_locked_keys(
     locked_keys: ServiceHandlerLockedKeysMap,
     limit_per_service: usize,
+    held_threshold_second: i64,
 ) -> Result<()> {
     let locked_keys = locked_keys.into_inner();
     if locked_keys.is_empty() {
@@ -285,8 +289,7 @@ async fn render_locked_keys(
                             } else {
                                 String::new()
                             };
-                            // TODO: Make this a configurable threshold
-                            if run_duration.num_seconds() > 5 {
+                            if run_duration.num_seconds() > held_threshold_second {
                                 // too long...
                                 notes = Cell::new(format!(
                                     "Current attempt has been in-flight for {}. {}",
@@ -301,7 +304,7 @@ async fn render_locked_keys(
                     }
                     InvocationState::Suspended => {
                         if let Some(suspend_duration) = key_info.invocation_state_duration {
-                            if suspend_duration.num_seconds() > 5 {
+                            if suspend_duration.num_seconds() > held_threshold_second {
                                 // too long...
                                 notes = Cell::new(format!(
                                     "Suspended for {}. The lock will not be \
