@@ -120,7 +120,7 @@ mod tests {
             completion_id,
         };
         let timer_key_value =
-            TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, completion_id);
+            TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, completion_id, 0);
         let actions = test_env
             .apply_multiple([
                 invoker_entry_effect(invocation_id, sleep_command.clone()),
@@ -173,7 +173,7 @@ mod tests {
         };
         let sleep_completion = SleepCompletion { completion_id };
         let timer_key_value =
-            TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, completion_id);
+            TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, completion_id, 0);
         let actions = test_env
             .apply_multiple([
                 invoker_entry_effect(invocation_id, sleep_command.clone()),

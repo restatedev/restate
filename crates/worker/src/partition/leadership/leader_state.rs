@@ -351,12 +351,14 @@ impl LeaderState {
         match action {
             Action::Invoke {
                 invocation_id,
+                invocation_epoch,
                 invocation_target,
                 invoke_input_journal,
             } => invoker_tx
                 .invoke(
                     partition_leader_epoch,
                     invocation_id,
+                    invocation_epoch,
                     invocation_target,
                     invoke_input_journal,
                 )
@@ -376,10 +378,16 @@ impl LeaderState {
             }
             Action::AckStoredCommand {
                 invocation_id,
+                invocation_epoch,
                 command_index,
             } => {
                 invoker_tx
-                    .notify_stored_command_ack(partition_leader_epoch, invocation_id, command_index)
+                    .notify_stored_command_ack(
+                        partition_leader_epoch,
+                        invocation_id,
+                        invocation_epoch,
+                        command_index,
+                    )
                     .await
                     .map_err(Error::Invoker)?;
             }
@@ -390,8 +398,11 @@ impl LeaderState {
                 .notify_completion(partition_leader_epoch, invocation_id, completion)
                 .await
                 .map_err(Error::Invoker)?,
-            Action::AbortInvocation { invocation_id } => invoker_tx
-                .abort_invocation(partition_leader_epoch, invocation_id)
+            Action::AbortInvocation {
+                invocation_id,
+                invocation_epoch,
+            } => invoker_tx
+                .abort_invocation(partition_leader_epoch, invocation_id, invocation_epoch)
                 .await
                 .map_err(Error::Invoker)?,
             Action::IngressResponse {
@@ -441,10 +452,16 @@ impl LeaderState {
             }
             Action::ForwardNotification {
                 invocation_id,
+                invocation_epoch,
                 notification,
             } => {
                 invoker_tx
-                    .notify_notification(partition_leader_epoch, invocation_id, notification)
+                    .notify_notification(
+                        partition_leader_epoch,
+                        invocation_id,
+                        invocation_epoch,
+                        notification,
+                    )
                     .await
                     .map_err(Error::Invoker)?;
             }
