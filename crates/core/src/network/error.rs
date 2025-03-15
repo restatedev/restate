@@ -60,8 +60,8 @@ pub enum NetworkError {
     OldPeerGeneration(String),
     #[error("node {0} was shut down")]
     NodeIsGone(GenerationalNodeId),
-    #[error("connection lost to peer {0}")]
-    ConnectionClosed(GenerationalNodeId),
+    #[error(transparent)]
+    ConnectionClosed(#[from] ConnectionClosed),
     #[error("cannot send messages to this node: {0}")]
     Unavailable(String),
     #[error("failed syncing metadata: {0}")]

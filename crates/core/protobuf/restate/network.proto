@@ -9,9 +9,9 @@
 
 syntax = "proto3";
 
-import "restate/common.proto";
-
 package restate.network;
+
+import "restate/common.proto";
 
 //
 // # Wire Protocol Of Streaming Connections
@@ -35,7 +35,33 @@ message Header {
   optional SpanContext span_context = 7;
 }
 
-message SpanContext { map<string, string> fields = 1; }
+message SpanContext {
+  map<string, string> fields = 1;
+}
+
+// direction is defined from the lens of the connection initiator
+enum ConnectionDirection {
+  // By default, it's assumed this is a bidirectional connection to maintain
+  // compatibility with v1.2
+  ConnectionDirection_UNKNOWN = 0;
+  // Connection is declared by initiator as bidirectional. Bidirectional
+  // connections are used to send and receive rpc and unary messages by both ends
+  // of the connection.
+  BIDIRECTIONAL = 1;
+  // Connection is declared by initiator that it's used by initiator to send rpc
+  // requests and unary messages to the peer (acceptor). The acceptor side should *not*
+  // use this connection to send requests back to us. Only servicing requests. This is
+  // a typical case for a server who wants to run a side dedicated connection to a peer
+  // or for a client session connecting to a server.
+  FORWARD = 2;
+  // Connection is declared as a reverse connection by the initiator. A reverse connection
+  // is used to receive requests from peers. The acceptor can use this connection to send
+  // rpc requests to us.
+  //
+  // This can be used to initiate connections to a remote node that doesn't have
+  // network access to initiate connections back to us.
+  REVERSE = 3;
+}
 
 // First message sent to an ingress after starting the connection. The message
 // must be sent before any other message.
@@ -47,12 +73,18 @@ message Hello {
   // this is optional for future-proofing with anonymous clients using this
   // protocol
   optional restate.common.GenerationalNodeId my_node_id = 4;
+  ConnectionDirection direction = 5;
 }
 
 message Welcome {
+  reserved 1;
   restate.common.ProtocolVersion protocol_version = 2;
   // generational node id of sender
   restate.common.GenerationalNodeId my_node_id = 3;
+  // confirmation that this connection respects the direction state in the Hello message.
+  // if this is unset (UNKNOWN) then it's equivalent to if the Hello message had `BIDIRECTIONAL`
+  // for backward compatibility.
+  ConnectionDirection direction_ack = 4;
 }
 
 // Bidirectional Communication

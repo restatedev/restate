@@ -25,10 +25,11 @@ pub mod protobuf;
 pub mod rpc_router;
 mod server_builder;
 pub mod tonic_service_filter;
+mod tracking;
 pub mod transport_connector;
 mod types;
 
-pub use connection::{OwnedConnection, WeakConnection};
+pub use connection::Connection;
 pub use connection_manager::ConnectionManager;
 pub use error::*;
 pub use grpc::GrpcConnector;

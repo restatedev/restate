@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-use std::sync::Weak;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -31,8 +29,8 @@ use super::protobuf::network::message;
 use super::protobuf::network::message::Body;
 
 pub struct OwnedSendPermit<M> {
-    _protocol_version: ProtocolVersion,
-    _permit: mpsc::OwnedPermit<EgressMessage>,
+    protocol_version: ProtocolVersion,
+    permit: mpsc::OwnedPermit<EgressMessage>,
     _phantom: std::marker::PhantomData<M>,
 }
 
@@ -66,21 +64,43 @@ where
     }
 }
 
+impl<M> OwnedSendPermit<M>
+where
+    M: WireEncode + Targeted,
+{
+    /// Sends a message over this permit.
+    ///
+    /// Note that sending messages over this permit won't use the peer information nor the connection
+    /// associated with the message.
+    pub fn send<S>(self, message: Outgoing<M, S>) {
+        let header = Header {
+            msg_id: message.msg_id(),
+            in_response_to: message.in_response_to(),
+            ..Default::default()
+        };
+
+        let target = M::TARGET.into();
+        let payload = message.into_body().encode_to_bytes(self.protocol_version);
+
+        let body = Body::Encoded(message::BinaryMessage { target, payload });
+        self.permit
+            .send(EgressMessage::Message(header, body, Some(Span::current())));
+    }
+}
+
 /// A single streaming connection with a channel to the peer. A connection can be
 /// opened by either ends of the connection and has no direction. Any connection
 /// can be used to send or receive from a peer.
-///
-/// The primary owner of a connection is the running reactor, all other components
-/// should hold a `WeakConnection` if access to a certain connection is
-/// needed.
-pub struct OwnedConnection {
+#[derive(Clone, derive_more::Debug)]
+pub struct Connection {
     pub(crate) peer: GenerationalNodeId,
     pub(crate) protocol_version: ProtocolVersion,
+    #[debug(skip)]
     pub(crate) sender: EgressSender,
     pub(crate) created: Instant,
 }
 
-impl OwnedConnection {
+impl Connection {
     pub(crate) fn new(
         peer: GenerationalNodeId,
         protocol_version: ProtocolVersion,
@@ -95,12 +115,22 @@ impl OwnedConnection {
     }
 
     #[cfg(any(test, feature = "test-util"))]
+    pub fn new_closed(peer: GenerationalNodeId) -> Self {
+        Self {
+            peer,
+            protocol_version: Default::default(),
+            sender: EgressSender::new_closed(),
+            created: Instant::now(),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
     pub fn new_fake(
         peer: GenerationalNodeId,
         protocol_version: ProtocolVersion,
         capacity: usize,
     ) -> (
-        Arc<Self>,
+        Self,
         super::io::UnboundedEgressSender,
         super::io::EgressStream,
         super::io::DropEgressStream,
@@ -109,7 +139,7 @@ impl OwnedConnection {
 
         let (sender, unbounded_sender, egress, drop_egress) = EgressStream::create(capacity);
         (
-            Arc::new(Self::new(peer, protocol_version, sender)),
+            Self::new(peer, protocol_version, sender),
             unbounded_sender,
             egress,
             drop_egress,
@@ -144,15 +174,6 @@ impl OwnedConnection {
         self.sender.close(reason).await
     }
 
-    /// A handle that sends messages through that connection. This hides the
-    /// wire protocol from the user and guarantees order of messages.
-    pub fn downgrade(self: &Arc<Self>) -> WeakConnection {
-        WeakConnection {
-            peer: self.peer,
-            connection: Arc::downgrade(self),
-        }
-    }
-
     /// Allocates capacity to send one message on this connection. If connection is closed, this
     /// returns None.
     pub async fn reserve<M>(&self) -> Option<SendPermit<'_, M>> {
@@ -169,24 +190,24 @@ impl OwnedConnection {
     pub async fn reserve_timeout<M>(
         &self,
         timeout: Duration,
-    ) -> Result<SendPermit<'_, M>, NetworkError> {
+    ) -> Result<OwnedSendPermit<M>, NetworkError> {
         let start = Instant::now();
-        let permit = tokio::time::timeout(timeout, self.sender.reserve())
+        let permit = tokio::time::timeout(timeout, self.sender.clone().reserve_owned())
             .await
             .map_err(|_| NetworkError::Timeout(start.elapsed()))?
-            .map_err(|_| NetworkError::ConnectionClosed(self.peer))?;
-        Ok(SendPermit {
+            .map_err(|_| NetworkError::ConnectionClosed(ConnectionClosed))?;
+        Ok(OwnedSendPermit {
             permit,
             protocol_version: self.protocol_version,
             _phantom: std::marker::PhantomData,
         })
     }
 
-    pub async fn reserve_owned<M>(self) -> Option<OwnedSendPermit<M>> {
-        let permit = self.sender.reserve_owned().await.ok()?;
+    pub async fn reserve_owned<M>(&self) -> Option<OwnedSendPermit<M>> {
+        let permit = self.sender.clone().reserve_owned().await.ok()?;
         Some(OwnedSendPermit {
-            _permit: permit,
-            _protocol_version: self.protocol_version,
+            permit,
+            protocol_version: self.protocol_version,
             _phantom: std::marker::PhantomData,
         })
     }
@@ -197,7 +218,9 @@ impl OwnedConnection {
         let permit = match self.sender.try_reserve() {
             Ok(permit) => permit,
             Err(TrySendError::Full(_)) => return Err(NetworkError::Full),
-            Err(TrySendError::Closed(_)) => return Err(NetworkError::ConnectionClosed(self.peer)),
+            Err(TrySendError::Closed(_)) => {
+                return Err(NetworkError::ConnectionClosed(ConnectionClosed));
+            }
         };
 
         Ok(SendPermit {
@@ -206,60 +229,29 @@ impl OwnedConnection {
             _phantom: std::marker::PhantomData,
         })
     }
+
+    /// Tries to allocate capacity to send one message on this connection. If there is no capacity,
+    /// it will fail with [`NetworkError::Full`]. If connection is closed it returns [`NetworkError::ConnectionClosed`]
+    pub fn try_reserve_owned<M>(&self) -> Result<OwnedSendPermit<M>, NetworkError> {
+        let permit = self.sender.clone().try_reserve_owned()?;
+
+        Ok(OwnedSendPermit {
+            permit,
+            protocol_version: self.protocol_version,
+            _phantom: std::marker::PhantomData,
+        })
+    }
 }
 
-impl PartialEq for OwnedConnection {
+impl PartialEq for Connection {
     fn eq(&self, other: &Self) -> bool {
         self.sender.same_channel(&other.sender)
-    }
-}
-
-/// A handle to send messages through a connection. It's safe to hold and clone objects of this
-/// even if the connection has been dropped. Cheap to clone.
-#[derive(Clone, Debug)]
-pub struct WeakConnection {
-    pub(crate) peer: GenerationalNodeId,
-    pub(crate) connection: Weak<OwnedConnection>,
-}
-
-static_assertions::assert_impl_all!(WeakConnection: Send, Sync);
-
-impl WeakConnection {
-    pub fn new_closed(peer: GenerationalNodeId) -> Self {
-        Self {
-            peer,
-            connection: Weak::new(),
-        }
-    }
-
-    /// The node id at the other end of this connection
-    pub fn peer(&self) -> GenerationalNodeId {
-        self.peer
-    }
-
-    /// Resolves when the connection is closed
-    pub fn closed(&self) -> impl std::future::Future<Output = ()> + Send + Sync + 'static {
-        let weak_connection = self.connection.clone();
-        async move {
-            let Some(connection) = weak_connection.upgrade() else {
-                return;
-            };
-            connection.closed().await
-        }
-    }
-}
-
-impl PartialEq for WeakConnection {
-    fn eq(&self, other: &Self) -> bool {
-        self.connection.ptr_eq(&other.connection)
     }
 }
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
     use super::*;
-
-    use std::sync::Arc;
 
     use async_trait::async_trait;
     use futures::StreamExt;
@@ -293,6 +285,7 @@ pub mod test_util {
     use crate::network::io::DropEgressStream;
     use crate::network::io::EgressStream;
     use crate::network::io::UnboundedEgressSender;
+    use crate::network::protobuf::network::ConnectionDirection;
     use crate::network::protobuf::network::Header;
     use crate::network::protobuf::network::Hello;
     use crate::network::protobuf::network::Message;
@@ -340,7 +333,11 @@ pub mod test_util {
                 EgressStream::create(message_buffer);
             let incoming = incoming.map(Ok);
 
-            let hello = Hello::new(from_node_id, my_cluster_name);
+            let hello = Hello::new(
+                Some(from_node_id),
+                my_cluster_name,
+                ConnectionDirection::Bidirectional,
+            );
             let header = Header {
                 my_nodes_config_version: Some(my_node_config_version.into()),
                 msg_id: crate::network::generate_msg_id(),
@@ -407,8 +404,8 @@ pub mod test_util {
         pub async fn reserve_owned<M>(self) -> Option<OwnedSendPermit<M>> {
             let permit = self.sender.reserve_owned().await.ok()?;
             Some(OwnedSendPermit {
-                _permit: permit,
-                _protocol_version: self.protocol_version,
+                permit,
+                protocol_version: self.protocol_version,
                 _phantom: std::marker::PhantomData,
             })
         }
@@ -420,7 +417,7 @@ pub mod test_util {
                 Ok(permit) => permit,
                 Err(TrySendError::Full(_)) => return Err(NetworkError::Full),
                 Err(TrySendError::Closed(_)) => {
-                    return Err(NetworkError::ConnectionClosed(self.peer));
+                    return Err(NetworkError::ConnectionClosed(ConnectionClosed));
                 }
             };
 
@@ -431,11 +428,11 @@ pub mod test_util {
             })
         }
 
-        /// Allows you to use utilities in OwnedConnection or WeakConnection.
+        /// Allows you to use utilities in Connection
         /// Reminder: Sending on this connection will cause message to arrive as incoming to the node
         /// we are connected to.
-        pub fn to_owned_connection(&self) -> OwnedConnection {
-            OwnedConnection {
+        pub fn to_owned_connection(&self) -> Connection {
+            Connection {
                 peer: self.peer,
                 protocol_version: self.protocol_version,
                 sender: self.sender.clone(),
@@ -447,7 +444,7 @@ pub mod test_util {
         pub fn process_with_message_handler<H: MessageHandler + Send + Sync + 'static>(
             self,
             handler: H,
-        ) -> anyhow::Result<(WeakConnection, TaskHandle<anyhow::Result<()>>)> {
+        ) -> anyhow::Result<(Connection, TaskHandle<anyhow::Result<()>>)> {
             let mut router = MessageRouterBuilder::default();
             router.add_message_handler(handler);
             let router = router.build();
@@ -460,7 +457,7 @@ pub mod test_util {
         pub fn process_with_message_router<R: Handler + 'static>(
             self,
             router: R,
-        ) -> anyhow::Result<(WeakConnection, TaskHandle<anyhow::Result<()>>)> {
+        ) -> anyhow::Result<(Connection, TaskHandle<anyhow::Result<()>>)> {
             let Self {
                 my_node_id,
                 peer,
@@ -472,18 +469,17 @@ pub mod test_util {
                 drop_egress,
             } = self;
 
-            let connection = Arc::new(OwnedConnection {
+            let connection = Connection {
                 peer,
                 protocol_version,
                 sender,
                 created,
-            });
+            };
 
-            let weak = connection.downgrade();
             let message_processor = MessageProcessor {
                 my_node_id,
                 router,
-                connection,
+                connection: connection.clone(),
                 tx: unbounded_sender,
                 recv_stream,
             };
@@ -492,14 +488,14 @@ pub mod test_util {
                 "test-message-processor",
                 async move { message_processor.run(drop_egress).await },
             )?;
-            Ok((weak, handle))
+            Ok((connection, handle))
         }
 
         // Allow for messages received on this connection to be forwarded to the supplied sender.
         pub fn forward_to_sender(
             self,
             sender: mpsc::Sender<(GenerationalNodeId, Incoming<BinaryMessage>)>,
-        ) -> anyhow::Result<(WeakConnection, TaskHandle<anyhow::Result<()>>)> {
+        ) -> anyhow::Result<(Connection, TaskHandle<anyhow::Result<()>>)> {
             let handler = ForwardingHandler {
                 my_node_id: self.my_node_id,
                 inner_sender: sender,
@@ -567,7 +563,7 @@ pub mod test_util {
             let selected_protocol_version = negotiate_protocol_version(&hello)?;
 
             // Enqueue the welcome message
-            let welcome = Welcome::new(my_node_id, selected_protocol_version);
+            let welcome = Welcome::new(my_node_id, selected_protocol_version, hello.direction());
 
             let header = Header::new(
                 nodes_config.version(),
@@ -635,7 +631,7 @@ pub mod test_util {
     struct MessageProcessor<R> {
         my_node_id: GenerationalNodeId,
         router: R,
-        connection: Arc<OwnedConnection>,
+        connection: Connection,
         tx: UnboundedEgressSender,
         recv_stream: BoxStream<'static, Message>,
     }
@@ -703,7 +699,7 @@ pub mod test_util {
                         .call(
                             Incoming::from_parts(
                                 msg,
-                                self.connection.downgrade(),
+                                self.connection.clone(),
                                 header.msg_id,
                                 header.in_response_to,
                                 PeerMetadataVersion::from(header),

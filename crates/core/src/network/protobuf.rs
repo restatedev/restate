@@ -29,11 +29,16 @@ pub mod network {
     use self::message::{BinaryMessage, ConnectionControl, Signal};
 
     impl Hello {
-        pub fn new(my_node_id: GenerationalNodeId, cluster_name: String) -> Self {
+        pub fn new(
+            my_node_id: Option<GenerationalNodeId>,
+            cluster_name: String,
+            direction: ConnectionDirection,
+        ) -> Self {
             Self {
+                direction: direction.into(),
                 min_protocol_version: MIN_SUPPORTED_PROTOCOL_VERSION.into(),
                 max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
-                my_node_id: Some(my_node_id.into()),
+                my_node_id: my_node_id.map(Into::into),
                 cluster_name,
             }
         }
@@ -77,10 +82,15 @@ pub mod network {
     }
 
     impl Welcome {
-        pub fn new(my_node_id: GenerationalNodeId, protocol_version: ProtocolVersion) -> Self {
+        pub fn new(
+            my_node_id: GenerationalNodeId,
+            protocol_version: ProtocolVersion,
+            direction_ack: ConnectionDirection,
+        ) -> Self {
             Self {
                 my_node_id: Some(my_node_id.into()),
                 protocol_version: protocol_version.into(),
+                direction_ack: direction_ack.into(),
             }
         }
     }

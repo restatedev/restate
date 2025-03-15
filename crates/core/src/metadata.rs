@@ -30,7 +30,7 @@ use restate_types::{GenerationalNodeId, Version, Versioned};
 
 use crate::metadata::manager::Command;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
-use crate::network::WeakConnection;
+use crate::network::Connection;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 
 #[derive(Debug, thiserror::Error)]
@@ -258,7 +258,7 @@ impl Metadata {
         &self,
         metadata_kind: MetadataKind,
         version: Version,
-        remote_peer: Option<WeakConnection>,
+        remote_peer: Option<Connection>,
         urgency: Urgency,
     ) {
         // check whether the version is newer than what we know
@@ -416,23 +416,23 @@ pub fn spawn_metadata_manager(metadata_manager: MetadataManager) -> Result<TaskI
 #[derive(Debug, Clone)]
 struct VersionInformation {
     version: Version,
-    remote_peer: Option<WeakConnection>,
+    peer_connection: Option<Connection>,
 }
 
 impl Default for VersionInformation {
     fn default() -> Self {
         Self {
             version: Version::INVALID,
-            remote_peer: None,
+            peer_connection: None,
         }
     }
 }
 
 impl VersionInformation {
-    fn new(version: Version, remote_peer: Option<WeakConnection>) -> Self {
+    fn new(version: Version, peer_connection: Option<Connection>) -> Self {
         Self {
             version,
-            remote_peer,
+            peer_connection,
         }
     }
 }

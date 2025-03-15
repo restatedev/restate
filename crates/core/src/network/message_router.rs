@@ -106,11 +106,8 @@ where
     }
 }
 
-#[derive(Clone, Default)]
-pub struct MessageRouter(Arc<MessageRouterInner>);
-
 #[derive(Default)]
-struct MessageRouterInner {
+pub struct MessageRouter {
     handlers: HashMap<TargetName, Box<dyn Handler + Send + Sync>>,
 }
 
@@ -123,7 +120,7 @@ impl Handler for MessageRouter {
         protocol_version: ProtocolVersion,
     ) -> Result<(), RouterError> {
         let target = message.body().target();
-        let Some(handler) = self.0.handlers.get(&target) else {
+        let Some(handler) = self.handlers.get(&target) else {
             return Err(RouterError::NotRegisteredTarget(target.to_string()));
         };
         handler.call(message, protocol_version).await?;
@@ -186,9 +183,9 @@ impl MessageRouterBuilder {
     /// Finalize this builder and return the message router that can be attached to
     /// [`crate::ConnectionManager`]
     pub fn build(self) -> MessageRouter {
-        MessageRouter(Arc::new(MessageRouterInner {
+        MessageRouter {
             handlers: self.handlers,
-        }))
+        }
     }
 }
 
@@ -231,7 +228,7 @@ where
 
 struct StreamHandlerWrapper<M>
 where
-    M: WireDecode + Targeted + Send + Sync + 'static,
+    M: WireDecode + Targeted + Send + 'static,
 {
     sender: mpsc::Sender<Incoming<M>>,
 }
@@ -239,7 +236,7 @@ where
 #[async_trait]
 impl<M> Handler for StreamHandlerWrapper<M>
 where
-    M: WireDecode + Targeted + Send + Sync + 'static,
+    M: WireDecode + Targeted + Send + 'static,
 {
     /// Process the request and return the response asynchronously.
     async fn call(
@@ -270,4 +267,4 @@ where
     }
 }
 
-static_assertions::assert_impl_all!(MessageRouter: Send, Sync);
+static_assertions::assert_impl_all!(MessageRouter: Send);

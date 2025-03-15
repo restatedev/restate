@@ -67,7 +67,7 @@ pub mod test_util {
     use crate::network::io::EgressStream;
     use crate::network::protobuf::network::Message;
     use crate::network::protobuf::network::message::BinaryMessage;
-    use crate::network::{Incoming, MockPeerConnection, PartialPeerConnection, WeakConnection};
+    use crate::network::{Connection, Incoming, MockPeerConnection, PartialPeerConnection};
     use crate::{TaskCenter, TaskHandle, TaskKind, my_node_id};
 
     #[derive(Clone)]
@@ -136,7 +136,7 @@ pub mod test_util {
     /// stream
     pub struct MessageCollectorMockConnector {
         pub mock_connector: MockConnector,
-        pub tasks: Mutex<Vec<(WeakConnection, TaskHandle<anyhow::Result<()>>)>>,
+        pub tasks: Mutex<Vec<(Connection, TaskHandle<anyhow::Result<()>>)>>,
     }
 
     impl MessageCollectorMockConnector {

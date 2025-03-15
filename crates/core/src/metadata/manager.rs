@@ -37,10 +37,10 @@ use crate::TaskKind;
 use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
+use crate::network::Connection;
 use crate::network::Incoming;
 use crate::network::Outgoing;
 use crate::network::Reciprocal;
-use crate::network::WeakConnection;
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
@@ -546,7 +546,7 @@ impl MetadataManager {
 }
 
 enum UpdateTaskState {
-    FromPeer(WeakConnection),
+    FromPeer(Connection),
     Sync,
 }
 
@@ -557,7 +557,7 @@ struct UpdateTask {
 
 impl UpdateTask {
     fn from(version_information: VersionInformation) -> Self {
-        let state = if let Some(connection) = version_information.remote_peer {
+        let state = if let Some(connection) = version_information.peer_connection {
             UpdateTaskState::FromPeer(connection)
         } else {
             UpdateTaskState::Sync

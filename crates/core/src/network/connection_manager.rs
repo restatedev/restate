@@ -8,45 +8,35 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::sync::Arc;
 
 use ahash::HashMap;
-use enum_map::EnumMap;
-use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
-use metrics::{counter, histogram};
-use opentelemetry::propagation::TextMapPropagator;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
 use parking_lot::Mutex;
-use tokio::time::{Instant, timeout};
-use tracing::{Instrument, Span, debug, info, instrument, trace, warn};
+use tracing::{Span, debug, info, instrument, trace, warn};
 
-use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::config::Configuration;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::{GenerationalNodeId, Merge, NodeId, PlainNodeId, Version};
+use restate_types::{GenerationalNodeId, Merge, NodeId, PlainNodeId};
 
-use super::connection::{OwnedConnection, WeakConnection};
+use super::MessageRouter;
+use super::connection::Connection;
 use super::error::{NetworkError, ProtocolError};
 use super::handshake::wait_for_welcome;
 use super::io::{
-    DrainReason, DropEgressStream, EgressMessage, EgressStream, UnboundedEgressSender,
+    ConnectionReactor, DropEgressStream, EgressMessage, EgressStream, UnboundedEgressSender,
 };
 use super::metric_definitions::{
     self, CONNECTION_DROPPED, INCOMING_CONNECTION, OUTGOING_CONNECTION,
 };
-use super::protobuf::network::{Header, Hello, Message, Welcome, message::Body, message::Signal};
+use super::protobuf::network::ConnectionDirection;
+use super::protobuf::network::{Header, Hello, Message, Welcome};
+use super::tracking::{ConnectionTracking, PeerRouting};
 use super::transport_connector::TransportConnect;
-use super::{Handler, MessageRouter};
 use crate::metadata::Urgency;
 use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
-use crate::network::metric_definitions::{
-    NETWORK_MESSAGE_PROCESSING_DURATION, NETWORK_MESSAGE_RECEIVED, NETWORK_MESSAGE_RECEIVED_BYTES,
-};
-use crate::network::{Incoming, PeerMetadataVersion};
-use crate::{Metadata, TaskCenter, TaskContext, TaskId, TaskKind, my_node_id};
+use crate::{Metadata, ShutdownError, my_node_id};
 
 #[derive(Copy, Clone, PartialOrd, PartialEq, Default)]
 struct GenStatus {
@@ -82,9 +72,8 @@ impl Merge for GenStatus {
 }
 
 struct ConnectionManagerInner {
-    router: MessageRouter,
-    connections: HashMap<TaskId, Weak<OwnedConnection>>,
-    connection_by_gen_id: HashMap<GenerationalNodeId, Vec<Weak<OwnedConnection>>>,
+    router: Arc<MessageRouter>,
+    connection_by_gen_id: HashMap<GenerationalNodeId, Vec<Connection>>,
     /// This tracks the max generation we observed from connection attempts regardless of our nodes
     /// configuration. We cannot accept connections from nodes older than ones we have observed
     /// already.
@@ -92,21 +81,11 @@ struct ConnectionManagerInner {
 }
 
 impl ConnectionManagerInner {
-    fn drop_connection(&mut self, task_id: TaskId) {
-        self.connections.remove(&task_id);
-    }
-
-    fn cleanup_stale_connections(&mut self, peer_node_id: &GenerationalNodeId) {
-        if let Some(connections) = self.connection_by_gen_id.get_mut(peer_node_id) {
-            connections.retain(|c| c.upgrade().is_some_and(|c| !c.is_closed()));
-        }
-    }
-
     fn get_random_connection(
         &self,
         peer_node_id: &GenerationalNodeId,
         target_concurrency: usize,
-    ) -> Option<Arc<OwnedConnection>> {
+    ) -> Option<Connection> {
         use rand::prelude::IndexedRandom;
         self.connection_by_gen_id
             .get(peer_node_id)
@@ -114,7 +93,7 @@ impl ConnectionManagerInner {
                 // Suggest we create new connection if the number
                 // of connections is below the target
                 if connections.len() >= target_concurrency {
-                    connections.choose(&mut rand::rng())?.upgrade()
+                    connections.choose(&mut rand::rng()).cloned()
                 } else {
                     None
                 }
@@ -126,8 +105,7 @@ impl Default for ConnectionManagerInner {
     fn default() -> Self {
         metric_definitions::describe_metrics();
         Self {
-            router: MessageRouter::default(),
-            connections: HashMap::default(),
+            router: Arc::new(MessageRouter::default()),
             connection_by_gen_id: HashMap::default(),
             observed_generations: HashMap::default(),
         }
@@ -144,7 +122,7 @@ impl ConnectionManager {
     /// In general, this should be called once on application start after
     /// initializing all message handlers.
     pub fn set_message_router(&self, router: MessageRouter) {
-        self.inner.lock().router = router;
+        self.inner.lock().router = Arc::new(router);
     }
 
     /// Accept a new incoming connection stream and register a network reactor task for it.
@@ -235,8 +213,11 @@ impl ConnectionManager {
                 .outbound_queue_length
                 .get(),
         );
+
+        self.update_generation_or_preempt(peer_node_id)?;
+
         // Enqueue the welcome message
-        let welcome = Welcome::new(my_node_id, selected_protocol_version);
+        let welcome = Welcome::new(my_node_id, selected_protocol_version, hello.direction());
         unbounded_sender
             .unbounded_send(EgressMessage::Message(
                 Header::default(),
@@ -244,12 +225,25 @@ impl ConnectionManager {
                 None,
             ))
             .map_err(|_| ProtocolError::PeerDropped)?;
-        let connection = OwnedConnection::new(peer_node_id, selected_protocol_version, sender);
+        let connection = Connection::new(peer_node_id, selected_protocol_version, sender);
+
+        let should_register = matches!(
+            hello.direction(),
+            ConnectionDirection::Unknown
+                | ConnectionDirection::Bidirectional
+                | ConnectionDirection::Reverse
+        );
+
+        // Register the connection.
+        let _ = self.start_connection_reactor(
+            connection,
+            unbounded_sender,
+            incoming,
+            drop_egress,
+            should_register,
+        )?;
 
         INCOMING_CONNECTION.increment(1);
-        // Register the connection.
-        let _ =
-            self.start_connection_reactor(connection, unbounded_sender, incoming, drop_egress)?;
 
         // Our output stream, i.e. responses.
         Ok(egress)
@@ -261,7 +255,7 @@ impl ConnectionManager {
         &self,
         node_id: GenerationalNodeId,
         transport_connector: &C,
-    ) -> Result<Arc<OwnedConnection>, NetworkError>
+    ) -> Result<Connection, NetworkError>
     where
         C: TransportConnect,
     {
@@ -271,37 +265,29 @@ impl ConnectionManager {
         }
 
         // find a connection by node_id
-        let maybe_connection: Option<Arc<OwnedConnection>> = {
-            let guard = self.inner.lock();
-            guard.get_random_connection(
-                &node_id,
-                Configuration::pinned()
-                    .networking
-                    .num_concurrent_connections(),
-            )
-            // lock is dropped.
-        };
-
-        if let Some(connection) = maybe_connection {
+        if let Some(connection) = self.inner.lock().get_random_connection(
+            &node_id,
+            Configuration::pinned()
+                .networking
+                .num_concurrent_connections(),
+        ) {
             return Ok(connection);
         }
 
-        let is_gone = {
-            self.inner
-                .lock()
-                .observed_generations
-                .get(&node_id.as_plain())
-                .map(|status| {
-                    node_id.generation() < status.generation
-                        || (node_id.generation() == status.generation && status.gone)
-                })
-                .unwrap_or(false)
-            // lock is dropped.
-        };
-
-        if is_gone {
+        if self
+            .inner
+            .lock()
+            .observed_generations
+            .get(&node_id.as_plain())
+            .map(|status| {
+                node_id.generation() < status.generation
+                    || (node_id.generation() == status.generation && status.gone)
+            })
+            .unwrap_or(false)
+        {
             return Err(NetworkError::NodeIsGone(node_id));
         }
+
         // We have no connection. We attempt to create a new connection.
         self.connect(node_id, transport_connector).await
     }
@@ -310,16 +296,16 @@ impl ConnectionManager {
         &self,
         node_id: GenerationalNodeId,
         transport_connector: &C,
-    ) -> Result<Arc<OwnedConnection>, NetworkError>
+    ) -> Result<Connection, NetworkError>
     where
         C: TransportConnect,
     {
         let metadata = Metadata::current();
-        if node_id == metadata.my_node_id() {
+        let my_node_id = metadata.my_node_id_opt();
+        if my_node_id.is_some_and(|my_node| my_node == node_id) {
             return self.connect_loopback();
         }
 
-        let my_node_id = metadata.my_node_id();
         let nodes_config = metadata.nodes_config_snapshot();
         let cluster_name = nodes_config.cluster_name().to_owned();
 
@@ -330,29 +316,29 @@ impl ConnectionManager {
                 .get(),
         );
 
+        let our_direction = ConnectionDirection::Bidirectional;
         // perform handshake.
-        let hello = Hello::new(my_node_id, cluster_name);
-        // Prime the channel with the hello message before connecting.
-        unbounded_sender
-            .unbounded_send(EgressMessage::Message(
-                Header::default(),
-                hello.into(),
-                None,
-            ))
-            .expect("egress channel must be open");
+        unbounded_sender.unbounded_send(EgressMessage::Message(
+            Header::default(),
+            Hello::new(my_node_id, cluster_name, our_direction).into(),
+            Some(Span::current()),
+        ))?;
 
         // Establish the connection
         let mut incoming = transport_connector
             .connect(node_id, &nodes_config, egress)
             .await?;
+
         // finish the handshake
         let (_header, welcome) = wait_for_welcome(
             &mut incoming,
             Configuration::pinned().networking.handshake_timeout.into(),
         )
         .await?;
+
         let protocol_version = welcome.protocol_version();
 
+        // this should not happen if the peer follows the correct protocol negotiation
         if !protocol_version.is_supported() {
             return Err(ProtocolError::UnsupportedVersion(protocol_version.into()).into());
         }
@@ -376,14 +362,43 @@ impl ConnectionManager {
             .into());
         }
 
-        let connection = OwnedConnection::new(peer_node_id, protocol_version, tx);
+        let connection = Connection::new(peer_node_id, protocol_version, tx);
+
+        if self
+            .inner
+            .lock()
+            .observed_generations
+            .get(&node_id.as_plain())
+            .map(|status| {
+                node_id.generation() < status.generation
+                    || (node_id.generation() == status.generation && status.gone)
+            })
+            .unwrap_or(false)
+        {
+            return Err(NetworkError::NodeIsGone(node_id));
+        }
+
+        // if peer cannot respect our hello intent of direction, we are okay with registering
+        let should_register = matches!(
+            welcome.direction_ack(),
+            ConnectionDirection::Unknown
+                | ConnectionDirection::Bidirectional
+                | ConnectionDirection::Forward
+        );
+        let res = self.start_connection_reactor(
+            connection,
+            unbounded_sender,
+            incoming,
+            drop_egress,
+            should_register,
+        )?;
 
         OUTGOING_CONNECTION.increment(1);
-        self.start_connection_reactor(connection, unbounded_sender, incoming, drop_egress)
+        Ok(res)
     }
 
     #[instrument(skip_all)]
-    fn connect_loopback(&self) -> Result<Arc<OwnedConnection>, NetworkError> {
+    fn connect_loopback(&self) -> Result<Connection, NetworkError> {
         trace!("Creating an express path connection to self");
         let (tx, unbounded_sender, egress, drop_egress) = EgressStream::create(
             Configuration::pinned()
@@ -391,13 +406,20 @@ impl ConnectionManager {
                 .outbound_queue_length
                 .get(),
         );
-        let connection = OwnedConnection::new(
+        let connection = Connection::new(
             my_node_id(),
             restate_types::net::CURRENT_PROTOCOL_VERSION,
             tx,
         );
 
-        self.start_connection_reactor(connection, unbounded_sender, egress.map(Ok), drop_egress)
+        Ok(self.start_connection_reactor(
+            connection,
+            unbounded_sender,
+            egress.map(Ok),
+            drop_egress,
+            // loopback is always registered
+            true,
+        )?)
     }
 
     fn verify_node_id(
@@ -444,475 +466,132 @@ impl ConnectionManager {
         Ok(())
     }
 
-    fn start_connection_reactor<S>(
+    fn update_generation_or_preempt(
         &self,
-        connection: OwnedConnection,
-        unbounded_sender: UnboundedEgressSender,
-        incoming: S,
-        drop_egress: DropEgressStream,
-    ) -> Result<Arc<OwnedConnection>, NetworkError>
-    where
-        S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
-    {
+        peer_node_id: GenerationalNodeId,
+    ) -> Result<(), NetworkError> {
         // Lock is held, don't perform expensive or async operations here.
-
-        // If we have a connection with an older generation, we request to drop it.
-        // However, more than one connection with the same generation is allowed.
-        let mut _cleanup = false;
         let mut guard = self.inner.lock();
         let known_status = guard
             .observed_generations
-            .get(&connection.peer.as_plain())
+            .get(&peer_node_id.as_plain())
             .copied()
-            .unwrap_or(GenStatus::new(connection.peer.generation()));
+            .unwrap_or(GenStatus::new(peer_node_id.generation()));
 
-        if known_status.generation > connection.peer.generation() {
+        if known_status.generation > peer_node_id.generation() {
             // This peer is _older_ than the one we have seen in the past, we cannot accept
             // this connection. We terminate the stream immediately.
             return Err(NetworkError::OldPeerGeneration(format!(
                 "newer generation '{}' has been observed",
-                NodeId::new_generational(connection.peer.id(), known_status.generation)
+                NodeId::new_generational(peer_node_id.id(), known_status.generation)
             )));
         }
 
-        if known_status.generation == connection.peer.generation() && known_status.gone {
+        if known_status.generation == peer_node_id.generation() && known_status.gone {
             // This peer was observed to have shutdown before. We cannot accept new connections from this peer.
-            return Err(NetworkError::NodeIsGone(connection.peer));
+            return Err(NetworkError::NodeIsGone(peer_node_id));
         }
 
-        if known_status.generation < connection.peer.generation() {
-            // We have observed newer generation of the same node.
-            // TODO: Terminate old node's connection by cancelling its reactor task,
-            // and continue with this connection.
-            _cleanup = true;
-        }
+        // todo: if we have connections with an older generation, we request to drop it.
+        // However, more than one connection with the same generation is allowed.
+        // if known_status.generation < connection.peer.generation() {
+        // todo: Terminate old node's connections
+        // }
+
         // update observed generation
-        let new_status = GenStatus::new(connection.peer.generation());
+        let new_status = GenStatus::new(peer_node_id.generation());
         guard
             .observed_generations
-            .entry(connection.peer.as_plain())
+            .entry(peer_node_id.as_plain())
             .and_modify(|status| {
                 status.merge(new_status);
             })
             .or_insert(new_status);
+        Ok(())
+    }
 
-        let connection = Arc::new(connection);
+    fn start_connection_reactor<S>(
+        &self,
+        connection: Connection,
+        unbounded_sender: UnboundedEgressSender,
+        incoming: S,
+        drop_egress: DropEgressStream,
+        should_register: bool,
+    ) -> Result<Connection, ShutdownError>
+    where
+        S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
+    {
         let peer_node_id = connection.peer;
-        let connection_weak = Arc::downgrade(&connection);
-        let span = tracing::error_span!(parent: None, "network-reactor",
-            task_id = tracing::field::Empty,
-            peer = %peer_node_id,
-        );
-        let router = guard.router.clone();
+        let router = self.inner.lock().router.clone();
 
-        let task_id = TaskCenter::spawn_child(
-            TaskKind::ConnectionReactor,
-            "network-connection-reactor",
-            run_reactor(
-                self.inner.clone(),
-                connection.clone(),
-                unbounded_sender,
-                router,
-                incoming,
-                drop_egress,
-            )
-            .instrument(span),
-        )?;
+        let reactor = ConnectionReactor::new(connection.clone(), unbounded_sender, drop_egress);
+
         if peer_node_id != my_node_id() {
             debug!(
                 peer = %peer_node_id,
-                task_id = %task_id,
                 "Incoming connection accepted from node {}", peer_node_id
             );
         }
-        // Reactor has already started by now.
 
-        guard.connections.insert(task_id, connection_weak.clone());
-        // clean up old connections
-        guard.cleanup_stale_connections(&peer_node_id);
-        // Add this connection.
-        guard
-            .connection_by_gen_id
-            .entry(peer_node_id)
-            .or_default()
-            .push(connection_weak);
+        let _ = reactor.start(
+            router,
+            self.clone(),
+            self.clone(),
+            incoming,
+            should_register,
+        )?;
+
         Ok(connection)
     }
 }
 
-async fn run_reactor<S>(
-    connection_manager: Arc<Mutex<ConnectionManagerInner>>,
-    connection: Arc<OwnedConnection>,
-    tx: UnboundedEgressSender,
-    router: MessageRouter,
-    mut incoming: S,
-    drop_egress: DropEgressStream,
-) -> anyhow::Result<()>
-where
-    S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send,
-{
-    let current_task = TaskContext::current();
-    let metadata = Metadata::current();
-    Span::current().record("task_id", tracing::field::display(current_task.id()));
-    let mut cancellation = std::pin::pin!(current_task.cancellation_token().cancelled());
-    let mut seen_versions = MetadataVersions::default();
-
-    let context_propagator = TraceContextPropagator::default();
-    let mut needs_drain = false;
-    let mut is_peer_shutting_down = false;
-    // Receive loop
-    loop {
-        // read a message from the stream
-        let msg = tokio::select! {
-            biased;
-            _ = &mut cancellation => {
-                if TaskCenter::is_shutdown_requested() {
-                    // We want to make the distinction between whether we are terminating the
-                    // connection, or whether the node is shutting down.
-                    tx.unbounded_drain(DrainReason::Shutdown);
-                } else {
-                    tx.unbounded_drain(DrainReason::ConnectionDrain);
-                }
-                // we only drain the connection if we were the initiators of the termination
-                needs_drain = true;
-                break;
-            },
-            msg = incoming.next() => {
-                match msg {
-                    Some(Ok(msg)) => { msg }
-                    Some(Err(status)) => {
-                        // stream has terminated.
-                        info!("Error received: {status}, terminating stream");
-                        tx.unbounded_drain(DrainReason::ConnectionDrain);
-                        break;
-                    }
-                    None => {
-                        // peer terminated the connection
-                        // stream has terminated cleanly.
-                        needs_drain = true;
-                        tx.unbounded_drain(DrainReason::ConnectionDrain);
-                        break;
-                    }
-                }
-            }
-        };
-
-        let processing_started = Instant::now();
-
-        // body are not allowed to be empty.
-        let Some(body) = msg.body else {
-            tx.unbounded_drain(DrainReason::CodecError(
-                "Body is missing on message".to_owned(),
-            ));
-            break;
-        };
-
-        // Welcome and hello are not allowed after handshake
-        if body.is_welcome() || body.is_hello() {
-            tx.unbounded_drain(DrainReason::CodecError(
-                "Hello/Welcome are not allowed after handshake".to_owned(),
-            ));
-            break;
-        };
-
-        // if it's a control signal, handle it, otherwise, route with message router.
-        if let Body::ConnectionControl(ctrl_msg) = &body {
-            // do something
-            info!(
-                "Terminating connection based on signal from {}: {}",
-                connection.peer(),
-                ctrl_msg.message
-            );
-            if ctrl_msg.signal() == Signal::Shutdown {
-                tx.unbounded_drain(DrainReason::ConnectionDrain);
-                is_peer_shutting_down = true;
-                needs_drain = true;
-            }
-            break;
-        }
-
-        //  header is required on all messages
-        let Some(header) = msg.header else {
-            tx.unbounded_drain(DrainReason::CodecError(
-                "Header is missing on message".to_owned(),
-            ));
-            break;
-        };
-
-        seen_versions
-            .update(
-                header.my_nodes_config_version.map(Into::into),
-                header.my_partition_table_version.map(Into::into),
-                header.my_schema_version.map(Into::into),
-                header.my_logs_version.map(Into::into),
-            )
-            .into_iter()
-            .for_each(|(kind, version)| {
-                if let Some(version) = version {
-                    metadata.notify_observed_version(
-                        kind,
-                        version,
-                        Some(connection.downgrade()),
-                        Urgency::Normal,
-                    );
-                }
-            });
-
-        let encoded_len = body.encoded_len();
-        match body.try_as_binary_body(connection.protocol_version) {
-            Ok(msg) => {
-                let target = msg.target();
-
-                let parent_context = header
-                    .span_context
-                    .as_ref()
-                    .map(|span_ctx| context_propagator.extract(span_ctx));
-
-                // unconstrained: We want to avoid yielding if the message router has capacity,
-                // this is to improve tail latency of message processing. We still give tokio
-                // a yielding point when reading the next message but it would be excessive to
-                // introduce more than one yielding point in this reactor loop.
-                if let Err(e) = tokio::task::unconstrained(
-                    router.call(
-                        Incoming::from_parts(
-                            msg,
-                            connection.downgrade(),
-                            header.msg_id,
-                            header.in_response_to,
-                            PeerMetadataVersion::from(header),
-                        )
-                        .with_parent_context(parent_context),
-                        connection.protocol_version,
-                    ),
-                )
-                .await
-                {
-                    warn!(
-                        target = target.as_str_name(),
-                        "Error processing message: {e}"
-                    );
-                }
-                histogram!(NETWORK_MESSAGE_PROCESSING_DURATION, "target" => target.as_str_name())
-                    .record(processing_started.elapsed());
-                counter!(NETWORK_MESSAGE_RECEIVED, "target" => target.as_str_name()).increment(1);
-                counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target.as_str_name())
-                    .increment(encoded_len as u64);
-                trace!(
-                    target = target.as_str_name(),
-                    "Processed message in {:?}",
-                    processing_started.elapsed()
-                );
-            }
-            Err(status) => {
-                // terminate the stream
-                warn!("Error processing message, reporting error to peer: {status}",);
-                tx.unbounded_drain(DrainReason::CodecError(status.to_string()));
-                break;
-            }
-        }
+impl PeerRouting for ConnectionManager {
+    fn register(&self, connection: &Connection) {
+        let peer = connection.peer;
+        let mut guard = self.inner.lock();
+        guard
+            .connection_by_gen_id
+            .entry(connection.peer)
+            .or_default()
+            .push(connection.clone());
+        debug!("connection to {} was registered", peer);
     }
 
-    // remove from active set
-    on_connection_draining(&connection, &connection_manager, is_peer_shutting_down);
-    let protocol_version = connection.protocol_version;
-    let peer_node_id = connection.peer;
-    let connection_created_at = connection.created;
-
-    let drain_start = std::time::Instant::now();
-    let mut drain_counter = 0;
-    let mut tx = Some(tx);
-    let mut drop_egress = Some(drop_egress);
-
-    // dropping the connection since it's the owner of sender stream.
-    drop(connection);
-    if needs_drain {
-        let mut drain_timeout = std::pin::pin!(tokio::time::sleep(Duration::from_secs(15)));
-        debug!("Draining connection");
-        loop {
-            tokio::select! {
-                _ = &mut drain_timeout => {
-                    // drain timed out.
-                    debug!("Drain timed out, closing connection");
-                    drop_egress.take();
-                    drop(incoming);
-                    break;
-                },
-                msg = incoming.next() => {
-                    let Some(Ok(msg)) = msg else {
-                        break;
-                    };
-                    // Draining of incoming queue
-                    if let Some(Body::ConnectionControl(ctrl_msg)) = &msg.body {
-                        trace!(
-                            "Received signal from {} while draining: {}",
-                            peer_node_id,
-                            ctrl_msg.signal()
-                        );
-                        // No more requests/unary messages will arrive. Reactor can be closed if we don't
-                        // have waiting responses
-                        match ctrl_msg.signal() {
-                            Signal::RequestStreamDrained => {
-                                // No more requests coming, but rpc responses might still arrive.
-                                // We don't need tx anymore. We'll not create future responder
-                                // tasks.
-                                tx.take();
-                            }
-                            Signal::ResponseStreamDrained => {
-                                // No more requests coming, but rpc requests might still arrive.
-                                // Peer will terminate its sender stream once if drained its two
-                                // egress streams.
-                            }
-                            _ => {}
-                        }
-                        continue;
-                    }
-                    // ignore malformed messages
-                    let Some(header) = msg.header else {
-                        continue;
-                    };
-                    if let Some(body) = msg.body {
-                        // we ignore non-deserializable messages (serde errors, or control signals in drain)
-                        if let Ok(msg) = body.try_as_binary_body(protocol_version) {
-                            drain_counter += 1;
-                            let parent_context = header
-                                .span_context
-                                .as_ref()
-                                .map(|span_ctx| context_propagator.extract(span_ctx));
-
-                            if let Err(e) = router
-                                .call(
-                                    Incoming::from_parts(
-                                        msg,
-                                        // This is a dying connection, don't pass it down.
-                                        WeakConnection::new_closed(peer_node_id),
-                                        header.msg_id,
-                                        header.in_response_to,
-                                        PeerMetadataVersion::from(header),
-                                    )
-                                    .with_parent_context(parent_context),
-                                    protocol_version,
-                                )
-                                .await
-                            {
-                                debug!(
-                                    "Error processing message while draining connection: {:?}",
-                                    e
-                                );
-                            }
-                        }
-                    }
-                },
-            }
+    fn deregister(&self, connection: &Connection) {
+        let mut guard = self.inner.lock();
+        if let Some(connections) = guard.connection_by_gen_id.get_mut(&connection.peer) {
+            connections.retain(|c| c != connection);
         }
+        trace!("connection reactor was deregistered {}", connection.peer);
     }
-    // in case we didn't drain, we still need to drop the response stream
-    tx.take();
-
-    // Wait for egress to fully drain
-    if timeout(
-        Duration::from_secs(5),
-        OptionFuture::from(drop_egress)
-            .log_slow_after(
-                Duration::from_secs(2),
-                tracing::Level::INFO,
-                "Waiting for connection's egress to drain",
-            )
-            .with_overdue(Duration::from_secs(3), tracing::Level::WARN),
-    )
-    .await
-    .is_err()
-    {
-        info!("Connection's egress has taken too long to drain, will drop");
-    }
-    on_connection_terminated(&connection_manager);
-    CONNECTION_DROPPED.increment(1);
-    debug!(
-        "Connection terminated, drained {} messages in {:?}, total connection age is {:?}",
-        drain_counter,
-        drain_start.elapsed(),
-        connection_created_at.elapsed()
-    );
-    Ok(())
 }
 
-fn on_connection_draining(
-    connection: &OwnedConnection,
-    inner_manager: &Mutex<ConnectionManagerInner>,
-    is_peer_shutting_down: bool,
-) {
-    let mut guard = inner_manager.lock();
-    if let Some(connections) = guard.connection_by_gen_id.get_mut(&connection.peer) {
-        // Remove this connection from connections map to reduce the chance
-        // of picking it up as connection.
-        connections.retain(|c| {
-            c.upgrade()
-                .map(|c| c.as_ref() != connection)
-                .unwrap_or_default()
-        });
+impl ConnectionTracking for ConnectionManager {
+    fn connection_created(&self, conn: &Connection) {
+        info!("Connection reactor started: {}", conn.peer);
     }
-    if is_peer_shutting_down {
-        let mut new_status = GenStatus::new(connection.peer.generation());
+
+    fn connection_dropped(&self, conn: &Connection) {
+        debug!(
+            peer = %conn.peer,
+            "Connection terminated, total connection age is {:?}",
+            conn.created.elapsed()
+        );
+        CONNECTION_DROPPED.increment(1);
+    }
+
+    fn notify_peer_shutdown(&self, node_id: GenerationalNodeId) {
+        let mut guard = self.inner.lock();
+        let mut new_status = GenStatus::new(node_id.generation());
         new_status.gone = true;
         guard
             .observed_generations
-            .entry(connection.peer.as_plain())
+            .entry(node_id.as_plain())
             .and_modify(|status| {
                 status.merge(new_status);
             })
             .or_insert(new_status);
-    }
-}
-
-fn on_connection_terminated(inner_manager: &Mutex<ConnectionManagerInner>) {
-    let mut guard = inner_manager.lock();
-    guard.drop_connection(TaskContext::with_current(|ctx| ctx.id()));
-}
-
-#[derive(Debug, Clone, PartialEq, derive_more::Index, derive_more::IndexMut)]
-pub struct MetadataVersions {
-    #[index]
-    versions: EnumMap<MetadataKind, Version>,
-}
-
-impl Default for MetadataVersions {
-    fn default() -> Self {
-        Self {
-            versions: EnumMap::from_fn(|_| Version::INVALID),
-        }
-    }
-}
-
-impl MetadataVersions {
-    pub fn update(
-        &mut self,
-        nodes_config_version: Option<Version>,
-        partition_table_version: Option<Version>,
-        schema_version: Option<Version>,
-        logs_version: Option<Version>,
-    ) -> EnumMap<MetadataKind, Option<Version>> {
-        let mut result = EnumMap::default();
-        result[MetadataKind::NodesConfiguration] =
-            self.update_internal(MetadataKind::NodesConfiguration, nodes_config_version);
-        result[MetadataKind::PartitionTable] =
-            self.update_internal(MetadataKind::PartitionTable, partition_table_version);
-        result[MetadataKind::Schema] = self.update_internal(MetadataKind::Schema, schema_version);
-        result[MetadataKind::Logs] = self.update_internal(MetadataKind::Logs, logs_version);
-
-        result
-    }
-
-    fn update_internal(
-        &mut self,
-        metadata_kind: MetadataKind,
-        version: Option<Version>,
-    ) -> Option<Version> {
-        if let Some(version) = version {
-            if version > self.versions[metadata_kind] {
-                self.versions[metadata_kind] = version;
-                return Some(version);
-            }
-        }
-        None
+        info!("Node {} notified us that it is shutting down", node_id);
     }
 }
 
@@ -1002,6 +681,7 @@ mod tests {
             max_protocol_version: ProtocolVersion::Unknown.into(),
             my_node_id: Some(my_node_id.into()),
             cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
+            direction: ConnectionDirection::Bidirectional.into(),
         };
         let hello = Message::new(
             Header::new(
@@ -1037,6 +717,7 @@ mod tests {
             max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
             my_node_id: Some(my_node_id.into()),
             cluster_name: "Random-cluster".to_owned(),
+            direction: ConnectionDirection::Bidirectional.into(),
         };
         let hello = Message::new(
             Header::new(
@@ -1076,8 +757,9 @@ mod tests {
 
         // newer generation
         let hello = Hello::new(
-            my_node_id,
+            Some(my_node_id),
             metadata.nodes_config_ref().cluster_name().to_owned(),
+            ConnectionDirection::Bidirectional,
         );
         let hello = Message::new(
             Header::new(
@@ -1115,8 +797,9 @@ mod tests {
         let my_node_id = GenerationalNodeId::new(55, 2);
 
         let hello = Hello::new(
-            my_node_id,
+            Some(my_node_id),
             metadata.nodes_config_ref().cluster_name().to_owned(),
+            ConnectionDirection::Bidirectional,
         );
         let hello = Message::new(
             Header::new(
