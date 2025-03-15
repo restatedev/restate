@@ -618,7 +618,7 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
-    use restate_core::network::OwnedConnection;
+    use restate_core::network::Connection;
     use restate_core::network::protobuf::network::message;
     use restate_core::{MetadataBuilder, TaskCenter};
     use restate_rocksdb::RocksDbManager;
@@ -672,7 +672,7 @@ mod tests {
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
         let (connection, _sender, mut net_rx, _egress_drop) =
-            OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
+            Connection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
@@ -705,8 +705,8 @@ mod tests {
             payloads: payloads.clone(),
         };
 
-        let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
-        let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
+        let msg1 = Incoming::for_testing(connection.clone(), msg1, None);
+        let msg2 = Incoming::for_testing(connection.clone(), msg2, None);
         let msg1_id = msg1.msg_id();
         let msg2_id = msg2.msg_id();
 
@@ -742,7 +742,7 @@ mod tests {
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
         let (connection, _sender, mut net_rx, _egress_drop) =
-            OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
+            Connection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
@@ -785,10 +785,10 @@ mod tests {
             payloads: payloads.clone(),
         };
 
-        let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
-        let seal1 = Incoming::for_testing(connection.downgrade(), seal1, None);
-        let seal2 = Incoming::for_testing(connection.downgrade(), seal2, None);
-        let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
+        let msg1 = Incoming::for_testing(connection.clone(), msg1, None);
+        let seal1 = Incoming::for_testing(connection.clone(), seal1, None);
+        let seal2 = Incoming::for_testing(connection.clone(), seal2, None);
+        let msg2 = Incoming::for_testing(connection.clone(), msg2, None);
         let msg1_id = msg1.msg_id();
         let seal1_id = seal1.msg_id();
         let seal2_id = seal2.msg_id();
@@ -843,7 +843,7 @@ mod tests {
             flags: StoreFlags::empty(),
             payloads: payloads.clone(),
         };
-        let msg3 = Incoming::for_testing(connection.downgrade(), msg3, None);
+        let msg3 = Incoming::for_testing(connection.clone(), msg3, None);
         let msg3_id = msg3.msg_id();
         worker.enqueue_store(msg3).unwrap();
         let response = net_rx.next().await.unwrap();
@@ -858,7 +858,7 @@ mod tests {
         let msg = GetLogletInfo {
             header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
         };
-        let msg = Incoming::for_testing(connection.downgrade(), msg, None);
+        let msg = Incoming::for_testing(connection.clone(), msg, None);
         let msg_id = msg.msg_id();
         worker.enqueue_get_loglet_info(msg).unwrap();
 
@@ -884,9 +884,9 @@ mod tests {
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
         let (connection, _sender, mut net_rx, _egress_drop) =
-            OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
+            Connection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
         let (repair_connection, _repair_sender, mut peer_net_rx, _egress_drop2) =
-            OwnedConnection::new_fake(PEER, CURRENT_PROTOCOL_VERSION, 10);
+            Connection::new_fake(PEER, CURRENT_PROTOCOL_VERSION, 10);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
@@ -946,19 +946,19 @@ mod tests {
             payloads: payloads.clone(),
         };
 
-        let msg1 = Incoming::for_testing(connection.downgrade(), msg1, None);
-        let msg2 = Incoming::for_testing(connection.downgrade(), msg2, None);
+        let msg1 = Incoming::for_testing(connection.clone(), msg1, None);
+        let msg2 = Incoming::for_testing(connection.clone(), msg2, None);
         let repair1 = Incoming::for_testing(
-            repair_connection.downgrade(),
+            repair_connection.clone(),
             repair_message_before_local_tail,
             None,
         );
         let repair2 = Incoming::for_testing(
-            repair_connection.downgrade(),
+            repair_connection.clone(),
             repair_message_after_local_tail,
             None,
         );
-        let seal1 = Incoming::for_testing(connection.downgrade(), seal1, None);
+        let seal1 = Incoming::for_testing(connection.clone(), seal1, None);
 
         worker.enqueue_store(msg1).unwrap();
         worker.enqueue_store(msg2).unwrap();
@@ -1003,7 +1003,7 @@ mod tests {
         let msg = GetLogletInfo {
             header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
         };
-        let msg = Incoming::for_testing(connection.downgrade(), msg, None);
+        let msg = Incoming::for_testing(connection.clone(), msg, None);
         let msg_id = msg.msg_id();
         worker.enqueue_get_loglet_info(msg).unwrap();
 
@@ -1027,7 +1027,7 @@ mod tests {
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
         let (connection, _sender, mut net_rx, _egress_drop) =
-            OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
+            Connection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(LOGLET, log_store, loglet_state)?;
@@ -1036,7 +1036,7 @@ mod tests {
         // Note: dots mean we don't have records at those globally committed offsets.
         worker
             .enqueue_store(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 Store {
                     // faking that offset=1 is released
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(2)),
@@ -1053,7 +1053,7 @@ mod tests {
 
         worker
             .enqueue_store(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 Store {
                     // faking that offset=4 is released
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(5)),
@@ -1070,7 +1070,7 @@ mod tests {
 
         worker
             .enqueue_store(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 Store {
                     // faking that offset=9 is released
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
@@ -1097,7 +1097,7 @@ mod tests {
         // We expect to see [2, 5]. No trim gaps, no filtered gaps.
         worker
             .enqueue_get_records(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 GetRecords {
                     // faking that offset=9 is released
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
@@ -1133,7 +1133,7 @@ mod tests {
         // We expect to see [2, FILTERED(5), 10, 11]. No trim gaps.
         worker
             .enqueue_get_records(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 GetRecords {
                     // INVALID can be used when we don't have a reasonable value to pass in.
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
@@ -1178,7 +1178,7 @@ mod tests {
         // We expect to see [FILTERED(5), 10]. (11 is not returned due to budget)
         worker
             .enqueue_get_records(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 GetRecords {
                     // INVALID can be used when we don't have a reasonable value to pass in.
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
@@ -1232,7 +1232,7 @@ mod tests {
         const LOGLET: LogletId = LogletId::new_unchecked(1);
         let loglet_state_map = LogletStateMap::default();
         let (connection, _sender, mut net_rx, _egress_drop) =
-            OwnedConnection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
+            Connection::new_fake(SEQUENCER, CURRENT_PROTOCOL_VERSION, 10);
 
         let loglet_state = loglet_state_map.get_or_load(LOGLET, &log_store).await?;
         let worker = LogletWorker::start(LOGLET, log_store.clone(), loglet_state.clone())?;
@@ -1242,7 +1242,7 @@ mod tests {
         // The loglet has no knowledge of global commits, it shouldn't accept trims.
         worker
             .enqueue_trim(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 Trim {
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::OLDEST),
                     trim_point: LogletOffset::OLDEST,
@@ -1263,7 +1263,7 @@ mod tests {
         // won't move trim point beyond its local tail.
         worker
             .enqueue_trim(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 Trim {
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
                     trim_point: LogletOffset::new(9),
@@ -1283,7 +1283,7 @@ mod tests {
         // let's store some records at offsets (5, 6)
         worker
             .enqueue_store(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 Store {
                     // faking that offset=9 is released
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
@@ -1307,7 +1307,7 @@ mod tests {
         // trim to 5
         worker
             .enqueue_trim(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 Trim {
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
                     trim_point: LogletOffset::new(5),
@@ -1327,7 +1327,7 @@ mod tests {
         // Attempt to read. We expect to see a trim gap (1->5, 6 (data-record))
         worker
             .enqueue_get_records(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 GetRecords {
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
                     total_limit_in_bytes: None,
@@ -1369,7 +1369,7 @@ mod tests {
         // trim everything
         worker
             .enqueue_trim(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 Trim {
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::new(10)),
                     trim_point: LogletOffset::new(9),
@@ -1389,7 +1389,7 @@ mod tests {
         // Attempt to read again. We expect to see a trim gap (1->6)
         worker
             .enqueue_get_records(Incoming::for_testing(
-                connection.downgrade(),
+                connection.clone(),
                 GetRecords {
                     header: LogServerRequestHeader::new(LOGLET, LogletOffset::INVALID),
                     total_limit_in_bytes: None,
