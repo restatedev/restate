@@ -21,6 +21,7 @@ pub use extensions::*;
 pub use handle::*;
 pub use monitoring::*;
 pub use runtime::*;
+use std::borrow::Cow;
 pub use task::*;
 pub use task_kind::*;
 
@@ -700,12 +701,14 @@ impl TaskCenterInner {
         let tokio_task = tokio::task::Builder::new().name(name);
         counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
         let runtime = match kind.runtime() {
-            crate::AsyncRuntime::Inherit => &tokio::runtime::Handle::current(),
-            crate::AsyncRuntime::Default => &self.default_runtime_handle,
-            crate::AsyncRuntime::Ingress => &self.ingress_runtime_handle,
+            crate::AsyncRuntime::Inherit => tokio::runtime::Handle::try_current()
+                .map(Cow::Owned)
+                .unwrap_or(Cow::Borrowed(&self.default_runtime_handle)),
+            crate::AsyncRuntime::Default => Cow::Borrowed(&self.default_runtime_handle),
+            crate::AsyncRuntime::Ingress => Cow::Borrowed(&self.ingress_runtime_handle),
         };
         let inner_handle = tokio_task
-            .spawn_on(fut, runtime)
+            .spawn_on(fut, runtime.as_ref())
             .expect("runtime can spawn tasks");
 
         TaskHandle {
