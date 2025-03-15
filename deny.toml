@@ -160,7 +160,6 @@ skip = [
 
     # clash between aws-config and pgwire
     { name = "untrusted" },
-    { name = "spin" },
     { name = "ring" },
 ]
 
