@@ -103,7 +103,7 @@ impl LatestSnapshot {
             node_name: snapshot.node_name.clone(),
             partition_id: snapshot.partition_id,
             snapshot_id: snapshot.snapshot_id,
-            created_at: snapshot.created_at.clone(),
+            created_at: snapshot.created_at,
             min_applied_lsn: snapshot.min_applied_lsn,
             path: UniqueSnapshotKey::from_metadata(snapshot).padded_key(),
         }
