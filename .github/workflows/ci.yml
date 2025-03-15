@@ -180,8 +180,10 @@ jobs:
         run: ./tools/scripts/verify-ui-artifact
 
   jepsen:
-    # id tokens are not available on forks
-    if: github.event.repository.fork == false
+    # Forks are not trusted and will break at the configure credentials step.
+    # Id tokens are not available to PRs created from fork branches; Jepsen tests on PR only
+    # works when the PR is created from a branch pushed to the restatedev/restate repo.
+    if: github.event.repository.fork == false && github.event.pull_request.head.repo.full_name == 'restatedev/restate'
     runs-on: warp-ubuntu-latest-arm64-4x
     name: Run Jepsen tests
     env:
