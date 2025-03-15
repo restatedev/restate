@@ -67,7 +67,7 @@ async fn send_sequential_counter_requests(client: &reqwest::Client, num_requests
             .body("10")
             .send()
             .await
-            .expect("Counter/1/getAndAdd should not fail");
+            .expect("Counter/1/add should not fail");
 
         assert!(response.status().is_success());
     }

@@ -149,7 +149,7 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
         true,
     );
     let mut cluster = Cluster::builder()
-        .cluster_name("raft_metadata_cluster_smoke_test")
+        .cluster_name("raft_metadata_cluster_chaos_test")
         .nodes(nodes)
         .temp_base_dir()
         .build()
@@ -174,7 +174,7 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
 
     let start_chaos = Instant::now();
 
-    let chaos_handle = TaskCenter::spawn_unmanaged(TaskKind::Background, "chaos", async move {
+    let chaos_handle = TaskCenter::spawn_unmanaged(TaskKind::TestRunner, "chaos", async move {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
 
         loop {
