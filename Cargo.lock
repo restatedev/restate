@@ -7306,6 +7306,7 @@ dependencies = [
  "datafusion",
  "datafusion-functions-json",
  "derive_more",
+ "enumset",
  "futures",
  "googletest",
  "paste",

@@ -408,7 +408,9 @@ macro_rules! document_type {
 /// And it can be used to create RecordBatches from rows.
 macro_rules! define_table {
 
-    ($table_name: ident (
+    (
+        $(#[doc = $description:expr])*
+        $table_name: ident (
         $(
             $(#[doc = $doc:expr])*
             $element:ident: $ty:expr
@@ -577,6 +579,7 @@ macro_rules! define_table {
         #[cfg(feature = "table_docs")]
         pub const TABLE_DOCS: $crate::table_docs::StaticTableDocs = $crate::table_docs::StaticTableDocs {
             name: stringify!($table_name),
+            description: concat!($($description),*),
             columns: &[
                 $(
                     $crate::table_docs::TableColumn {

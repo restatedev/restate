@@ -20,6 +20,7 @@ mod invocation_state;
 mod invocation_status;
 mod journal;
 mod keyed_service_status;
+mod node;
 mod partition_store_scanner;
 mod physical_optimizer;
 mod promise;
