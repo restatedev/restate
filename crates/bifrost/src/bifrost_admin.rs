@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use tracing::{debug, instrument, warn};
 
-use restate_core::metadata_store::retry_on_retryable_error;
 use restate_core::{Metadata, MetadataKind};
 use restate_types::Version;
 use restate_types::config::Configuration;
@@ -216,33 +215,32 @@ impl<'a> BifrostAdmin<'a> {
             .common
             .network_error_retry_policy
             .clone();
-        let logs = retry_on_retryable_error(retry_policy, || {
-            self.inner
-                .metadata_writer
-                .metadata_store_client()
-                .read_modify_write(BIFROST_CONFIG_KEY.clone(), |logs: Option<Logs>| {
-                    let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
+        let logs = self
+            .inner
+            .metadata_writer
+            .metadata_store_client()
+            .with_retries(retry_policy)
+            .read_modify_write(BIFROST_CONFIG_KEY.clone(), |logs: Option<Logs>| {
+                let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
 
-                    let mut builder = logs.into_builder();
-                    let mut chain_builder =
-                        builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
+                let mut builder = logs.into_builder();
+                let mut chain_builder = builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
 
-                    if chain_builder.tail().index() != last_segment_index {
-                        // tail is not what we expected.
-                        return Err(Error::from(AdminError::SegmentMismatch {
-                            expected: last_segment_index,
-                            found: chain_builder.tail().index(),
-                        }));
-                    }
+                if chain_builder.tail().index() != last_segment_index {
+                    // tail is not what we expected.
+                    return Err(Error::from(AdminError::SegmentMismatch {
+                        expected: last_segment_index,
+                        found: chain_builder.tail().index(),
+                    }));
+                }
 
-                    let _ = chain_builder
-                        .append_segment(base_lsn, provider, params.clone())
-                        .map_err(AdminError::from)?;
-                    Ok(builder.build())
-                })
-        })
-        .await
-        .map_err(|e| e.into_inner().transpose())?;
+                let _ = chain_builder
+                    .append_segment(base_lsn, provider, params.clone())
+                    .map_err(AdminError::from)?;
+                Ok(builder.build())
+            })
+            .await
+            .map_err(|e| e.into_inner().transpose())?;
 
         self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
@@ -261,27 +259,24 @@ impl<'a> BifrostAdmin<'a> {
             .common
             .network_error_retry_policy
             .clone();
-        let logs = retry_on_retryable_error(retry_policy, || {
-            self.inner
-                .metadata_writer
-                .metadata_store_client()
-                .read_modify_write::<_, _, Error>(
-                    BIFROST_CONFIG_KEY.clone(),
-                    |logs: Option<Logs>| {
-                        // We assume that we'll always see a value set in metadata for BIFROST_CONFIG_KEY,
-                        // provisioning the empty logs metadata is not our responsibility.
-                        let logs = logs.ok_or(Error::LogsMetadataNotProvisioned)?;
+        let logs = self
+            .inner
+            .metadata_writer
+            .metadata_store_client()
+            .with_retries(retry_policy)
+            .read_modify_write::<_, _, Error>(BIFROST_CONFIG_KEY.clone(), |logs: Option<Logs>| {
+                // We assume that we'll always see a value set in metadata for BIFROST_CONFIG_KEY,
+                // provisioning the empty logs metadata is not our responsibility.
+                let logs = logs.ok_or(Error::LogsMetadataNotProvisioned)?;
 
-                        let mut builder = logs.into_builder();
-                        builder
-                            .add_log(log_id, Chain::new(provider, params.clone()))
-                            .map_err(AdminError::from)?;
-                        Ok(builder.build())
-                    },
-                )
-        })
-        .await
-        .map_err(|e| e.into_inner().transpose())?;
+                let mut builder = logs.into_builder();
+                builder
+                    .add_log(log_id, Chain::new(provider, params.clone()))
+                    .map_err(AdminError::from)?;
+                Ok(builder.build())
+            })
+            .await
+            .map_err(|e| e.into_inner().transpose())?;
 
         self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
@@ -295,17 +290,17 @@ impl<'a> BifrostAdmin<'a> {
             .network_error_retry_policy
             .clone();
 
-        let logs = retry_on_retryable_error(retry_policy, || {
-            self.inner
-                .metadata_writer
-                .metadata_store_client()
-                .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                    debug!("Attempting to initialize logs metadata in metadata store");
-                    Logs::from_configuration(&Configuration::pinned())
-                })
-        })
-        .await
-        .map_err(|err| err.into_inner())?;
+        let logs = self
+            .inner
+            .metadata_writer
+            .metadata_store_client()
+            .with_retries(retry_policy)
+            .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
+                debug!("Attempting to initialize logs metadata in metadata store");
+                Logs::from_configuration(&Configuration::pinned())
+            })
+            .await
+            .map_err(|err| err.into_inner())?;
 
         self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
