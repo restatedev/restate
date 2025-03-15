@@ -8,19 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::de::{Error, IntoDeserializer};
-use serde::{Deserialize, Deserializer, Serializer};
-use serde_with::{DeserializeAs, SerializeAs};
 use std::time::Duration;
 
-/// Serializable/Deserializable duration to use with serde_with.
+use jiff::{Span, SpanRelativeTo};
+use serde::de::{Error, IntoDeserializer};
+use serde::ser;
+use serde::{Deserialize, Deserializer, Serializer};
+use serde_with::{DeserializeAs, SerializeAs};
+
+/// Serializable/Deserializable duration for use with serde_with.
 ///
-/// When serializing the humantime format is used.
+/// Deserialization uses [`jiff::Span`]'s parsing to support both human-friendly and ISO8601
+/// inputs. Days are the largest supported unit of time, and are interpreted as 24 hours long when
+/// converting the parsed span into an actual duration.
 ///
-/// When deserializing, the following formats are accepted:
-///
-/// * ISO8601 durations
-/// * Humantime durations
+/// Serialization is performed using [`jiff::fmt::friendly`] for output.
 pub struct DurationString;
 
 impl DurationString {
@@ -34,12 +36,13 @@ impl<'de> DeserializeAs<'de, std::time::Duration> for DurationString {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        if s.starts_with('P') {
-            Ok(iso8601::duration(&s).map_err(Error::custom)?.into())
-        } else {
-            humantime::parse_duration(&s).map_err(Error::custom)
-        }
+        let span: Span = String::deserialize(deserializer)?
+            .parse()
+            .map_err(Error::custom)?;
+        let signed_duration = span
+            .to_duration(SpanRelativeTo::days_are_24_hours())
+            .map_err(Error::custom)?;
+        Duration::try_from(signed_duration).map_err(Error::custom)
     }
 }
 
@@ -48,7 +51,11 @@ impl SerializeAs<std::time::Duration> for DurationString {
     where
         S: Serializer,
     {
-        serializer.collect_str(&humantime::Duration::from(*source))
+        let span = Span::try_from(*source).map_err(ser::Error::custom)?;
+        let signed_duration = span
+            .to_duration(SpanRelativeTo::days_are_24_hours())
+            .map_err(ser::Error::custom)?;
+        serializer.collect_str(&format!("{signed_duration:#}"))
     }
 }
 
@@ -66,14 +73,51 @@ mod tests {
     struct MyDuration(#[serde_as(as = "DurationString")] std::time::Duration);
 
     #[test]
-    fn serialize_humantime() {
-        let d = std::time::Duration::from_secs(60 * 23);
+    fn parse_duration_input_formats() {
+        let duration = DurationString::parse_duration("10 min");
+        assert_eq!(Ok(Duration::from_secs(600)), duration);
 
-        let result_string =
-            serde_json::from_str::<String>(&serde_json::to_string(&MyDuration(d)).unwrap())
-                .unwrap();
+        // we don't support "1 month" as months have variable length
+        let duration = DurationString::parse_duration("P1M");
+        assert_eq!(
+            Err(serde::de::Error::custom(
+                "could not compute normalized relative span from P1M when all days are assumed to \
+                be 24 hours: using unit 'month' in span or configuration requires that a relative \
+                reference time be given (`SpanRelativeTo::days_are_24_hours()` was given but this \
+                only permits using days and weeks without a relative reference time)"
+            )),
+            duration
+        );
 
-        assert_eq!(result_string, humantime::Duration::from(d).to_string());
+        // we can, however, use "30 days" instead - we fix those to 24 hours
+        let duration = DurationString::parse_duration("P30D");
+        assert_eq!(Ok(Duration::from_secs(30 * 24 * 3600)), duration);
+
+        // more complex inputs are also supported - but will be serialized as a more humane output
+        let duration = DurationString::parse_duration("P30DT10H30M15S");
+        assert_eq!(
+            Ok(Duration::from_secs(
+                30 * 24 * 3600 + 10 * 3600 + 30 * 60 + 15
+            )),
+            duration
+        );
+        assert_eq!(
+            serde_json::from_str::<String>(
+                &serde_json::to_string(&MyDuration(duration.unwrap())).unwrap()
+            )
+            .unwrap(),
+            "730h 30m 15s"
+        );
+    }
+
+    #[test]
+    fn serialize_friendly() {
+        let friendly_output = serde_json::from_str::<String>(
+            &serde_json::to_string(&MyDuration(std::time::Duration::from_secs(60 * 23))).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(friendly_output, "23m");
     }
 
     #[test]
@@ -89,16 +133,16 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_humantime() {
-        let d = std::time::Duration::from_secs(60 * 23);
+    fn serde_roundtrip() {
+        let duration =
+            serde_json::from_value::<MyDuration>(serde_json::Value::String("P30D".to_owned()))
+                .unwrap()
+                .0;
 
         assert_eq!(
-            serde_json::from_value::<MyDuration>(serde_json::Value::String(
-                humantime::Duration::from(d).to_string()
-            ))
-            .unwrap()
-            .0,
-            d
+            serde_json::from_str::<String>(&serde_json::to_string(&MyDuration(duration)).unwrap())
+                .unwrap(),
+            "720h"
         );
     }
 }
