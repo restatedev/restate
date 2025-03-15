@@ -166,7 +166,11 @@ impl Watchdog {
         trace!("Shutting down live bifrost providers");
         let mut providers = JoinSet::new();
         for provider in self.live_providers {
-            providers.spawn(async move { provider.shutdown().await });
+            providers
+                .build_task()
+                .name("shutdown-loglet-provider")
+                .spawn(async move { provider.shutdown().await })
+                .expect("to spawn provider shutdown");
         }
 
         debug!(

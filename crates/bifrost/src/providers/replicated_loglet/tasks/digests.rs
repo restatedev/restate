@@ -251,13 +251,18 @@ impl Digests {
         // spread selector strategy picked extra nodes)
         let mut inflight_stores = JoinSet::new();
         for node in fixup_nodes {
-            inflight_stores.spawn({
-                let networking = networking.clone();
-                let msg = msg.clone();
-                let store_rpc = store_rpc.clone();
+            inflight_stores
+                .build_task()
+                .name("replicate-records")
+                .spawn({
+                    let networking = networking.clone();
+                    let msg = msg.clone();
+                    let store_rpc = store_rpc.clone();
 
-                async move { (node, store_rpc.call(&networking, node, msg).await) }.in_current_tc()
-            });
+                    async move { (node, store_rpc.call(&networking, node, msg).await) }
+                        .in_current_tc()
+                })
+                .expect("to spawn store task for replicating records");
         }
         let mut cancel = std::pin::pin!(cancellation_watcher());
 

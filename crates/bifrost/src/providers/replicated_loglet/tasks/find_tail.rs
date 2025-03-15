@@ -183,23 +183,27 @@ impl<T: TransportConnect> FindTailTask<T> {
 
             let mut inflight_info_requests = JoinSet::new();
             for node in effective_nodeset.iter() {
-                inflight_info_requests.spawn({
-                    let networking = self.networking.clone();
-                    let get_loglet_info_rpc = self.logservers_rpc.get_loglet_info.clone();
-                    let known_global_tail = self.known_global_tail.clone();
-                    let node = *node;
-                    async move {
-                        let task = FindTailOnNode {
-                            node_id: node,
-                            loglet_id: self.my_params.loglet_id,
-                            get_loglet_info_rpc: &get_loglet_info_rpc,
-                            known_global_tail: &known_global_tail,
-                        };
-                        task.run(&networking).await
-                    }
-                    .in_current_tc()
-                    .instrument(Span::current())
-                });
+                inflight_info_requests
+                    .build_task()
+                    .name("find-tail")
+                    .spawn({
+                        let networking = self.networking.clone();
+                        let get_loglet_info_rpc = self.logservers_rpc.get_loglet_info.clone();
+                        let known_global_tail = self.known_global_tail.clone();
+                        let node = *node;
+                        async move {
+                            let task = FindTailOnNode {
+                                node_id: node,
+                                loglet_id: self.my_params.loglet_id,
+                                get_loglet_info_rpc: &get_loglet_info_rpc,
+                                known_global_tail: &known_global_tail,
+                            };
+                            task.run(&networking).await
+                        }
+                        .in_current_tc()
+                        .instrument(Span::current())
+                    })
+                    .expect("to spawn find tail on node");
             }
 
             // We'll only refresh our view of the effective nodeset if we retry the find-tail
@@ -418,10 +422,14 @@ impl<T: TransportConnect> FindTailTask<T> {
                             wait_for_tail_rpc: self.logservers_rpc.wait_for_tail.clone(),
                             known_global_tail: self.known_global_tail.clone(),
                         };
-                        inflight_tail_update_watches.spawn({
-                            let networking = self.networking.clone();
-                            task.run(max_local_tail, networking).in_current_tc()
-                        });
+                        inflight_tail_update_watches
+                            .build_task()
+                            .name(&format!("wait-for-tail-on-{}", node))
+                            .spawn({
+                                let networking = self.networking.clone();
+                                task.run(max_local_tail, networking).in_current_tc()
+                            })
+                            .expect("to spawn wait for tail on node task");
                     }
                     loop {
                         // Re-evaluation conditition is any of:

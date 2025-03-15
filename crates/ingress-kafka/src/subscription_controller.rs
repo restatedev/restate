@@ -355,12 +355,15 @@ mod task_orchestrator {
             );
             let task_id = self
                 .tasks
+                .build_task()
+                .name("kafka-consumer")
                 .spawn({
                     let consumer_task_clone = consumer_task_clone.clone();
                     consumer_task_clone
                         .run(rx)
                         .in_current_tc_as_task(TaskKind::Kafka, "kafka-consumer-task")
                 })
+                .expect("to spawn kafka consumer task")
                 .id();
 
             self.running_tasks_to_subscriptions
