@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,14 +19,17 @@ use aws_config::{BehaviorVersion, Region};
 use aws_smithy_runtime_api::client::identity::ResolveCachedIdentity;
 use aws_smithy_runtime_api::client::runtime_components::RuntimeComponentsBuilder;
 use futures::FutureExt;
-use object_store::ObjectStore;
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
+use object_store::{BackoffConfig, ObjectStore, RetryConfig};
 use tracing::debug;
 use url::Url;
+
+use restate_types::retries::RetryPolicy;
 
 pub async fn create_object_store_client(
     destination: Url,
     options: &restate_types::config::ObjectStoreOptions,
+    retry_policy: &RetryPolicy,
 ) -> anyhow::Result<Arc<dyn ObjectStore>> {
     // We use the AWS SDK configuration and credentials provider so that the conventional AWS
     // environment variables and config files work as expected. The object_store crate has its
@@ -155,15 +159,7 @@ pub async fn create_object_store_client(
         let builder = builder
             .with_url(destination)
             .with_conditional_put(S3ConditionalPut::ETagMatch)
-            .with_retry(object_store::RetryConfig {
-                max_retries: 8,
-                retry_timeout: Duration::from_secs(60),
-                backoff: object_store::BackoffConfig {
-                    init_backoff: Duration::from_millis(100),
-                    max_backoff: Duration::from_secs(5),
-                    base: 2.,
-                },
-            });
+            .with_retry(from_retry_policy(retry_policy));
 
         Arc::new(builder.build()?)
     } else {
@@ -171,6 +167,46 @@ pub async fn create_object_store_client(
         object_store::parse_url(&destination)?.0.into()
     };
     Ok(object_store)
+}
+
+/// Convert Restate [RetryPolicy] into [object_store::RetryConfig].
+fn from_retry_policy(retry_policy: &RetryPolicy) -> RetryConfig {
+    match retry_policy {
+        RetryPolicy::None => RetryConfig {
+            max_retries: 0, // zero disables retries in object_store::RetryConfig
+            ..Default::default()
+        },
+        RetryPolicy::FixedDelay {
+            interval,
+            max_attempts,
+        } => RetryConfig {
+            max_retries: max_attempts
+                .unwrap_or(NonZeroUsize::new(usize::MAX).expect("non-zero"))
+                .into(),
+            backoff: BackoffConfig {
+                init_backoff: (*interval).into(),
+                max_backoff: (*interval).into(),
+                base: 1.,
+            },
+            retry_timeout: Duration::MAX,
+        },
+        RetryPolicy::Exponential {
+            initial_interval,
+            factor,
+            max_attempts,
+            max_interval,
+        } => RetryConfig {
+            max_retries: max_attempts
+                .unwrap_or(NonZeroUsize::new(usize::MAX).expect("non-zero"))
+                .into(),
+            backoff: BackoffConfig {
+                init_backoff: (*initial_interval).into(),
+                max_backoff: max_interval.unwrap_or(Duration::MAX.into()).into(),
+                base: f64::from(*factor),
+            },
+            retry_timeout: Duration::MAX,
+        },
+    }
 }
 
 #[derive(Debug)]
