@@ -28,7 +28,7 @@ pub mod tonic_service_filter;
 pub mod transport_connector;
 mod types;
 
-pub use connection::{OwnedConnection, WeakConnection};
+pub use connection::Connection;
 pub use connection_manager::ConnectionManager;
 pub use error::*;
 pub use grpc::GrpcConnector;

@@ -14,7 +14,7 @@ use std::task::{Context, Poll, ready};
 use futures::FutureExt;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::network::ConnectionClosed;
+use crate::network::{ConnectionClosed, NetworkError};
 
 use super::{DrainReason, EgressMessage};
 
@@ -59,11 +59,27 @@ impl EgressSender {
         Self { inner: sender }
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new_closed() -> Self {
+        let (inner, _rx) = mpsc::channel(1);
+        Self { inner }
+    }
+
     // temporary, will be replaced in future work
     pub async fn reserve_owned(
         self,
     ) -> Result<mpsc::OwnedPermit<EgressMessage>, mpsc::error::SendError<()>> {
         self.inner.reserve_owned().await
+    }
+
+    pub fn try_reserve_owned(self) -> Result<mpsc::OwnedPermit<EgressMessage>, NetworkError> {
+        match self.inner.try_reserve_owned() {
+            Ok(permit) => Ok(permit),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(NetworkError::Full),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(NetworkError::ConnectionClosed(ConnectionClosed))
+            }
+        }
     }
 
     /// Starts a drain of this stream. Enqueued messages will be sent before

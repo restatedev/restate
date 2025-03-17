@@ -21,7 +21,8 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
 use restate_core::{
     ShutdownError, TaskCenter, TaskKind,
     network::{
-        NetworkError, NetworkSendError, Networking, Outgoing, TransportConnect, WeakConnection,
+        Connection, ConnectionClosed, NetworkError, NetworkSendError, Networking, Outgoing,
+        TransportConnect,
         rpc_router::{RpcRouter, RpcToken},
     },
 };
@@ -265,14 +266,14 @@ where
 /// are resolved with an error.
 #[derive(Clone)]
 struct RemoteSequencerConnection {
-    inner: WeakConnection,
+    inner: Connection,
     tx: mpsc::UnboundedSender<RemoteInflightAppend>,
 }
 
 impl RemoteSequencerConnection {
     fn start(
         known_global_tail: TailOffsetWatch,
-        connection: WeakConnection,
+        connection: Connection,
     ) -> Result<Self, ShutdownError> {
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -323,7 +324,7 @@ impl RemoteSequencerConnection {
             err.0
                 .commit_resolver
                 .error(AppendError::retryable(NetworkError::ConnectionClosed(
-                    self.inner.peer(),
+                    ConnectionClosed,
                 )));
         }
     }
@@ -335,7 +336,7 @@ impl RemoteSequencerConnection {
     /// to retry if needed.
     async fn handle_appended_responses(
         known_global_tail: TailOffsetWatch,
-        connection: WeakConnection,
+        connection: Connection,
         mut rx: mpsc::UnboundedReceiver<RemoteInflightAppend>,
     ) -> anyhow::Result<()> {
         let mut closed = std::pin::pin!(connection.closed());
@@ -352,13 +353,13 @@ impl RemoteSequencerConnection {
                     inflight
                 }
                 _ = &mut closed => {
-                    break AppendError::retryable(NetworkError::ConnectionClosed(connection.peer()));
+                    break AppendError::retryable(NetworkError::ConnectionClosed(ConnectionClosed));
                 }
             };
 
             let Some(inflight) = inflight else {
                 // connection was dropped.
-                break AppendError::retryable(NetworkError::ConnectionClosed(connection.peer()));
+                break AppendError::retryable(NetworkError::ConnectionClosed(ConnectionClosed));
             };
 
             let RemoteInflightAppend {
@@ -372,7 +373,7 @@ impl RemoteSequencerConnection {
                     incoming.map_err(AppendError::Shutdown)
                 },
                 _ = &mut closed => {
-                    Err(AppendError::retryable(NetworkError::ConnectionClosed(connection.peer())))
+                    Err(AppendError::retryable(NetworkError::ConnectionClosed(ConnectionClosed)))
                 }
             };
 

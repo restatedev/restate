@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::marker::PhantomData;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
@@ -21,11 +20,16 @@ use restate_types::net::RpcRequest;
 use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::{GenerationalNodeId, NodeId, Version};
 
-use super::connection::OwnedConnection;
 use super::protobuf::network::Header;
-use super::{NetworkError, NetworkSendError, WeakConnection};
+use super::{Connection, ConnectionClosed, NetworkSendError};
 
 static NEXT_MSG_ID: AtomicU64 = const { AtomicU64::new(1) };
+
+/// Address of a peer in the network. It can be a specific node or an anonymous peer.
+pub enum PeerAddress {
+    ServerNode(NodeId),
+    Anonymous,
+}
 
 /// generate a new unique message id for this node
 #[inline(always)]
@@ -33,27 +37,10 @@ pub(crate) fn generate_msg_id() -> u64 {
     NEXT_MSG_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-macro_rules! bail_on_error {
-    ($original:ident, $expression:expr) => {
-        match $expression {
-            Ok(a) => a,
-            Err(e) => return Err(NetworkSendError::new($original, e)),
-        }
-    };
-}
-
-macro_rules! bail_on_none {
-    ($original:ident, $expression:expr, $err:expr) => {
-        match $expression {
-            Some(a) => a,
-            None => return Err(NetworkSendError::new($original, $err)),
-        }
-    };
-}
-
 // Using type-state pattern to model Outgoing
 #[derive(Debug)]
-pub struct HasConnection(WeakConnection);
+pub struct HasConnection(Connection);
+
 #[derive(Debug)]
 pub struct NoConnection(NodeId);
 
@@ -94,7 +81,7 @@ impl From<Header> for PeerMetadataVersion {
 #[derive(Debug, Clone)]
 pub struct Incoming<M> {
     meta: MsgMeta,
-    connection: WeakConnection,
+    connection: Connection,
     body: M,
     metadata_version: PeerMetadataVersion,
     parent_context: Option<Context>,
@@ -103,7 +90,7 @@ pub struct Incoming<M> {
 impl<M> Incoming<M> {
     pub(crate) fn from_parts(
         body: M,
-        connection: WeakConnection,
+        connection: Connection,
         msg_id: u64,
         in_response_to: Option<u64>,
         metadata_version: PeerMetadataVersion,
@@ -126,7 +113,7 @@ impl<M> Incoming<M> {
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub fn for_testing(connection: WeakConnection, body: M, in_response_to: Option<u64>) -> Self {
+    pub fn for_testing(connection: Connection, body: M, in_response_to: Option<u64>) -> Self {
         let msg_id = generate_msg_id();
         Self::from_parts(
             body,
@@ -251,13 +238,13 @@ impl<M: RpcRequest> Incoming<M> {
 /// into `Outgoing` once a message is ready. An [`Outgoing`] can be created with `prepare(body)`
 #[derive(Debug)]
 pub struct Reciprocal<O> {
-    connection: WeakConnection,
+    connection: Connection,
     in_response_to: u64,
     _phantom: PhantomData<O>,
 }
 
 impl<O> Reciprocal<O> {
-    pub(crate) fn new(connection: WeakConnection, in_response_to: u64) -> Self {
+    pub(crate) fn new(connection: Connection, in_response_to: u64) -> Self {
         Self {
             connection,
             in_response_to,
@@ -383,7 +370,7 @@ impl<M> Outgoing<M, NoConnection> {
     }
 
     /// Panics (debug assertion) if connection doesn't match the plain node Id of the original message
-    pub fn assign_connection(self, connection: WeakConnection) -> Outgoing<M, HasConnection> {
+    pub fn assign_connection(self, connection: Connection) -> Outgoing<M, HasConnection> {
         debug_assert_eq!(self.connection.0.id(), connection.peer().as_plain());
         Outgoing {
             connection: HasConnection(connection),
@@ -414,12 +401,11 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
     /// for retrying externally.
     // #[instrument(level = "trace", skip_all, fields(peer_node_id = %self.peer, target_service = ?message.target(), msg = ?message.kind()))]
     pub async fn send(self) -> Result<(), NetworkSendError<Self>> {
-        let connection = bail_on_error!(self, self.try_upgrade());
-        let permit = bail_on_none!(
-            self,
-            tokio::task::unconstrained(connection.reserve()).await,
-            NetworkError::ConnectionClosed(connection.peer())
-        );
+        let connection = &self.connection.0;
+        let permit = match tokio::task::unconstrained(connection.reserve_owned()).await {
+            Some(permit) => permit,
+            None => return Err(NetworkSendError::new(self, ConnectionClosed.into())),
+        };
 
         permit.send(self);
         Ok(())
@@ -429,7 +415,7 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
     /// on the assigned connection or returns [`NetworkError::ConnectionClosed`] immediately if the
     /// assigned connection is no longer valid.
     pub async fn send_timeout(self, timeout: Duration) -> Result<(), NetworkSendError<Self>> {
-        let connection = bail_on_error!(self, self.try_upgrade());
+        let connection = &self.connection.0;
         let permit = match tokio::task::unconstrained(connection.reserve_timeout(timeout)).await {
             Ok(permit) => permit,
             Err(e) => return Err(NetworkSendError::new(self, e)),
@@ -444,18 +430,14 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
     ///
     /// This fails immediately with [`NetworkError::Full`] if connection stream is out of capacity.
     pub fn try_send(self) -> Result<(), NetworkSendError<Self>> {
-        let connection = bail_on_error!(self, self.try_upgrade());
-        let permit = bail_on_error!(self, connection.try_reserve());
+        let connection = &self.connection.0;
+        let permit = match connection.try_reserve_owned() {
+            Ok(a) => a,
+            Err(e) => return Err(NetworkSendError::new(self, e)),
+        };
 
         permit.send(self);
 
         Ok(())
-    }
-
-    fn try_upgrade(&self) -> Result<Arc<OwnedConnection>, NetworkError> {
-        match self.connection.0.connection.upgrade() {
-            Some(connection) => Ok(connection),
-            None => Err(NetworkError::ConnectionClosed(self.connection.0.peer())),
-        }
     }
 }
