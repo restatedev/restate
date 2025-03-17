@@ -23,7 +23,7 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
-use restate_types::invocation::InvocationTarget;
+use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use std::ops::RangeInclusive;
 use tracing::trace;
 
@@ -76,6 +76,7 @@ impl PartitionStoreProtobufValue for InvocationStatus {
 pub struct InvocationLite {
     pub status: InvocationStatusDiscriminants,
     pub invocation_target: InvocationTarget,
+    pub current_invocation_epoch: InvocationEpoch,
 }
 
 impl PartitionStoreProtobufValue for InvocationLite {
@@ -267,6 +268,7 @@ fn read_invoked_v1_full_invocation_id(
         Ok(Some(InvokedInvocationStatusLite {
             invocation_id,
             invocation_target: invocation_meta.invocation_target,
+            current_invocation_epoch: 0,
         }))
     } else {
         Ok(None)
@@ -283,6 +285,7 @@ fn read_invoked_full_invocation_id(
         Ok(Some(InvokedInvocationStatusLite {
             invocation_id,
             invocation_target: invocation_status.invocation_target,
+            current_invocation_epoch: invocation_status.current_invocation_epoch,
         }))
     } else {
         Ok(None)

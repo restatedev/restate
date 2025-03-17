@@ -16,7 +16,6 @@ use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::promise_table::{Promise, PromiseState, PromiseTable};
 use restate_storage_api::state_table::ReadOnlyStateTable;
 use restate_types::errors::ALREADY_COMPLETED_INVOCATION_ERROR;
-use restate_types::identifiers::WithInvocationId;
 use restate_types::invocation::{InvocationResponse, ResponseResult};
 use restate_types::journal_v2::{
     CompletePromiseCommand, CompletePromiseCompletion, CompletePromiseResult, CompletePromiseValue,
@@ -78,8 +77,7 @@ where
                     for listener in listeners {
                         ctx.handle_outgoing_message(OutboxMessage::ServiceResponse(
                             InvocationResponse {
-                                id: listener.invocation_id(),
-                                entry_index: listener.journal_index(),
+                                target: listener,
                                 result: match self.entry.value.clone() {
                                     CompletePromiseValue::Success(s) => ResponseResult::Success(s),
                                     CompletePromiseValue::Failure(f) => {

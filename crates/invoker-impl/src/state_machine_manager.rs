@@ -74,6 +74,21 @@ where
     }
 
     #[inline]
+    pub(super) fn resolve_invocation_with_epoch(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> Option<(&mpsc::Sender<Effect>, &mut InvocationStateMachine)> {
+        self.resolve_partition(partition).and_then(|p| {
+            p.invocation_state_machines
+                .get_mut(invocation_id)
+                .filter(|f| f.invocation_epoch == invocation_epoch)
+                .map(|ism| (&p.output_tx, ism))
+        })
+    }
+
+    #[inline]
     pub(super) fn remove_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
@@ -82,6 +97,21 @@ where
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
                 .remove(invocation_id)
+                .map(|ism| (&p.output_tx, &p.storage_reader, ism))
+        })
+    }
+
+    #[inline]
+    pub(super) fn remove_invocation_with_epoch(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> Option<(&mpsc::Sender<Effect>, &SR, InvocationStateMachine)> {
+        self.resolve_partition(partition).and_then(|p| {
+            p.invocation_state_machines
+                .remove(invocation_id)
+                .filter(|f| f.invocation_epoch == invocation_epoch)
                 .map(|ism| (&p.output_tx, &p.storage_reader, ism))
         })
     }

@@ -13,21 +13,34 @@ use bytestring::ByteString;
 use googletest::prelude::*;
 use restate_storage_api::timer_table::{TimerKey, TimerKeyKind};
 use restate_types::errors::codes;
-use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::{InvocationTermination, TerminationFlavor};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{Completion, CompletionResult};
-use restate_types::journal_v2::Entry;
+use restate_types::journal_v2::{Entry, EntryIndex};
 
 pub mod storage {
     use super::*;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
     use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
+    use restate_storage_api::invocation_status_table::InvocationStatus;
     use restate_storage_api::journal_table::JournalEntry;
     use restate_types::identifiers::InvocationId;
     use restate_types::invocation::InvocationTarget;
     use restate_types::journal::Entry;
+
+    pub fn has_journal_length(
+        journal_length: EntryIndex,
+    ) -> impl Matcher<ActualT = InvocationStatus> {
+        predicate(move |is: &InvocationStatus| {
+            is.get_journal_metadata()
+                .is_some_and(|jm| jm.length == journal_length)
+        })
+        .with_description(
+            format!("has journal length {}", journal_length),
+            format!("hasn't journal length {}", journal_length),
+        )
+    }
 
     pub fn invocation_inbox_entry(
         invocation_id: InvocationId,
@@ -161,7 +174,9 @@ pub mod outbox {
 
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::identifiers::InvocationId;
-    use restate_types::invocation::{InvocationResponse, NotifySignalRequest, ResponseResult};
+    use restate_types::invocation::{
+        InvocationResponse, JournalCompletionTarget, NotifySignalRequest, ResponseResult,
+    };
     use restate_types::journal_v2::Signal;
 
     pub fn invocation_response_to_partition_processor(
@@ -172,8 +187,10 @@ pub mod outbox {
         pat!(
             restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(pat!(
                 InvocationResponse {
-                    id: eq(caller_invocation_id),
-                    entry_index: eq(caller_entry_index),
+                    target: pat!(JournalCompletionTarget {
+                        caller_id: eq(caller_invocation_id),
+                        caller_completion_id: eq(caller_entry_index),
+                    }),
                     result: response_result_matcher
                 }
             ))
