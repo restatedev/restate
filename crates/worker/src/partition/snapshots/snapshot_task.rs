@@ -18,7 +18,7 @@ use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
 };
-use restate_types::identifiers::{PartitionId, SnapshotId};
+use restate_types::identifiers::{ClusterId, PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
 
 use crate::partition::snapshots::SnapshotRepository;
@@ -31,6 +31,7 @@ pub struct SnapshotPartitionTask {
     pub snapshot_base_path: PathBuf,
     pub partition_store_manager: PartitionStoreManager,
     pub cluster_name: String,
+    pub cluster_id: Option<ClusterId>,
     pub node_name: String,
     pub snapshot_repository: SnapshotRepository,
 }
@@ -84,6 +85,7 @@ impl SnapshotPartitionTask {
         PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
             cluster_name: self.cluster_name.clone(),
+            cluster_id: self.cluster_id,
             node_name: self.node_name.clone(),
             partition_id: self.partition_id,
             created_at: humantime::Timestamp::from(created_at),

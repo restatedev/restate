@@ -961,10 +961,15 @@ macro_rules! ulid_backed_id {
     };
 }
 
+ulid_backed_id!(Cluster @with_resource_id);
 ulid_backed_id!(Deployment @with_resource_id);
 ulid_backed_id!(Subscription @with_resource_id);
 ulid_backed_id!(PartitionProcessorRpcRequest);
 ulid_backed_id!(Snapshot @with_resource_id);
+
+impl ClusterId {
+    pub const UNINITIALIZED: ClusterId = ClusterId::from_parts(0, 0);
+}
 
 #[derive(
     Debug, Clone, PartialEq, Eq, serde_with::SerializeDisplay, serde_with::DeserializeFromStr,

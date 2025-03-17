@@ -17,7 +17,7 @@ use serde_with::hex::Hex;
 use serde_with::{DeserializeAs, SerializeAs, serde_as};
 
 use restate_core::worker_api::SnapshotCreated;
-use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
+use restate_types::identifiers::{ClusterId, PartitionId, PartitionKey, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -34,12 +34,10 @@ pub enum SnapshotFormatVersion {
 #[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartitionSnapshotMetadata {
+    pub snapshot_id: SnapshotId,
     pub version: SnapshotFormatVersion,
-
-    /// Restate cluster name which produced the snapshot.
     pub cluster_name: String,
-
-    /// Restate partition id.
+    pub cluster_id: Option<ClusterId>,
     pub partition_id: PartitionId,
 
     /// Node that produced this snapshot.
@@ -48,9 +46,6 @@ pub struct PartitionSnapshotMetadata {
     /// Local node time when the snapshot was created.
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     pub created_at: humantime::Timestamp,
-
-    /// Snapshot id.
-    pub snapshot_id: SnapshotId,
 
     /// The partition key range that the partition processor which generated this snapshot was
     /// responsible for, at the time the snapshot was generated.

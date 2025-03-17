@@ -16,7 +16,7 @@ use tempfile::tempdir;
 use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_types::config::WorkerOptions;
-use restate_types::identifiers::{PartitionKey, SnapshotId};
+use restate_types::identifiers::{ClusterId, PartitionKey, SnapshotId};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn};
 use restate_types::time::MillisSinceEpoch;
@@ -40,6 +40,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
     let snapshot_meta = PartitionSnapshotMetadata {
         version: SnapshotFormatVersion::V1,
         cluster_name: "cluster_name".to_string(),
+        cluster_id: Some(ClusterId::new()),
         partition_id,
         node_name: "node".to_string(),
         created_at: humantime::Timestamp::from(SystemTime::from(MillisSinceEpoch::new(0))),

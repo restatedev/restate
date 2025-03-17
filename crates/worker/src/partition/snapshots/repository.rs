@@ -32,7 +32,7 @@ use restate_partition_store::snapshots::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
 };
 use restate_types::config::SnapshotsOptions;
-use restate_types::identifiers::{PartitionId, SnapshotId};
+use restate_types::identifiers::{ClusterId, PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
 
 /// Provides read and write access to the long-term partition snapshot storage destination.
@@ -335,6 +335,7 @@ impl SnapshotRepository {
     )]
     pub(crate) async fn get_latest(
         &self,
+        cluster_id: Option<ClusterId>,
         partition_id: PartitionId,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
         let latest_path = self.get_latest_snapshot_pointer(partition_id);
@@ -385,6 +386,24 @@ impl SnapshotRepository {
             );
             return Ok(None); // perhaps this needs to be a configuration error
         }
+
+        if let Some(cluster_id) = cluster_id {
+            match snapshot_metadata.cluster_id {
+                None => warn!(
+                    "We have a cluster ID {} but the snapshot we are restoring from has none",
+                    cluster_id
+                ),
+                Some(id) => {
+                    if id != cluster_id {
+                        warn!(
+                            "Snapshot matches the cluster name but not the unique id of the current cluster! Expected: cluster id=\"{}\", found: \"{}\"",
+                            cluster_id, id,
+                        );
+                        return Ok(None);
+                    }
+                }
+            }
+        };
 
         if !self.staging_dir.exists() {
             std::fs::create_dir_all(&self.staging_dir)?;
@@ -683,7 +702,7 @@ mod tests {
     use super::{LatestSnapshot, SnapshotRepository, UniqueSnapshotKey};
     use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
     use restate_types::config::{ObjectStoreOptions, SnapshotsOptions};
-    use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
+    use restate_types::identifiers::{ClusterId, PartitionId, PartitionKey, SnapshotId};
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
 
     use crate::partition::snapshots::repository::ObjectPath;
@@ -863,9 +882,21 @@ mod tests {
             .get(&partition_prefix.child("latest.json"))
             .await?;
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
-        assert_eq!(LatestSnapshot::from_snapshot(&snapshot2,), latest);
+        assert_eq!(LatestSnapshot::from_snapshot(&snapshot2), latest);
 
-        let latest = repository.get_latest(PartitionId::MIN).await?.unwrap();
+        assert!(
+            repository
+                .get_latest(Some(ClusterId::new()), PartitionId::MIN)
+                .await?
+                .is_none(),
+            "Snapshot repository refuses to serve a snapshot for a mismatched cluster id"
+        );
+
+        let latest = repository
+            .get_latest(snapshot2.cluster_id, PartitionId::MIN)
+            .await?
+            .unwrap();
+
         assert_eq!(latest.min_applied_lsn, snapshot2.min_applied_lsn);
         let local_path = latest.base_dir.as_path().to_string_lossy().to_string();
         drop(latest);
@@ -885,6 +916,7 @@ mod tests {
         PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
             cluster_name: "cluster".to_string(),
+            cluster_id: Some(ClusterId::new()),
             node_name: "node".to_string(),
             partition_id: PartitionId::MIN,
             created_at: humantime::Timestamp::from(SystemTime::now()),

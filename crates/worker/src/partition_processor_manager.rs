@@ -14,7 +14,6 @@ mod processor_state;
 mod spawn_processor_task;
 
 use restate_bifrost::loglet::FindTailOptions;
-use restate_types::identifiers::SnapshotId;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
@@ -50,6 +49,7 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
+use restate_types::identifiers::{ClusterId, SnapshotId};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -83,6 +83,7 @@ use crate::partition_processor_manager::processor_state::{
 use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 
 pub struct PartitionProcessorManager {
+    cluster_id: Option<ClusterId>,
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
     processor_states: BTreeMap<PartitionId, ProcessorState>,
@@ -174,6 +175,7 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
 impl PartitionProcessorManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        cluster_id: Option<ClusterId>,
         health_status: HealthStatus<WorkerStatus>,
         updateable_config: Live<Configuration>,
         metadata_store_client: MetadataStoreClient,
@@ -187,6 +189,7 @@ impl PartitionProcessorManager {
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
         Self {
+            cluster_id,
             health_status,
             updateable_config,
             processor_states: BTreeMap::default(),
@@ -989,6 +992,7 @@ impl PartitionProcessorManager {
                     snapshot_base_path,
                     partition_store_manager: self.partition_store_manager.clone(),
                     cluster_name: config.common.cluster_name().into(),
+                    cluster_id: self.cluster_id,
                     node_name: config.common.node_name().into(),
                     snapshot_repository,
                 };
@@ -1149,7 +1153,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StorageOptions};
     use restate_types::health::HealthStatus;
-    use restate_types::identifiers::{PartitionId, PartitionKey};
+    use restate_types::identifiers::{ClusterId, PartitionId, PartitionKey};
     use restate_types::live::{Constant, Live};
     use restate_types::locality::NodeLocation;
     use restate_types::net::AdvertisedAddress;
@@ -1199,6 +1203,7 @@ mod tests {
         .await?;
 
         let partition_processor_manager = PartitionProcessorManager::new(
+            Some(ClusterId::new()),
             health_status,
             Live::from_value(Configuration::default()),
             env_builder.metadata_store_client.clone(),

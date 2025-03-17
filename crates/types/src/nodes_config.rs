@@ -11,6 +11,7 @@
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
 
+use crate::identifiers::ClusterId;
 use crate::locality::NodeLocation;
 use crate::net::AdvertisedAddress;
 use crate::{GenerationalNodeId, NodeId, PlainNodeId, flexbuffers_storage_encode_decode};
@@ -59,6 +60,7 @@ pub enum Role {
 pub struct NodesConfiguration {
     version: Version,
     cluster_name: String,
+    cluster_id: Option<ClusterId>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     nodes: HashMap<PlainNodeId, MaybeNode>,
@@ -71,6 +73,7 @@ impl Default for NodesConfiguration {
         Self {
             version: Version::INVALID,
             cluster_name: "Unspecified".to_owned(),
+            cluster_id: None,
             nodes: Default::default(),
             name_lookup: Default::default(),
         }
@@ -128,6 +131,7 @@ impl NodesConfiguration {
         Self {
             version,
             cluster_name,
+            cluster_id: None,
             nodes: HashMap::default(),
             name_lookup: HashMap::default(),
         }
@@ -143,6 +147,20 @@ impl NodesConfiguration {
 
     pub fn cluster_name(&self) -> &str {
         &self.cluster_name
+    }
+
+    pub fn cluster_id(&self) -> Option<ClusterId> {
+        self.cluster_id
+    }
+
+    pub fn set_cluster_id(&mut self, cluster_id: ClusterId) {
+        assert!(
+            self.cluster_id.is_none(),
+            "Attempt to re-initialize cluster id from {} to {}!",
+            self.cluster_id.unwrap_or(ClusterId::UNINITIALIZED),
+            cluster_id,
+        );
+        self.cluster_id = Some(cluster_id);
     }
 
     pub fn increment_version(&mut self) {
