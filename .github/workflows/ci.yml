@@ -246,3 +246,4 @@ jobs:
         if: always()
         with:
           clusterName: ${{ env.CLUSTER_NAME }}
+          bucketName: "restate-jepsen-test-clusters-us-east-1"
