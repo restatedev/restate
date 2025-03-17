@@ -17,8 +17,8 @@ use restate_types::config::Configuration;
 use restate_types::net::codec::{Targeted, WireEncode};
 
 use super::{
-    ConnectionManager, HasConnection, NetworkError, NetworkSendError, NetworkSender, NoConnection,
-    Outgoing, WeakConnection,
+    Connection, ConnectionManager, HasConnection, NetworkError, NetworkSendError, NetworkSender,
+    NoConnection, Outgoing,
 };
 use super::{GrpcConnector, TransportConnect};
 use crate::Metadata;
@@ -75,7 +75,7 @@ impl<T: TransportConnect> Networking<T> {
     pub async fn node_connection(
         &self,
         node: impl Into<NodeId>,
-    ) -> Result<WeakConnection, NetworkError> {
+    ) -> Result<Connection, NetworkError> {
         let node = node.into();
         // find latest generation if this is not generational node id
         let node = match node.as_generational() {
@@ -87,11 +87,7 @@ impl<T: TransportConnect> Networking<T> {
             }
         };
 
-        Ok(self
-            .connections
-            .get_or_connect(node, &self.connector)
-            .await?
-            .downgrade())
+        self.connections.get_or_connect(node, &self.connector).await
     }
 }
 
@@ -197,7 +193,7 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
 
             // can only fail due to codec errors or if connection is closed. Retry only if
             // connection closed.
-            let msg_with_connection = msg.assign_connection(sender.downgrade());
+            let msg_with_connection = msg.assign_connection(sender);
             match msg_with_connection.send().await {
                 Ok(_) => return Ok(()),
                 Err(NetworkSendError {
