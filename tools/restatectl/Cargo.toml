@@ -70,3 +70,9 @@ vergen = { version = "8", default-features = false, features = [
     "gitcl",
     "cargo",
 ] }
+
+[dev-dependencies]
+restate-local-cluster-runner = { workspace = true }
+restate-test-util = { workspace = true }
+
+googletest = { workspace = true }
