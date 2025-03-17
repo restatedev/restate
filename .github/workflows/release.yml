@@ -208,6 +208,7 @@ jobs:
       "actions": "read"
       "checks": "write"
       "contents": "read"
+      "id-token": "write"
       "issues": "read"
       "packages": "read"
       "pull-requests": "write"

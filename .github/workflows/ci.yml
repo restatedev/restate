@@ -189,12 +189,12 @@ jobs:
     env:
       CLUSTER_NAME: restatedev-restate-${{ github.event.pull_request.number != null && format('pr{0}', github.event.pull_request.number) || format('run{0}', github.run_id) }}
     permissions:
-      contents: read
-      issues: read
-      checks: write
-      pull-requests: write
       actions: read
+      checks: write
+      contents: read
       id-token: write # NB: can obtain OIDC tokens on behalf of this repository!
+      issues: read
+      pull-requests: write
 
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
