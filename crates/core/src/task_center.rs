@@ -163,7 +163,7 @@ impl TaskCenter {
     #[track_caller]
     pub fn spawn_unmanaged<F, T>(
         kind: TaskKind,
-        name: &'static str,
+        name: impl Into<SharedString>,
         future: F,
     ) -> Result<TaskHandle<T>, ShutdownError>
     where
