@@ -285,6 +285,7 @@ pub mod test_util {
     use crate::network::io::DropEgressStream;
     use crate::network::io::EgressStream;
     use crate::network::io::UnboundedEgressSender;
+    use crate::network::protobuf::network::ConnectionDirection;
     use crate::network::protobuf::network::Header;
     use crate::network::protobuf::network::Hello;
     use crate::network::protobuf::network::Message;
@@ -332,7 +333,11 @@ pub mod test_util {
                 EgressStream::create(message_buffer);
             let incoming = incoming.map(Ok);
 
-            let hello = Hello::new(Some(from_node_id), my_cluster_name);
+            let hello = Hello::new(
+                Some(from_node_id),
+                my_cluster_name,
+                ConnectionDirection::Bidirectional,
+            );
             let header = Header {
                 my_nodes_config_version: Some(my_node_config_version.into()),
                 msg_id: crate::network::generate_msg_id(),
@@ -558,7 +563,7 @@ pub mod test_util {
             let selected_protocol_version = negotiate_protocol_version(&hello)?;
 
             // Enqueue the welcome message
-            let welcome = Welcome::new(my_node_id, selected_protocol_version);
+            let welcome = Welcome::new(my_node_id, selected_protocol_version, hello.direction());
 
             let header = Header::new(
                 nodes_config.version(),
