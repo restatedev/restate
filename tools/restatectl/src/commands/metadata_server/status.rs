@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use bytesize::ByteSize;
 use futures::future::join_all;
 use itertools::Itertools;
 use tonic::codec::CompressionEncoding;
@@ -133,13 +134,15 @@ pub async fn list_metadata_servers(connection: &ConnectionInfo) -> anyhow::Resul
                     .map(|snapshot| snapshot.index)
                     .unwrap_or_default(),
             ),
-            Cell::new(bytesize::to_string(
-                status
-                    .snapshot
-                    .map(|snapshot| snapshot.size)
-                    .unwrap_or_default(),
-                true,
-            )),
+            Cell::new(
+                ByteSize::b(
+                    status
+                        .snapshot
+                        .map(|snapshot| snapshot.size)
+                        .unwrap_or_default(),
+                )
+                .display(),
+            ),
         ]);
     }
 
