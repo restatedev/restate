@@ -206,6 +206,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           clusterName: ${{ env.CLUSTER_NAME }}
+          bucketName: "restate-jepsen-test-clusters-us-east-1"
       - name: Drop AWS credentials
         run: |
           echo "AWS_ACCESS_KEY_ID=" >> $GITHUB_ENV
