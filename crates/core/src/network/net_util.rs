@@ -40,7 +40,8 @@ pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Si
             // dummy endpoint required to specify an uds connector, it is not used anywhere
             Endpoint::try_from("http://127.0.0.1").expect("/ should be a valid Uri")
         }
-        AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
+        // todo: running this on TaskCenterExecutor was previously removed due to use in restatectl (#2919)
+        AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()),
     };
 
     let endpoint = apply_options(endpoint, options);
