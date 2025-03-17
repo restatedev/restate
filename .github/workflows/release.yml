@@ -205,13 +205,13 @@ jobs:
       plan: ${{ needs.plan.outputs.val }}
     secrets: inherit
     permissions:
-      actions: "read"
-      checks: "write"
-      contents: "read"
-      id-token: write # NB: can obtain OIDC tokens on behalf of this repository!
-      issues: "read"
-      packages: "read"
-      pull-requests: "write"
+      "actions": "read"
+      "checks": "write"
+      "contents": "read"
+      "id-token": "write"
+      "issues": "read"
+      "packages": "read"
+      "pull-requests": "write"
 
   custom-docker-build-release:
     needs:

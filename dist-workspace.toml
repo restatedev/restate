@@ -34,12 +34,13 @@ publish-jobs = ["./homebrew", "./docker-push-release", "./npm", "npm", "./releas
 post-announce-jobs = ["./helm"]
 
 [dist.github-custom-job-permissions.ci]
-packages = "read"
-contents = "read"
-issues = "read"
-checks = "write"
-pull-requests = "write"
 actions = "read"
+checks = "write"
+contents = "read"
+id-token = "write"
+issues = "read"
+packages = "read"
+pull-requests = "write"
 
 [dist.github-custom-job-permissions.npm]
 packages = "read"
