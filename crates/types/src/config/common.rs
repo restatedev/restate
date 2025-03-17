@@ -560,6 +560,7 @@ impl Default for MetadataClientOptions {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_more::Display)]
 #[serde(
     tag = "type",
@@ -579,6 +580,7 @@ pub enum MetadataClientKind {
     /// Store metadata on the replicated metadata store that runs on nodes with the metadata-server role.
     #[display("replicated")]
     Replicated {
+        /// # Restate metadata server address list
         #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
         addresses: Vec<AdvertisedAddress>,
     },
@@ -587,6 +589,7 @@ pub enum MetadataClientKind {
     /// The addresses are formatted as `host:port`
     #[display("etcd")]
     Etcd {
+        /// # Etcd cluster node address list
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         addresses: Vec<String>,
     },
@@ -605,7 +608,22 @@ pub enum MetadataClientKind {
 
         #[serde(flatten)]
         object_store: ObjectStoreOptions,
+
+        /// # Error retry policy
+        #[serde(default = "MetadataClientKind::default_object_store_retry_policy")]
+        object_store_retry_policy: RetryPolicy,
     },
+}
+
+impl MetadataClientKind {
+    fn default_object_store_retry_policy() -> RetryPolicy {
+        RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.,
+            Some(10),
+            Some(Duration::from_secs(10)),
+        )
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -630,6 +648,8 @@ enum MetadataClientKindShadow {
         path: String,
         #[serde(flatten)]
         object_store: ObjectStoreOptions,
+        #[serde(default = "MetadataClientKind::default_object_store_retry_policy")]
+        object_store_retry_policy: RetryPolicy,
     },
     // Fallback to support not having to specify the type field
     #[serde(untagged)]
@@ -644,9 +664,15 @@ impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
     type Error = &'static str;
     fn try_from(value: MetadataClientKindShadow) -> Result<Self, Self::Error> {
         let result = match value {
-            MetadataClientKindShadow::ObjectStore { path, object_store } => {
-                Self::ObjectStore { path, object_store }
-            }
+            MetadataClientKindShadow::ObjectStore {
+                path,
+                object_store,
+                object_store_retry_policy,
+            } => Self::ObjectStore {
+                path,
+                object_store,
+                object_store_retry_policy,
+            },
             MetadataClientKindShadow::Etcd { addresses } => Self::Etcd { addresses },
             MetadataClientKindShadow::Replicated { address, addresses }
             | MetadataClientKindShadow::Fallback { address, addresses } => {
