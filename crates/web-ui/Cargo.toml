@@ -13,4 +13,4 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 include_dir = "0.7.4"
 
 [build-dependencies]
-zip = "2.2.0"
+zip = { version = "2.3.0" }
