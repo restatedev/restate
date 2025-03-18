@@ -218,7 +218,7 @@ where
                     .serve_connection(io, service.clone()).into_owned());
 
                 TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
-                    debug!("New connection accepted");
+                    trace!("New connection accepted");
                     if let Err(e) = connection.await {
                         if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
                             if hyper_error.is_incomplete_message() {
