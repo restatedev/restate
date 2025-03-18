@@ -57,8 +57,7 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
             Err(NodesConfigError::UnknownNodeId(_)) | Err(NodesConfigError::Deleted(_)) => {
                 return Ok(());
             }
-            Err(NodesConfigError::GenerationMismatch { .. })
-            | Err(NodesConfigError::InvalidUri(_)) => {
+            Err(NodesConfigError::GenerationMismatch { .. }) => {
                 unreachable!("impossible nodes config errors")
             }
         };

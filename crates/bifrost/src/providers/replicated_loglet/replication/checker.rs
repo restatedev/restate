@@ -176,9 +176,9 @@ impl<Attr: Eq + Hash + Clone + std::fmt::Debug> NodeSetChecker<Attr> {
                     // (nodeset is newer).
                     checker.add_node(*node_id, StorageState::Provisioning, &NodeLocation::new());
                 }
-                Err(
-                    NodesConfigError::InvalidUri(_) | NodesConfigError::GenerationMismatch { .. },
-                ) => unreachable!("impossible nodes-configuration errors"),
+                Err(NodesConfigError::GenerationMismatch { .. }) => {
+                    unreachable!("impossible nodes-configuration errors")
+                }
             }
         }
 
