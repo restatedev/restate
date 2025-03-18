@@ -1116,17 +1116,21 @@ impl LogsController {
             Event::LogsTailUpdates { updates }
         };
 
-        self.async_operations.spawn(
-            find_tail
-                .log_slow_after(
-                    Duration::from_secs(3),
-                    tracing::Level::INFO,
-                    "Determining the tail status for all logs",
-                )
-                .with_overdue(Duration::from_secs(15), tracing::Level::WARN)
-                .instrument(trace_span!("scheduled-find-tail"))
-                .in_current_tc(),
-        );
+        self.async_operations
+            .build_task()
+            .name("cc-find-tail")
+            .spawn(
+                find_tail
+                    .log_slow_after(
+                        Duration::from_secs(3),
+                        tracing::Level::INFO,
+                        "Determining the tail status for all logs",
+                    )
+                    .with_overdue(Duration::from_secs(15), tracing::Level::WARN)
+                    .instrument(trace_span!("scheduled-find-tail"))
+                    .in_current_tc(),
+            )
+            .expect("to spawn find-tail task");
     }
 
     pub fn on_observed_cluster_state_update(
@@ -1193,7 +1197,7 @@ impl LogsController {
     ) {
         let metadata_writer = self.metadata_writer.clone();
 
-        self.async_operations.spawn(async move {
+        self.async_operations.build_task().name("cc-write-logs").spawn(async move {
                 if let Some(debounce) = &mut debounce {
                     let delay = debounce.next().unwrap_or(FALLBACK_MAX_RETRY_DELAY);
                     debug!(?delay, %previous_version, "Wait before attempting to write the log chain metadata");
@@ -1231,7 +1235,7 @@ impl LogsController {
 
                 let version = logs.version();
                 Event::WriteLogsSucceeded(version)
-        }.in_current_tc());
+        }.in_current_tc()).expect("to spawn write-logs task");
     }
 
     fn seal_log(
@@ -1242,7 +1246,7 @@ impl LogsController {
     ) {
         let bifrost = self.bifrost.clone();
 
-        self.async_operations.spawn(
+        self.async_operations.build_task().name(&format!("cc-seal-log-{}", log_id)).spawn(
             async move {
                 let start = tokio::time::Instant::now();
                 if let Some(debounce) = &mut debounce {
@@ -1276,7 +1280,7 @@ impl LogsController {
                 }
             }
             .in_current_tc(),
-        );
+        ).expect("to spawn seal-log task");
     }
 
     pub async fn run_async_operations(&mut self) -> Result<Never> {

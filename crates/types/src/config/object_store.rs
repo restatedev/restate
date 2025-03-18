@@ -18,6 +18,8 @@ use serde_with::serde_as;
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct ObjectStoreOptions {
+    /// # AWS profile
+    ///
     /// The AWS configuration profile to use for S3 object store destinations. If you use
     /// named profiles in your AWS configuration, you can replace all the other settings with
     /// a single profile reference. See the [AWS documentation on profiles]
@@ -25,6 +27,8 @@ pub struct ObjectStoreOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aws_profile: Option<String>,
 
+    /// # AWS region
+    ///
     /// AWS region to use with S3 object store destinations. This may be inferred from the
     /// environment, for example the current region when running in EC2. Because of the
     /// request signing algorithm this must have a value. For Minio, you can generally
@@ -32,27 +36,36 @@ pub struct ObjectStoreOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aws_region: Option<String>,
 
-    /// AWS access key (or username in Minio / S3-compatible stores).
+    /// # AWS access key
+    ///
+    /// Username for Minio, or consult the service documentation for other S3-compatible stores.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aws_access_key_id: Option<String>,
 
-    /// AWS secret key (or password in Minio / S3-compatible stores).
+    /// # AWS secret key
+    ///
+    /// Password for Minio, or consult the service documentation for other S3-compatible stores.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aws_secret_access_key: Option<String>,
 
-    /// AWS session token, needed with short-term STS session credentials.
+    /// # AWS session token
+    ///
+    /// This is only needed with short-term STS session credentials.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aws_session_token: Option<String>,
 
-    /// Endpoint URL override. When you use Amazon S3, this is typically inferred from the region
-    /// and there is no need to set it. With other object stores, you will have to provide
-    /// an appropriate HTTP(S) endpoint. If *not* using HTTPS, also set `aws-allow-http` to
-    /// `true`.
+    /// # Object store API endpoint URL override
+    ///
+    /// When you use Amazon S3, this is typically inferred from the region and there is no need to
+    /// set it. With other object stores, you will have to provide an appropriate HTTP(S) endpoint.
+    /// If *not* using HTTPS, also set `aws-allow-http` to `true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aws_endpoint_url: Option<String>,
 
-    /// Allow plain HTTP to be used with the object store endpoint. Required when the
-    /// endpoint URL that isn't using HTTPS.
+    /// # Allow insecure HTTP
+    ///
+    /// Allow plain HTTP to be used with the object store endpoint. Required when the endpoint URL
+    /// that isn't using HTTPS.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aws_allow_http: Option<bool>,
 }

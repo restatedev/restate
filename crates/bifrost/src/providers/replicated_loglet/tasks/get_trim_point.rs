@@ -103,29 +103,33 @@ impl<'a> GetTrimPointTask<'a> {
                 ),
             };
 
-            inflight_requests.spawn({
-                let networking = networking.clone();
-                let trim_rpc_router = self.logservers_rpc.get_loglet_info.clone();
-                let known_global_tail = self.known_global_tail.clone();
+            inflight_requests
+                .build_task()
+                .name("get-trim-point")
+                .spawn({
+                    let networking = networking.clone();
+                    let trim_rpc_router = self.logservers_rpc.get_loglet_info.clone();
+                    let known_global_tail = self.known_global_tail.clone();
 
-                async move {
-                    let task = RunOnSingleNode::new(
-                        node_id,
-                        request,
-                        &trim_rpc_router,
-                        &known_global_tail,
-                        Configuration::pinned()
-                            .bifrost
-                            .replicated_loglet
-                            .log_server_retry_policy
-                            .clone(),
-                    );
+                    async move {
+                        let task = RunOnSingleNode::new(
+                            node_id,
+                            request,
+                            &trim_rpc_router,
+                            &known_global_tail,
+                            Configuration::pinned()
+                                .bifrost
+                                .replicated_loglet
+                                .log_server_retry_policy
+                                .clone(),
+                        );
 
-                    (node_id, task.run(on_info_response, &networking).await)
-                }
-                .in_current_tc()
-                .instrument(Span::current())
-            });
+                        (node_id, task.run(on_info_response, &networking).await)
+                    }
+                    .in_current_tc()
+                    .instrument(Span::current())
+                })
+                .expect("to spawn get trim point task");
         }
 
         let mut nodeset_checker = NodeSetChecker::<Option<LogletOffset>>::new(

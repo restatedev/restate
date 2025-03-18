@@ -86,6 +86,10 @@ impl Handle {
 
     /// Sets the current task_center but doesn't create a task. Use this when you need to run a
     /// closure within task_center scope.
+    ///
+    /// # Panics
+    /// If your closure tries to spawn tasks with [`TaskKind`] that inherit the runtime, then you
+    /// need to call this method from within a Tokio runtime. Otherwise, this method panics.
     pub fn run_sync<F, O>(&self, f: F) -> O
     where
         F: FnOnce() -> O,

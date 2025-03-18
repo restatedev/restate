@@ -63,7 +63,7 @@ pub struct CommonOptionCliOverride {
     /// - `us-west` -- the node is in the `us-west` region.
     /// - `us-west.a1` -- the node is in the `us-west` region and in the `a1` zone.
     /// - `` -- [default] the node is in the default location
-    #[clap(long, alias = "node-location", global = true)]
+    #[clap(long, alias = "node-location", global = true, verbatim_doc_comment)]
     pub location: Option<NodeLocation>,
 
     /// If set, the node insists on acquiring this node ID.

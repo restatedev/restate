@@ -94,25 +94,29 @@ impl SealTask {
                 ),
                 sequencer: my_params.sequencer,
             };
-            inflight_requests.spawn({
-                let networking = networking.clone();
-                let rpc_router = seal_rpc_router.clone();
-                let known_global_tail = known_global_tail.clone();
-                let retry_policy = retry_policy.clone();
-                async move {
-                    let task = RunOnSingleNode::new(
-                        node_id,
-                        request,
-                        &rpc_router,
-                        &known_global_tail,
-                        retry_policy,
-                    );
+            inflight_requests
+                .build_task()
+                .name("seal")
+                .spawn({
+                    let networking = networking.clone();
+                    let rpc_router = seal_rpc_router.clone();
+                    let known_global_tail = known_global_tail.clone();
+                    let retry_policy = retry_policy.clone();
+                    async move {
+                        let task = RunOnSingleNode::new(
+                            node_id,
+                            request,
+                            &rpc_router,
+                            &known_global_tail,
+                            retry_policy,
+                        );
 
-                    (node_id, task.run(on_seal_response, &networking).await)
-                }
-                .in_current_tc()
-                .in_current_span()
-            });
+                        (node_id, task.run(on_seal_response, &networking).await)
+                    }
+                    .in_current_tc()
+                    .in_current_span()
+                })
+                .expect("to spawn seal task");
         }
 
         // Max observed local-tail from sealed nodes

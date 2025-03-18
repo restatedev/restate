@@ -129,27 +129,31 @@ where
         input_journal: InvokeInputJournal,
         task_pool: &mut JoinSet<()>,
     ) -> AbortHandle {
-        task_pool.spawn(
-            InvocationTask::new(
-                self.client.clone(),
-                partition,
-                invocation_id,
-                invocation_target,
-                opts.inactivity_timeout.into(),
-                opts.abort_timeout.into(),
-                opts.disable_eager_state,
-                opts.message_size_warning.get(),
-                opts.message_size_limit(),
-                retry_count_since_last_stored_entry,
-                storage_reader.clone(),
-                storage_reader,
-                self.entry_enricher.clone(),
-                self.schemas.clone(),
-                invoker_tx,
-                invoker_rx,
+        task_pool
+            .build_task()
+            .name("invocation-task")
+            .spawn(
+                InvocationTask::new(
+                    self.client.clone(),
+                    partition,
+                    invocation_id,
+                    invocation_target,
+                    opts.inactivity_timeout.into(),
+                    opts.abort_timeout.into(),
+                    opts.disable_eager_state,
+                    opts.message_size_warning.get(),
+                    opts.message_size_limit(),
+                    retry_count_since_last_stored_entry,
+                    storage_reader.clone(),
+                    storage_reader,
+                    self.entry_enricher.clone(),
+                    self.schemas.clone(),
+                    invoker_tx,
+                    invoker_rx,
+                )
+                .run(input_journal),
             )
-            .run(input_journal),
-        )
+            .expect("to spawn invocation task")
     }
 }
 
@@ -1372,15 +1376,19 @@ mod tests {
             input_journal: InvokeInputJournal,
             task_pool: &mut JoinSet<()>,
         ) -> AbortHandle {
-            task_pool.spawn((*self)(
-                partition,
-                invocation_id,
-                invocation_target,
-                storage_reader,
-                invoker_tx,
-                invoker_rx,
-                input_journal,
-            ))
+            task_pool
+                .build_task()
+                .name("invocation-task-fn")
+                .spawn((*self)(
+                    partition,
+                    invocation_id,
+                    invocation_target,
+                    storage_reader,
+                    invoker_tx,
+                    invoker_rx,
+                    input_journal,
+                ))
+                .expect("to spawn invocation task")
         }
     }
 
