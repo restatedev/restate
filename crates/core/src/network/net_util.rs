@@ -31,6 +31,39 @@ use restate_types::net::{AdvertisedAddress, BindAddress};
 
 use crate::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 
+// pub async fn create_tonic_channel2<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
+//     address: AdvertisedAddress,
+//     options: &T,
+// ) -> Result<Channel, ConnectError> {
+//     let endpoint = match &address {
+//         AdvertisedAddress::Uds(_) => {
+//             // dummy endpoint required to specify an uds connector, it is not used anywhere
+//             Endpoint::try_from("http://127.0.0.1").expect("/ should be a valid Uri")
+//         }
+//         // todo: running this on TaskCenterExecutor was previously removed due to use in restatectl (#2919)
+//         AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()),
+//     };
+//
+//     let endpoint = apply_options(endpoint, options);
+//
+//     Ok(
+//         match address {
+//             AdvertisedAddress::Uds(uds_path) => {
+//                 endpoint
+//                     .connect_with_connector(tower::service_fn(move |_: Uri| {
+//                         let uds_path = uds_path.clone();
+//                         async move {
+//                             Ok::<_, io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
+//                         }
+//                     }))
+//                     .await
+//                     .map_err(|e| Arc::from(e))?
+//             }
+//             AdvertisedAddress::Http(_) => endpoint.connect().await.map_err(|e| Arc::from(e))?,
+//         },
+//     )
+// }
+
 pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
     address: AdvertisedAddress,
     options: &T,

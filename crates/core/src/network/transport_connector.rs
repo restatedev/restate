@@ -12,11 +12,30 @@ use std::future::Future;
 
 use futures::Stream;
 
-use restate_types::GenerationalNodeId;
-use restate_types::nodes_config::NodesConfiguration;
+use restate_types::nodes_config::{NodeConfig, NodesConfigError, NodesConfiguration};
+use restate_types::{GenerationalNodeId, NodeId};
 
 use super::protobuf::network::Message;
-use super::{NetworkError, ProtocolError};
+use super::{ConnectError, DiscoveryError};
+
+/// Finds a node in nodes configuration by ID and maps the error to [`DiscoveryError`]
+pub fn find_node(
+    nodes_config: &NodesConfiguration,
+    node_id: impl Into<NodeId>,
+) -> Result<&NodeConfig, DiscoveryError> {
+    match nodes_config.find_node_by_id(node_id) {
+        Ok(node_config) => Ok(node_config),
+        Err(NodesConfigError::Deleted(id)) => Err(DiscoveryError::NodeIsGone(id)),
+        Err(NodesConfigError::UnknownNodeId(id)) => Err(DiscoveryError::UnknownNodeId(id)),
+        Err(NodesConfigError::GenerationMismatch { expected, found }) => {
+            if found.is_newer_than(expected) {
+                Err(DiscoveryError::NodeIsGone(expected))
+            } else {
+                Err(DiscoveryError::UnknownNodeId(expected))
+            }
+        }
+    }
+}
 
 pub trait TransportConnect: Clone + Send + Sync + 'static {
     fn connect(
@@ -25,10 +44,7 @@ pub trait TransportConnect: Clone + Send + Sync + 'static {
         nodes_config: &NodesConfiguration,
         output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
     ) -> impl Future<
-        Output = Result<
-            impl Stream<Item = Result<Message, ProtocolError>> + Send + Unpin + 'static,
-            NetworkError,
-        >,
+        Output = Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError>,
     > + Send;
 }
 
@@ -39,10 +55,7 @@ impl<T: TransportConnect> TransportConnect for std::sync::Arc<T> {
         nodes_config: &NodesConfiguration,
         output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
     ) -> impl Future<
-        Output = Result<
-            impl Stream<Item = Result<Message, ProtocolError>> + Send + Unpin + 'static,
-            NetworkError,
-        >,
+        Output = Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError>,
     > + Send {
         (**self).connect(node_id, nodes_config, output_stream)
     }
@@ -63,7 +76,6 @@ pub mod test_util {
     use restate_types::GenerationalNodeId;
     use restate_types::nodes_config::NodesConfiguration;
 
-    use super::{NetworkError, ProtocolError};
     use crate::network::io::EgressStream;
     use crate::network::protobuf::network::Message;
     use crate::network::protobuf::network::message::BinaryMessage;
@@ -96,12 +108,9 @@ pub mod test_util {
             node_id: GenerationalNodeId,
             nodes_config: &NodesConfiguration,
             output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
-        ) -> Result<
-            impl Stream<Item = Result<Message, ProtocolError>> + Send + Unpin + 'static,
-            NetworkError,
-        > {
+        ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
             // validates that the node is known in the config
-            let current_generation = nodes_config.find_node_by_id(node_id)?.current_generation;
+            let current_generation = find_node(nodes_config, node_id)?.current_generation;
             info!(
                 "Attempting to fake a connection to node {} and current_generation is {}",
                 node_id, current_generation
@@ -124,11 +133,11 @@ pub mod test_util {
 
             if self.new_connection_sender.send(peer_connection).is_err() {
                 // receiver has closed, cannot accept connections
-                return Err(NetworkError::Unavailable(format!(
+                return Err(ConnectError::Transport(format!(
                     "MockConnector has been terminated, cannot connect to {node_id}"
                 )));
             }
-            Ok(egress.map(Ok))
+            Ok(egress)
         }
     }
 
@@ -172,10 +181,7 @@ pub mod test_util {
             node_id: GenerationalNodeId,
             nodes_config: &NodesConfiguration,
             output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
-        ) -> Result<
-            impl Stream<Item = Result<Message, ProtocolError>> + Send + Unpin + 'static,
-            NetworkError,
-        > {
+        ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
             self.mock_connector
                 .connect(node_id, nodes_config, output_stream)
                 .await
@@ -193,12 +199,9 @@ pub mod test_util {
             _node_id: GenerationalNodeId,
             _nodes_config: &NodesConfiguration,
             _output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
-        ) -> Result<
-            impl Stream<Item = Result<Message, ProtocolError>> + Send + Unpin + 'static,
-            NetworkError,
-        > {
-            Result::<futures::stream::Empty<_>, _>::Err(NetworkError::ConnectError(
-                tonic::Status::unavailable("Trying to connect using failing transport"),
+        ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
+            Result::<futures::stream::Empty<_>, _>::Err(ConnectError::Transport(
+                "Trying to connect using failing transport".to_string(),
             ))
         }
     }

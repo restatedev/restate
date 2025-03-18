@@ -36,6 +36,7 @@ pub use grpc::GrpcConnector;
 pub use message_router::*;
 pub use network_sender::*;
 pub use networking::Networking;
+pub use protobuf::network::ConnectionDirection;
 pub use server_builder::NetworkServerBuilder;
 pub use transport_connector::TransportConnect;
 pub use types::*;
