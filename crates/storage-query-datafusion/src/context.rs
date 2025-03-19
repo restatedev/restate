@@ -198,6 +198,17 @@ where
     }
 }
 
+pub struct ClusterTables;
+
+impl RegisterTable for ClusterTables {
+    async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
+        let metadata = Metadata::current();
+        crate::node::register_self(ctx, metadata)?;
+
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct QueryContext {
     sql_options: SQLOptions,
