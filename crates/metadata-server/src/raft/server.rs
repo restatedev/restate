@@ -779,9 +779,22 @@ impl Member {
         match request {
             Request::ReadOnly(read_only_request) => {
                 let read_ctx = read_only_request.request_id.to_bytes().to_vec();
+
+                let previous_ready_read_count = self.raw_node.raft.ready_read_count();
+                let previous_pending_read_count = self.raw_node.raft.pending_read_count();
+
                 self.raw_node.read_index(read_ctx);
-                self.kv_storage
-                    .register_read_only_request(read_only_request);
+
+                // check whether the read request was silently dropped
+                if previous_ready_read_count == self.raw_node.raft.ready_read_count()
+                    && previous_pending_read_count == self.raw_node.raft.pending_read_count()
+                {
+                    // fail the request if we cannot serve read-only requests yet
+                    read_only_request.fail(RequestError::Unavailable("Cannot serve read-only queries yet because the latest commit index has not been retrieved. Try again in a bit".into(), self.known_leader()));
+                } else {
+                    self.kv_storage
+                        .register_read_only_request(read_only_request);
+                }
             }
             Request::Write { request, callback } => {
                 if let Err(err) = request
