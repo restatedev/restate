@@ -253,6 +253,10 @@ impl RetryIter<'_> {
     pub fn remaining_attempts(&self) -> usize {
         self.max_attempts() - self.attempts()
     }
+
+    pub fn last_retry(&self) -> Option<Duration> {
+        self.last_retry
+    }
 }
 
 impl Iterator for RetryIter<'_> {

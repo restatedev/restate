@@ -21,8 +21,8 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
 use restate_core::{
     ShutdownError, TaskCenter, TaskKind,
     network::{
-        Connection, ConnectionClosed, NetworkError, NetworkSendError, Networking, Outgoing,
-        TransportConnect,
+        ConnectError, Connection, ConnectionClosed, DiscoveryError, NetworkError, NetworkSendError,
+        Networking, Outgoing, TransportConnect,
         rpc_router::{RpcRouter, RpcToken},
     },
 };
@@ -32,7 +32,6 @@ use restate_types::{
     errors::MaybeRetryableError,
     logs::{LogId, Record, metadata::SegmentIndex},
     net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
-    nodes_config::NodesConfigError,
     replicated_loglet::ReplicatedLogletParams,
 };
 use tracing::instrument;
@@ -163,20 +162,13 @@ where
             {
                 Ok(token) => break token,
                 Err(err) => {
-                    match err.source {
-                        NetworkError::ConnectError(_)
-                        | NetworkError::ConnectionClosed(_)
-                        | NetworkError::Timeout(_) => {
-                            // we retry to re-connect one time
-                            connection = match self.renew_connection(connection).await {
-                                Ok(connection) => connection,
-                                Err(err) => return self.on_handle_network_error(err),
-                            };
-                            msg = err.original;
-                            continue;
-                        }
-                        err => return Err(err.into()),
-                    }
+                    // re-connect
+                    connection = match self.renew_connection(connection).await {
+                        Ok(connection) => connection,
+                        Err(err) => return self.on_handle_network_error(err),
+                    };
+                    msg = err.original;
+                    continue;
                 }
             };
         };
@@ -187,29 +179,21 @@ where
         Ok(commit_token)
     }
 
-    fn on_handle_network_error(&self, err: NetworkError) -> Result<LogletCommit, OperationError> {
+    fn on_handle_network_error(&self, err: ConnectError) -> Result<LogletCommit, OperationError> {
         match err {
-            err @ NetworkError::OldPeerGeneration(_) | err @ NetworkError::NodeIsGone(_) => {
-                // means that the sequencer is gone, we need reconfiguration.
-                Ok(LogletCommit::reconfiguration_needed(format!(
-                    "sequencer is gone; {err}"
-                )))
-            }
-            NetworkError::UnknownNode(NodesConfigError::GenerationMismatch { found, .. })
-                if found.is_newer_than(self.params.sequencer) =>
-            {
+            err @ ConnectError::Discovery(DiscoveryError::NodeIsGone(_)) => {
                 // means that the sequencer is gone, we need reconfiguration.
                 Ok(LogletCommit::reconfiguration_needed(format!(
                     "sequencer is gone; {err}"
                 )))
             }
             // probably retryable
-            err => Err(err.into()),
+            err => Err(OperationError::retryable(err)),
         }
     }
 
     /// Gets or starts a new remote sequencer connection
-    async fn get_connection(&self) -> Result<RemoteSequencerConnection, NetworkError> {
+    async fn get_connection(&self) -> Result<RemoteSequencerConnection, ConnectError> {
         let mut guard = self.connection.lock().await;
         if let Some(connection) = guard.deref() {
             return Ok(connection.clone());
@@ -232,7 +216,7 @@ where
     async fn renew_connection(
         &self,
         old: RemoteSequencerConnection,
-    ) -> Result<RemoteSequencerConnection, NetworkError> {
+    ) -> Result<RemoteSequencerConnection, ConnectError> {
         let mut guard = self.connection.lock().await;
         let current = guard.as_ref().expect("connection has been initialized");
 
