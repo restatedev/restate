@@ -25,8 +25,6 @@ pub enum NodesConfigError {
     Deleted(NodeId),
     #[error("node was found but has a mismatching generation (expected={expected} found={found})")]
     GenerationMismatch { expected: NodeId, found: NodeId },
-    #[error("node config has an invalid URI: {0}")]
-    InvalidUri(#[from] http::uri::InvalidUri),
 }
 
 // PartialEq+Eq+Clone+Copy are implemented by EnumSetType

@@ -148,7 +148,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                                             .await,
                                     )
                                 }
-                                Err(network_error) => (node_id, Err(network_error)),
+                                Err(network_error) => (node_id, Err(network_error.into())),
                             }
                         }
                         .in_current_tc_as_task(TaskKind::InPlace, "get-nodes-state"),

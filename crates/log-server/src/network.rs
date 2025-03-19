@@ -238,54 +238,60 @@ impl RequestPump {
 
     fn on_get_digest(worker: &LogletWorkerHandle, msg: Incoming<GetDigest>) {
         if let Err(msg) = worker.enqueue_get_digest(msg) {
+            let peer = msg.peer();
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.to_rpc_response(Digest::empty()).try_send() {
-                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to GetDigest message with status Disabled due to peer channel capacity being full");
+            if !msg.to_rpc_response(Digest::empty()).try_send() {
+                debug!(%peer, "Failed to respond to GetDigest message with status Disabled");
             }
         }
     }
 
     fn on_wait_for_tail(worker: &LogletWorkerHandle, msg: Incoming<WaitForTail>) {
         if let Err(msg) = worker.enqueue_wait_for_tail(msg) {
+            let peer = msg.peer();
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.to_rpc_response(TailUpdated::empty()).try_send() {
-                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to WaitForTail message with status Disabled due to peer channel capacity being full");
+            if !msg.to_rpc_response(TailUpdated::empty()).try_send() {
+                debug!(%peer, "Failed to respond to WaitForTail message with status Disabled");
             }
         }
     }
 
     fn on_store(worker: &LogletWorkerHandle, msg: Incoming<Store>) {
         if let Err(msg) = worker.enqueue_store(msg) {
+            let peer = msg.peer();
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.to_rpc_response(Stored::empty()).try_send() {
-                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to Store message with status Disabled due to peer channel capacity being full");
+            if !msg.to_rpc_response(Stored::empty()).try_send() {
+                debug!(%peer, "Failed to respond to Store message with status Disabled");
             }
         }
     }
 
     fn on_release(worker: &LogletWorkerHandle, msg: Incoming<Release>) {
         if let Err(msg) = worker.enqueue_release(msg) {
+            let peer = msg.peer();
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.to_rpc_response(Released::empty()).try_send() {
-                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to Release message with status Disabled due to peer channel capacity being full");
+            if !msg.to_rpc_response(Released::empty()).try_send() {
+                debug!(%peer, "Failed to respond to Release message with status Disabled");
             }
         }
     }
 
     fn on_seal(worker: &LogletWorkerHandle, msg: Incoming<Seal>) {
         if let Err(msg) = worker.enqueue_seal(msg) {
+            let peer = msg.peer();
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.to_rpc_response(Sealed::empty()).try_send() {
-                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to Seal message with status Disabled due to peer channel capacity being full");
+            if !msg.to_rpc_response(Sealed::empty()).try_send() {
+                debug!(%peer, "Failed to respond to Seal message with status Disabled");
             }
         }
     }
 
     fn on_get_loglet_info(worker: &LogletWorkerHandle, msg: Incoming<GetLogletInfo>) {
         if let Err(msg) = worker.enqueue_get_loglet_info(msg) {
+            let peer = msg.peer();
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.to_rpc_response(LogletInfo::empty()).try_send() {
-                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to GetLogletInfo message with status Disabled due to peer channel capacity being full");
+            if !msg.to_rpc_response(LogletInfo::empty()).try_send() {
+                debug!(%peer, "Failed to respond to GetLogletInfo message with status Disabled");
             }
         }
     }
@@ -293,18 +299,20 @@ impl RequestPump {
     fn on_get_records(worker: &LogletWorkerHandle, msg: Incoming<GetRecords>) {
         if let Err(msg) = worker.enqueue_get_records(msg) {
             let next_offset = msg.body().from_offset;
+            let peer = msg.peer();
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.to_rpc_response(Records::empty(next_offset)).try_send() {
-                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to GetRecords message with status Disabled due to peer channel capacity being full");
+            if !msg.to_rpc_response(Records::empty(next_offset)).try_send() {
+                debug!(%peer, "Failed to respond to GetRecords message with status Disabled");
             }
         }
     }
 
     fn on_trim(worker: &LogletWorkerHandle, msg: Incoming<Trim>) {
         if let Err(msg) = worker.enqueue_trim(msg) {
+            let peer = msg.peer();
             // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if let Err(e) = msg.to_rpc_response(Trimmed::empty()).try_send() {
-                debug!(?e.source, peer = %e.original.peer(), "Failed to respond to Trim message with status Disabled due to peer channel capacity being full");
+            if !msg.to_rpc_response(Trimmed::empty()).try_send() {
+                debug!(%peer, "Failed to respond to Trim message with status Disabled");
             }
         }
     }
