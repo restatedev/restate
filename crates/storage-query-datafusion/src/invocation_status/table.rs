@@ -28,6 +28,7 @@ use crate::invocation_status::schema::{
 };
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
 const NAME: &str = "sys_invocation_status";
@@ -36,6 +37,7 @@ pub(crate) fn register_self(
     ctx: &QueryContext,
     partition_selector: impl SelectPartitions,
     local_partition_store_manager: Option<PartitionStoreManager>,
+    remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
     let local_scanner = local_partition_store_manager.map(|partition_store_manager| {
         Arc::new(LocalPartitionsScanner::new(
@@ -47,7 +49,7 @@ pub(crate) fn register_self(
         partition_selector,
         SysInvocationStatusBuilder::schema(),
         sys_invocation_status_sort_order(),
-        ctx.create_distributed_scanner(NAME, local_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_service_key("target_service_key")
             .with_invocation_id("id"),

@@ -12,7 +12,7 @@ use std::pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::context::QueryContext;
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::{decode_schema, encode_record_batch};
 use ahash::HashMap;
 use anyhow::Context;
@@ -36,8 +36,11 @@ struct Scanner {
 }
 
 impl Scanner {
-    fn new(ctx: QueryContext, request: RemoteQueryScannerOpen) -> anyhow::Result<Self> {
-        let scanner = ctx
+    fn new(
+        remote_scanner_manager: RemoteScannerManager,
+        request: RemoteQueryScannerOpen,
+    ) -> anyhow::Result<Self> {
+        let scanner = remote_scanner_manager
             .local_partition_scanner(&request.table)
             .context("not registered scanner for a table")?;
         let schema = decode_schema(&request.projection_schema_bytes).context("bad schema bytes")?;
@@ -66,7 +69,7 @@ impl Scanner {
 
 pub struct RemoteQueryScannerServer {
     expire_old_scanners_after: Duration,
-    query_context: QueryContext,
+    remote_scanner_manager: RemoteScannerManager,
     open_stream: MessageStream<RemoteQueryScannerOpen>,
     next_stream: MessageStream<RemoteQueryScannerNext>,
     close_stream: MessageStream<RemoteQueryScannerClose>,
@@ -75,7 +78,7 @@ pub struct RemoteQueryScannerServer {
 impl RemoteQueryScannerServer {
     pub fn new(
         expire_old_scanners_after: Duration,
-        query_context: QueryContext,
+        remote_scanner_manager: RemoteScannerManager,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         let open_stream = router_builder.subscribe_to_stream(64);
@@ -84,7 +87,7 @@ impl RemoteQueryScannerServer {
 
         Self {
             expire_old_scanners_after,
-            query_context,
+            remote_scanner_manager,
             open_stream,
             next_stream,
             close_stream,
@@ -94,7 +97,7 @@ impl RemoteQueryScannerServer {
     pub async fn run(self) -> anyhow::Result<()> {
         let RemoteQueryScannerServer {
             expire_old_scanners_after,
-            query_context,
+            remote_scanner_manager,
             mut open_stream,
             mut next_stream,
             mut close_stream,
@@ -118,7 +121,7 @@ impl RemoteQueryScannerServer {
                         Some(scan_req) = open_stream.next() => {
                             next_scanner_id += 1;
                             let scanner_id = ScannerId(my_node_id(), next_scanner_id);
-                            Self::on_open(scanner_id, scan_req, &mut scanners, query_context.clone()).await;
+                            Self::on_open(scanner_id, scan_req, &mut scanners, remote_scanner_manager.clone()).await;
                         },
                         Some(next_req) = next_stream.next() => {
                             let (reciprocal, req) = next_req.split();
@@ -149,10 +152,10 @@ impl RemoteQueryScannerServer {
         scanner_id: ScannerId,
         scan_req: Incoming<RemoteQueryScannerOpen>,
         scanners: &mut HashMap<ScannerId, Scanner>,
-        query_context: QueryContext,
+        remote_scanner_manager: RemoteScannerManager,
     ) {
         let (reciprocal, body) = scan_req.split();
-        let maybe_scanner = Scanner::new(query_context, body);
+        let maybe_scanner = Scanner::new(remote_scanner_manager, body);
         let Ok(scanner) = maybe_scanner else {
             warn!(
                 "Unable to create a scanner {}",
