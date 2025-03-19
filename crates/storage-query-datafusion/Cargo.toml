@@ -34,6 +34,7 @@ datafusion-functions-json = { version = "0.44.2" }
 derive_more = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
+itertools = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }
 schemars = { workspace = true, optional = true }
