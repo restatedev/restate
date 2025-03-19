@@ -269,6 +269,8 @@ pub enum InvalidConfigurationError {
         "force-node-id can not be 0 since it is a reserved value. Please choose a non-zero value or unset this option. Existing clusters will be auto-migrated"
     )]
     ForceNodeIdZero,
+    #[error("could not derive bind address: {0}")]
+    DeriveBindAddress(String),
 }
 
 /// Used to deserialize the [`Configuration`] in backwards compatible way which allows to specify

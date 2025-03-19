@@ -21,8 +21,8 @@ use serde_with::serde_as;
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 
 use super::{
-    AwsOptions, HttpOptions, ObjectStoreOptions, PerfStatsLevel, RocksDbOptions,
-    print_warning_deprecated_config_option,
+    AwsOptions, HttpOptions, InvalidConfigurationError, ObjectStoreOptions, PerfStatsLevel,
+    RocksDbOptions, print_warning_deprecated_config_option,
 };
 use crate::PlainNodeId;
 use crate::locality::NodeLocation;
@@ -387,11 +387,12 @@ impl CommonOptions {
     }
 
     /// set derived values if they are not configured to reduce verbose configurations
-    pub fn set_derived_values(&mut self) {
+    pub fn set_derived_values(&mut self) -> Result<(), InvalidConfigurationError> {
         // Only derive bind_address if it is not explicitly set
         if self.bind_address.is_none() {
-            self.bind_address = Some(self.advertised_address.derive_bind_address());
+            self.bind_address = Some(self.advertised_address.derive_bind_address()?);
         }
+        Ok(())
     }
 }
 

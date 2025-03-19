@@ -66,7 +66,7 @@ impl ConfigLoader {
 
         let mut config: Configuration = figment.extract()?;
 
-        config.common.set_derived_values();
+        config.common.set_derived_values()?;
         config.admin.set_derived_values();
         config.ingress.set_derived_values();
 

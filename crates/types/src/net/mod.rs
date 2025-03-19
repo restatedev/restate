@@ -17,15 +17,15 @@ pub mod partition_processor_manager;
 pub mod remote_query_scanner;
 pub mod replicated_loglet;
 
-use anyhow::{Context, Error};
-
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use anyhow::{Context, Error};
 use http::Uri;
 
 use self::codec::{Targeted, WireEncode};
+use crate::config::InvalidConfigurationError;
 pub use crate::protobuf::common::ProtocolVersion;
 pub use crate::protobuf::common::TargetName;
 
@@ -78,8 +78,32 @@ fn parse_http(s: &str) -> Result<AdvertisedAddress, Error> {
     let mut parts = uri.into_parts();
     // default to http if scheme is missing
     if parts.scheme.is_none() {
+        if let Some(authority) = &parts.authority {
+            if authority.port().is_none() {
+                // can not update just the port in place
+                parts.authority = Some(format!("{}:5122", authority).parse()?);
+            }
+        }
         parts.scheme = Some(http::uri::Scheme::HTTP);
+    } else if parts
+        .authority
+        .as_ref()
+        .is_some_and(|authority| authority.port().is_none())
+    {
+        let scheme = parts.scheme.as_ref().expect("some").as_str();
+        let port = match scheme {
+            "http" => 80,
+            "https" => 443,
+            _ => anyhow::bail!("Unsupported URI scheme '{}'", scheme),
+        };
+        // logging is not yet configured
+        eprintln!(
+            "The advertised address is configured with scheme {scheme}:// and no explicit port, implying port {port}",
+        );
+        parts.authority =
+            Some(format!("{}:{port}", parts.authority.as_ref().expect("some")).parse()?);
     }
+
     if parts.path_and_query.is_none() {
         parts.path_and_query = Some(http::uri::PathAndQuery::from_str("/")?);
     }
@@ -93,23 +117,32 @@ fn parse_http(s: &str) -> Result<AdvertisedAddress, Error> {
 
 impl AdvertisedAddress {
     /// Derives a `BindAddress` based on the advertised address
-    pub fn derive_bind_address(&self) -> BindAddress {
+    pub fn derive_bind_address(&self) -> Result<BindAddress, InvalidConfigurationError> {
         match self {
             AdvertisedAddress::Http(uri) => {
-                let port = uri
-                    .authority()
-                    .and_then(|auth| auth.port_u16())
-                    .unwrap_or(80); // HTTP default port is 80 if unspecified
-
                 let ip = if uri.host().unwrap_or("").contains(':') {
                     IpAddr::V6(Ipv6Addr::UNSPECIFIED)
                 } else {
                     IpAddr::V4(Ipv4Addr::UNSPECIFIED)
                 };
 
-                BindAddress::Socket(SocketAddr::new(ip, port))
+                let default_port = 5122;
+                let port = match (uri.scheme_str(), uri.port_u16()) {
+                    (None, None) => default_port,
+                    (Some("http"), Some(port)) => port,
+                    (Some("https"), _) => {
+                        return Err(InvalidConfigurationError::DeriveBindAddress(
+                            "Restate does not support HTTPS. If you are using a TLS-terminating \
+                            reverse proxy, please set bind-address explicitly."
+                                .to_owned(),
+                        ));
+                    }
+                    (_, _) => unreachable!(), // parse_http rejects other protocols, and sets an explicit port
+                };
+
+                Ok(BindAddress::Socket(SocketAddr::new(ip, port)))
             }
-            AdvertisedAddress::Uds(path) => BindAddress::Uds(path.clone()),
+            AdvertisedAddress::Uds(path) => Ok(BindAddress::Uds(path.clone())),
         }
     }
 }
@@ -334,7 +367,7 @@ mod tests {
         let addr = input
             .parse::<AdvertisedAddress>()
             .expect("Failed to parse HTTP address");
-        let bind_addr = addr.derive_bind_address();
+        let bind_addr = addr.derive_bind_address().unwrap();
 
         match bind_addr {
             BindAddress::Socket(socket_addr) => {
@@ -349,9 +382,8 @@ mod tests {
 
     #[test]
     fn test_derive_bind_address_fallback_port() {
-        // Case with no port specified, should fallback to 80
         let advertised_address = AdvertisedAddress::from_str("http://example.com").unwrap();
-        let bind_address = advertised_address.derive_bind_address();
+        let bind_address = advertised_address.derive_bind_address().unwrap();
 
         match bind_address {
             BindAddress::Socket(socket_addr) => {
@@ -367,12 +399,39 @@ mod tests {
     }
 
     #[test]
+    fn derive_bind_address_host_only_no_protocol_uses_default_port() {
+        let advertised_address = AdvertisedAddress::from_str("example.com").unwrap();
+        let bind_address = advertised_address.derive_bind_address().unwrap();
+
+        match bind_address {
+            BindAddress::Socket(socket_addr) => {
+                assert_eq!(socket_addr.port(), 5122, "Expected port 5122 for fallback");
+                assert_eq!(
+                    socket_addr.ip(),
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    "Expected IPv4 unspecified address"
+                );
+            }
+            _ => panic!("Expected BindAddress::Socket"),
+        }
+    }
+
+    #[test]
+    fn derive_bind_address_https_not_possible() {
+        // we only call this if bind-address is unset; so it's still possible to advertise HTTPS, we
+        // just can't infer the bind address from such a URL
+        let advertised_address = AdvertisedAddress::from_str("https://example.com").unwrap();
+        let bind_address = advertised_address.derive_bind_address();
+        assert!(bind_address.is_err())
+    }
+
+    #[test]
     fn test_derive_bind_address_uds() {
         let input = "unix:/path/to/socket";
         let addr = input
             .parse::<AdvertisedAddress>()
             .expect("Failed to parse UDS address");
-        let bind_addr = addr.derive_bind_address();
+        let bind_addr = addr.derive_bind_address().unwrap();
 
         match bind_addr {
             BindAddress::Uds(path) => assert_eq!(path, PathBuf::from("/path/to/socket")),
@@ -387,7 +446,7 @@ mod tests {
             AdvertisedAddress::from_str(address).expect("Failed to parse IPv6 URI");
 
         // Derive the bind address
-        let bind_address = advertised_address.derive_bind_address();
+        let bind_address = advertised_address.derive_bind_address().unwrap();
 
         // Check that it matches the expected IPv6 bind address
         match bind_address {
