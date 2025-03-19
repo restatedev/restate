@@ -24,7 +24,6 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::{Tense, duration_to_human_rough};
 use restate_core::protobuf::node_ctl_svc::IdentResponse;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
-use restate_types::PlainNodeId;
 use restate_types::health::MetadataServerStatus;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::NodesConfiguration;
@@ -112,7 +111,7 @@ async fn list_nodes_configuration(
 
         if opts.extra {
             node_row.extend(render_optional_columns(
-                nodes_extra_info.get(&node_id),
+                nodes_extra_info.get(&node_config.address),
                 render_ident_extras,
             ));
         }
@@ -212,17 +211,17 @@ fn render_ident_extras(ident_response: &IdentResponse) -> Vec<Cell> {
 
 async fn fetch_extra_info(
     nodes_configuration: &NodesConfiguration,
-) -> anyhow::Result<HashMap<PlainNodeId, IdentResponse>> {
-    let mut get_ident_tasks = JoinSet::<anyhow::Result<IdentResponse>>::new();
+) -> anyhow::Result<HashMap<AdvertisedAddress, IdentResponse>> {
+    let mut get_ident_tasks = JoinSet::<anyhow::Result<(AdvertisedAddress, IdentResponse)>>::new();
 
     for (node_id, node_config) in nodes_configuration.iter() {
         let address = node_config.address.clone();
         let get_ident = async move {
-            let channel = grpc_channel(address);
+            let channel = grpc_channel(address.clone());
             let mut node_ctl_svc_client =
                 NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-            Ok(node_ctl_svc_client
+            let ident_response = node_ctl_svc_client
                 .get_ident(())
                 .await
                 .map_err(|e| {
@@ -230,8 +229,10 @@ async fn fetch_extra_info(
                     c_println!("failed to call GetIdent for node {}: {:?}", node_id, e);
                     anyhow::anyhow!(e)
                 })?
-                .into_inner())
+                .into_inner();
+            Ok((address, ident_response))
         };
+
         get_ident_tasks.spawn(async move {
             match tokio::time::timeout(GET_IDENT_TIMEOUT_1S, get_ident).await {
                 Ok(res) => res,
@@ -244,11 +245,8 @@ async fn fetch_extra_info(
     }
 
     let mut ident_responses = HashMap::new();
-    while let Some(Ok(Ok(ident_response))) = get_ident_tasks.join_next().await {
-        ident_responses.insert(
-            PlainNodeId::from(ident_response.node_id.expect("has node_id").id),
-            ident_response,
-        );
+    while let Some(Ok(Ok((address, ident_response)))) = get_ident_tasks.join_next().await {
+        ident_responses.insert(address, ident_response);
     }
 
     Ok(ident_responses)

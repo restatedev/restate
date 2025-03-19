@@ -55,7 +55,8 @@ message ProvisionClusterResponse {
 
 message IdentResponse {
   restate.common.NodeStatus status = 1;
-  restate.common.NodeId node_id = 2;
+  // node id may be unset if the node hasn't yet joined a cluster
+  optional restate.common.NodeId node_id = 2;
   string cluster_name = 3;
   // indicates which roles are enabled on this node
   repeated string roles = 4;
