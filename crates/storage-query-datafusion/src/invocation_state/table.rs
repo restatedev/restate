@@ -27,6 +27,7 @@ use crate::context::{QueryContext, SelectPartitions};
 use crate::invocation_state::row::append_invocation_state_row;
 use crate::invocation_state::schema::SysInvocationStateBuilder;
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::table_util::Builder;
 
@@ -37,6 +38,7 @@ pub(crate) fn register_self(
     partition_selector: impl SelectPartitions,
     status: Option<impl StatusHandle + Send + Sync + Debug + Clone + 'static>,
     local_partition_store_manager: Option<PartitionStoreManager>,
+    remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
     let local_partition_scanner = match (status, local_partition_store_manager) {
         (Some(status_handle), Some(partition_store_manager)) => {
@@ -58,7 +60,7 @@ pub(crate) fn register_self(
         partition_selector,
         SysInvocationStateBuilder::schema(),
         vec![],
-        ctx.create_distributed_scanner(NAME, local_partition_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME, local_partition_scanner),
         FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
     );
     ctx.register_partitioned_table(NAME, Arc::new(status_table))

@@ -154,6 +154,7 @@ fn render_table_docs(mut write: impl Write) -> io::Result<()> {
 
 fn render_table_doc(table_doc: &impl table_docs::TableDocs, w: &mut impl Write) -> io::Result<()> {
     writeln!(w, "## Table: `{}`\n", table_doc.name())?;
+    writeln!(w, "{}\n", table_doc.description())?;
     writeln!(w, "| Column name | Type | Description |")?;
     writeln!(w, "|-------------|------|-------------|")?;
     for column in table_doc.columns() {

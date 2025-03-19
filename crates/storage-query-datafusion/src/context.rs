@@ -36,7 +36,6 @@ use restate_types::schema::service::ServiceMetadataResolver;
 use tracing::warn;
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
-use crate::table_providers::ScanPartition;
 use crate::{analyzer, physical_optimizer};
 
 const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
@@ -99,16 +98,132 @@ pub trait SelectPartitions: Send + Sync + Debug + 'static {
     async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError>;
 }
 
+/// Allows grouping and registration of set of tables and views
+/// on the QueryContext.
+pub trait RegisterTable: Send + Sync + 'static {
+    fn register(&self, ctx: &QueryContext) -> impl Future<Output = Result<(), BuildError>>;
+}
+
+/// A query context registerer for user tables
+pub struct UserTables<P, S, D> {
+    partition_selector: P,
+    local_partition_store_manager: Option<PartitionStoreManager>,
+    status: Option<S>,
+    schemas: Live<D>,
+    remote_scanner_manager: RemoteScannerManager,
+}
+
+impl<P, S, D> UserTables<P, S, D> {
+    pub fn new(
+        partition_selector: P,
+        local_partition_store_manager: Option<PartitionStoreManager>,
+        status: Option<S>,
+        schemas: Live<D>,
+        remote_scanner_manager: RemoteScannerManager,
+    ) -> Self {
+        Self {
+            partition_selector,
+            local_partition_store_manager,
+            status,
+            schemas,
+            remote_scanner_manager,
+        }
+    }
+}
+
+impl<P, S, D> RegisterTable for UserTables<P, S, D>
+where
+    P: SelectPartitions + Clone,
+    S: StatusHandle + Send + Sync + Debug + Clone + 'static,
+    D: DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
+{
+    async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
+        // ----- non partitioned tables -----
+        crate::deployment::register_self(ctx, self.schemas.clone())?;
+        crate::service::register_self(ctx, self.schemas.clone())?;
+        // ----- partition-key-based -----
+        crate::invocation_state::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.status.clone(),
+            self.local_partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::invocation_status::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.local_partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::keyed_service_status::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.local_partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::state::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.local_partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::journal::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.local_partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::inbox::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.local_partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::idempotency::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.local_partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::promise::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.local_partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+
+        ctx.datafusion_context.sql(SYS_INVOCATION_VIEW).await?;
+
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct QueryContext {
     sql_options: SQLOptions,
     datafusion_context: SessionContext,
-    remote_scanner_manager: RemoteScannerManager,
 }
 
 impl QueryContext {
+    pub async fn create<T: RegisterTable>(
+        options: &QueryEngineOptions,
+        registerer: T,
+    ) -> Result<Self, BuildError> {
+        let ctx = QueryContext::new(
+            options.memory_size.get(),
+            options.tmp_dir.clone(),
+            options.query_parallelism(),
+        );
+
+        registerer.register(&ctx).await?;
+
+        Ok(ctx)
+    }
+
+    /// A shortcut to create a query context with built in
+    /// UserTables
     #[allow(clippy::too_many_arguments)]
-    pub async fn create(
+    pub async fn with_user_tables(
         options: &QueryEngineOptions,
         partition_selector: impl SelectPartitions + Clone,
         local_partition_store_manager: Option<PartitionStoreManager>,
@@ -118,65 +233,15 @@ impl QueryContext {
         >,
         remote_scanner_manager: RemoteScannerManager,
     ) -> Result<QueryContext, BuildError> {
-        let ctx = QueryContext::new(
-            options.memory_size.get(),
-            options.tmp_dir.clone(),
-            options.query_parallelism(),
+        let tables = UserTables::new(
+            partition_selector,
+            local_partition_store_manager,
+            status,
+            schemas,
             remote_scanner_manager,
         );
-        // ----- non partitioned tables -----
-        crate::deployment::register_self(&ctx, schemas.clone())?;
-        crate::service::register_self(&ctx, schemas)?;
-        // ----- partition-key-based -----
-        crate::invocation_state::register_self(
-            &ctx,
-            partition_selector.clone(),
-            status,
-            local_partition_store_manager.clone(),
-        )?;
-        crate::invocation_status::register_self(
-            &ctx,
-            partition_selector.clone(),
-            local_partition_store_manager.clone(),
-        )?;
-        crate::keyed_service_status::register_self(
-            &ctx,
-            partition_selector.clone(),
-            local_partition_store_manager.clone(),
-        )?;
-        crate::state::register_self(
-            &ctx,
-            partition_selector.clone(),
-            local_partition_store_manager.clone(),
-        )?;
-        crate::journal::register_self(
-            &ctx,
-            partition_selector.clone(),
-            local_partition_store_manager.clone(),
-        )?;
-        crate::inbox::register_self(
-            &ctx,
-            partition_selector.clone(),
-            local_partition_store_manager.clone(),
-        )?;
-        crate::idempotency::register_self(
-            &ctx,
-            partition_selector.clone(),
-            local_partition_store_manager.clone(),
-        )?;
-        crate::promise::register_self(
-            &ctx,
-            partition_selector.clone(),
-            local_partition_store_manager,
-        )?;
 
-        let ctx = ctx
-            .datafusion_context
-            .sql(SYS_INVOCATION_VIEW)
-            .await
-            .map(|_| ctx)?;
-
-        Ok(ctx)
+        Self::create(options, tables).await
     }
 
     pub(crate) fn register_partitioned_table(
@@ -198,28 +263,10 @@ impl QueryContext {
             .map(|_| ())
     }
 
-    pub(crate) fn create_distributed_scanner(
-        &self,
-        table_name: impl Into<String>,
-        local_partition_scanner: Option<Arc<dyn ScanPartition>>,
-    ) -> impl ScanPartition + Clone {
-        self.remote_scanner_manager
-            .create_distributed_scanner(table_name, local_partition_scanner)
-    }
-
-    pub(crate) fn local_partition_scanner(
-        &self,
-        table_name: &str,
-    ) -> Option<Arc<dyn ScanPartition>> {
-        self.remote_scanner_manager
-            .local_partition_scanner(table_name)
-    }
-
     fn new(
         memory_limit: usize,
         temp_folder: Option<String>,
         default_parallelism: Option<usize>,
-        remote_scanner_manager: RemoteScannerManager,
     ) -> Self {
         //
         // build the runtime
@@ -309,7 +356,6 @@ impl QueryContext {
         Self {
             sql_options,
             datafusion_context: ctx,
-            remote_scanner_manager,
         }
     }
 

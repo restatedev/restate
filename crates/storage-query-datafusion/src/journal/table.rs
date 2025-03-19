@@ -20,6 +20,7 @@ use crate::journal::row::{append_journal_row, append_journal_row_v2};
 use crate::journal::schema::{SysJournalBuilder, sys_journal_sort_order};
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
@@ -33,6 +34,7 @@ pub(crate) fn register_self(
     ctx: &QueryContext,
     partition_selector: impl SelectPartitions,
     local_partition_store_manager: Option<PartitionStoreManager>,
+    remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
     let local_scanner = local_partition_store_manager.map(|partition_store_manager| {
         Arc::new(LocalPartitionsScanner::new(
@@ -44,7 +46,7 @@ pub(crate) fn register_self(
         partition_selector,
         SysJournalBuilder::schema(),
         sys_journal_sort_order(),
-        ctx.create_distributed_scanner(NAME, local_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
     );
     ctx.register_partitioned_table(NAME, Arc::new(journal_table))

@@ -24,6 +24,7 @@ use crate::inbox::row::append_inbox_row;
 use crate::inbox::schema::{SysInboxBuilder, sys_inbox_sort_order};
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
 const NAME: &str = "sys_inbox";
@@ -32,6 +33,7 @@ pub(crate) fn register_self(
     ctx: &QueryContext,
     partition_selector: impl SelectPartitions,
     local_partition_store_manager: Option<PartitionStoreManager>,
+    remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
     let local_partition_scanner = local_partition_store_manager.map(|partition_store_manager| {
         Arc::new(LocalPartitionsScanner::new(
@@ -44,7 +46,7 @@ pub(crate) fn register_self(
         partition_selector,
         SysInboxBuilder::schema(),
         sys_inbox_sort_order(),
-        ctx.create_distributed_scanner(NAME, local_partition_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME, local_partition_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_service_key("service_key")
             .with_invocation_id("id"),

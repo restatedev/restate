@@ -173,13 +173,13 @@ impl Worker {
             create_partition_locator(partition_routing, metadata.clone()),
         );
         let schema = metadata.updateable_schema();
-        let storage_query_context = QueryContext::create(
+        let storage_query_context = QueryContext::with_user_tables(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata,
             Some(partition_store_manager.clone()),
             Some(partition_processor_manager.invokers_status_reader()),
             schema,
-            remote_scanner_manager,
+            remote_scanner_manager.clone(),
         )
         .await?;
 
@@ -190,7 +190,7 @@ impl Worker {
 
         let datafusion_remote_scanner = RemoteQueryScannerServer::new(
             Duration::from_secs(60),
-            storage_query_context.clone(),
+            remote_scanner_manager,
             router_builder,
         );
 
