@@ -14,3 +14,9 @@ You can find example values for a 3-node replicated cluster in [replicated-value
 ```bash
 helm install restate oci://ghcr.io/restatedev/restate-helm --namespace restate --create-namespace -f replicated-values.yaml
 ```
+
+Note that you need to explicitly provision the Restate cluster via
+
+```bash
+kubectl exec -it restate-0 -- restatectl provision --log-provider replicated --log-replication 2 --yes
+```

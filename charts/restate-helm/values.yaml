@@ -26,13 +26,14 @@ securityContext:
   runAsUser: 1000
   runAsGroup: 3000
 
-
 logging:
   env_filter: info
 
 env:
   - name: RESTATE_LOG_FORMAT
     value: json
+  - name: RESTATE_CLUSTER_NAME
+    value: helm-single-node
 
 service:
   type: ClusterIP
