@@ -7330,6 +7330,7 @@ dependencies = [
  "enumset",
  "futures",
  "googletest",
+ "itertools 0.14.0",
  "paste",
  "prost",
  "restate-core",
