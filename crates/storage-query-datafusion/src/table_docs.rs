@@ -31,6 +31,8 @@ pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
 pub trait TableDocs {
     fn name(&self) -> &str;
 
+    fn description(&self) -> &str;
+
     fn columns(&self) -> &[TableColumn];
 }
 
@@ -44,12 +46,17 @@ pub struct TableColumn {
 #[derive(Debug, Copy, Clone)]
 pub struct StaticTableDocs {
     pub name: &'static str,
+    pub description: &'static str,
     pub columns: &'static [TableColumn],
 }
 
 impl TableDocs for StaticTableDocs {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn description(&self) -> &str {
+        self.description
     }
 
     fn columns(&self) -> &[TableColumn] {
@@ -60,12 +67,17 @@ impl TableDocs for StaticTableDocs {
 #[derive(Debug)]
 pub struct OwnedTableDocs {
     pub name: Cow<'static, str>,
+    pub description: Cow<'static, str>,
     pub columns: Vec<TableColumn>,
 }
 
 impl TableDocs for OwnedTableDocs {
     fn name(&self) -> &str {
         self.name.as_ref()
+    }
+
+    fn description(&self) -> &str {
+        &self.description
     }
 
     fn columns(&self) -> &[TableColumn] {
@@ -199,6 +211,7 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
 
     OwnedTableDocs {
         name: Cow::Borrowed("sys_invocation"),
+        description: Cow::Borrowed(""),
         columns,
     }
 }
