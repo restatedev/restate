@@ -33,8 +33,8 @@ use crate::TaskCenter;
 use crate::metadata_store::MetadataStoreClient;
 use crate::network::protobuf::network::Message;
 use crate::network::{
-    FailingConnector, Incoming, MessageHandler, MessageRouterBuilder, NetworkError, Networking,
-    ProtocolError, TransportConnect,
+    AcceptError, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder, Networking,
+    TransportConnect,
 };
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{MetadataBuilder, TaskId, spawn_metadata_manager};
@@ -217,9 +217,9 @@ impl<T: TransportConnect> TestCoreEnv<T> {
     pub async fn accept_incoming_connection<S>(
         &self,
         incoming: S,
-    ) -> Result<impl Stream<Item = Message> + Unpin + Send + 'static, NetworkError>
+    ) -> Result<impl Stream<Item = Message> + Unpin + Send + 'static, AcceptError>
     where
-        S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
+        S: Stream<Item = Message> + Unpin + Send + 'static,
     {
         self.networking
             .connection_manager()

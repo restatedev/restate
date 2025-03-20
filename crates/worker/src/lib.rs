@@ -241,7 +241,7 @@ impl Worker {
         )?;
 
         TaskCenter::spawn_child(
-            TaskKind::SystemService,
+            TaskKind::PartitionProcessorManager,
             "partition-processor-manager",
             self.partition_processor_manager.run(),
         )?;

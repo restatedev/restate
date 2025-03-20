@@ -311,10 +311,9 @@ where
     ) -> Result<Incoming<T::ResponseMessage>, ConnectionAwareRpcError<Outgoing<T, HasConnection>>>
     {
         let peer = peer.into();
-        let connection = networking
-            .node_connection(peer)
-            .await
-            .map_err(|e| ConnectionAwareRpcError::CannotEstablishConnectionToPeer(peer, e))?;
+        let connection = networking.node_connection(peer).await.map_err(|e| {
+            ConnectionAwareRpcError::CannotEstablishConnectionToPeer(peer, e.into())
+        })?;
         let connection_closed = connection.closed();
         let outgoing = Outgoing::new(peer, msg).assign_connection(connection);
 

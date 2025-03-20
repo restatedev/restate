@@ -47,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "#[derive(::derive_more::IsVariant, ::derive_more::From)]",
         )
         .enum_attribute("Body", "#[derive(::derive_more::From)]")
+        .enum_attribute("ConnectionDirection", "#[derive(::derive_more::Display)]")
         .file_descriptor_set_path(out_dir.join("core_node_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")

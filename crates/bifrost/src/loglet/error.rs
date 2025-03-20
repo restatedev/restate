@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use restate_core::{ShutdownError, network::NetworkError};
+use restate_core::ShutdownError;
 use restate_types::errors::{IntoMaybeRetryable, MaybeRetryableError};
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -68,16 +68,6 @@ impl From<OperationError> for AppendError {
         match value {
             OperationError::Shutdown(s) => AppendError::Shutdown(s),
             OperationError::Other(o) => AppendError::Other(o),
-        }
-    }
-}
-
-impl From<NetworkError> for OperationError {
-    fn from(value: NetworkError) -> Self {
-        match value {
-            NetworkError::Shutdown(err) => OperationError::Shutdown(err),
-            // todo(azmy): are all network errors retryable?
-            _ => OperationError::retryable(value),
         }
     }
 }
