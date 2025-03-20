@@ -253,4 +253,8 @@ impl ClusterStateWatcher {
     pub fn current(&self) -> Arc<ClusterState> {
         Arc::clone(&self.cluster_state_watcher.borrow())
     }
+
+    pub fn watch(&self) -> watch::Receiver<Arc<ClusterState>> {
+        self.cluster_state_watcher.clone()
+    }
 }

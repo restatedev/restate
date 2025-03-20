@@ -26,6 +26,7 @@ use datafusion::sql::TableReference;
 use restate_core::Metadata;
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
+use restate_types::cluster::cluster_state::ClusterState;
 use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -33,6 +34,7 @@ use restate_types::live::Live;
 use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
+use tokio::sync::watch;
 use tracing::warn;
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -204,7 +206,17 @@ where
     }
 }
 
-pub struct ClusterTables;
+pub struct ClusterTables {
+    cluster_state_watch: watch::Receiver<Arc<ClusterState>>,
+}
+
+impl ClusterTables {
+    pub fn new(cluster_state_watch: watch::Receiver<Arc<ClusterState>>) -> Self {
+        Self {
+            cluster_state_watch,
+        }
+    }
+}
 
 impl RegisterTable for ClusterTables {
     async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
@@ -212,6 +224,7 @@ impl RegisterTable for ClusterTables {
         crate::node::register_self(ctx, metadata.clone())?;
         crate::partition::register_self(ctx, metadata.clone())?;
         crate::log::register_self(ctx, metadata)?;
+        crate::node_state::register_self(ctx, self.cluster_state_watch.clone())?;
 
         ctx.datafusion_context
             .sql(CLUSTER_LOGS_TAIL_SEGMENTS_VIEW)

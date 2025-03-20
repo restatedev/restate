@@ -22,6 +22,7 @@ mod journal;
 mod keyed_service_status;
 mod log;
 mod node;
+mod node_state;
 mod partition;
 mod partition_store_scanner;
 mod physical_optimizer;
