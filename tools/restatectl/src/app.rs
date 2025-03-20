@@ -21,6 +21,7 @@ use crate::commands::partition::Partitions;
 use crate::commands::provision::ProvisionOpts;
 use crate::commands::replicated_loglet::ReplicatedLoglet;
 use crate::commands::snapshot::Snapshot;
+use crate::commands::sql::SqlOpts;
 use crate::commands::status::ClusterStatusOpts;
 use crate::connection::ConnectionInfo;
 
@@ -71,6 +72,8 @@ pub enum Command {
     /// [low-level] Commands that operate on replicated loglets
     #[clap(subcommand)]
     ReplicatedLoglet(ReplicatedLoglet),
+    /// Query cluster status
+    Sql(SqlOpts),
 }
 
 fn init(common_opts: &CommonOpts) {
