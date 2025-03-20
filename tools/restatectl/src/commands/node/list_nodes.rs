@@ -11,12 +11,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
+use anyhow::Context;
 use chrono::TimeDelta;
 use cling::prelude::*;
 use itertools::Itertools;
 use tokio::task::JoinSet;
 use tonic::codec::CompressionEncoding;
-use tracing::warn;
+use tracing::{info, warn};
 
 use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::c_println;
@@ -221,32 +222,30 @@ async fn fetch_extra_info(
             let mut node_ctl_svc_client =
                 NodeCtlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-            let ident_response = node_ctl_svc_client
-                .get_ident(())
-                .await
-                .map_err(|e| {
-                    // we ignore individual errors in table rendering so this is the only place to log them
-                    c_println!("failed to call GetIdent for node {}: {:?}", node_id, e);
-                    anyhow::anyhow!(e)
-                })?
-                .into_inner();
+            let ident_response = node_ctl_svc_client.get_ident(()).await?.into_inner();
             Ok((address, ident_response))
         };
 
         get_ident_tasks.spawn(async move {
-            match tokio::time::timeout(GET_IDENT_TIMEOUT_1S, get_ident).await {
-                Ok(res) => res,
-                Err(e) => {
-                    c_println!("timeout calling GetIdent for node {}", node_id);
-                    Err(e.into())
-                }
-            }
+            tokio::time::timeout(GET_IDENT_TIMEOUT_1S, get_ident)
+                .await
+                .context(format!("timeout calling {node_id}"))?
         });
     }
 
     let mut ident_responses = HashMap::new();
-    while let Some(Ok(Ok((address, ident_response)))) = get_ident_tasks.join_next().await {
-        ident_responses.insert(address, ident_response);
+    while let Some(result) = get_ident_tasks.join_next().await {
+        match result {
+            Ok(Ok((address, ident_response))) => {
+                ident_responses.insert(address, ident_response);
+            }
+            Ok(Err(err)) => {
+                info!("get_ident error: {}", err)
+            }
+            Err(err) => {
+                info!("get_ident failed: {}", err)
+            }
+        }
     }
 
     Ok(ident_responses)
