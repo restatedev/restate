@@ -15,6 +15,7 @@ mod query;
 use axum::{Router, routing::post};
 use std::sync::Arc;
 
+pub use query::{RecordBatchWriter, WriteRecordBatchStream};
 use restate_storage_query_datafusion::context::QueryContext;
 
 #[derive(Clone)]

@@ -86,6 +86,12 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
         FROM sys_invocation_status ss
         LEFT JOIN sys_invocation_state sis ON ss.id = sis.id";
 
+const CLUSTER_LOGS_TAIL_SEGMENTS_VIEW: &str = "CREATE VIEW logs_tail_segments as SELECT
+        l.* FROM logs AS l JOIN (
+            SELECT log_id, max(segment_index) AS segment_index FROM logs GROUP BY log_id
+        ) m
+        ON m.log_id=l.log_id AND l.segment_index=m.segment_index";
+
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum BuildError {
     #[error(transparent)]
@@ -204,7 +210,12 @@ impl RegisterTable for ClusterTables {
     async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
         let metadata = Metadata::current();
         crate::node::register_self(ctx, metadata.clone())?;
-        crate::partition::register_self(ctx, metadata)?;
+        crate::partition::register_self(ctx, metadata.clone())?;
+        crate::log::register_self(ctx, metadata)?;
+
+        ctx.datafusion_context
+            .sql(CLUSTER_LOGS_TAIL_SEGMENTS_VIEW)
+            .await?;
 
         Ok(())
     }

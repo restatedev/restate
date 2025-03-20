@@ -9,12 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Bytes, BytesMut};
+use datafusion::arrow::ipc::writer::StreamWriter;
+use datafusion::error::DataFusionError;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use tonic::{Request, Response, Status, async_trait};
 use tracing::info;
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BiforstError};
 use restate_core::{Metadata, MetadataWriter};
+use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -32,10 +37,11 @@ use crate::cluster_controller::protobuf::{
     FindTailResponse, ListLogsRequest, ListLogsResponse, SealAndExtendChainRequest,
     SealAndExtendChainResponse, SealedSegment, TailState, TrimLogRequest,
 };
+use crate::storage_query::WriteRecordBatchStream;
 
 use super::ClusterControllerHandle;
 use super::protobuf::{
-    GetClusterConfigurationRequest, GetClusterConfigurationResponse,
+    GetClusterConfigurationRequest, GetClusterConfigurationResponse, QueryRequest, QueryResponse,
     SetClusterConfigurationRequest, SetClusterConfigurationResponse,
 };
 use super::service::ChainExtension;
@@ -44,6 +50,7 @@ pub(crate) struct ClusterCtrlSvcHandler {
     controller_handle: ClusterControllerHandle,
     bifrost: Bifrost,
     metadata_writer: MetadataWriter,
+    query_context: QueryContext,
 }
 
 impl ClusterCtrlSvcHandler {
@@ -51,11 +58,13 @@ impl ClusterCtrlSvcHandler {
         controller_handle: ClusterControllerHandle,
         bifrost: Bifrost,
         metadata_writer: MetadataWriter,
+        query_context: QueryContext,
     ) -> Self {
         Self {
             controller_handle,
             bifrost,
             metadata_writer,
+            query_context,
         }
     }
 
@@ -351,10 +360,44 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
         Ok(Response::new(SetClusterConfigurationResponse {}))
     }
+
+    /// Server streaming response type for the Query method.
+    type QueryStream = BoxStream<'static, Result<QueryResponse, Status>>;
+
+    async fn query(
+        &self,
+        request: Request<QueryRequest>,
+    ) -> std::result::Result<Response<Self::QueryStream>, tonic::Status> {
+        let request = request.into_inner();
+        let stream = self
+            .query_context
+            .execute(&request.query)
+            .await
+            .map_err(datafusion_error_to_status)?;
+
+        Ok(Response::new(
+            WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(stream, request.query)
+                .map_err(datafusion_error_to_status)?
+                .map(|item| {
+                    item.map(|encoded| QueryResponse { encoded })
+                        .map_err(datafusion_error_to_status)
+                })
+                .boxed(),
+        ))
+    }
 }
 
 fn serialize_value<T: StorageEncode>(value: T) -> Bytes {
     let mut buf = BytesMut::new();
     StorageCodec::encode(&value, &mut buf).expect("We can always serialize");
     buf.freeze()
+}
+
+fn datafusion_error_to_status(err: DataFusionError) -> Status {
+    match err {
+        DataFusionError::SQL(..)
+        | DataFusionError::Execution(..)
+        | DataFusionError::SchemaError(..) => Status::invalid_argument(err.to_string()),
+        _ => Status::internal(err.to_string()),
+    }
 }

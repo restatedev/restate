@@ -98,6 +98,7 @@ impl KvMemoryStorage {
     }
 
     pub fn handle_read_only_request(&mut self, request_id: Ulid) {
+        trace!("Handle read-only request: {request_id:?}");
         if let Some(read_only_request) = self.read_only_requests.remove(&request_id) {
             match read_only_request.kind {
                 ReadOnlyRequestKind::Get { key, result_tx } => {

@@ -8,16 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod config;
-mod display_util;
-pub mod dump;
-pub mod log;
-pub mod metadata;
-pub mod metadata_server;
-pub mod node;
-pub mod partition;
-pub mod provision;
-pub mod replicated_loglet;
-pub mod snapshot;
-pub mod sql;
-pub mod status;
+mod row;
+pub(crate) mod schema;
+mod table;
+
+pub use table::register_self;

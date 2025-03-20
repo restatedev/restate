@@ -109,15 +109,18 @@ impl<T: TransportConnect> AdminRole<T> {
         .with_query_context(query_context);
 
         let controller = if config.admin.is_cluster_controller_enabled() {
-            Some(cluster_controller::Service::new(
-                updateable_config.clone(),
-                health_status,
-                bifrost,
-                networking,
-                router_builder,
-                server_builder,
-                metadata_writer,
-            ))
+            Some(
+                cluster_controller::Service::create(
+                    updateable_config.clone(),
+                    health_status,
+                    bifrost,
+                    networking,
+                    router_builder,
+                    server_builder,
+                    metadata_writer,
+                )
+                .await?,
+            )
         } else {
             None
         };
