@@ -98,7 +98,7 @@ pub async fn query(
         .expect("content-type header is correct"))
 }
 
-trait RecordBatchWriter
+pub trait RecordBatchWriter
 where
     Self: Sized,
 {
@@ -193,7 +193,7 @@ impl RecordBatchWriter for JsonWriter {
     }
 }
 
-struct WriteRecordBatchStream<W> {
+pub struct WriteRecordBatchStream<W> {
     done: bool,
     record_batch_stream: SendableRecordBatchStream,
     stream_writer: W,
@@ -201,7 +201,7 @@ struct WriteRecordBatchStream<W> {
 }
 
 impl<W: RecordBatchWriter> WriteRecordBatchStream<W> {
-    fn new(
+    pub fn new(
         record_batch_stream: SendableRecordBatchStream,
         query: String,
     ) -> Result<Self, DataFusionError> {

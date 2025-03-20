@@ -19,4 +19,5 @@ pub mod partition;
 pub mod provision;
 pub mod replicated_loglet;
 pub mod snapshot;
+pub mod sql;
 pub mod status;

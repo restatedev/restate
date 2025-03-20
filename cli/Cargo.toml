@@ -62,7 +62,6 @@ itertools = { workspace = true }
 jsonwebtoken = { version = "9.1.0" }
 octocrab = { version = "0.32.0", features = ["stream"] }
 open = "5.1.2"
-pin-project = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls", "stream", "http2"] }
 ring = { version = "0.17.8" }
 serde = { workspace = true }

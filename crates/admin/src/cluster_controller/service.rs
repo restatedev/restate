@@ -16,6 +16,8 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use codederror::CodedError;
 use futures::never::Never;
+use restate_storage_query_datafusion::BuildError;
+use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
@@ -90,7 +92,7 @@ where
     T: TransportConnect,
 {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub async fn create(
         mut configuration: Live<Configuration>,
         health_status: HealthStatus<AdminStatus>,
         bifrost: Bifrost,
@@ -98,7 +100,7 @@ where
         router_builder: &mut MessageRouterBuilder,
         server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
-    ) -> Self {
+    ) -> Result<Self, BuildError> {
         let (command_tx, command_rx) = mpsc::channel(2);
 
         let cluster_state_refresher =
@@ -110,6 +112,9 @@ where
         let options = configuration.live_load();
         let heartbeat_interval = Self::create_heartbeat_interval(&options.admin);
 
+        let cluster_query_context =
+            QueryContext::create(&options.admin.query_engine, ClusterTables).await?;
+
         // Registering ClusterCtrlSvc grpc service to network server
         server_builder.register_grpc_service(
             TonicServiceFilter::new(
@@ -119,6 +124,7 @@ where
                     },
                     bifrost.clone(),
                     metadata_writer.clone(),
+                    cluster_query_context,
                 ))
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip),
@@ -127,7 +133,7 @@ where
             crate::cluster_controller::protobuf::FILE_DESCRIPTOR_SET,
         );
 
-        Service {
+        Ok(Service {
             configuration,
             health_status,
             networking,
@@ -139,7 +145,7 @@ where
             command_rx,
             heartbeat_interval,
             observed_cluster_state: ObservedClusterState::default(),
-        }
+        })
     }
 
     fn create_heartbeat_interval(options: &AdminOptions) -> Interval {
@@ -869,7 +875,7 @@ mod tests {
             .with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
 
-        let svc = Service::new(
+        let svc = Service::create(
             Live::from_value(Configuration::default()),
             HealthStatus::default(),
             bifrost.clone(),
@@ -877,7 +883,9 @@ mod tests {
             &mut builder.router_builder,
             &mut NetworkServerBuilder::default(),
             builder.metadata_writer.clone(),
-        );
+        )
+        .await?;
+
         let svc_handle = svc.handle();
 
         let _ = builder.build().await;
@@ -1472,7 +1480,7 @@ mod tests {
 
         let mut server_builder = NetworkServerBuilder::default();
 
-        let svc = Service::new(
+        let svc = Service::create(
             Configuration::updateable(),
             HealthStatus::default(),
             bifrost.clone(),
@@ -1480,7 +1488,9 @@ mod tests {
             &mut builder.router_builder,
             &mut server_builder,
             builder.metadata_writer.clone(),
-        );
+        )
+        .await?;
+
         let cluster_state_watcher = svc.cluster_state_refresher.cluster_state_watcher();
 
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
