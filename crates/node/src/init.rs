@@ -247,9 +247,8 @@ impl<'a> NodeInit<'a> {
                         });
                     }
 
-                    // it is only safe to write this if all current and future cluster nodes
-                    // run a version that is cluster id aware; older versions may clobber the id
-                    // on joining, creating a huge mess!
+                    // it is only safe to write this if all current and future cluster nodes are
+                    // cluster-id aware, as older versions will clobber the existing id on joining!
                     match nodes_config.cluster_id() {
                         Some(cluster_id) => {
                             debug!(cluster_id = ?cluster_id, "Joining cluster");

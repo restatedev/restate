@@ -156,8 +156,8 @@ impl NodesConfiguration {
     pub fn set_cluster_id(&mut self, cluster_id: ClusterId) {
         assert!(
             self.cluster_id.is_none(),
-            "Attempt to re-initialize cluster id from {} to {}!",
-            self.cluster_id.unwrap_or(ClusterId::UNINITIALIZED),
+            "attempt to set cluster-id on already-initialized configuration with id {:?} to new id: {}",
+            self.cluster_id,
             cluster_id,
         );
         self.cluster_id = Some(cluster_id);

@@ -150,7 +150,6 @@ impl Worker {
         }
 
         let partition_processor_manager = PartitionProcessorManager::new(
-            metadata.nodes_config_ref().cluster_id(),
             health_status,
             updateable_config.clone(),
             metadata_store_client,
