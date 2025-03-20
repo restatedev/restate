@@ -369,7 +369,7 @@ impl Default for StorageOptions {
 pub struct SnapshotsOptions {
     /// # Snapshot destination URL
     ///
-    /// Base URL for cluster snapshots. Supports `s3://` and `file://` protocol scheme.
+    /// Base URL for cluster snapshots. Supports `s3://` and `file:/` protocol scheme.
     /// S3-compatible object stores must support ETag-based conditional writes.
     ///
     /// Default: `None`
