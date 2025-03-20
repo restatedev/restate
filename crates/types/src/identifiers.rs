@@ -864,6 +864,10 @@ macro_rules! ulid_backed_id {
 
                     // ulid (u128)
                     let raw_ulid: u128 = decoder.cursor.decode_next()?;
+                    if decoder.cursor.remaining() > 0 {
+                        return Err(IdDecodeError::Length);
+                    }
+
                     Ok(Self::from(raw_ulid))
                 }
             }
