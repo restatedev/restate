@@ -13,11 +13,11 @@ use tokio_stream::StreamExt;
 use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::network::ConnectionManager;
 use crate::network::protobuf::core_node_svc::core_node_svc_server::{
     CoreNodeSvc, CoreNodeSvcServer,
 };
 use crate::network::protobuf::network::Message;
-use crate::network::{ConnectionManager, ProtocolError};
 
 use super::MAX_MESSAGE_SIZE;
 
@@ -56,15 +56,14 @@ impl CoreNodeSvc for CoreNodeSvcHandler {
         request: Request<Streaming<Message>>,
     ) -> Result<Response<Self::CreateConnectionStream>, Status> {
         let incoming = request.into_inner();
-        let transformed = incoming.map(|x| x.map_err(ProtocolError::from));
+        let transformed = incoming.map_while(|x| x.ok());
         let output_stream = self
             .connections
             .accept_incoming_connection(transformed)
             .await?;
 
-        // For uniformity with outbound connections, we map all responses to Ok, we never rely on
-        // sending tonic::Status errors explicitly. We use ConnectionControl frames to communicate
-        // errors and/or drop the stream when necessary.
+        // We map all responses to Ok, we never rely on sending tonic::Status errors explicitly.
+        // We use ConnectionControl frames to communicate errors and/or drop the stream when necessary.
         Ok(Response::new(Box::pin(output_stream.map(Ok))))
     }
 }

@@ -102,11 +102,16 @@ pub enum TaskKind {
     /// Kafka ingestion related task
     Kafka,
     PartitionProcessor,
+    #[strum(props(runtime = "default"))]
+    PartitionProcessorManager,
     /// Low-priority tasks responsible for partition snapshot-related I/O.
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     PartitionSnapshotProducer,
     #[strum(props(OnError = "log", runtime = "default"))]
     ConnectionReactor,
+    /// connection reactor for loopback connections
+    #[strum(props(OnError = "log", runtime = "default"))]
+    LocalReactor,
     Shuffle,
     Cleaner,
     MetadataServer,
