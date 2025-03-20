@@ -53,7 +53,7 @@ enum UpdateError {
     Network(#[from] NetworkError),
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, derive_more::Display)]
 pub enum TargetVersion {
     Latest,
     Version(Version),
@@ -341,6 +341,8 @@ impl MetadataManager {
         if self.has_target_version(metadata_kind, target_version) {
             return Ok(());
         }
+
+        trace!(%metadata_kind, %target_version, "Sync metadata");
 
         match metadata_kind {
             MetadataKind::NodesConfiguration => {

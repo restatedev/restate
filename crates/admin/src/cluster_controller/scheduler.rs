@@ -197,7 +197,7 @@ impl<T: TransportConnect> Scheduler<T> {
             )
             .log_slow_after(
                 Duration::from_secs(1),
-                tracing::Level::DEBUG,
+                Level::DEBUG,
                 format!(
                     "Updating partition table to version {}",
                     partition_table.version()
@@ -211,6 +211,16 @@ impl<T: TransportConnect> Scheduler<T> {
                     "Partition table {} has been written to metadata store",
                     partition_table.version()
                 );
+                let new_version = partition_table.version();
+                self.metadata_writer
+                    .update(Arc::new(partition_table))
+                    .log_slow_after(
+                        Duration::from_millis(100),
+                        Level::DEBUG,
+                        format!("Updating partition table in metadata manager to {new_version}."),
+                    )
+                    .with_overdue(Duration::from_secs(2), tracing::Level::INFO)
+                    .await?;
             }
             Err(WriteError::FailedPrecondition(err)) => {
                 info!(
@@ -222,21 +232,13 @@ impl<T: TransportConnect> Scheduler<T> {
                 // There is no need to wait for the partition table to synchronize.
                 // The update_partition_placement will get called again anyway once
                 // the partition table is updated.
-                self.sync_partition_table(partition_table.version().next())?;
+                // Pick previous_version.next(), because we know that previous_version no longer
+                // matches.
+                self.sync_partition_table(previous_version.next())?;
             }
             Err(err) => return Err(err.into()),
         }
 
-        let new_version = partition_table.version();
-        self.metadata_writer
-            .update(Arc::new(partition_table))
-            .log_slow_after(
-                Duration::from_millis(100),
-                tracing::Level::DEBUG,
-                format!("Updating partition table in metadata manager to {new_version}."),
-            )
-            .with_overdue(Duration::from_secs(2), tracing::Level::INFO)
-            .await?;
         Ok(())
     }
 

@@ -348,7 +348,7 @@ impl<T: TransportConnect> Service<T> {
                 },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     self.observed_cluster_state.update(&cluster_state);
-                    trace!("Observed cluster state updated");
+                    trace!(observed_cluster_state = ?self.observed_cluster_state, "Observed cluster state updated");
                     // todo quarantine this cluster controller if errors re-occur too often so that
                     //  another cluster controller can take over
                     if let Err(err) = state.update(&self) {

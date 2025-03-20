@@ -107,7 +107,7 @@ pub struct CommonOptionCliOverride {
     /// Address that other nodes will use to connect to this node. Defaults to use bind_address if
     /// unset. e.g. `http://127.0.0.1:5122/`
     #[clap(long, global = true)]
-    pub advertise_address: Option<AdvertisedAddress>,
+    pub advertised_address: Option<AdvertisedAddress>,
 
     /// Default Number Of Partitions
     ///
