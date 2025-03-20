@@ -16,8 +16,8 @@ use opentelemetry::Context;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use restate_types::net::RpcRequest;
 use restate_types::net::codec::{Targeted, WireEncode};
+use restate_types::net::{AdvertisedAddress, RpcRequest};
 use restate_types::{GenerationalNodeId, NodeId, Version};
 
 use super::protobuf::network::Header;
@@ -29,6 +29,12 @@ static NEXT_MSG_ID: AtomicU64 = const { AtomicU64::new(1) };
 pub enum PeerAddress {
     ServerNode(NodeId),
     Anonymous,
+}
+
+#[derive(Hash, Eq, PartialEq, Clone, Debug, derive_more::Display)]
+pub enum Destination {
+    Address(AdvertisedAddress),
+    Node(GenerationalNodeId),
 }
 
 /// generate a new unique message id for this node
@@ -425,19 +431,16 @@ impl<M: Targeted + WireEncode> Outgoing<M, HasConnection> {
         Ok(())
     }
 
-    /// Sends a response on the same connection where we received the request. This will
-    /// fail with [`NetworkError::ConnectionClosed`] if the connection is terminated.
-    ///
-    /// This fails immediately with [`NetworkError::Full`] if connection stream is out of capacity.
-    pub fn try_send(self) -> Result<(), NetworkSendError<Self>> {
+    /// Sends a response on the same connection where we received the request.
+    /// Returns `true` if successful
+    pub fn try_send(self) -> bool {
         let connection = &self.connection.0;
-        let permit = match connection.try_reserve_owned() {
-            Ok(a) => a,
-            Err(e) => return Err(NetworkSendError::new(self, e)),
+        let Some(permit) = connection.try_reserve_owned() else {
+            return false;
         };
 
         permit.send(self);
 
-        Ok(())
+        true
     }
 }

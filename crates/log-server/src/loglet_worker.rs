@@ -191,10 +191,10 @@ impl<S: LogStore> LogletWorker<S> {
                     self.loglet_state.notify_known_global_tail(msg.body().header.known_global_tail);
                     // drop response if connection is lost/congested
                     let peer = msg.peer();
-                    if let Err(e) = msg.to_rpc_response(LogletInfo::new(self.loglet_state.local_tail(), self.loglet_state.trim_point(), self.loglet_state.known_global_tail())).try_send() {
-                        debug!(?e.source, peer = %peer, "Failed to respond to GetLogletInfo message due to peer channel capacity being full");
-                    } else {
+                    if msg.to_rpc_response(LogletInfo::new(self.loglet_state.local_tail(), self.loglet_state.trim_point(), self.loglet_state.known_global_tail())).try_send() {
                         tracing::trace!(%peer, %self.loglet_id, local_tail = ?self.loglet_state.local_tail(), known_global_tail = %self.loglet_state.known_global_tail(), "GetLogletInfo response");
+                    } else {
+                        debug!(peer = %peer, "Failed to respond to GetLogletInfo message");
                     }
                 }
                 Some(_) = in_flight_stores.next() => {}

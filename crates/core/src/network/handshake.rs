@@ -15,55 +15,53 @@ use tokio_stream::StreamExt;
 
 use restate_types::net::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
 
-use super::error::ProtocolError;
+use super::HandshakeError;
 use super::protobuf::network::{Header, Hello, Message, Welcome, message};
 
 pub async fn wait_for_hello<S>(
     incoming: &mut S,
     timeout: Duration,
-) -> Result<(Header, Hello), ProtocolError>
+) -> Result<(Header, Hello), HandshakeError>
 where
-    S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
+    S: Stream<Item = Message> + Unpin,
 {
     let maybe_hello = tokio::time::timeout(timeout, incoming.next())
         .await
         .map_err(|_| {
-            ProtocolError::HandshakeTimeout("Hello message wasn't received within deadline")
+            HandshakeError::Timeout("Hello message wasn't received within deadline".to_owned())
         })?;
 
     let Some(maybe_hello) = maybe_hello else {
-        return Err(ProtocolError::PeerDropped);
+        return Err(HandshakeError::PeerDropped);
     };
 
-    let maybe_hello = maybe_hello.map_err(|_| ProtocolError::PeerDropped)?;
-
     let Some(header) = maybe_hello.header else {
-        return Err(ProtocolError::HandshakeFailed(
-            "Header should always be set",
+        return Err(HandshakeError::Failed(
+            "Header should always be set".to_owned(),
         ));
     };
 
     let Some(maybe_hello) = maybe_hello.body else {
-        return Err(ProtocolError::HandshakeFailed(
-            "Hello is expected on handshake",
+        return Err(HandshakeError::Failed(
+            "Hello is expected on handshake".to_owned(),
         ));
     };
 
     // only hello is allowed
     let message::Body::Hello(hello) = maybe_hello else {
-        return Err(ProtocolError::HandshakeFailed(
-            "Only hello is allowed in handshake!",
+        return Err(HandshakeError::Failed(
+            "Only hello is allowed in handshake!".to_owned(),
         ));
     };
     Ok((header, hello))
 }
 
-pub fn negotiate_protocol_version(hello: &Hello) -> Result<ProtocolVersion, ProtocolError> {
+pub fn negotiate_protocol_version(hello: &Hello) -> Result<ProtocolVersion, HandshakeError> {
     let selected_proto_version =
         std::cmp::min(CURRENT_PROTOCOL_VERSION, hello.max_protocol_version());
     if !selected_proto_version.is_supported() {
         // We cannot support peer's protocol version
-        return Err(ProtocolError::UnsupportedVersion(
+        return Err(HandshakeError::UnsupportedVersion(
             hello.max_protocol_version,
         ));
     }
@@ -75,7 +73,7 @@ pub fn negotiate_protocol_version(hello: &Hello) -> Result<ProtocolVersion, Prot
         || selected_proto_version > hello.max_protocol_version()
     {
         // The client cannot support our protocol version
-        return Err(ProtocolError::UnsupportedVersion(
+        return Err(HandshakeError::UnsupportedVersion(
             hello.max_protocol_version,
         ));
     }
@@ -85,37 +83,35 @@ pub fn negotiate_protocol_version(hello: &Hello) -> Result<ProtocolVersion, Prot
 pub async fn wait_for_welcome<S>(
     response_stream: &mut S,
     timeout: Duration,
-) -> Result<(Header, Welcome), ProtocolError>
+) -> Result<(Header, Welcome), HandshakeError>
 where
-    S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
+    S: Stream<Item = Message> + Unpin,
 {
     // first thing we expect is Welcome.
     let maybe_welcome = tokio::time::timeout(timeout, response_stream.next())
         .await
-        .map_err(|_| ProtocolError::HandshakeTimeout("No Welcome received within deadline"))?;
+        .map_err(|_| HandshakeError::Timeout("No Welcome received within deadline".to_owned()))?;
 
     let Some(maybe_welcome) = maybe_welcome else {
-        return Err(ProtocolError::HandshakeFailed("No Welcome received"));
+        return Err(HandshakeError::Failed("No Welcome received".to_owned()));
     };
 
-    let maybe_welcome = maybe_welcome.map_err(|_| ProtocolError::PeerDropped)?;
-
     let Some(header) = maybe_welcome.header else {
-        return Err(ProtocolError::HandshakeFailed(
-            "Header should always be set",
+        return Err(HandshakeError::Failed(
+            "Header should always be set".to_owned(),
         ));
     };
 
     let Some(maybe_welcome) = maybe_welcome.body else {
-        return Err(ProtocolError::HandshakeFailed(
-            "Welcome is expected on handshake",
+        return Err(HandshakeError::Failed(
+            "Welcome is expected on handshake".to_owned(),
         ));
     };
 
     // only welcome is allowed
     let message::Body::Welcome(welcome) = maybe_welcome else {
-        return Err(ProtocolError::HandshakeFailed(
-            "Only Welcome is allowed in handshake!",
+        return Err(HandshakeError::Failed(
+            "Only Welcome is allowed in handshake!".to_owned(),
         ));
     };
 
