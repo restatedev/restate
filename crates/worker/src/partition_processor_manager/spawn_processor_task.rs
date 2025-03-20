@@ -150,7 +150,9 @@ impl SpawnPartitionProcessorTask {
                     )
                     .await?;
 
-                    TaskCenter::spawn_child(
+                    // invoker needs to outlive the partition processor when shutdown signal is
+                    // received. This is why it's not spawned as a "child".
+                    TaskCenter::spawn(
                         TaskKind::SystemService,
                         invoker_name,
                         invoker.run(invoker_config),
