@@ -378,8 +378,9 @@ where
 
         if rpc_result.is_err() && rpc_result.as_ref().unwrap_err().likely_stale_route() {
             trace!(
-                ?partition_id,
-                ?node_id,
+                %partition_id,
+                %node_id,
+                %request_id,
                 "Received Partition Processor error indicating possible stale route"
             );
             self.partition_routing.request_refresh();

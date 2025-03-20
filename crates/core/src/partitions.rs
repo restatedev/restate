@@ -174,8 +174,9 @@ impl PartitionRoutingRefresher {
                     }
                 }
                 _ = partition_table_watch.changed() => {
-                    trace!("Refreshing routing information...");
-                    let routing = PartitionToNodesRoutingTable::from(Metadata::with_current(|m| m.partition_table_ref()));
+                    let partition_table = Metadata::with_current(|m| m.partition_table_ref());
+                    debug!("Refreshing routing information based on partition table {}...", partition_table.version());
+                    let routing = PartitionToNodesRoutingTable::from(partition_table);
                     self.inner.store(Arc::new(routing));
                 }
             }
