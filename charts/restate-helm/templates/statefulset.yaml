@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "restate.labels" . | nindent 4 }}
 spec:
-  serviceName: {{ include "restate.fullname" . }}
+  serviceName: {{ include "restate.fullname" . }}-cluster
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
@@ -44,8 +44,16 @@ spec:
             - containerPort: 5122
               name: node
           env:
-            - name: RUST_LOG
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: "metadata.name"
+            - name: RESTATE_LOG_FILTER
               value: {{ .Values.logging.env_filter }}
+            - name: RESTATE_ADVERTISED_ADDRESS
+              # Use the stable network identifier (dns resolvable) provided by the stateful set. The second part is the
+              # serviceName of the stateful set.
+              value: http://$(POD_NAME).{{ include "restate.fullname" . }}-cluster:5122
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -63,6 +71,11 @@ spec:
       volumes:
         - name: tmp
           emptyDir: { }
+  # It's important to start multiple pods at the same time in case multiple pods died. Otherwise, we risk
+  # unavailability of an already configured metadata cluster
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
   volumeClaimTemplates:
     - metadata:
         name: storage
