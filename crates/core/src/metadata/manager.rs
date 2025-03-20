@@ -37,10 +37,9 @@ use crate::TaskKind;
 use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
-use crate::network::Connection;
 use crate::network::Incoming;
-use crate::network::Outgoing;
 use crate::network::Reciprocal;
+use crate::network::UnboundedConnectionRef;
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
@@ -493,22 +492,19 @@ impl MetadataManager {
                 match task.state {
                     UpdateTaskState::FromPeer(connection) => {
                         trace!(
-                            "Attempting to get '{}' metadata from {}",
+                            "Attempting to get '{}' metadata from {:?}",
                             metadata_kind,
                             connection.peer()
                         );
-                        let outgoing = Outgoing::new(
-                            connection.peer(),
-                            MetadataMessage::GetMetadataRequest(GetMetadataRequest {
-                                metadata_kind,
-                                min_version: Some(task.version),
-                            }),
-                        )
-                        .assign_connection(connection);
-
                         // Best-effort send. We'll sync from metadata store if we couldn't send or
                         // if we have not heard a response before the next tick.
-                        let _ = outgoing.try_send();
+                        let _ = connection.encode_and_send(MetadataMessage::GetMetadataRequest(
+                            GetMetadataRequest {
+                                metadata_kind,
+                                min_version: Some(task.version),
+                            },
+                        ));
+
                         task.state = UpdateTaskState::Sync;
                         update_task = Some(task);
                     }
@@ -546,7 +542,7 @@ impl MetadataManager {
 }
 
 enum UpdateTaskState {
-    FromPeer(Connection),
+    FromPeer(UnboundedConnectionRef),
     Sync,
 }
 
