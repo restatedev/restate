@@ -32,7 +32,7 @@ use restate_types::{config::Configuration, nodes_config::Role};
 use std::convert::Infallible;
 use std::num::{NonZeroU8, NonZeroU16, NonZeroUsize};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use tracing::{debug, info};
 
 mod common;
@@ -140,15 +140,25 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
 
     let service_endpoint_address = restate_local_cluster_runner::random_socket_address()?;
 
+    let (running_tx, running_rx) = oneshot::channel();
+
     let service_handle = TaskCenter::spawn_unmanaged(TaskKind::TestRunner, "mock-service", {
         async move {
+            info!("Running the mock service endpoint");
             cancellation_token()
                 .run_until_cancelled(mock_service_endpoint::listener::run_listener(
                     service_endpoint_address,
+                    move || {
+                        // if the test program is gone than this task will soon be stopped as well
+                        let _ = running_tx.send(());
+                    },
                 ))
                 .await
         }
     })?;
+
+    // await that the mock service endpoint is running
+    running_rx.await?;
 
     let client = reqwest::Client::builder()
         .build()

@@ -30,6 +30,5 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let addr: SocketAddr = ([127, 0, 0, 1], 9080).into();
 
-    info!("Listening on http://{}", addr);
-    run_listener(addr).await
+    run_listener(addr, || info!("Listening on http://{}", addr)).await
 }

@@ -15,6 +15,7 @@ use enumset::enum_set;
 use futures_util::StreamExt;
 use googletest::fail;
 use tempfile::TempDir;
+use tokio::sync::oneshot;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::{error, info};
@@ -89,13 +90,22 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
 
     tokio::time::timeout(Duration::from_secs(5), any_partition_active(&mut client)).await??;
 
+    let (running_tx, running_rx) = oneshot::channel();
+
     let addr: SocketAddr = "127.0.0.1:9080".parse()?;
     tokio::spawn(async move {
         info!("Starting mock service on http://{}", addr);
-        if let Err(e) = mock_service_endpoint::listener::run_listener(addr).await {
+        if let Err(e) = mock_service_endpoint::listener::run_listener(addr, || {
+            let _ = running_tx.send(());
+        })
+        .await
+        {
             error!("Error running listener: {:?}", e);
         }
     });
+
+    // await that the mock service endpoint is running
+    running_rx.await?;
 
     let http_client = reqwest::Client::new();
     let registration_response = http_client

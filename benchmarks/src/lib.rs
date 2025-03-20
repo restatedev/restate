@@ -31,6 +31,7 @@ use restate_types::retries::RetryPolicy;
 use std::num::NonZeroU16;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use tokio::sync::oneshot;
 use tracing::warn;
 
 pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
@@ -125,16 +126,24 @@ pub fn spawn_restate(config: Configuration) -> task_center::Handle {
 
 pub fn spawn_mock_service_endpoint(task_center_handle: &task_center::Handle) {
     task_center_handle.block_on(async {
-        TaskCenter::spawn(TaskKind::TestRunner, "mock-service-endpoint", async {
+        let (running_tx, running_rx) = oneshot::channel();
+        TaskCenter::spawn(TaskKind::TestRunner, "mock-service-endpoint", async move {
             cancellation_token()
                 .run_until_cancelled(mock_service_endpoint::listener::run_listener(
                     "127.0.0.1:9080".parse().expect("valid socket addr"),
+                    || {
+                        let _ = running_tx.send(());
+                    },
                 ))
                 .await
                 .map(|result| result.map_err(|err| anyhow!("mock service endpoint failed: {err}")))
                 .unwrap_or(Ok(()))
         })
-        .expect("mock service endpoint should start");
+        .expect("spawn mock service endpoint task");
+
+        running_rx
+            .await
+            .expect("mock service endpoint should start");
     });
 }
 

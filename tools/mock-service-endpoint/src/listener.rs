@@ -23,8 +23,12 @@ use tracing::error;
 
 use crate::handler::serve;
 
-pub async fn run_listener(address: SocketAddr) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn run_listener(
+    address: SocketAddr,
+    on_bind: impl FnOnce(),
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let listener = TcpListener::bind(address).await?;
+    on_bind();
 
     loop {
         tokio::select! {
