@@ -34,7 +34,7 @@ use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 pub struct BifrostOptions {
     /// # The default kind of loglet to be used
     ///
-    /// Default: Local
+    /// Default: Replicated
     pub default_provider: ProviderKind,
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     /// Configuration of local loglet provider
@@ -101,7 +101,7 @@ impl BifrostOptions {
 impl Default for BifrostOptions {
     fn default() -> Self {
         Self {
-            default_provider: ProviderKind::Local,
+            default_provider: ProviderKind::Replicated,
             replicated_loglet: ReplicatedLogletOptions::default(),
             local: LocalLogletOptions::default(),
             read_retry_policy: RetryPolicy::exponential(
