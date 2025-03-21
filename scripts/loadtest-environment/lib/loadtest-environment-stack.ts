@@ -52,6 +52,11 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
       "set -euf -o pipefail",
       "apt update && apt upgrade",
       "apt install -y make cmake clang protobuf-compiler npm wrk tmux htop podman podman-docker nodejs jq",
+      "mkdir /restate-data",
+      "mkfs -t xfs /dev/nvme1n1",
+      'echo "/dev/nvme1n1 /restate-data xfs defaults 0 0" >> /etc/fstab',
+      "systemctl daemon-reload",
+      "mount /restate-data"
     );
     const cloudConfig = ec2.UserData.custom([`cloud_final_modules:`, `- [scripts-user, once]`].join("\n"));
 
@@ -80,7 +85,7 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
         ),
         blockDevices: [
           {
-            deviceName: "/dev/sde", // "e" for EBS
+            deviceName: "/dev/nvme1n1", // "e" for EBS
             volume: {
               ebsDevice: props.ebsVolume,
               virtualName: "restate-data",
