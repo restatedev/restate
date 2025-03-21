@@ -49,17 +49,12 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
     // Cloud init script. To run on every boot, make sure it's idempotent and change `once` to `always` below.
     const initScript = ec2.UserData.forLinux();
     initScript.addCommands(
-      "set -euf -o pipefail",
       "apt update && apt upgrade",
-      "apt install -y make cmake clang protobuf-compiler npm wrk tmux htop podman podman-docker nodejs jq",
+      "apt install -y make cmake clang protobuf-compiler rustup npm wrk tmux htop podman podman-docker jq prometheus-node-exporter",
       "mkdir /restate-data",
-      "mkfs -t xfs /dev/nvme1n1",
-      'echo "/dev/nvme1n1 /restate-data xfs defaults 0 0" >> /etc/fstab',
-      "systemctl daemon-reload",
-      "mount /restate-data"
     );
-    const cloudConfig = ec2.UserData.custom([`cloud_final_modules:`, `- [scripts-user, once]`].join("\n"));
 
+    const cloudConfig = ec2.UserData.custom([`cloud_final_modules:`, `- [scripts-user, once]`].join("\n"));
     const userData = new ec2.MultipartUserData();
     userData.addUserDataPart(cloudConfig, "text/cloud-config");
     userData.addUserDataPart(initScript, "text/x-shellscript");
@@ -70,11 +65,14 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
       description: "Restate servers",
     });
 
+    const subnets = vpc.publicSubnets;
     for (let n = 1; n <= 3; n++) {
       const node = new ec2.Instance(this, `N${n}`, {
         instanceProfile,
         vpc,
-        vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+        vpcSubnets: {
+          subnets: [subnets[n % subnets.length]],
+        },
         instanceType: props.instanceType,
         machineImage: ec2.MachineImage.fromSsmParameter(
           `/aws/service/canonical/ubuntu/server/24.04/stable/current/${
@@ -85,12 +83,18 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
         ),
         blockDevices: [
           {
-            deviceName: "/dev/nvme1n1", // "e" for EBS
-            volume: {
-              ebsDevice: props.ebsVolume,
-              virtualName: "restate-data",
-            },
+            deviceName: "/dev/sda1",
+            volume: ec2.BlockDeviceVolume.ebs(200, {
+              volumeType: ec2.EbsDeviceVolumeType.GP2,
+            }),
           },
+          // {
+          //   deviceName: "/dev/sdb",
+          //   volume: {
+          //     ebsDevice: props.ebsVolume,
+          //     virtualName: "restate-data",
+          //   },
+          // },
         ],
         userData,
         keyPair,
@@ -99,6 +103,53 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
       new cdk.CfnOutput(this, `InstanceId${n}`, { value: node.instanceId });
       new cdk.CfnOutput(this, `Node${n}`, { value: node.instancePublicDnsName });
     }
+
+    /*
+      wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
+      add-apt-repository "deb https://packages.grafana.com/oss/deb stable main"
+      apt update && apt install grafana prometheus
+
+      cat > /etc/prometheus/prometheus.yml <<EOF
+
+        - job_name: 'restate-cluster-nodes'
+          scrape_interval: 5s
+          static_configs:
+            - targets: ['172.31.34.171:9100']
+            - targets: ['172.31.1.249:9100']
+            - targets: ['172.31.28.10:9100']
+
+        - job_name: 'restate-cluster-restate'
+          metrics_path: '/metrics'
+          scrape_interval: 5s
+          static_configs:
+            - targets: ['172.31.34.171:5122']
+            - targets: ['172.31.1.249:5122']
+            - targets: ['172.31.28.10:5122']
+      EOF
+      systemctl restart prometheus
+    */
+    const grafanaInstanceType = ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.LARGE);
+    const grafana = new ec2.Instance(this, `GrafanaInstance`, {
+      instanceProfile,
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      instanceType: grafanaInstanceType,
+      machineImage: ec2.MachineImage.fromSsmParameter(
+        `/aws/service/canonical/ubuntu/server/24.04/stable/current/${
+          grafanaInstanceType.architecture == ec2.InstanceArchitecture.X86_64
+            ? "amd64"
+            : grafanaInstanceType.architecture
+        }/hvm/ebs-gp3/ami-id`,
+      ),
+      blockDevices: [
+        {
+          deviceName: "/dev/sda1", // root device
+          volume: ec2.BlockDeviceVolume.ebs(100),
+        },
+      ],
+      keyPair,
+    });
+    grafana.addSecurityGroup(securityGroup);
 
     securityGroup.addIngressRule(securityGroup, ec2.Port.allTraffic());
     securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.allTraffic());
