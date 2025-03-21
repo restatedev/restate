@@ -16,9 +16,10 @@ use restate_types::NodeId;
 use restate_types::config::Configuration;
 use restate_types::net::codec::{Targeted, WireEncode};
 
+use super::transport_connector::find_node;
 use super::{
-    Connection, ConnectionManager, HasConnection, NetworkError, NetworkSendError, NetworkSender,
-    NoConnection, Outgoing,
+    ConnectError, Connection, ConnectionManager, HandshakeError, HasConnection, NetworkError,
+    NetworkSendError, NetworkSender, NoConnection, Outgoing,
 };
 use super::{GrpcConnector, TransportConnect};
 use crate::Metadata;
@@ -42,7 +43,7 @@ impl Networking<GrpcConnector> {
     pub fn with_grpc_connector() -> Self {
         Self {
             connections: ConnectionManager::default(),
-            connector: GrpcConnector,
+            connector: GrpcConnector::default(),
         }
     }
 }
@@ -75,18 +76,7 @@ impl<T: TransportConnect> Networking<T> {
     pub async fn node_connection(
         &self,
         node: impl Into<NodeId>,
-    ) -> Result<Connection, NetworkError> {
-        let node = node.into();
-        // find latest generation if this is not generational node id
-        let node = match node.as_generational() {
-            Some(node) => node,
-            None => {
-                Metadata::with_current(|metadata| metadata.nodes_config_ref())
-                    .find_node_by_id(node)?
-                    .current_generation
-            }
-        };
-
+    ) -> Result<Connection, ConnectError> {
         self.connections.get_or_connect(node, &self.connector).await
     }
 }
@@ -117,13 +107,13 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
             // find latest generation if this is not generational node id. We do this in the loop
             // to ensure we get the latest if it has been updated since last attempt.
             if !original_peer.is_generational() {
-                let current_generation = match metadata
-                    .nodes_config_ref()
-                    .find_node_by_id(original_peer)
-                {
-                    Ok(node) => node.current_generation,
-                    Err(e) => return Err(NetworkSendError::new(msg, NetworkError::UnknownNode(e))),
-                };
+                let current_generation =
+                    match find_node(&metadata.nodes_config_ref(), original_peer) {
+                        Ok(node) => node.current_generation,
+                        Err(e) => {
+                            return Err(NetworkSendError::new(msg, NetworkError::Discovery(e)));
+                        }
+                    };
                 peer_as_generational = Some(current_generation);
             };
 
@@ -133,7 +123,7 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                 if let Some(next_retry_interval) = retry_policy.next() {
                     tokio::time::sleep(next_retry_interval).await;
                 } else {
-                    let e = NetworkError::Unavailable(format!(
+                    let e = NetworkError::ConnectionFailed(format!(
                         "failed to connect to node {} after {} attempts",
                         msg.peer(),
                         attempts + 1
@@ -152,9 +142,9 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                     Ok(sender) => sender,
                     // retryable errors
                     Err(
-                        err @ NetworkError::Timeout(_)
-                        | err @ NetworkError::ConnectError(_)
-                        | err @ NetworkError::ConnectionClosed(_),
+                        err @ ConnectError::Handshake(HandshakeError::Timeout(_))
+                        | err @ ConnectError::Throttled(_)
+                        | err @ ConnectError::Transport(_),
                     ) => {
                         if next_attempt >= max_attempts {
                             trace!(
@@ -166,13 +156,10 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                         continue;
                     }
                     // terminal errors
-                    Err(NetworkError::OldPeerGeneration(e)) => {
+                    Err(ConnectError::Discovery(e)) => {
                         if target_is_generational {
                             // Caller asked for this specific node generation and we know it's old.
-                            return Err(NetworkSendError::new(
-                                msg,
-                                NetworkError::OldPeerGeneration(e),
-                            ));
+                            return Err(NetworkSendError::new(msg, NetworkError::Discovery(e)));
                         }
                         if next_attempt >= max_attempts {
                             trace!(
@@ -185,7 +172,7 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                     Err(e) => {
                         return Err(NetworkSendError::new(
                             msg,
-                            NetworkError::Unavailable(e.to_string()),
+                            NetworkError::ConnectionFailed(e.to_string()),
                         ));
                     }
                 }
@@ -213,7 +200,7 @@ impl<T: TransportConnect> NetworkSender<NoConnection> for Networking<T> {
                 Err(e) => {
                     return Err(NetworkSendError::new(
                         e.original.forget_connection().set_peer(original_peer),
-                        NetworkError::Unavailable(e.source.to_string()),
+                        NetworkError::ConnectionFailed(e.source.to_string()),
                     ));
                 }
             }

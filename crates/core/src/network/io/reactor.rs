@@ -37,7 +37,7 @@ use crate::network::metric_definitions::{
 use crate::network::protobuf::network::message::{Body, Signal};
 use crate::network::protobuf::network::{Header, Message};
 use crate::network::tracking::{ConnectionTracking, PeerRouting};
-use crate::network::{Connection, Handler, Incoming, PeerMetadataVersion, ProtocolError};
+use crate::network::{Connection, Handler, Incoming, PeerMetadataVersion};
 use crate::{Metadata, ShutdownError, TaskCenter, TaskContext, TaskId, TaskKind};
 
 use super::{DrainReason, DropEgressStream, UnboundedEgressSender};
@@ -85,26 +85,40 @@ impl ConnectionReactor {
 
     pub fn start<S>(
         self,
+        task_kind: TaskKind,
         router: impl Handler + Sync + 'static,
         conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
-        peer_router: impl PeerRouting + Send + Sync + 'static,
+        peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
         incoming: S,
         should_register: bool,
     ) -> Result<TaskId, ShutdownError>
     where
-        S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
+        S: Stream<Item = Message> + Unpin + Send + 'static,
     {
         let span = tracing::error_span!(parent: None, "network-reactor",
             task_id = tracing::field::Empty,
             peer = %self.connection.peer(),
         );
 
-        TaskCenter::spawn(
-            TaskKind::ConnectionReactor,
+        if should_register {
+            peer_router.register(&self.connection);
+        }
+        let connection = self.connection.clone();
+        let peer_router_cloned = peer_router.clone();
+
+        match TaskCenter::spawn(
+            task_kind,
             "network-connection-reactor",
-            self.run_reactor(router, incoming, conn_tracker, peer_router, should_register)
+            self.run_reactor(router, incoming, conn_tracker, peer_router)
                 .instrument(span),
-        )
+        ) {
+            Ok(task) => Ok(task),
+            Err(e) => {
+                // make sure we deregister if we failed to spawn
+                peer_router_cloned.deregister(&connection);
+                Err(e)
+            }
+        }
     }
 
     fn send_drain_signal(&self, reason: DrainReason) {
@@ -135,10 +149,9 @@ impl ConnectionReactor {
         mut incoming: S,
         conn_tracker: impl ConnectionTracking,
         peer_router: impl PeerRouting,
-        should_register: bool,
     ) -> anyhow::Result<()>
     where
-        S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send,
+        S: Stream<Item = Message> + Unpin + Send,
     {
         let current_task = TaskContext::current();
         let metadata = Metadata::current();
@@ -146,9 +159,6 @@ impl ConnectionReactor {
         Span::current().record("task_id", tracing::field::display(current_task.id()));
         let mut cancellation = std::pin::pin!(current_task.cancellation_token().cancelled());
 
-        if should_register {
-            peer_router.register(&self.connection);
-        }
         conn_tracker.connection_created(&self.connection);
 
         loop {
@@ -240,20 +250,9 @@ impl ConnectionReactor {
         Ok(())
     }
 
-    async fn handle_message(
-        &mut self,
-        msg: Option<Result<Message, ProtocolError>>,
-        router: &impl Handler,
-    ) -> Decision {
+    async fn handle_message(&mut self, msg: Option<Message>, router: &impl Handler) -> Decision {
         let msg = match msg {
-            Some(Ok(msg)) => msg,
-            Some(Err(status)) => {
-                // This indicates an unrecoverable error in the underlying stream.
-                // It's very likely that we can't send or receive anything.
-                // We'll choose to drop the queued messages on the floor.
-                info!("Error received: {status}, terminating stream");
-                return Decision::Drop;
-            }
+            Some(msg) => msg,
             None if self.state.is_active() => {
                 return Decision::Drain(DrainReason::ConnectionDrain);
             }

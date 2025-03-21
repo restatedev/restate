@@ -8,25 +8,49 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod throttle;
+
+// re-export
+pub use throttle::ConnectThrottle;
+use tracing::debug;
+use tracing::info;
+
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::Instant;
 use tracing::Span;
 
 use restate_types::GenerationalNodeId;
+use restate_types::config::Configuration;
 use restate_types::net::ProtocolVersion;
 use restate_types::net::codec::Targeted;
 use restate_types::net::codec::WireEncode;
 
+use crate::Metadata;
+use crate::TaskId;
+use crate::TaskKind;
+
+use super::ConnectError;
 use super::ConnectionClosed;
+use super::ConnectionDirection;
+use super::Destination;
+use super::Handler;
+use super::HandshakeError;
 use super::NetworkError;
 use super::Outgoing;
+use super::TransportConnect;
+use super::handshake::wait_for_welcome;
+use super::io::ConnectionReactor;
+use super::io::EgressStream;
 use super::io::{DrainReason, EgressMessage, EgressSender};
+use super::metric_definitions::OUTGOING_CONNECTION;
 use super::protobuf::network::Header;
+use super::protobuf::network::Hello;
 use super::protobuf::network::message;
 use super::protobuf::network::message::Body;
+use super::tracking::ConnectionTracking;
+use super::tracking::PeerRouting;
 
 pub struct OwnedSendPermit<M> {
     protocol_version: ProtocolVersion,
@@ -146,6 +170,159 @@ impl Connection {
         )
     }
 
+    /// Starts a new connection to a destination
+    pub async fn connect(
+        destination: Destination,
+        transport_connector: impl TransportConnect,
+        direction: ConnectionDirection,
+        task_kind: TaskKind,
+        router: impl Handler + Sync + 'static,
+        conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
+        peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
+    ) -> Result<(Connection, TaskId), ConnectError> {
+        ConnectThrottle::may_connect(&destination)?;
+        Self::force_connect(
+            destination.clone(),
+            transport_connector,
+            direction,
+            task_kind,
+            router,
+            conn_tracker,
+            peer_router,
+        )
+        .await
+    }
+
+    /// Does not check for throttling before attempting a connection.
+    pub async fn force_connect(
+        destination: Destination,
+        transport_connector: impl TransportConnect,
+        direction: ConnectionDirection,
+        task_kind: TaskKind,
+        router: impl Handler + Sync + 'static,
+        conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
+        peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
+    ) -> Result<(Connection, TaskId), ConnectError> {
+        let result = Self::connect_inner(
+            destination.clone(),
+            transport_connector,
+            direction,
+            task_kind,
+            router,
+            conn_tracker,
+            peer_router,
+        )
+        .await;
+
+        ConnectThrottle::note_connect_status(&destination, result.is_ok());
+        match result {
+            Err(ref e) => {
+                info!(%direction, "Couldn't connect to {}: {}", destination, e);
+            }
+            Ok((_, task_id)) => {
+                info!(%direction, %task_id, "Connection established to {}", destination);
+            }
+        }
+        result
+    }
+
+    async fn connect_inner(
+        destination: Destination,
+        transport_connector: impl TransportConnect,
+        direction: ConnectionDirection,
+        task_kind: TaskKind,
+        router: impl Handler + Sync + 'static,
+        conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
+        peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
+    ) -> Result<(Connection, TaskId), ConnectError> {
+        let Destination::Node(node_id) = destination else {
+            unimplemented!("connecting to anonymous nodes is not supported yet");
+        };
+
+        debug!(%direction, "Connecting to {}", node_id);
+        let metadata = Metadata::current();
+        let my_node_id = metadata.my_node_id_opt();
+        let nodes_config = metadata.nodes_config_snapshot();
+        let cluster_name = nodes_config.cluster_name().to_owned();
+
+        let (tx, unbounded_sender, egress, drop_egress) = EgressStream::create(
+            Configuration::pinned()
+                .networking
+                .outbound_queue_length
+                .get(),
+        );
+
+        // perform handshake.
+        unbounded_sender
+            .unbounded_send(EgressMessage::Message(
+                Header::default(),
+                Hello::new(my_node_id, cluster_name, direction).into(),
+                Some(Span::current()),
+            ))
+            .unwrap();
+
+        // Establish the connection
+        let mut incoming = transport_connector
+            .connect(node_id, &nodes_config, egress)
+            .await?;
+
+        // finish the handshake
+        let (_header, welcome) = wait_for_welcome(
+            &mut incoming,
+            Configuration::pinned().networking.handshake_timeout.into(),
+        )
+        .await?;
+
+        let protocol_version = welcome.protocol_version();
+
+        // this should not happen if the peer follows the correct protocol negotiation
+        if !protocol_version.is_supported() {
+            return Err(HandshakeError::UnsupportedVersion(protocol_version.into()).into());
+        }
+
+        // sanity checks
+        // In this version, we don't allow anonymous connections.
+        let peer_node_id: GenerationalNodeId = welcome
+            .my_node_id
+            .ok_or(HandshakeError::Failed(
+                "Peer must set my_node_id in Welcome message".to_owned(),
+            ))?
+            .into();
+
+        // we expect the node to identify itself as the same NodeId we think we are connecting to.
+        if peer_node_id != node_id {
+            // Node claims that it's someone else!
+            return Err(HandshakeError::Failed(
+                "Node returned an unexpected GenerationalNodeId in Welcome message.".to_owned(),
+            )
+            .into());
+        }
+
+        let connection = Connection::new(peer_node_id, protocol_version, tx);
+
+        // if peer cannot respect our hello intent of direction, we are okay with registering
+        let should_register = matches!(
+            welcome.direction_ack(),
+            ConnectionDirection::Unknown
+                | ConnectionDirection::Bidirectional
+                | ConnectionDirection::Forward
+        );
+
+        let reactor = ConnectionReactor::new(connection.clone(), unbounded_sender, drop_egress);
+
+        let task_id = reactor.start(
+            task_kind,
+            router,
+            conn_tracker,
+            peer_router,
+            incoming,
+            should_register,
+        )?;
+
+        OUTGOING_CONNECTION.increment(1);
+        Ok((connection, task_id))
+    }
+
     /// The node id at the other end of this connection
     pub fn peer(&self) -> GenerationalNodeId {
         self.peer
@@ -212,30 +389,12 @@ impl Connection {
         })
     }
 
-    /// Tries to allocate capacity to send one message on this connection. If there is no capacity,
-    /// it will fail with [`NetworkError::Full`]. If connection is closed it returns [`NetworkError::ConnectionClosed`]
-    pub fn try_reserve<M>(&self) -> Result<SendPermit<'_, M>, NetworkError> {
-        let permit = match self.sender.try_reserve() {
-            Ok(permit) => permit,
-            Err(TrySendError::Full(_)) => return Err(NetworkError::Full),
-            Err(TrySendError::Closed(_)) => {
-                return Err(NetworkError::ConnectionClosed(ConnectionClosed));
-            }
-        };
-
-        Ok(SendPermit {
-            permit,
-            protocol_version: self.protocol_version,
-            _phantom: std::marker::PhantomData,
-        })
-    }
-
-    /// Tries to allocate capacity to send one message on this connection. If there is no capacity,
-    /// it will fail with [`NetworkError::Full`]. If connection is closed it returns [`NetworkError::ConnectionClosed`]
-    pub fn try_reserve_owned<M>(&self) -> Result<OwnedSendPermit<M>, NetworkError> {
+    /// Tries to allocate capacity to send one message on this connection.
+    /// Returns None if the connection was closed or is at capacity.
+    pub fn try_reserve_owned<M>(&self) -> Option<OwnedSendPermit<M>> {
         let permit = self.sender.clone().try_reserve_owned()?;
 
-        Ok(OwnedSendPermit {
+        Some(OwnedSendPermit {
             permit,
             protocol_version: self.protocol_version,
             _phantom: std::marker::PhantomData,
@@ -257,7 +416,6 @@ pub mod test_util {
     use futures::StreamExt;
     use futures::stream::BoxStream;
     use tokio::sync::mpsc;
-    use tokio::sync::mpsc::error::TrySendError;
     use tracing::info;
     use tracing::warn;
 
@@ -273,12 +431,11 @@ pub mod test_util {
     use crate::cancellation_watcher;
     use crate::network::ConnectionManager;
     use crate::network::Handler;
+    use crate::network::HandshakeError;
     use crate::network::Incoming;
     use crate::network::MessageHandler;
     use crate::network::MessageRouterBuilder;
-    use crate::network::NetworkError;
     use crate::network::PeerMetadataVersion;
-    use crate::network::ProtocolError;
     use crate::network::RouterError;
     use crate::network::handshake::negotiate_protocol_version;
     use crate::network::handshake::wait_for_hello;
@@ -331,7 +488,6 @@ pub mod test_util {
         ) -> anyhow::Result<Self> {
             let (sender, unbounded_sender, incoming, drop_egress) =
                 EgressStream::create(message_buffer);
-            let incoming = incoming.map(Ok);
 
             let hello = Hello::new(
                 Some(from_node_id),
@@ -404,24 +560,6 @@ pub mod test_util {
         pub async fn reserve_owned<M>(self) -> Option<OwnedSendPermit<M>> {
             let permit = self.sender.reserve_owned().await.ok()?;
             Some(OwnedSendPermit {
-                permit,
-                protocol_version: self.protocol_version,
-                _phantom: std::marker::PhantomData,
-            })
-        }
-
-        /// Tries to allocate capacity to send one message on this connection. If there is no capacity,
-        /// it will fail with [`NetworkError::Full`]. If connection is closed it returns [`NetworkError::ConnectionClosed`]
-        pub fn try_reserve<M>(&self) -> Result<SendPermit<'_, M>, NetworkError> {
-            let permit = match self.sender.try_reserve() {
-                Ok(permit) => permit,
-                Err(TrySendError::Full(_)) => return Err(NetworkError::Full),
-                Err(TrySendError::Closed(_)) => {
-                    return Err(NetworkError::ConnectionClosed(ConnectionClosed));
-                }
-            };
-
-            Ok(SendPermit {
                 permit,
                 protocol_version: self.protocol_version,
                 _phantom: std::marker::PhantomData,
@@ -544,20 +682,17 @@ pub mod test_util {
                 drop_egress,
             } = self;
             let temp_stream = recv_stream.by_ref();
-            let (header, hello) = wait_for_hello(
-                &mut temp_stream.map(Ok),
-                std::time::Duration::from_millis(500),
-            )
-            .await?;
+            let (header, hello) =
+                wait_for_hello(temp_stream, std::time::Duration::from_millis(500)).await?;
 
             // NodeId **must** be generational at this layer
-            let _peer_node_id = hello.my_node_id.ok_or(ProtocolError::HandshakeFailed(
-                "NodeId is not set in the Hello message",
+            let _peer_node_id = hello.my_node_id.ok_or(HandshakeError::Failed(
+                "NodeId is not set in the Hello message".to_owned(),
             ))?;
 
             // Are we both from the same cluster?
             if hello.cluster_name != nodes_config.cluster_name() {
-                return Err(ProtocolError::HandshakeFailed("cluster name mismatch").into());
+                return Err(HandshakeError::Failed("cluster name mismatch".to_owned()).into());
             }
 
             let selected_protocol_version = negotiate_protocol_version(&hello)?;

@@ -14,7 +14,7 @@ use std::task::{Context, Poll, ready};
 use futures::FutureExt;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::network::{ConnectionClosed, NetworkError};
+use crate::network::ConnectionClosed;
 
 use super::{DrainReason, EgressMessage};
 
@@ -72,13 +72,10 @@ impl EgressSender {
         self.inner.reserve_owned().await
     }
 
-    pub fn try_reserve_owned(self) -> Result<mpsc::OwnedPermit<EgressMessage>, NetworkError> {
+    pub fn try_reserve_owned(self) -> Option<mpsc::OwnedPermit<EgressMessage>> {
         match self.inner.try_reserve_owned() {
-            Ok(permit) => Ok(permit),
-            Err(mpsc::error::TrySendError::Full(_)) => Err(NetworkError::Full),
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                Err(NetworkError::ConnectionClosed(ConnectionClosed))
-            }
+            Ok(permit) => Some(permit),
+            Err(_) => None,
         }
     }
 

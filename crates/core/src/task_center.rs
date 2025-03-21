@@ -805,14 +805,13 @@ impl TaskCenterInner {
         }
         self.cancel_tasks(Some(TaskKind::ClusterController), None)
             .await;
-        tokio::join!(
-            self.cancel_tasks(Some(TaskKind::RpcServer), None),
-            self.cancel_tasks(Some(TaskKind::ConnectionReactor), None),
-            // note that this one will shutdown after connections are terminated.
-            // It will not be aborted on the shutdown signal itself.
-            self.cancel_tasks(Some(TaskKind::SocketHandler), None)
-        );
+        // stop accepting ingress
+        self.cancel_tasks(Some(TaskKind::IngressServer), None).await;
+        // PPM will shutdown running processors
+        self.cancel_tasks(Some(TaskKind::PartitionProcessorManager), None)
+            .await;
         self.initiate_managed_runtimes_shutdown();
+        // global shutdown trigger
         self.cancel_tasks(None, None).await;
         self.shutdown_managed_runtimes();
         // notify outer components that we have completed the shutdown.

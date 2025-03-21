@@ -20,10 +20,13 @@ use super::MAX_MESSAGE_SIZE;
 use crate::network::net_util::create_tonic_channel;
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
-use crate::network::{NetworkError, ProtocolError, TransportConnect};
+use crate::network::transport_connector::find_node;
+use crate::network::{ConnectError, TransportConnect};
 
-#[derive(Clone)]
-pub struct GrpcConnector;
+#[derive(Clone, Default)]
+pub struct GrpcConnector {
+    _private: (),
+}
 
 impl TransportConnect for GrpcConnector {
     async fn connect(
@@ -31,11 +34,8 @@ impl TransportConnect for GrpcConnector {
         node_id: GenerationalNodeId,
         nodes_config: &NodesConfiguration,
         output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
-    ) -> Result<
-        impl Stream<Item = Result<Message, ProtocolError>> + Send + Unpin + 'static,
-        NetworkError,
-    > {
-        let address = nodes_config.find_node_by_id(node_id)?.address.clone();
+    ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
+        let address = find_node(nodes_config, node_id)?.address.clone();
 
         trace!("Attempting to connect to node {} at {}", node_id, address);
         let channel = create_tonic_channel(address, &Configuration::pinned().networking);
@@ -45,6 +45,6 @@ impl TransportConnect for GrpcConnector {
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
             .max_decoding_message_size(MAX_MESSAGE_SIZE);
         let incoming = client.create_connection(output_stream).await?.into_inner();
-        Ok(incoming.map(|x| x.map_err(ProtocolError::from)))
+        Ok(incoming.map_while(|x| x.ok()))
     }
 }
