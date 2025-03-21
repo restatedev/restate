@@ -45,6 +45,7 @@ pub use query_engine::*;
 pub use rocksdb::*;
 pub use worker::*;
 
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
@@ -250,13 +251,42 @@ impl Configuration {
 
     /// Checks whether the given configuration is valid. Returns an [`InvalidConfigurationError`]
     /// it if is not valid.
-    pub fn validate(&self) -> Result<(), InvalidConfigurationError> {
+    pub fn validate(&mut self) -> Result<(), InvalidConfigurationError> {
         if self
             .common
             .force_node_id
             .is_some_and(|force_node_id| force_node_id == PlainNodeId::new(0))
         {
             return Err(InvalidConfigurationError::ForceNodeIdZero);
+        }
+
+        if self.common.node_name.is_none() {
+            // If the node name is not set, we will fallback to use hostname as the node name.
+            // So to avoid changing hostname to make data loss, we must validate the directory's entry.
+            let dirs = read_dir_subdirs(&self.common.base_dir());
+            match dirs.len().cmp(&1) {
+                std::cmp::Ordering::Less => {
+                    // If it's an empty directory, it's safe to use default behavior.
+                }
+                std::cmp::Ordering::Equal => {
+                    // If there is only one directory, it must be the node name.
+                    // And if it's not equal to hostname, emit an warning.
+                    if self.common.node_name() != dirs[0].to_string_lossy() {
+                        println!(
+                            "The working directory have only one subdirectory '{}', and node name is not set, but it's not equal to hostname '{}'",
+                            dirs[0].to_string_lossy(),
+                            self.common.node_name()
+                        );
+                    }
+
+                    self.common.node_name = Some(String::from(dirs[0].to_string_lossy()));
+                }
+                std::cmp::Ordering::Greater => {
+                    if self.common.node_name.is_none() {
+                        return Err(InvalidConfigurationError::RequiredNodeName);
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -271,6 +301,8 @@ pub enum InvalidConfigurationError {
     ForceNodeIdZero,
     #[error("could not derive bind address: {0}")]
     DeriveBindAddress(String),
+    #[error("node-name is required when directory has multiple subdirectories")]
+    RequiredNodeName,
 }
 
 /// Used to deserialize the [`Configuration`] in backwards compatible way which allows to specify
@@ -325,4 +357,20 @@ fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<
     } else {
         eprintln!("Using the deprecated config option '{deprecated}'.");
     }
+}
+
+/// read_dir_subdirs reads the given directory and returns a vector of subdirectories.
+/// If the directory does not exist, it returns an empty vector.
+fn read_dir_subdirs(dir: &PathBuf) -> Vec<PathBuf> {
+    if !dir.exists() {
+        return vec![];
+    }
+
+    let paths = fs::read_dir(dir).unwrap();
+    let dirs: Vec<PathBuf> = paths
+        .filter(|path| path.as_ref().unwrap().path().is_dir())
+        .map(|path| path.as_ref().unwrap().file_name().into())
+        .collect();
+
+    dirs
 }
