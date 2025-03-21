@@ -21,9 +21,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
-use restate_core::metadata_store::{
-    ReadWriteError, RetryError, RetryingMetadataStoreClient, WriteError,
-};
+use restate_core::metadata_store::{ReadWriteError, WriteError, retry_on_retryable_error};
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
@@ -621,17 +619,18 @@ async fn provision_cluster_metadata(
     let (initial_nodes_configuration, initial_partition_table, initial_logs) =
         generate_initial_metadata(common_opts, cluster_configuration);
 
-    let retrying_client =
-        metadata_store_client.with_retries(common_opts.network_error_retry_policy.clone());
-    let result = retrying_client
-        .provision(&initial_nodes_configuration)
-        .await?;
+    let result = retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
+        metadata_store_client.provision(&initial_nodes_configuration)
+    })
+    .await?;
 
-    write_initial_logs_dont_fail_if_it_exists(
-        &retrying_client,
-        BIFROST_CONFIG_KEY.clone(),
-        initial_logs.clone(),
-    )
+    retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
+        write_initial_logs_dont_fail_if_it_exists(
+            metadata_store_client,
+            BIFROST_CONFIG_KEY.clone(),
+            initial_logs.clone(),
+        )
+    })
     .await
     .context("failed provisioning the initial logs")?;
 
@@ -639,11 +638,13 @@ async fn provision_cluster_metadata(
     // The partition table metadata must be initialized only after the bifrost (logs) metadata.
     // Otherwise, the logs controller may begin creating logs with incorrect configurations
     // initialized by bifrost.
-    write_initial_value_dont_fail_if_it_exists(
-        &retrying_client,
-        PARTITION_TABLE_KEY.clone(),
-        &initial_partition_table,
-    )
+    retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
+        write_initial_value_dont_fail_if_it_exists(
+            metadata_store_client,
+            PARTITION_TABLE_KEY.clone(),
+            &initial_partition_table,
+        )
+    })
     .await
     .context("failed provisioning the initial partition table")?;
 
@@ -695,63 +696,52 @@ fn generate_initial_metadata(
 }
 
 async fn write_initial_value_dont_fail_if_it_exists<T: Versioned + StorageEncode>(
-    metadata_store_client: &RetryingMetadataStoreClient<'_>,
+    metadata_store_client: &MetadataStoreClient,
     key: ByteString,
     initial_value: &T,
-) -> Result<(), RetryError<WriteError>> {
+) -> Result<(), WriteError> {
     match metadata_store_client
         .put(key, initial_value, Precondition::DoesNotExist)
         .await
     {
         Ok(_) => Ok(()),
-        Err(err) => {
-            match err.as_inner() {
-                WriteError::FailedPrecondition(_) => {
-                    // we might have failed on a previous attempt after writing this value; so let's continue
-                    Ok(())
-                }
-                _ => Err(err),
-            }
+        Err(WriteError::FailedPrecondition(_)) => {
+            // we might have failed on a previous attempt after writing this value; so let's continue
+            Ok(())
         }
+        Err(err) => Err(err),
     }
 }
 
 async fn write_initial_logs_dont_fail_if_it_exists(
-    metadata_store_client: &RetryingMetadataStoreClient<'_>,
+    metadata_store_client: &MetadataStoreClient,
     key: ByteString,
     initial_value: Logs,
-) -> Result<(), RetryError<ReadWriteError>> {
+) -> Result<(), ReadWriteError> {
     let value = metadata_store_client
         .read_modify_write(key, |current| match current {
             None => Ok(initial_value.clone()),
             Some(current_value) => {
                 if current_value.configuration() == initial_value.configuration() {
-                    Err(AlreadyInitialized)
+                    Err(ReadModifyWriteError::FailedOperation(AlreadyInitialized))
                 } else if current_value.version() == Version::MIN && current_value.num_logs() == 0 {
                     let builder = initial_value.clone().into_builder();
                     // make sure version is incremented to MIN + 1
                     Ok(builder.build())
                 } else {
-                    Err(AlreadyInitialized)
+                    Err(ReadModifyWriteError::FailedOperation(AlreadyInitialized))
                 }
             }
         })
         .await;
 
     match value {
-        Ok(_) => Ok(()),
-        Err(err) => match err.as_inner() {
-            ReadModifyWriteError::FailedOperation(_) => Ok(()),
-            _ => Err(err.map(|err| match err {
-                ReadModifyWriteError::ReadWrite(err) => err,
-                ReadModifyWriteError::FailedOperation(_) => unreachable!(),
-            })),
-        },
+        Ok(_) | Err(ReadModifyWriteError::FailedOperation(_)) => Ok(()),
+        Err(ReadModifyWriteError::ReadWrite(err)) => Err(err),
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("node has already been initialized")]
+#[derive(Debug)]
 struct AlreadyInitialized;
 
 #[cfg(not(feature = "replicated-loglet"))]
