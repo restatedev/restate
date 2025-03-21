@@ -52,6 +52,7 @@ futures-util = { workspace = true }
 itertools = { workspace = true }
 json-patch = "2.0.0"
 humantime = { workspace = true }
+lambda_runtime = "0.13.0"
 prost-types = { workspace = true }
 rand = { workspace = true }
 rlimit = { workspace = true }
