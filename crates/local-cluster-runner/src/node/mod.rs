@@ -18,7 +18,7 @@ use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest as ProtoProvisionClusterRequest;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
-use restate_types::config::{MetadataServerKind, RaftOptions};
+use restate_types::config::{InvalidConfigurationError, MetadataServerKind, RaftOptions};
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::partition_table::PartitionReplication;
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -118,6 +118,8 @@ pub enum NodeStartError {
     CreateConfig(io::Error),
     #[error("Failed to create or append to node log file: {0}")]
     CreateLog(io::Error),
+    #[error(transparent)]
+    DeriveBindAddress(#[from] InvalidConfigurationError),
     #[error("Failed to dump config to bytes: {0}")]
     DumpConfig(GenericError),
     #[error("Failed to spawn restate-server: {0}")]
@@ -258,7 +260,7 @@ impl Node {
                 self.base_config
                     .common
                     .advertised_address
-                    .derive_bind_address(),
+                    .derive_bind_address()?,
             );
         }
 
