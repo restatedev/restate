@@ -18,9 +18,9 @@ use restate_types::nodes_config::{NodeConfig, Role, StorageState};
 use restate_types::replication::{NodeSet, NodeSetSelector, NodeSetSelectorOptions};
 use tracing::{debug, warn};
 
+use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenter, TaskKind, my_node_id};
-use restate_metadata_server::MetadataStoreClient;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,

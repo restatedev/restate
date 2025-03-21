@@ -17,12 +17,9 @@ use tracing::{debug, error, trace};
 use restate_core::{
     MetadataWriter, TaskCenter, TaskCenterFutureExt, TaskKind, cancellation_watcher,
 };
-use restate_types::config::Configuration;
-use restate_types::live::Live;
 use restate_types::logs::metadata::ProviderKind;
 
 use crate::bifrost::BifrostInner;
-use crate::providers::local_loglet;
 #[cfg(any(test, feature = "memory-loglet"))]
 use crate::providers::memory_loglet;
 use crate::watchdog::{Watchdog, WatchdogCommand};
@@ -61,8 +58,12 @@ impl BifrostService {
         self
     }
 
-    pub fn enable_local_loglet(mut self, config: &Live<Configuration>) -> Self {
-        let factory = local_loglet::Factory::new(
+    #[cfg(feature = "local-loglet")]
+    pub fn enable_local_loglet(
+        mut self,
+        config: &restate_types::live::Live<restate_types::config::Configuration>,
+    ) -> Self {
+        let factory = crate::providers::local_loglet::Factory::new(
             config.clone().map(|c| &c.bifrost.local).boxed(),
             config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
         );
