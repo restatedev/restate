@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::ops::RangeInclusive;
 
-use serde_with::{DisplayFromStr, serde_as};
+use serde_with::serde_as;
 
 use crate::identifiers::{PartitionId, PartitionKey};
 use crate::logs::LogId;
@@ -58,7 +58,12 @@ pub enum PartitionReplication {
     /// Replication of partitions is limited to the specified replication property.
     /// for example a replication property of `{node: 2}` will run
     /// each partition on maximum of two nodes (one leader, and one follower)
-    Limit(#[serde_as(as = "DisplayFromStr")] ReplicationProperty),
+    Limit(
+        #[serde_as(
+            as = "serde_with::PickFirst<(serde_with::DisplayFromStr, crate::replication::ReplicationPropertyFromNonZeroU8)>"
+        )]
+        ReplicationProperty,
+    ),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]

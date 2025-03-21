@@ -19,7 +19,6 @@ use restate_local_cluster_runner::{
 use restate_types::config::{Configuration, LogFormat};
 use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::logs::metadata::ProviderKind::Replicated;
-use std::num::NonZeroU16;
 use std::pin::pin;
 use std::time::Duration;
 use tracing::{error, info};
@@ -29,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     let mut base_config = Configuration::default();
     base_config.common.log_format = LogFormat::Compact;
     base_config.common.log_filter = "warn,restate=debug".to_string();
-    base_config.common.default_num_partitions = NonZeroU16::new(4).unwrap();
+    base_config.common.default_num_partitions = 4;
     base_config.bifrost.default_provider = Replicated;
 
     let config = ConfigLoaderBuilder::default()
