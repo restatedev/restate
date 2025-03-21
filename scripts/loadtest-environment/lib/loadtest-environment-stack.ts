@@ -25,10 +25,12 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: LoadTestEnvironmentStackProps) {
     super(scope, id, props);
 
+    const keyPair = new ec2.KeyPair(this, "SshKeypair");
     const instanceRole = new iam.Role(this, "InstanceRole", {
       assumedBy: new iam.ServicePrincipal("ec2.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("AmazonSSMManagedInstanceCore")],
     });
+    const instanceProfile = new iam.InstanceProfile(this, "InstanceProfile", { role: instanceRole });
 
     const invokerRole = new iam.Role(this, "InvokerRole", {
       assumedBy: instanceRole,
@@ -49,7 +51,7 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
     initScript.addCommands(
       "set -euf -o pipefail",
       "apt update && apt upgrade",
-      "apt install -y make cmake clang protobuf-compiler npm wrk tmux htop",
+      "apt install -y make cmake clang protobuf-compiler npm wrk tmux htop podman podman-docker nodejs jq",
     );
     const cloudConfig = ec2.UserData.custom([`cloud_final_modules:`, `- [scripts-user, once]`].join("\n"));
 
@@ -58,41 +60,44 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
     userData.addUserDataPart(initScript, "text/x-shellscript");
 
     const vpc = ec2.Vpc.fromLookup(this, "Vpc", { isDefault: true });
-    const testInstance = new ec2.Instance(this, "TestInstance", {
+    const securityGroup = new ec2.SecurityGroup(this, "SecurityGroup", {
       vpc,
-      // Make sure to use an available subnet for the VPC.
-      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-      instanceType: props.instanceType,
-      machineImage: ec2.MachineImage.fromSsmParameter(
-        `/aws/service/canonical/ubuntu/server/24.04/stable/current/${
-          props.instanceType.architecture == ec2.InstanceArchitecture.X86_64 ? "amd64" : props.instanceType.architecture
-        }/hvm/ebs-gp3/ami-id`,
-      ),
-      role: instanceRole,
-      blockDevices: [
-        {
-          deviceName: "/dev/sde", // "e" for EBS
-          volume: {
-            ebsDevice: props.ebsVolume,
-            virtualName: "restate-data",
+      description: "Restate servers",
+    });
+
+    for (let n = 1; n <= 3; n++) {
+      const node = new ec2.Instance(this, `N${n}`, {
+        instanceProfile,
+        vpc,
+        vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+        instanceType: props.instanceType,
+        machineImage: ec2.MachineImage.fromSsmParameter(
+          `/aws/service/canonical/ubuntu/server/24.04/stable/current/${
+            props.instanceType.architecture == ec2.InstanceArchitecture.X86_64
+              ? "amd64"
+              : props.instanceType.architecture
+          }/hvm/ebs-gp3/ami-id`,
+        ),
+        blockDevices: [
+          {
+            deviceName: "/dev/sde", // "e" for EBS
+            volume: {
+              ebsDevice: props.ebsVolume,
+              virtualName: "restate-data",
+            },
           },
-        },
-      ],
-      userData,
-    });
+        ],
+        userData,
+        keyPair,
+      });
+      node.addSecurityGroup(securityGroup);
+      new cdk.CfnOutput(this, `InstanceId${n}`, { value: node.instanceId });
+      new cdk.CfnOutput(this, `Node${n}`, { value: node.instancePublicDnsName });
+    }
 
-    // In case you might want to enable remote access from within the VPC
-    const ingressSecurityGroup = new ec2.SecurityGroup(this, "IngressSecurityGroup", {
-      vpc,
-      description: "Restate Ingress ACLs",
-    });
-    testInstance.addSecurityGroup(ingressSecurityGroup);
-    const adminSecurityGroup = new ec2.SecurityGroup(this, "AdminSecurityGroup", {
-      vpc,
-      description: "Restate Admin ACLs",
-    });
-    testInstance.addSecurityGroup(adminSecurityGroup);
+    securityGroup.addIngressRule(securityGroup, ec2.Port.allTraffic());
+    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.allTraffic());
 
-    new cdk.CfnOutput(this, "InstanceId", { value: testInstance.instanceId });
+    new cdk.CfnOutput(this, "KeyArn", { value: keyPair.privateKey.parameterArn });
   }
 }
