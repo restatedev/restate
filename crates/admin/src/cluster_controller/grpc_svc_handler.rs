@@ -335,16 +335,19 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         request: Request<SetClusterConfigurationRequest>,
     ) -> Result<Response<SetClusterConfigurationResponse>, Status> {
         let request = request.into_inner();
-        let request = request
+        let cluster_configuration = request
             .cluster_configuration
             .ok_or_else(|| Status::invalid_argument("cluster_configuration is a required field"))?;
 
         self.controller_handle
             .update_cluster_configuration(
-                request.partition_replication.try_into().map_err(|err| {
-                    Status::invalid_argument(format!("invalid partition_replication: {err}"))
-                })?,
-                request
+                cluster_configuration
+                    .partition_replication
+                    .try_into()
+                    .map_err(|err| {
+                        Status::invalid_argument(format!("invalid partition_replication: {err}"))
+                    })?,
+                cluster_configuration
                     .bifrost_provider
                     .ok_or_else(|| {
                         Status::invalid_argument("default_provider is a required field")
@@ -353,6 +356,9 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                     .map_err(|err| {
                         Status::invalid_argument(format!("invalid default_provider: {err}"))
                     })?,
+                u16::try_from(cluster_configuration.num_partitions).map_err(|err| {
+                    Status::invalid_argument(format!("must be 0 <= num_partitions < 65536: {err}"))
+                })?,
             )
             .await
             .map_err(|_| Status::aborted("Node is shutting down"))?

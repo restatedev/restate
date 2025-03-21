@@ -14,10 +14,11 @@ use std::num::NonZeroU8;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+use crate::locality::LocationScope;
 use anyhow::Context;
 use regex::Regex;
-
-use crate::locality::LocationScope;
+use serde::{Deserialize, Deserializer};
+use serde_with::DeserializeAs;
 
 static REPLICATION_PROPERTY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -221,6 +222,18 @@ impl FromStr for ReplicationProperty {
 
         replication_property
             .ok_or_else(|| anyhow::anyhow!("No replication property scopes defined"))
+    }
+}
+
+/// Helper struct to support deserializing the ReplicationProperty from a [`NonZeroU8`].
+pub struct ReplicationPropertyFromNonZeroU8;
+
+impl<'de> DeserializeAs<'de, ReplicationProperty> for ReplicationPropertyFromNonZeroU8 {
+    fn deserialize_as<D>(deserializer: D) -> Result<ReplicationProperty, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        NonZeroU8::deserialize(deserializer).map(ReplicationProperty::new)
     }
 }
 

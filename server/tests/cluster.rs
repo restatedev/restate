@@ -30,7 +30,7 @@ use restate_types::partition_table::PartitionReplication;
 use restate_types::replication::ReplicationProperty;
 use restate_types::{config::Configuration, nodes_config::Role};
 use std::convert::Infallible;
-use std::num::{NonZeroU8, NonZeroU16, NonZeroUsize};
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch};
 use tracing::{debug, info};
@@ -42,7 +42,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
     let mut base_config = Configuration::default();
     // require an explicit provision step to configure the replication property to 2
     base_config.common.auto_provision = false;
-    base_config.common.default_num_partitions = NonZeroU16::new(1).expect("1 to be non-zero");
+    base_config.common.default_num_partitions = 1;
 
     let nodes = Node::new_test_nodes(
         base_config.clone(),
@@ -100,7 +100,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
             raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
             ..RaftOptions::default()
         }));
-    base_config.common.default_num_partitions = NonZeroU16::new(4).expect("to be non-zero");
+    base_config.common.default_num_partitions = 4;
     base_config.bifrost.default_provider = ProviderKind::Replicated;
     base_config
         .bifrost

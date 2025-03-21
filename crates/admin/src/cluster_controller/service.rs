@@ -188,6 +188,7 @@ enum ClusterControllerCommand {
     UpdateClusterConfiguration {
         partition_replication: PartitionReplication,
         default_provider: ProviderConfiguration,
+        num_partitions: u16,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
     },
     SealAndExtendChain {
@@ -271,6 +272,7 @@ impl ClusterControllerHandle {
         &self,
         partition_replication: PartitionReplication,
         default_provider: ProviderConfiguration,
+        num_partitions: u16,
     ) -> Result<anyhow::Result<()>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -279,6 +281,7 @@ impl ClusterControllerHandle {
             .send(ClusterControllerCommand::UpdateClusterConfiguration {
                 partition_replication,
                 default_provider,
+                num_partitions,
                 response_tx,
             })
             .await;
@@ -459,6 +462,7 @@ impl<T: TransportConnect> Service<T> {
         &self,
         partition_replication: PartitionReplication,
         default_provider: ProviderConfiguration,
+        num_partitions: u16,
     ) -> anyhow::Result<()> {
         let logs = self
             .metadata_writer
@@ -515,6 +519,14 @@ impl<T: TransportConnect> Service<T> {
 
                     if builder.partition_replication() != &partition_replication {
                         builder.set_partition_replication(partition_replication.clone());
+                    }
+
+                    if builder.num_partitions() != num_partitions {
+                        if builder.num_partitions() != 0 {
+                            return Err(ClusterConfigurationUpdateError::Repartitioning);
+                        }
+
+                        builder.with_equally_sized_partitions(num_partitions)?;
                     }
 
                     builder
@@ -590,13 +602,18 @@ impl<T: TransportConnect> Service<T> {
                     .await;
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
-                partition_replication: replication_strategy,
+                partition_replication,
                 default_provider,
+                num_partitions,
                 response_tx,
             } => {
                 match tokio::time::timeout(
                     Duration::from_secs(2),
-                    self.update_cluster_configuration(replication_strategy, default_provider),
+                    self.update_cluster_configuration(
+                        partition_replication,
+                        default_provider,
+                        num_partitions,
+                    ),
                 )
                 .await
                 {
@@ -651,14 +668,16 @@ async fn sync_cluster_controller_metadata() -> anyhow::Result<()> {
 
 #[derive(thiserror::Error, Debug)]
 enum ClusterConfigurationUpdateError {
-    #[error("Unchanged")]
+    #[error("unchanged")]
     Unchanged,
-    #[error("Changing default provider kind to {0} is not supported. Choose 'replicated' instead")]
+    #[error("changing default provider kind to {0} is not supported. Choose 'replicated' instead")]
     ChooseReplicatedLoglet(ProviderKind),
     #[error(transparent)]
     BuildError(#[from] partition_table::BuilderError),
     #[error("missing partition table; cluster seems to be not provisioned")]
     MissingPartitionTable,
+    #[error("changing the number of partitions is not yet supported by Restate")]
+    Repartitioning,
 }
 
 #[derive(Clone)]

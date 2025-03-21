@@ -140,7 +140,7 @@ impl<T: TransportConnect> Scheduler<T> {
         let version = partition_table.version();
 
         // todo(azmy): avoid cloning the partition table every time by keeping
-        // the latest built always available as a field
+        //  the latest built always available as a field
         let mut builder = partition_table.clone().into_builder();
         let partition_replication = builder.partition_replication().clone();
 

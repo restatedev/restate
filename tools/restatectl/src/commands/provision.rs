@@ -20,7 +20,6 @@ use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
 use restate_types::replication::ReplicationProperty;
 use std::cmp::Ordering;
-use std::num::NonZeroU16;
 use tonic::Code;
 use tonic::codec::CompressionEncoding;
 
@@ -29,7 +28,7 @@ use tonic::codec::CompressionEncoding;
 pub struct ProvisionOpts {
     /// Number of partitions
     #[clap(long)]
-    num_partitions: Option<NonZeroU16>,
+    num_partitions: Option<u16>,
 
     /// Optional partition placement strategy. By default replicates
     /// partitions on all nodes. Accepts replication property
@@ -77,7 +76,7 @@ async fn provision_cluster(
 
     let request = ProvisionClusterRequest {
         dry_run: true,
-        num_partitions: provision_opts.num_partitions.map(|n| u32::from(n.get())),
+        num_partitions: provision_opts.num_partitions.map(u32::from),
         partition_replication: provision_opts.partition_replication.clone().map(Into::into),
         log_provider: provision_opts
             .log_provider

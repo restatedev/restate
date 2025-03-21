@@ -12,8 +12,8 @@ use std::num::{NonZeroU8, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_with::{DeserializeAs, serde_as};
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
@@ -295,7 +295,7 @@ pub struct ReplicatedLogletOptions {
     // Also allow to specify the replication property as non-zero u8 value to make it simpler to
     // pass it in via an env variable.
     #[serde_as(
-        as = "serde_with::PickFirst<(serde_with::DisplayFromStr, ReplicationPropertyFromNonZeroU8)>"
+        as = "serde_with::PickFirst<(serde_with::DisplayFromStr, crate::replication::ReplicationPropertyFromNonZeroU8)>"
     )]
     #[serde(default = "default_log_replication")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
@@ -316,18 +316,6 @@ pub struct ReplicatedLogletOptions {
     // hide the configuration option by excluding it from the Json schema
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub default_nodeset_size: NodeSetSize,
-}
-
-/// Helper struct to support deserializing the ReplicationProperty from a [`NonZeroU8`].
-struct ReplicationPropertyFromNonZeroU8;
-
-impl<'de> DeserializeAs<'de, ReplicationProperty> for ReplicationPropertyFromNonZeroU8 {
-    fn deserialize_as<D>(deserializer: D) -> Result<ReplicationProperty, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        NonZeroU8::deserialize(deserializer).map(ReplicationProperty::new)
-    }
 }
 
 fn nodeset_size_is_zero(i: &NodeSetSize) -> bool {
