@@ -15,11 +15,12 @@ dist = true
 formula = "restatectl"
 
 [features]
-default = ["replicated-loglet", "memory-loglet", "no-trace-logging"]
+default = ["replicated-loglet", "local-loglet", "memory-loglet", "no-trace-logging"]
 replicated-loglet = [
     "restate-bifrost/replicated-loglet",
 ]
 memory-loglet = ["restate-types/memory-loglet", "restate-bifrost/memory-loglet", "restate-admin/memory-loglet"]
+local-loglet = ["restate-bifrost/local-loglet", "restate-admin/local-loglet"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
 [dependencies]

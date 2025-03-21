@@ -124,13 +124,13 @@ impl RestateCode {
     fn fmt_alternate(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
             None => {
-                write!(f, "{}", "No error description")
+                write!(f, "No error description")
             }
             Some(code) => match code.description() {
                 None => {
                     // We should never end up here,
                     // as we enforce all restate error codes to have a description thanks to the macro in helper.rs
-                    write!(f, "{}", &format!("{}", code.code()))
+                    write!(f, "{}", &code.code().to_string())
                 }
                 Some(description) => {
                     write!(

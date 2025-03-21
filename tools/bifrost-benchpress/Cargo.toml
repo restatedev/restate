@@ -16,7 +16,7 @@ console = [
 ]
 
 [dependencies]
-restate-bifrost = { workspace = true, features = ["memory-loglet"] }
+restate-bifrost = { workspace = true, features = ["memory-loglet", "local-loglet"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-errors = { workspace = true }
 restate-metadata-server = { workspace = true }
