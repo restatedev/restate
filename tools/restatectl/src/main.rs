@@ -17,6 +17,8 @@ use restatectl::CliApp;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ClingFinished<CliApp> {
+    restatectl::lambda::handle_lambda_if_needed().await;
+
     let _ = ctrlc::set_handler(move || {
         // Showing cursor again if it was hidden by dialoguer.
         let mut stdout = std::io::stdout();
