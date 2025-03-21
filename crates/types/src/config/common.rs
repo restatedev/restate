@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::LazyLock;
@@ -136,7 +136,7 @@ pub struct CommonOptions {
     /// NOTE 2: This will be renamed to `default-num-partitions` by default as of v1.3+
     ///
     /// Default: 24
-    pub default_num_partitions: NonZeroU16,
+    pub default_num_partitions: u16,
 
     /// # Shutdown grace timeout
     ///
@@ -414,7 +414,7 @@ impl Default for CommonOptions {
             metadata_client: MetadataClientOptions::default(),
             bind_address: None,
             advertised_address: AdvertisedAddress::from_str(DEFAULT_ADVERTISED_ADDRESS).unwrap(),
-            default_num_partitions: NonZeroU16::new(24).expect("is not zero"),
+            default_num_partitions: 24,
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
             service_client: Default::default(),
@@ -856,9 +856,9 @@ pub struct CommonOptionsShadow {
     // todo drop in version 1.3
     allow_bootstrap: Option<bool>,
 
-    default_num_partitions: NonZeroU16,
+    default_num_partitions: u16,
     // todo drop in version 1.3
-    bootstrap_num_partitions: Option<NonZeroU16>,
+    bootstrap_num_partitions: Option<u16>,
 }
 
 impl From<CommonOptionsShadow> for CommonOptions {

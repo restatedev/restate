@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::cmp::max_by_key;
-use std::num::NonZeroU16;
 
 use anyhow::Context;
 use bytes::BytesMut;
@@ -64,10 +63,6 @@ impl NodeCtlSvcHandler {
             .map(|num_partitions| {
                 u16::try_from(num_partitions)
                     .context("Restate only supports running up to 65535 partitions.")
-                    .and_then(|num_partitions| {
-                        NonZeroU16::try_from(num_partitions)
-                            .context("The number of partitions needs to be > 0")
-                    })
             })
             .transpose()?
             .unwrap_or(config.common.default_num_partitions);

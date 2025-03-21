@@ -233,7 +233,7 @@ pub struct StorageOptions {
 
     /// How many partitions to divide memory across?
     ///
-    /// By default this uses the value defined in `bootstrap-num-partitions` in the common section of
+    /// By default this uses the value defined in `default-num-partitions` in the common section of
     /// the config.
     #[serde(skip_serializing_if = "Option::is_none")]
     num_partitions_to_share_memory_budget: Option<NonZeroU16>,
@@ -280,7 +280,14 @@ impl StorageOptions {
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
         if self.num_partitions_to_share_memory_budget.is_none() {
-            self.num_partitions_to_share_memory_budget = Some(common.default_num_partitions)
+            self.num_partitions_to_share_memory_budget = Some(
+                NonZeroU16::new(common.default_num_partitions)
+                    // todo add support for configuring the memory budget after the system has
+                    //  been started.
+                    // In the absence of a configured number of default partitions, we default to
+                    // its default value of 24 partitions. This is not great :-(
+                    .unwrap_or(NonZeroU16::new(24).expect("to be non zero")),
+            )
         }
 
         // todo: move to a shared struct and deduplicate
