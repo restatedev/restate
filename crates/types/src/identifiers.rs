@@ -1351,6 +1351,22 @@ mod tests {
     }
 
     #[test]
+    fn test_deployment_id_from_str() {
+        let deployment_id = "dp_11nGQpCRmau6ypL82KH2TnP";
+        let from_str_result = DeploymentId::from_str(deployment_id);
+        assert!(from_str_result.is_ok());
+        assert_eq!(
+            from_str_result.unwrap().to_string(),
+            deployment_id.to_string()
+        );
+
+        let deployment_id = "dp_11nGQpCRmau6ypL82KH2TnP123456";
+        let from_str_result = DeploymentId::from_str(deployment_id);
+        assert!(from_str_result.is_err());
+        assert_eq!(from_str_result.unwrap_err(), IdDecodeError::Length);
+    }
+
+    #[test]
     fn roundtrip_awakeable_id() {
         let expected_invocation_id = InvocationId::mock_random();
         let expected_entry_index = 2_u32;
