@@ -54,7 +54,7 @@ pub struct CommonOptions {
     ///
     /// Unique name for this node in the cluster. The node must not change unless
     /// it's started with empty local store. It defaults to the node's hostname.
-    node_name: Option<String>,
+    pub(crate) node_name: Option<String>,
 
     /// # Node Location
     ///

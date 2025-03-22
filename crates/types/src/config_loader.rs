@@ -70,7 +70,7 @@ impl ConfigLoader {
         config.admin.set_derived_values();
         config.ingress.set_derived_values();
 
-        let config = config.apply_cascading_values();
+        let mut config = config.apply_cascading_values();
 
         config.validate()?;
 
