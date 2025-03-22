@@ -10,6 +10,7 @@
 
 use super::Schema;
 use super::invocation_target::InvocationTargetMetadata;
+use crate::config::Configuration;
 use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
@@ -285,7 +286,17 @@ impl ServiceSchemas {
             }
         };
 
-        service_openapi.to_openapi_contract(name, self.documentation.as_deref(), self.revision)
+        let advertised_ingress_endpoint = Configuration::pinned()
+            .ingress
+            .advertised_ingress_endpoint
+            .as_ref()
+            .map(|u| u.to_string());
+        service_openapi.to_openapi_contract(
+            name,
+            advertised_ingress_endpoint.as_deref(),
+            self.documentation.as_deref(),
+            self.revision,
+        )
     }
 }
 

@@ -278,6 +278,7 @@ impl ServiceOpenAPI {
     pub(crate) fn to_openapi_contract(
         &self,
         service_name: &str,
+        ingress_url: Option<&str>,
         documentation: Option<&str>,
         revision: ServiceRevision,
     ) -> Value {
@@ -296,7 +297,15 @@ impl ServiceOpenAPI {
         paths.merge(self.attach_paths.clone());
         paths.merge(self.get_output_paths.clone());
 
-        // TODO how to add servers?! :(
+        let servers = ingress_url.map(|ingress_url| {
+            vec![
+                Server::builder()
+                    .description(Some("Restate Ingress URL"))
+                    .url(ingress_url)
+                    .build(),
+            ]
+        });
+
         serde_json::to_value(
             OpenApi::builder()
                 .info(
@@ -306,6 +315,7 @@ impl ServiceOpenAPI {
                         .description(documentation)
                         .build(),
                 )
+                .servers(servers)
                 .paths(paths)
                 .tags(Some(restate_tags()))
                 .components(Some(components))
