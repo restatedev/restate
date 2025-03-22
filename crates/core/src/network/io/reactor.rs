@@ -37,7 +37,9 @@ use crate::network::metric_definitions::{
 use crate::network::protobuf::network::message::{Body, Signal};
 use crate::network::protobuf::network::{Header, Message};
 use crate::network::tracking::{ConnectionTracking, PeerRouting};
-use crate::network::{Connection, Handler, Incoming, PeerMetadataVersion};
+use crate::network::{
+    Connection, Handler, Incoming, PeerAddress, PeerMetadataVersion, UnboundedConnectionRef,
+};
 use crate::{Metadata, ShutdownError, TaskCenter, TaskContext, TaskId, TaskKind};
 
 use super::{DrainReason, DropEgressStream, UnboundedEgressSender};
@@ -60,6 +62,7 @@ enum State {
 pub struct ConnectionReactor {
     state: State,
     connection: Connection,
+    connection_ref: UnboundedConnectionRef,
     tx: Option<UnboundedEgressSender>,
     drop_egress: Option<DropEgressStream>,
     context_propagator: TraceContextPropagator,
@@ -71,15 +74,26 @@ impl ConnectionReactor {
         connection: Connection,
         tx: UnboundedEgressSender,
         drop_egress: DropEgressStream,
+        peer_metadata: Option<PeerMetadataVersion>,
     ) -> Self {
         let context_propagator = TraceContextPropagator::default();
+        let mut seen_versions = MetadataVersions::new(Metadata::current());
+        let connection_ref = UnboundedConnectionRef::new(
+            PeerAddress::ServerNode(connection.peer().into()),
+            connection.protocol_version,
+            &tx,
+        );
+        if let Some(peer_metadata) = peer_metadata {
+            seen_versions.notify_peer_metadata(peer_metadata, &connection_ref);
+        }
         Self {
             state: State::Active,
             connection,
+            connection_ref,
             tx: Some(tx),
             drop_egress: Some(drop_egress),
             context_propagator,
-            seen_versions: Default::default(),
+            seen_versions: Some(seen_versions),
         }
     }
 
@@ -129,7 +143,7 @@ impl ConnectionReactor {
 
     fn notify_metadata_versions(&mut self, header: &Header) {
         if let Some(seen) = self.seen_versions.as_mut() {
-            seen.notify(header, &self.connection);
+            seen.notify(header, &self.connection_ref);
         }
     }
 
@@ -154,8 +168,6 @@ impl ConnectionReactor {
         S: Stream<Item = Message> + Unpin + Send,
     {
         let current_task = TaskContext::current();
-        let metadata = Metadata::current();
-        self.seen_versions = Some(MetadataVersions::new(metadata));
         Span::current().record("task_id", tracing::field::display(current_task.id()));
         let mut cancellation = std::pin::pin!(current_task.cancellation_token().cancelled());
 
@@ -398,7 +410,34 @@ impl MetadataVersions {
         }
     }
 
-    pub fn notify(&mut self, header: &Header, connection: &Connection) {
+    pub fn notify_peer_metadata(
+        &mut self,
+        peer: PeerMetadataVersion,
+        connection: &UnboundedConnectionRef,
+    ) {
+        self.update(
+            peer.nodes_config,
+            peer.partition_table,
+            peer.schema,
+            peer.logs,
+        )
+        .into_iter()
+        .for_each(|(kind, version)| {
+            if let Some(version) = version {
+                if version > self.get_latest_version(kind) {
+                    self.metadata.notify_observed_version(
+                        kind,
+                        version,
+                        Some(connection.clone()),
+                        Urgency::Normal,
+                    );
+                }
+                // todo: store the latest if it's higher
+            }
+        });
+    }
+
+    pub fn notify(&mut self, header: &Header, connection: &UnboundedConnectionRef) {
         self.update(
             header.my_nodes_config_version.map(Into::into),
             header.my_partition_table_version.map(Into::into),

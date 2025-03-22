@@ -30,6 +30,7 @@ use restate_types::net::codec::WireEncode;
 use crate::Metadata;
 use crate::TaskId;
 use crate::TaskKind;
+use crate::network::PeerMetadataVersion;
 
 use super::ConnectError;
 use super::ConnectionClosed;
@@ -39,10 +40,14 @@ use super::Handler;
 use super::HandshakeError;
 use super::NetworkError;
 use super::Outgoing;
+use super::PeerAddress;
 use super::TransportConnect;
+use super::generate_msg_id;
 use super::handshake::wait_for_welcome;
 use super::io::ConnectionReactor;
 use super::io::EgressStream;
+use super::io::UnboundedEgressSender;
+use super::io::WeakUnboundedEgressSender;
 use super::io::{DrainReason, EgressMessage, EgressSender};
 use super::metric_definitions::OUTGOING_CONNECTION;
 use super::protobuf::network::Header;
@@ -235,11 +240,6 @@ impl Connection {
         conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
         peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
     ) -> Result<(Connection, TaskId), ConnectError> {
-        let Destination::Node(node_id) = destination else {
-            unimplemented!("connecting to anonymous nodes is not supported yet");
-        };
-
-        debug!(%direction, "Connecting to {}", node_id);
         let metadata = Metadata::current();
         let my_node_id = metadata.my_node_id_opt();
         let nodes_config = metadata.nodes_config_snapshot();
@@ -262,12 +262,10 @@ impl Connection {
             .unwrap();
 
         // Establish the connection
-        let mut incoming = transport_connector
-            .connect(node_id, &nodes_config, egress)
-            .await?;
+        let mut incoming = transport_connector.connect(&destination, egress).await?;
 
         // finish the handshake
-        let (_header, welcome) = wait_for_welcome(
+        let (header, welcome) = wait_for_welcome(
             &mut incoming,
             Configuration::pinned().networking.handshake_timeout.into(),
         )
@@ -290,12 +288,14 @@ impl Connection {
             .into();
 
         // we expect the node to identify itself as the same NodeId we think we are connecting to.
-        if peer_node_id != node_id {
-            // Node claims that it's someone else!
-            return Err(HandshakeError::Failed(
-                "Node returned an unexpected GenerationalNodeId in Welcome message.".to_owned(),
-            )
-            .into());
+        if let Destination::Node(destination_node_id) = destination {
+            if peer_node_id != destination_node_id {
+                // Node claims that it's someone else!
+                return Err(HandshakeError::Failed(
+                    "Node returned an unexpected GenerationalNodeId in Welcome message.".to_owned(),
+                )
+                .into());
+            }
         }
 
         let connection = Connection::new(peer_node_id, protocol_version, tx);
@@ -307,8 +307,14 @@ impl Connection {
                 | ConnectionDirection::Bidirectional
                 | ConnectionDirection::Forward
         );
+        let peer_metadata = PeerMetadataVersion::from(header.clone());
 
-        let reactor = ConnectionReactor::new(connection.clone(), unbounded_sender, drop_egress);
+        let reactor = ConnectionReactor::new(
+            connection.clone(),
+            unbounded_sender,
+            drop_egress,
+            Some(peer_metadata),
+        );
 
         let task_id = reactor.start(
             task_kind,
@@ -405,6 +411,57 @@ impl Connection {
 impl PartialEq for Connection {
     fn eq(&self, other: &Self) -> bool {
         self.sender.same_channel(&other.sender)
+    }
+}
+
+/// A weak connection that can be used to send system-level messages to peers.
+/// This should **not** be used for other purposes.
+#[derive(Clone, derive_more::Debug)]
+pub struct UnboundedConnectionRef {
+    pub(crate) peer: PeerAddress,
+    pub(crate) protocol_version: ProtocolVersion,
+    #[debug(skip)]
+    pub(crate) sender: WeakUnboundedEgressSender,
+}
+
+impl UnboundedConnectionRef {
+    pub fn new(
+        peer: PeerAddress,
+        protocol_version: ProtocolVersion,
+        sender: &UnboundedEgressSender,
+    ) -> Self {
+        Self {
+            peer,
+            protocol_version,
+            sender: sender.downgrade(),
+        }
+    }
+
+    pub fn peer(&self) -> &PeerAddress {
+        &self.peer
+    }
+
+    /// Encodes and sends the message on the unbounded channel to peer
+    pub fn encode_and_send<M>(&self, msg: M) -> Result<(), ConnectionClosed>
+    where
+        M: WireEncode + Targeted,
+    {
+        // no need to serialize if the connection is already closed
+        let Some(sender) = self.sender.upgrade() else {
+            return Err(ConnectionClosed);
+        };
+
+        let header = Header {
+            // for compatibility with protocol V1
+            msg_id: generate_msg_id(),
+            ..Default::default()
+        };
+
+        let target = M::TARGET.into();
+        let payload = msg.encode_to_bytes(self.protocol_version);
+
+        let body = Body::Encoded(message::BinaryMessage { target, payload });
+        sender.unbounded_send(EgressMessage::Message(header, body, Some(Span::current())))
     }
 }
 
@@ -645,7 +702,6 @@ pub mod test_util {
 
     // Represents a partially connected peer connection in test environment. A connection must be
     // handshaken in order to be converted into MockPeerConnection.
-    //
     // This is used to represent an outgoing connection from (`peer` to `my_node_id`)
     #[derive(derive_more::Debug)]
     pub struct PartialPeerConnection {

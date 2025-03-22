@@ -17,7 +17,6 @@ use parking_lot::Mutex;
 use tracing::{debug, info, instrument, trace, warn};
 
 use restate_types::config::Configuration;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{NodesConfigError, NodesConfiguration};
 use restate_types::{GenerationalNodeId, Merge, NodeId, PlainNodeId};
 
@@ -33,7 +32,7 @@ use super::transport_connector::{TransportConnect, find_node};
 use super::{
     AcceptError, ConnectError, Destination, DiscoveryError, HandshakeError, MessageRouter,
 };
-use crate::metadata::Urgency;
+use crate::network::PeerMetadataVersion;
 use crate::network::connection::ConnectThrottle;
 use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
 use crate::{Metadata, ShutdownError, TaskId, TaskKind, my_node_id};
@@ -211,8 +210,6 @@ impl ConnectionManager {
             selected_protocol_version
         );
 
-        self.verify_node_id(peer_node_id, &header, &nodes_config, &metadata)?;
-
         let (sender, unbounded_sender, egress, drop_egress) = EgressStream::create(
             Configuration::pinned()
                 .networking
@@ -220,7 +217,9 @@ impl ConnectionManager {
                 .get(),
         );
 
-        self.update_generation_or_preempt(peer_node_id)?;
+        self.update_generation_or_preempt(&nodes_config, peer_node_id)?;
+
+        let peer_metadata = PeerMetadataVersion::from(header.clone());
 
         // Enqueue the welcome message
         let welcome = Welcome::new(my_node_id, selected_protocol_version, hello.direction());
@@ -248,6 +247,7 @@ impl ConnectionManager {
             incoming,
             drop_egress,
             should_register,
+            Some(peer_metadata),
         )?;
 
         info!(
@@ -409,57 +409,15 @@ impl ConnectionManager {
             drop_egress,
             // loopback is always registered
             true,
+            None,
         )?;
 
         Ok(connection)
     }
 
-    fn verify_node_id(
-        &self,
-        peer_node_id: GenerationalNodeId,
-        header: &Header,
-        nodes_config: &NodesConfiguration,
-        metadata: &Metadata,
-    ) -> Result<(), NodesConfigError> {
-        if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
-            // If nodeId is unrecognized and peer is at higher nodes configuration version,
-            // then we have to update our NodesConfiguration
-            if let Some(other_nodes_config_version) = header.my_nodes_config_version.map(Into::into)
-            {
-                let peer_is_in_the_future = other_nodes_config_version > nodes_config.version();
-
-                if peer_is_in_the_future {
-                    metadata.notify_observed_version(
-                        MetadataKind::NodesConfiguration,
-                        other_nodes_config_version,
-                        None,
-                        Urgency::High,
-                    );
-                    debug!(
-                        "Remote node '{}' with newer nodes configuration '{}' tried to connect. Trying to fetch newer version before accepting connection.",
-                        peer_node_id, other_nodes_config_version
-                    );
-                } else {
-                    info!(
-                        "Unknown remote node '{}' tried to connect to cluster. Rejecting connection.",
-                        peer_node_id
-                    );
-                }
-            } else {
-                info!(
-                    "Unknown remote node '{}' w/o specifying its node configuration tried to connect to cluster. Rejecting connection.",
-                    peer_node_id
-                );
-            }
-
-            return Err(e);
-        }
-
-        Ok(())
-    }
-
     fn update_generation_or_preempt(
         &self,
+        nodes_config: &NodesConfiguration,
         peer_node_id: GenerationalNodeId,
     ) -> Result<(), AcceptError> {
         // Lock is held, don't perform expensive or async operations here.
@@ -484,6 +442,21 @@ impl ConnectionManager {
             return Err(AcceptError::PreviouslyShutdown);
         }
 
+        if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
+            match e {
+                NodesConfigError::UnknownNodeId(_) => {}
+                NodesConfigError::Deleted(_) => return Err(AcceptError::PreviouslyShutdown),
+                NodesConfigError::GenerationMismatch { expected, found } => {
+                    if found.is_newer_than(expected) {
+                        return Err(AcceptError::OldPeerGeneration(format!(
+                            "newer generation '{}' has been observed",
+                            found
+                        )));
+                    }
+                }
+            }
+        }
+
         // todo: if we have connections with an older generation, we request to drop it.
         // However, more than one connection with the same generation is allowed.
         // if known_status.generation < connection.peer.generation() {
@@ -502,6 +475,7 @@ impl ConnectionManager {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_connection_reactor<S>(
         &self,
         task_kind: TaskKind,
@@ -510,13 +484,15 @@ impl ConnectionManager {
         incoming: S,
         drop_egress: DropEgressStream,
         should_register: bool,
+        peer_metadata: Option<PeerMetadataVersion>,
     ) -> Result<TaskId, ShutdownError>
     where
         S: Stream<Item = Message> + Unpin + Send + 'static,
     {
         let router = self.inner.lock().router.clone();
 
-        let reactor = ConnectionReactor::new(connection, unbounded_sender, drop_egress);
+        let reactor =
+            ConnectionReactor::new(connection, unbounded_sender, drop_egress, peer_metadata);
 
         let task_id = reactor.start(
             task_kind,
@@ -612,6 +588,7 @@ mod tests {
     use restate_types::config::NetworkingOptions;
     use restate_types::locality::NodeLocation;
     use restate_types::net::codec::WireDecode;
+    use restate_types::net::metadata::MetadataKind;
     use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage};
     use restate_types::net::node::GetNodeState;
     use restate_types::net::{
@@ -619,8 +596,7 @@ mod tests {
         ProtocolVersion,
     };
     use restate_types::nodes_config::{
-        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfigError, NodesConfiguration,
-        Role,
+        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
     };
     use tokio_stream::StreamExt;
 
@@ -788,43 +764,6 @@ mod tests {
             pat!(AcceptError::Handshake(pat!(HandshakeError::Failed(eq(
                 "cannot accept a connection to the same NodeID from a different generation",
             )))))
-        );
-
-        // Unrecognized node Id
-        let (tx, rx) = mpsc::channel(1);
-        let my_node_id = GenerationalNodeId::new(55, 2);
-
-        let hello = Hello::new(
-            Some(my_node_id),
-            metadata.nodes_config_ref().cluster_name().to_owned(),
-            ConnectionDirection::Bidirectional,
-        );
-        let hello = Message::new(
-            Header::new(
-                metadata.nodes_config_version(),
-                None,
-                None,
-                None,
-                crate::network::generate_msg_id(),
-                None,
-            ),
-            hello,
-        );
-        tx.send(hello).await.expect("Channel accept hello message");
-
-        let connections = ConnectionManager::default();
-
-        let incoming = ReceiverStream::new(rx);
-        let err = connections
-            .accept_incoming_connection(incoming)
-            .await
-            .err()
-            .unwrap();
-        assert_that!(
-            err,
-            pat!(AcceptError::NodesConfig(pat!(
-                NodesConfigError::UnknownNodeId(_)
-            )))
         );
         Ok(())
     }
