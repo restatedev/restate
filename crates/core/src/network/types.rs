@@ -26,6 +26,7 @@ use super::{Connection, ConnectionClosed, NetworkSendError};
 static NEXT_MSG_ID: AtomicU64 = const { AtomicU64::new(1) };
 
 /// Address of a peer in the network. It can be a specific node or an anonymous peer.
+#[derive(Debug, Clone)]
 pub enum PeerAddress {
     ServerNode(NodeId),
     Anonymous,
