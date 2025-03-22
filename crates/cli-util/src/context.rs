@@ -156,6 +156,10 @@ impl CliContext {
         Duration::from_millis(self.network.request_timeout)
     }
 
+    pub fn insecure_skip_tls_verify(&self) -> bool {
+        self.network.insecure_skip_tls_verify
+    }
+
     pub fn loaded_dotenv(&self) -> Option<&Path> {
         self.loaded_dotenv.as_deref()
     }
