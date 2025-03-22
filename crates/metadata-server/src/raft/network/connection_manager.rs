@@ -135,7 +135,10 @@ where
 
                                     let message = M::deserialize(&mut message.payload)?;
 
-                                    assert_eq!(message.to(), self.connection_manager.identity, "Expect to only receive messages for peer '{}'", self.connection_manager.identity);
+                                    if message.to() != self.connection_manager.identity {
+                                        debug!("Sender assumes me to be node {} but I am node {}; closing the connection", message.to(), self.connection_manager.identity);
+                                        break;
+                                    }
 
                                     if self.connection_manager.router.send(message).await.is_err() {
                                         // system is shutting down
