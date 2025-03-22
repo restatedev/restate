@@ -18,12 +18,15 @@ import { LoadTestEnvironmentStack } from "../lib/loadtest-environment-stack";
 // Graviton2 arm64, 8vCPU x 32GB RAM
 const INSTANCE_TYPE_MID = ec2.InstanceType.of(ec2.InstanceClass.M6G, ec2.InstanceSize.XLARGE2);
 
+// Xeon x86_64 4vCPU x 8GB RAM
+const INSTANCE_TYPE_X86_4_VCPU_8GB_RAM = ec2.InstanceType.of(ec2.InstanceClass.C6I, ec2.InstanceSize.XLARGE);
+
 // Xeon x86_64, 32vCPU x64GB RAM, 1.9TB local NVMe SSD
 const INSTANCE_TYPE_HIGH = ec2.InstanceType.of(ec2.InstanceClass.C6ID, ec2.InstanceSize.XLARGE8);
 
 const EBS_VOLUME_MID = {
   volumeType: ec2.EbsDeviceVolumeType.GP3,
-  volumeSize: 16, // GiB
+  volumeSize: 64, // GiB
   deleteOnTermination: true,
   iops: 3_000,
   throughput: 250, // MiB/s
@@ -46,12 +49,12 @@ const EBS_VOLUME_ULTRA = {
 
 const app = new cdk.App();
 
-new LoadTestEnvironmentStack(app, `restate-benchmark-sandbox-${process.env.USER}`, {
+new LoadTestEnvironmentStack(app, `restate-ebs-testbed`, {
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,
   },
-  instanceType: INSTANCE_TYPE_MID,
+  instanceType: INSTANCE_TYPE_X86_4_VCPU_8GB_RAM,
   vpcId: undefined, // use default VPC unless specified
   ebsVolume: EBS_VOLUME_MID, // optional EBS volume
 });
