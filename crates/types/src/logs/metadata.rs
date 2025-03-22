@@ -328,7 +328,7 @@ pub struct LogsConfiguration {
 #[serde(try_from = "LogsSerde", into = "LogsSerde")]
 pub struct Logs {
     pub(super) version: Version,
-    pub(super) logs: HashMap<LogId, Chain>,
+    pub(super) logs: BTreeMap<LogId, Chain>,
     #[debug(skip)]
     pub(super) lookup_index: LookupIndex,
     pub(super) config: LogsConfiguration,
@@ -349,6 +349,8 @@ impl From<Logs> for LogsSerde {
     fn from(value: Logs) -> Self {
         Self {
             version: value.version,
+            // As logs is a btreemap, this is ordered by log id, which avoids reordering the entire logs config
+            // on every write.
             logs: value.logs.into_iter().collect(),
             config: Some(value.config),
         }
@@ -359,7 +361,7 @@ impl TryFrom<LogsSerde> for Logs {
     type Error = anyhow::Error;
 
     fn try_from(value: LogsSerde) -> Result<Self, Self::Error> {
-        let mut logs = HashMap::with_capacity(value.logs.len());
+        let mut logs = BTreeMap::new();
         let mut lookup_index = LookupIndex::default();
 
         let mut config = value.config;
