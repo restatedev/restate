@@ -20,6 +20,7 @@ use tracing::{debug, trace};
 pub struct Prometheus {
     handle: Option<PrometheusHandle>,
     upkeep_task: Option<AbortHandle>,
+    global_labels: Vec<(String, String)>,
 }
 
 impl Prometheus {
@@ -33,6 +34,7 @@ impl Prometheus {
             return Self {
                 handle: None,
                 upkeep_task: None,
+                global_labels: vec![],
             };
         }
         let builder = PrometheusBuilder::default()
@@ -40,7 +42,9 @@ impl Prometheus {
             .idle_timeout(
                 MetricKindMask::HISTOGRAM,
                 opts.histogram_inactivity_timeout.map(Into::into),
-            );
+            )
+            .add_global_label("cluster_name", opts.cluster_name())
+            .add_global_label("node_name", opts.node_name());
         let recorder = builder.build_recorder();
         let prometheus_handle = recorder.handle();
 
@@ -51,11 +55,19 @@ impl Prometheus {
         Self {
             handle: Some(prometheus_handle),
             upkeep_task: None,
+            global_labels: vec![
+                ("cluster_name".to_string(), opts.cluster_name().to_string()),
+                ("node_name".to_string(), opts.node_name().to_string()),
+            ],
         }
     }
 
     pub fn handle(&self) -> Option<&PrometheusHandle> {
         self.handle.as_ref()
+    }
+
+    pub fn global_labels(&self) -> &[(String, String)] {
+        &self.global_labels
     }
 
     /// Starts the upkeep task. Should typically be run once, but it'll abort
