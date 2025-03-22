@@ -81,8 +81,9 @@ fn instant_to_proto(t: Instant) -> prost_types::Duration {
     t.elapsed().try_into().unwrap()
 }
 
-#[derive(Debug, Clone, IntoProst)]
+#[derive(Debug, Clone, IntoProst, strum::Display)]
 #[prost(target = "crate::protobuf::cluster::NodeState", oneof = "state")]
+#[strum(serialize_all = "snake_case")]
 pub enum NodeState {
     Alive(AliveNode),
     Dead(DeadNode),
@@ -120,17 +121,17 @@ pub struct SuspectNode {
     pub last_attempt: MillisSinceEpoch,
 }
 
-#[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProst, derive_more::Display,
-)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProst, strum::Display)]
 #[prost(target = "crate::protobuf::cluster::RunMode")]
+#[strum(serialize_all = "snake_case")]
 pub enum RunMode {
     Leader,
     Follower,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoProst)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoProst, strum::Display)]
 #[prost(target = "crate::protobuf::cluster::ReplayStatus")]
+#[strum(serialize_all = "snake_case")]
 pub enum ReplayStatus {
     Starting,
     Active,
