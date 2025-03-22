@@ -47,6 +47,13 @@ pub struct ConfigSetOpts {
     /// It's recommended to leave it unset (defaults to 0)
     #[clap(long)]
     log_default_nodeset_size: Option<u16>,
+
+    /// Number of partitions.
+    ///
+    /// It is only possible to change the number of partitions if the current cluster value is 0.
+    /// Otherwise, the set operation will fail.
+    #[clap(long)]
+    num_partitions: Option<u16>,
 }
 
 async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> anyhow::Result<()> {
@@ -99,6 +106,15 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
 
     if let Some(nodeset_size) = set_opts.log_default_nodeset_size {
         bifrost_provider.target_nodeset_size = u32::from(nodeset_size);
+    }
+
+    if let Some(num_partitions) = set_opts.num_partitions {
+        if current.num_partitions != 0 {
+            anyhow::bail!(
+                "The cluster has already been provisioned with partitions. Restate does not support repartitioning, yet."
+            );
+        }
+        current.num_partitions = num_partitions.into();
     }
 
     let updated_config_string = cluster_config_string(&current)?;
