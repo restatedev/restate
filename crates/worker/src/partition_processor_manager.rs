@@ -14,7 +14,6 @@ mod processor_state;
 mod spawn_processor_task;
 
 use restate_bifrost::loglet::FindTailOptions;
-use restate_types::identifiers::SnapshotId;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
@@ -50,6 +49,7 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
+use restate_types::identifiers::SnapshotId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -989,6 +989,7 @@ impl PartitionProcessorManager {
                     snapshot_base_path,
                     partition_store_manager: self.partition_store_manager.clone(),
                     cluster_name: config.common.cluster_name().into(),
+                    cluster_id: Metadata::current().nodes_config_ref().cluster_id(),
                     node_name: config.common.node_name().into(),
                     snapshot_repository,
                 };

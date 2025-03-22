@@ -961,6 +961,7 @@ macro_rules! ulid_backed_id {
     };
 }
 
+ulid_backed_id!(Cluster @with_resource_id);
 ulid_backed_id!(Deployment @with_resource_id);
 ulid_backed_id!(Subscription @with_resource_id);
 ulid_backed_id!(PartitionProcessorRpcRequest);
