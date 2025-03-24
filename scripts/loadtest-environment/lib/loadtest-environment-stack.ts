@@ -49,8 +49,9 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
     // Cloud init script. To run on every boot, make sure it's idempotent and change `once` to `always` below.
     const initScript = ec2.UserData.forLinux();
     initScript.addCommands(
-      "apt update && apt upgrade",
-      "apt install -y make cmake clang protobuf-compiler rustup npm wrk tmux htop podman podman-docker jq prometheus-node-exporter",
+      "set -eufx -o pipefail",
+      "apt-get update",
+      "apt-get install -y make cmake clang protobuf-compiler rustup npm wrk tmux htop podman podman-docker jq prometheus-node-exporter",
       "mkdir /restate-data",
     );
 
@@ -103,13 +104,13 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
     // Cloud init script. To run on every boot, make sure it's idempotent and change `once` to `always` below.
     const grafanaInitScript = ec2.UserData.forLinux();
     grafanaInitScript.addCommands(
-      "wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -",
-      'add-apt-repository "deb https://packages.grafana.com/oss/deb stable main"',
+      "set -eufx -o pipefail",
+      "wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor > /etc/apt/trusted.gpg.d/grafana.gpg",
+      'add-apt-repository -y "deb https://packages.grafana.com/oss/deb stable main"',
       "apt-get update",
-      "apt-get install --yes grafana prometheus",
+      "apt-get install -y grafana prometheus",
       "",
       "cat << EOF >> /etc/prometheus/prometheus.yml",
-      "",
       `
   - job_name: 'restate-cluster-nodes'
     scrape_interval: 5s
@@ -161,6 +162,7 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
     });
     grafana.addSecurityGroup(securityGroup);
     new cdk.CfnOutput(this, "GrafanaNode", { value: grafana.instancePublicDnsName });
+    new cdk.CfnOutput(this, "GrafanaInstanceId", { value: grafana.instanceId });
     new cdk.CfnOutput(this, "GrafanaAddress", { value: `http://${grafana.instancePublicDnsName}:3000` });
 
     securityGroup.addIngressRule(securityGroup, ec2.Port.allTraffic());
