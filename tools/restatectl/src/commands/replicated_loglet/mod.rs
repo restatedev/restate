@@ -36,6 +36,7 @@ fn render_storage_state(state: StorageState) -> Cell {
     match state {
         StorageState::ReadWrite => cell.fg(Color::Green),
         StorageState::ReadOnly => cell.fg(Color::Yellow),
+        StorageState::Gone => cell.fg(Color::Yellow),
         StorageState::DataLoss => cell.fg(Color::Red),
         StorageState::Provisioning => cell.fg(Color::Reset),
         StorageState::Disabled => cell.fg(Color::Grey),

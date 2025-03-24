@@ -229,7 +229,7 @@ impl LogServerService {
                     my_node_id.as_plain(),
                 ));
             }
-            StorageState::ReadWrite | StorageState::ReadOnly => {}
+            StorageState::ReadWrite | StorageState::ReadOnly | StorageState::Gone => {}
         }
 
         debug!("My storage state: {:?}", my_storage_state);
