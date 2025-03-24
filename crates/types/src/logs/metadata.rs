@@ -411,10 +411,25 @@ struct LogsSerde {
     config: Option<LogsConfiguration>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq, derive_more::IsVariant)]
+pub enum ChainState {
+    /// Chain is allowed to grow
+    #[default]
+    Open,
+    /// Chain is sealed. No new segments can be added.
+    Sealed {
+        /// The LSN of the virtually impossible next segment, akin to the first lsn of the next
+        /// segment in an open chain.
+        tail_lsn: Lsn,
+    },
+}
+
 /// the chain is a list of segments in (from Lsn) order.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chain {
+    #[serde(default)]
+    pub(super) state: ChainState,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub(super) chain: BTreeMap<Lsn, LogletConfig>,
@@ -635,7 +650,10 @@ impl Chain {
             base_lsn,
             LogletConfig::new(SegmentIndex::default(), kind, config),
         );
-        Self { chain }
+        Self {
+            chain,
+            state: ChainState::Open,
+        }
     }
 
     #[track_caller]
