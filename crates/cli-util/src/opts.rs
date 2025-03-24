@@ -86,6 +86,10 @@ pub struct NetworkOpts {
     /// Overall request timeout for network calls, in milliseconds.
     #[arg(long, default_value_t = DEFAULT_REQUEST_TIMEOUT, global = true)]
     pub request_timeout: u64,
+    /// If true, the server's certificate will not be checked for validity. This will make your HTTPS connections
+    /// insecure
+    #[arg[long = "insecure", short = 'k', default_value_t = false, global = true]]
+    pub insecure_skip_tls_verify: bool,
 }
 
 impl CommonClientConnectionOptions for NetworkOpts {
