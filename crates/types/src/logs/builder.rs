@@ -153,23 +153,26 @@ impl ChainBuilder<'_> {
         };
 
         let remaining = self.inner.chain.split_off(&found_base_lsn);
-        for loglet_config in self.inner.chain.values() {
-            if let ProviderKind::Replicated = loglet_config.kind {
-                // if it was inserted correctly before, we shouldn't fail to deserialize it.
-                // validation happens at original insert time.
-                let params =
-                    ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())
-                        .expect("params should be deserializable");
-                self.lookup_index.rm_replicated_loglet_reference(
-                    self.log_id,
-                    loglet_config.index(),
-                    params.loglet_id,
-                );
+        if !self.inner.chain.is_empty() {
+            *self.modified = true;
+
+            for loglet_config in self.inner.chain.values() {
+                if let ProviderKind::Replicated = loglet_config.kind {
+                    // if it was inserted correctly before, we shouldn't fail to deserialize it.
+                    // validation happens at original insert time.
+                    let params =
+                        ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())
+                            .expect("params should be deserializable");
+                    self.lookup_index.rm_replicated_loglet_reference(
+                        self.log_id,
+                        loglet_config.index(),
+                        params.loglet_id,
+                    );
+                }
             }
         }
 
         self.inner.chain = remaining;
-        *self.modified = true;
     }
 
     /// `base_lsn` must be higher than all previous base_lsns.
