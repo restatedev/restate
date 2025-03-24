@@ -121,17 +121,17 @@ pub struct SuspectNode {
     pub last_attempt: MillisSinceEpoch,
 }
 
-#[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProst, derive_more::Display,
-)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProst, strum::Display)]
 #[prost(target = "crate::protobuf::cluster::RunMode")]
+#[strum(serialize_all = "snake_case")]
 pub enum RunMode {
     Leader,
     Follower,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoProst)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoProst, strum::Display)]
 #[prost(target = "crate::protobuf::cluster::ReplayStatus")]
+#[strum(serialize_all = "snake_case")]
 pub enum ReplayStatus {
     Starting,
     Active,

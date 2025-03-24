@@ -24,6 +24,7 @@ mod log;
 mod node;
 mod node_state;
 mod partition;
+mod partition_state;
 mod partition_store_scanner;
 mod physical_optimizer;
 mod promise;
