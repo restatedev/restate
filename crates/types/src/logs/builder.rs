@@ -27,6 +27,8 @@ pub struct LogsBuilder {
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuilderError {
+    #[error("log {0} is permanently sealed")]
+    ChainPermanentlySealed(LogId),
     #[error("log {0} already exists")]
     LogAlreadyExists(LogId),
     #[error("loglet params could not be deserialized: {0}")]
@@ -180,6 +182,10 @@ impl ChainBuilder<'_> {
         provider: ProviderKind,
         params: LogletParams,
     ) -> Result<SegmentIndex, BuilderError> {
+        if self.inner.state.is_sealed() {
+            return Err(BuilderError::ChainPermanentlySealed(self.log_id));
+        }
+
         let mut last_entry = self
             .inner
             .chain
