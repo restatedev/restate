@@ -102,8 +102,10 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
       node.addSecurityGroup(securityGroup);
       new cdk.CfnOutput(this, `InstanceId${n}`, { value: node.instanceId });
       new cdk.CfnOutput(this, `Node${n}`, { value: node.instancePublicDnsName });
+      new cdk.CfnOutput(this, `NodeInternalIpAddress${n}`, { value: node.instancePrivateIp });
     }
 
+    // todo: replace the IPs below with the NodeInternalIpAddress${N} outputs
     /*
       wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
       add-apt-repository "deb https://packages.grafana.com/oss/deb stable main"

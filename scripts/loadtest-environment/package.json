@@ -2,6 +2,7 @@
   "name": "restate-loadtest-environment",
   "description": "An EC2-based Restate performance testing environment",
   "scripts": {
+    "deploy": "npx cdk deploy --outputs-file cdk-outputs.json --require-approval never",
     "cdk": "cdk"
   },
   "devDependencies": {
