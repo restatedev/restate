@@ -81,8 +81,9 @@ fn instant_to_proto(t: Instant) -> prost_types::Duration {
     t.elapsed().try_into().unwrap()
 }
 
-#[derive(Debug, Clone, IntoProst)]
+#[derive(Debug, Clone, IntoProst, strum::Display)]
 #[prost(target = "crate::protobuf::cluster::NodeState", oneof = "state")]
+#[strum(serialize_all = "snake_case")]
 pub enum NodeState {
     Alive(AliveNode),
     Dead(DeadNode),

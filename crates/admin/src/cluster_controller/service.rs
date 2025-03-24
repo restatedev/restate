@@ -112,8 +112,11 @@ where
         let options = configuration.live_load();
         let heartbeat_interval = Self::create_heartbeat_interval(&options.admin);
 
-        let cluster_query_context =
-            QueryContext::create(&options.admin.query_engine, ClusterTables).await?;
+        let cluster_query_context = QueryContext::create(
+            &options.admin.query_engine,
+            ClusterTables::new(cluster_state_refresher.cluster_state_watcher().watch()),
+        )
+        .await?;
 
         // Registering ClusterCtrlSvc grpc service to network server
         server_builder.register_grpc_service(
