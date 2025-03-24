@@ -340,6 +340,7 @@ pub fn logserver_candidate_filter(_node_id: PlainNodeId, config: &NodeConfig) ->
         StorageState::Provisioning
         | StorageState::Disabled
         | StorageState::ReadOnly
+        | StorageState::Gone
         | StorageState::DataLoss => false,
     }
 }

@@ -92,7 +92,10 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
             // it's safe to disable a disabled node
             StorageState::Disabled => return Ok(()),
             // we need to check whether this node is no longer part of any known node sets
-            StorageState::ReadOnly | StorageState::DataLoss | StorageState::Provisioning => {}
+            StorageState::ReadOnly
+            | StorageState::Gone
+            | StorageState::DataLoss
+            | StorageState::Provisioning => {}
         }
 
         // if the default provider kind is local or in-memory than it is not safe to disable the
