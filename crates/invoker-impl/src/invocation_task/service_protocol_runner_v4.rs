@@ -739,7 +739,7 @@ where
                                 headers: cmd.headers.into_iter().map(Into::into).collect(),
                                 key: cmd.key.into(),
                                 idempotency_key: cmd.idempotency_key.map(|s| s.into()),
-                                span_relation: parent_span_context.as_linked()
+                                span_relation: parent_span_context.as_parent()
                             }
                         )
                         .map_err(|e| InvokerError::CommandPrecondition(
