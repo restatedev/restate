@@ -54,6 +54,8 @@ pub enum EnqueueError<T> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdminError {
+    #[error("log {0} is permanently sealed")]
+    ChainPermanentlySealed(LogId),
     #[error("log {0} already exists")]
     LogAlreadyExists(LogId),
     #[error("segment conflicts with existing segment with base_lsn={0}")]
@@ -80,6 +82,9 @@ impl From<BuilderError> for AdminError {
     fn from(value: BuilderError) -> Self {
         match value {
             BuilderError::LogAlreadyExists(log_id) => AdminError::LogAlreadyExists(log_id),
+            BuilderError::ChainPermanentlySealed(log_id) => {
+                AdminError::ChainPermanentlySealed(log_id)
+            }
             BuilderError::ParamsSerde(error) => AdminError::ParamsSerde(error),
             BuilderError::SegmentConflict(lsn) => AdminError::SegmentConflict(lsn),
         }
