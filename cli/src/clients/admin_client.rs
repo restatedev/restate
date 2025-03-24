@@ -128,6 +128,7 @@ impl AdminClient {
                 std::env::consts::ARCH,
             ))
             .connect_timeout(CliContext::get().connect_timeout())
+            .danger_accept_invalid_certs(CliContext::get().insecure_skip_tls_verify())
             .build()?;
 
         let base_url = env.admin_base_url()?.clone();
