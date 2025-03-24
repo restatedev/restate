@@ -12,7 +12,7 @@ use crate::table_util::format_using;
 
 use super::schema::PartitionBuilder;
 use itertools::{Itertools, Position};
-use restate_types::{Version, partition_table::Partition};
+use restate_types::{Version, cluster::cluster_state::RunMode, partition_table::Partition};
 
 #[inline]
 pub(crate) fn append_partition_rows(
@@ -32,10 +32,10 @@ pub(crate) fn append_partition_rows(
 
         match position {
             Position::First | Position::Only => {
-                row.target_mode("LEADER");
+                row.target_mode(format_using(output, &RunMode::Leader));
             }
             _ => {
-                row.target_mode("FOLLOWER");
+                row.target_mode(format_using(output, &RunMode::Follower));
             }
         }
     }
