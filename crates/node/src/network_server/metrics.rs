@@ -188,10 +188,15 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
     let manager = RocksDbManager::get();
     let all_dbs = manager.get_all_dbs();
 
+    let mut global_labels: Vec<String> = vec![];
+    for (k, v) in state.prometheus_handle.global_labels() {
+        global_labels.push(format!("{}=\"{}\"", k, formatting::sanitize_label_value(v)));
+    }
+
     // Overall write buffer manager stats
     format_rocksdb_property_for_prometheus(
         &mut out,
-        &[],
+        &global_labels,
         MetricUnit::Bytes,
         "rocksdb.memory.write_buffer_manager_capacity",
         manager.get_total_write_buffer_capacity(),
@@ -199,17 +204,19 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
 
     format_rocksdb_property_for_prometheus(
         &mut out,
-        &[],
+        &global_labels,
         MetricUnit::Bytes,
         "rocksdb.memory.write_buffer_manager_usage",
         manager.get_total_write_buffer_usage(),
     );
 
     for db in &all_dbs {
-        let labels = vec![format!(
+        let mut labels = Vec::with_capacity(global_labels.len() + 1);
+        global_labels.clone_into(&mut labels);
+        labels.push(format!(
             "db=\"{}\"",
             formatting::sanitize_label_value(&db.name)
-        )];
+        ));
         // Tickers (Counters)
         for ticker in ROCKSDB_TICKERS {
             format_rocksdb_stat_ticker_for_prometheus(&mut out, db, &labels, *ticker);

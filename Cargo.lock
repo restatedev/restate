@@ -4231,6 +4231,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "lambda_runtime"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed49669d6430292aead991e19bf13153135a884f916e68f32997c951af637ebe"
+dependencies = [
+ "async-stream",
+ "base64 0.22.1",
+ "bytes",
+ "futures",
+ "http 1.2.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "http-serde",
+ "hyper 1.6.0",
+ "hyper-util",
+ "lambda_runtime_api_client",
+ "pin-project",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "tokio",
+ "tokio-stream",
+ "tower 0.4.13",
+ "tower-layer",
+ "tracing",
+]
+
+[[package]]
+name = "lambda_runtime_api_client"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c90a10f094475a34a04da2be11686c4dcfe214d93413162db9ffdff3d3af293a"
+dependencies = [
+ "bytes",
+ "futures-channel",
+ "futures-util",
+ "http 1.2.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "hyper 1.6.0",
+ "hyper-util",
+ "tokio",
+ "tower 0.4.13",
+ "tower-service",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "lazy-regex"
 version = "3.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7850,6 +7899,7 @@ dependencies = [
  "humantime",
  "itertools 0.14.0",
  "json-patch",
+ "lambda_runtime",
  "prost-types",
  "rand 0.9.0",
  "restate-admin",
