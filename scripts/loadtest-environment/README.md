@@ -12,4 +12,6 @@ This will create a file `cdk-outputs.json` which contains some useful output par
 
 To connect to your EC2 instance, you can use `ssh -i private-key.pem -l ubuntu ${node-public-ip}` or alternatively `aws ssm start-session --target <instance-id>`. You can find some predefined load tests in the `tests` directory. You can find some standard restate-server configurations in the `config` directory.
 
+The Grafana default username / password will be `admin` / `admin`.
+
 If you want to temporarily suspend the machine, you can do so with `aws ec2 stop-instances --instance-ids <instance-id>` and later re-start it. You will still pay for the associated EBS volumes even while the instance is stopped. Note that the contents of any local NVMe devices will be wiped if you do so. Tear down the stack using `npx cdk destroy` when you are done with it.
