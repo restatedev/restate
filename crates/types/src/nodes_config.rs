@@ -377,6 +377,14 @@ pub enum StorageState {
     ReadOnly,
 
     // [authoritative]
+    /// Gone is logically equivalent to ReadOnly but it signifies that the node has been
+    /// permanently lost along with all the data it might have had.
+    /// Future versions of restate can decide to not even attempt to read from Gone nodes.
+    ///
+    /// - new node sets: **excluded**
+    Gone,
+
+    // [authoritative]
     /// Can be picked up in new write sets and accepts writes in existing write sets.
     ///
     /// - should read from: **yes**
@@ -401,7 +409,7 @@ impl StorageState {
     pub fn can_write_to(&self) -> bool {
         use StorageState::*;
         match self {
-            Provisioning | Disabled | ReadOnly | DataLoss => false,
+            Provisioning | Disabled | ReadOnly | Gone | DataLoss => false,
             ReadWrite => true,
         }
     }
@@ -410,7 +418,7 @@ impl StorageState {
     pub fn can_read_from(&self) -> bool {
         use StorageState::*;
         match self {
-            Provisioning | ReadOnly | ReadWrite | DataLoss => true,
+            Provisioning | ReadOnly | Gone | ReadWrite | DataLoss => true,
             Disabled => false,
         }
     }
@@ -419,7 +427,7 @@ impl StorageState {
         use StorageState::*;
         match self {
             DataLoss => false,
-            Disabled | Provisioning | ReadOnly | ReadWrite => true,
+            Disabled | Provisioning | ReadOnly | Gone | ReadWrite => true,
         }
     }
 
