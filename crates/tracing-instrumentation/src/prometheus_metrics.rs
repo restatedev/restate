@@ -11,6 +11,7 @@
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use metrics_util::MetricKindMask;
 
+use metrics_exporter_prometheus::formatting;
 use restate_types::config::CommonOptions;
 use tokio::task::AbortHandle;
 use tokio::time::MissedTickBehavior;
@@ -20,7 +21,7 @@ use tracing::{debug, trace};
 pub struct Prometheus {
     handle: Option<PrometheusHandle>,
     upkeep_task: Option<AbortHandle>,
-    global_labels: Vec<(String, String)>,
+    global_labels: Vec<String>,
 }
 
 impl Prometheus {
@@ -56,8 +57,14 @@ impl Prometheus {
             handle: Some(prometheus_handle),
             upkeep_task: None,
             global_labels: vec![
-                ("cluster_name".to_string(), opts.cluster_name().to_string()),
-                ("node_name".to_string(), opts.node_name().to_string()),
+                format!(
+                    "cluster_name=\"{}\"",
+                    formatting::sanitize_label_value(opts.cluster_name())
+                ),
+                format!(
+                    "node_name=\"{}\"",
+                    formatting::sanitize_label_value(opts.node_name())
+                ),
             ],
         }
     }
@@ -66,7 +73,7 @@ impl Prometheus {
         self.handle.as_ref()
     }
 
-    pub fn global_labels(&self) -> &[(String, String)] {
+    pub fn global_labels(&self) -> &Vec<String> {
         &self.global_labels
     }
 
