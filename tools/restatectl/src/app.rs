@@ -16,6 +16,7 @@ use restate_cli_util::CommonOpts;
 use crate::commands::config::ConfigOpts;
 use crate::commands::log::Logs;
 use crate::commands::metadata::Metadata;
+use crate::commands::metadata_server::MetadataServer;
 use crate::commands::node::Nodes;
 use crate::commands::partition::Partitions;
 use crate::commands::provision::ProvisionOpts;
@@ -72,6 +73,9 @@ pub enum Command {
     /// [low-level] Commands that operate on replicated loglets
     #[clap(subcommand)]
     ReplicatedLoglet(ReplicatedLoglet),
+    /// Command that operate on the replicated metadata servers
+    #[clap(subcommand)]
+    MetadataServer(MetadataServer),
     /// Query cluster status
     Sql(SqlOpts),
 }
