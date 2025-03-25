@@ -165,7 +165,8 @@ impl RocksDbOptions {
     }
 
     pub fn rocksdb_disable_direct_io_for_flush_and_compaction(&self) -> bool {
-        self.rocksdb_disable_direct_io_for_reads.unwrap_or(false)
+        self.rocksdb_disable_direct_io_for_flush_and_compactions
+            .unwrap_or(false)
     }
 
     pub fn rocksdb_disable_statistics(&self) -> bool {
