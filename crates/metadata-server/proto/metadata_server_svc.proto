@@ -34,6 +34,12 @@ service MetadataServerSvc {
 
   // Returns the status of the metadata store svc
   rpc Status(google.protobuf.Empty) returns (StatusResponse);
+
+  // Instructs the node to join the metadata cluster
+  rpc AddNode(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+  // Remove the given node from the metadata cluster. This operation can only be executed by the leader.
+  rpc RemoveNode(RemoveNodeRequest) returns (google.protobuf.Empty);
 }
 
 message GetRequest { string key = 1; }
@@ -56,6 +62,12 @@ message GetVersionResponse { optional restate.common.Version version = 1; }
 message ProvisionRequest { bytes nodes_configuration = 1; }
 
 message ProvisionResponse { bool newly_provisioned = 1; }
+
+message RemoveNodeRequest {
+  uint32 plain_node_id = 1;
+  // optional field to uniquely identify a given cluster member
+  optional int64 created_at_millis = 2;
+}
 
 message StatusResponse {
   restate.common.MetadataServerStatus status = 1;

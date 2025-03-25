@@ -12,23 +12,24 @@ use std::ops::Deref;
 
 use async_trait::async_trait;
 use metrics::{counter, histogram};
-use tokio::sync::{oneshot, watch};
-use tokio::time::Instant;
-use tonic::codec::CompressionEncoding;
-use tonic::{Request, Response, Status};
-
 use restate_core::metadata_store::serialize_value;
+use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::errors::ConversionError;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
+use tokio::sync::{oneshot, watch};
+use tokio::time::Instant;
+use tonic::codec::CompressionEncoding;
+use tonic::{Request, Response, Status};
 
 use crate::grpc::metadata_server_svc_server::MetadataServerSvc;
 use crate::grpc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse,
-    ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest, StatusResponse,
+    ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest, RemoveNodeRequest,
+    StatusResponse,
 };
 use crate::metric_definitions::{
     METADATA_SERVER_DELETE_DURATION, METADATA_SERVER_DELETE_TOTAL, METADATA_SERVER_GET_DURATION,
@@ -37,8 +38,9 @@ use crate::metric_definitions::{
     STATUS_COMPLETED, STATUS_FAILED,
 };
 use crate::{
-    MetadataServerSummary, MetadataStoreRequest, ProvisionError, ProvisionRequest, ProvisionSender,
-    RequestError, RequestSender, StatusWatch, prepare_initial_nodes_configuration,
+    MetadataCommand, MetadataCommandSender, MetadataServerSummary, MetadataStoreRequest,
+    ProvisionError, ProvisionRequest, ProvisionSender, RequestError, RequestSender, StatusWatch,
+    prepare_initial_nodes_configuration,
 };
 
 use super::metadata_server_svc_server::MetadataServerSvcServer;
@@ -49,6 +51,7 @@ pub struct MetadataServerHandler {
     request_tx: RequestSender,
     provision_tx: Option<ProvisionSender>,
     status_watch: Option<StatusWatch>,
+    command_tx: MetadataCommandSender,
 }
 
 impl MetadataServerHandler {
@@ -56,11 +59,13 @@ impl MetadataServerHandler {
         request_tx: RequestSender,
         provision_tx: Option<ProvisionSender>,
         status_watch: Option<watch::Receiver<MetadataServerSummary>>,
+        command_tx: MetadataCommandSender,
     ) -> Self {
         Self {
             request_tx,
             provision_tx,
             status_watch,
+            command_tx,
         }
     }
 
@@ -92,11 +97,11 @@ impl MetadataServerSvc for MetadataServerHandler {
                     result_tx,
                 })
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))?;
 
             let result = result_rx
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))??;
 
             Ok(Response::new(GetResponse {
                 value: result.map(Into::into),
@@ -130,11 +135,11 @@ impl MetadataServerSvc for MetadataServerHandler {
                     result_tx,
                 })
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))?;
 
             let result = result_rx
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))??;
 
             Ok(Response::new(GetVersionResponse {
                 version: result.map(Into::into),
@@ -179,11 +184,11 @@ impl MetadataServerSvc for MetadataServerHandler {
                     result_tx,
                 })
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))?;
 
             result_rx
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))??;
 
             Ok(Response::new(()))
         };
@@ -219,11 +224,11 @@ impl MetadataServerSvc for MetadataServerHandler {
                     result_tx,
                 })
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))?;
 
             result_rx
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))??;
 
             Ok(Response::new(()))
         };
@@ -258,22 +263,22 @@ impl MetadataServerSvc for MetadataServerHandler {
                     result_tx,
                 })
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))?;
 
             let newly_provisioned = result_rx
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))??;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))??;
 
             Ok(Response::new(ProvisionResponse { newly_provisioned }))
         } else {
-            // if there is no provision_tx configured, then the underlying metadata store does not
+            // if there is no provision_tx configured, then the underlying metadata server does not
             // need a provision step.
             let mut request = request.into_inner();
             let mut nodes_configuration: NodesConfiguration =
                 StorageCodec::decode(&mut request.nodes_configuration)
                     .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
-            // Make sure that the NodesConfiguration our node and has the right metadata store state set.
+            // Make sure that the NodesConfiguration our node and has the right metadata server state set.
             prepare_initial_nodes_configuration(&Configuration::pinned(), &mut nodes_configuration)
                 .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
@@ -289,11 +294,11 @@ impl MetadataServerSvc for MetadataServerHandler {
                     result_tx,
                 })
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))?;
 
             let result = result_rx
                 .await
-                .map_err(|_| Status::unavailable("metadata store is shut down"))?;
+                .map_err(|_| Status::unavailable("metadata server is shut down"))?;
 
             let newly_provisioned = match result {
                 Ok(()) => true,
@@ -311,9 +316,47 @@ impl MetadataServerSvc for MetadataServerHandler {
             Ok(Response::new(response))
         } else {
             Err(Status::unimplemented(
-                "metadata store does not support reporting its status",
+                "metadata server does not support reporting its status",
             ))
         }
+    }
+
+    async fn add_node(&self, _request: Request<()>) -> Result<Response<()>, Status> {
+        let (node_added_tx, node_added_rx) = oneshot::channel();
+        self.command_tx
+            .send(MetadataCommand::AddNode(node_added_tx))
+            .await
+            .map_err(|_| Status::unavailable("metadata server is shut down"))?;
+
+        node_added_rx
+            .await
+            .map_err(|_| Status::unavailable("metadata server is shut down"))?
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(()))
+    }
+
+    async fn remove_node(
+        &self,
+        request: Request<RemoveNodeRequest>,
+    ) -> Result<Response<()>, Status> {
+        let (node_removed_tx, node_removed_rx) = oneshot::channel();
+        let request = request.into_inner();
+        self.command_tx
+            .send(MetadataCommand::RemoveNode {
+                plain_node_id: PlainNodeId::from(request.plain_node_id),
+                created_at_millis: request.created_at_millis,
+                response_tx: node_removed_tx,
+            })
+            .await
+            .map_err(|_| Status::unavailable("metadata server is shut down"))?;
+
+        node_removed_rx
+            .await
+            .map_err(|_| Status::unavailable("metadata server is shut down"))?
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(()))
     }
 }
 

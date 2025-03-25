@@ -7223,6 +7223,7 @@ dependencies = [
  "futures",
  "googletest",
  "http 1.2.0",
+ "humantime",
  "indexmap 2.7.1",
  "itertools 0.14.0",
  "metrics",

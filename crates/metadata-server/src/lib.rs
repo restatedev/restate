@@ -66,6 +66,9 @@ pub type ProvisionReceiver = mpsc::Receiver<ProvisionRequest>;
 type StatusWatch = watch::Receiver<MetadataServerSummary>;
 type StatusSender = watch::Sender<MetadataServerSummary>;
 
+type MetadataCommandSender = mpsc::Sender<MetadataCommand>;
+type MetadataCommandReceiver = mpsc::Receiver<MetadataCommand>;
+
 pub const KNOWN_LEADER_KEY: &str = "x-restate-known-leader";
 
 #[derive(Debug, thiserror::Error)]
@@ -494,8 +497,6 @@ enum JoinClusterError {
     UnknownNode(PlainNodeId),
     #[error("node '{0}' does not have the 'metadata-server' role")]
     InvalidRole(PlainNodeId),
-    #[error("node '{0}' is a standby node")]
-    Standby(PlainNodeId),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -536,13 +537,15 @@ impl KnownLeader {
     }
 }
 
+type JoinClusterResponseSender = oneshot::Sender<Result<Version, JoinClusterError>>;
+
 struct JoinClusterRequest {
     member_id: MemberId,
-    response_tx: oneshot::Sender<Result<(), JoinClusterError>>,
+    response_tx: JoinClusterResponseSender,
 }
 
 impl JoinClusterRequest {
-    fn into_inner(self) -> (oneshot::Sender<Result<(), JoinClusterError>>, MemberId) {
+    fn into_inner(self) -> (oneshot::Sender<Result<Version, JoinClusterError>>, MemberId) {
         (self.response_tx, self.member_id)
     }
 }
@@ -557,7 +560,7 @@ impl JoinClusterHandle {
         JoinClusterHandle { join_cluster_tx }
     }
 
-    pub async fn join_cluster(&self, member_id: MemberId) -> Result<(), JoinClusterError> {
+    pub async fn join_cluster(&self, member_id: MemberId) -> Result<Version, JoinClusterError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.join_cluster_tx
@@ -642,10 +645,24 @@ impl SnapshotSummary {
 #[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst, derive_more::Display)]
 #[prost(target = "crate::grpc::MetadataServerConfiguration")]
 #[display("{version}; [{}]", members.keys().format(", "))]
-struct MetadataServerConfiguration {
+pub struct MetadataServerConfiguration {
     #[prost(required)]
     version: Version,
     members: HashMap<PlainNodeId, CreatedAtMillis>,
+}
+
+impl MetadataServerConfiguration {
+    pub fn contains(&self, node_id: PlainNodeId) -> bool {
+        self.members.contains_key(&node_id)
+    }
+
+    pub fn num_members(&self) -> usize {
+        self.members.len()
+    }
+
+    pub fn version(&self) -> Version {
+        self.version
+    }
 }
 
 impl Default for MetadataServerConfiguration {
@@ -742,6 +759,75 @@ fn prepare_initial_nodes_configuration(
     };
 
     Ok(plain_node_id)
+}
+
+type RemoveNodeResponseSender = oneshot::Sender<Result<(), MetadataCommandError>>;
+
+#[derive(Debug)]
+enum MetadataCommand {
+    AddNode(oneshot::Sender<Result<(), MetadataCommandError>>),
+    RemoveNode {
+        plain_node_id: PlainNodeId,
+        created_at_millis: Option<CreatedAtMillis>,
+        response_tx: RemoveNodeResponseSender,
+    },
+}
+
+impl MetadataCommand {
+    fn fail(self, err: impl Into<MetadataCommandError>) {
+        match self {
+            MetadataCommand::AddNode(response_tx) => {
+                // if receiver is gone, then it is no longer interested
+                let _ = response_tx.send(Err(err.into()));
+            }
+            MetadataCommand::RemoveNode { response_tx, .. } => {
+                // if receiver is gone, then it is no longer interested
+                let _ = response_tx.send(Err(err.into()));
+            }
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum MetadataCommandError {
+    #[error("service currently unavailable: {0}")]
+    Unavailable(String),
+    #[error("command needs to be processed by the metadata cluster leader")]
+    NotLeader(Option<KnownLeader>),
+    #[error("internal error: {0}")]
+    Internal(String),
+    #[error("failed to add node: {0}")]
+    AddNode(#[from] AddNodeError),
+    #[error("failed to remove node: {0}")]
+    RemoveNode(#[from] RemoveNodeError),
+}
+
+#[derive(Debug, thiserror::Error)]
+enum AddNodeError {
+    #[error(
+        "node needs to join the Restate cluster first before becoming a metadata cluster member"
+    )]
+    NotReadyToJoin,
+    #[error("cannot add node because it is still a member of the metadata cluster")]
+    StillMember,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum RemoveNodeError {
+    #[error("node '{0}' is not a member")]
+    NotMember(MemberId),
+    #[error("node '{0}' is not a member")]
+    NotMemberPlainNodeId(PlainNodeId),
+    #[error("pending reconfiguration, try at a later point")]
+    PendingReconfiguration,
+    #[error("unknown node '{0}'")]
+    UnknownNode(PlainNodeId),
+    #[error("concurrent remove request for node '{0}'")]
+    ConcurrentRequest(PlainNodeId),
+    #[error("cannot remove the only member '{0}' of the metadata cluster")]
+    OnlyMember(MemberId),
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 #[cfg(any(test, feature = "test-util"))]

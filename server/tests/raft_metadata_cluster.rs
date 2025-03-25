@@ -11,27 +11,30 @@
 use anyhow::anyhow;
 use bytestring::ByteString;
 use enumset::enum_set;
+use futures_util::never::Never;
 use googletest::prelude::err;
 use googletest::{IntoTestResult, assert_that, pat};
+use rand::Rng;
 use rand::seq::IndexedMutRandom;
-use restate_core::metadata_store::{WriteError, retry_on_retryable_error};
+use restate_core::metadata_store::{MetadataStoreClient, WriteError, retry_on_retryable_error};
 use restate_core::{TaskCenter, TaskKind, cancellation_token};
 use restate_local_cluster_runner::cluster::{Cluster, StartedCluster};
 use restate_local_cluster_runner::node::{BinarySource, HealthCheck, Node};
 use restate_metadata_server::create_client;
 use restate_metadata_server::tests::Value;
-use restate_types::Versioned;
 use restate_types::config::{
     Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind, RaftOptions,
 };
 use restate_types::metadata::Precondition;
 use restate_types::nodes_config::Role;
 use restate_types::retries::RetryPolicy;
+use restate_types::{PlainNodeId, Versioned};
 use std::convert::Infallible;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
-use tracing::info;
+use tracing::{debug, info};
 
 #[test_log::test(restate_core::test)]
 async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
@@ -316,4 +319,184 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
 enum State {
     Write,
     Reconcile,
+}
+
+#[test_log::test(restate_core::test)]
+async fn raft_metadata_cluster_reconfiguration() -> googletest::Result<()> {
+    let num_nodes = 3;
+    let test_duration = Duration::from_secs(20);
+    let expected_recovery_duration = Duration::from_secs(10);
+    let mut base_config = Configuration::default();
+    base_config
+        .metadata_server
+        .set_kind(MetadataServerKind::Raft);
+    base_config.metadata_server.set_raft_options(RaftOptions {
+        raft_election_tick: NonZeroUsize::new(5).expect("5 to be non zero"),
+        raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
+        ..RaftOptions::default()
+    });
+
+    let nodes = Node::new_test_nodes(
+        base_config,
+        BinarySource::CargoTest,
+        // we need to run the admin role to exchange metadata information between nodes, this can
+        // be removed once we have gossip support on every node
+        enum_set!(Role::MetadataServer | Role::Admin),
+        num_nodes,
+        true,
+    );
+    let mut cluster = Cluster::builder()
+        .cluster_name("raft_metadata_cluster_reconfiguration")
+        .nodes(nodes)
+        .temp_base_dir()
+        .build()
+        .start()
+        .await?;
+
+    cluster.wait_healthy(Duration::from_secs(30)).await?;
+
+    let addresses = cluster
+        .nodes
+        .iter()
+        .map(|node| node.node_address().clone())
+        .collect();
+
+    let metadata_store_client_options = MetadataClientOptions {
+        kind: MetadataClientKind::Replicated { addresses },
+        ..MetadataClientOptions::default()
+    };
+    let client = create_client(metadata_store_client_options)
+        .await
+        .expect("to not fail");
+
+    let (status_tx, mut status_rx) = watch::channel(0);
+
+    let read_modify_write_task =
+        TaskCenter::spawn_unmanaged(TaskKind::TestRunner, "read-modify-write", async {
+            async fn read_modify_write(
+                client: MetadataStoreClient,
+                status_tx: watch::Sender<u32>,
+            ) -> anyhow::Result<Never> {
+                let retry_policy = RetryPolicy::exponential(
+                    Duration::from_millis(50),
+                    2.0,
+                    None,
+                    Some(Duration::from_secs(1)),
+                );
+                let lower_bound = AtomicU32::new(0);
+                let upper_bound = AtomicU32::new(0);
+
+                loop {
+                    retry_on_retryable_error(retry_policy.clone(), || {
+                        client.read_modify_write::<Value, _, _>("my_key".into(), |value| {
+                            Ok::<_, Infallible>(if let Some(value) = value {
+                                // make sure that we don't miss any writes as part of the reconfiguration
+                                assert!(
+                                    lower_bound.load(Ordering::Relaxed) <= value.value
+                                        && value.value <= upper_bound.load(Ordering::Relaxed),
+                                    "value should lie within the bounds"
+                                );
+                                let mut value = value.next_version();
+                                value.value += 1;
+                                upper_bound.store(value.value, Ordering::Relaxed);
+                                value
+                            } else {
+                                Value::new(lower_bound.load(Ordering::Relaxed))
+                            })
+                        })
+                    })
+                    .await?;
+
+                    // write was successful; update the lower bound wrt the upper one
+                    let new_value = upper_bound.load(Ordering::Relaxed);
+                    lower_bound.store(new_value, Ordering::Relaxed);
+                    status_tx.send_replace(new_value);
+                }
+            }
+
+            if let Some(result) = cancellation_token()
+                .run_until_cancelled(read_modify_write(client, status_tx))
+                .await
+            {
+                result?;
+            }
+
+            Ok(())
+        })?;
+
+    let start_reconfiguration = Instant::now();
+    let mut rng = rand::rng();
+    let mut successful_reconfigurations = 0;
+
+    let mut step = async || -> anyhow::Result<()> {
+        let cluster_status = cluster
+            .get_metadata_cluster_status()
+            .await
+            .ok_or(anyhow!("failed to retrieve the cluster status"))?;
+
+        let (leader, configuration) = cluster_status.into_inner();
+
+        let leader = leader.ok_or(anyhow!("unknown metadata server leader"))?;
+
+        // switch a random node from member to standby and standby to member
+        let mut chosen_node = PlainNodeId::from(rng.random_range(1..=num_nodes));
+
+        if configuration.num_members() == 1 && configuration.contains(chosen_node) {
+            // we cannot remove the only remaining metadata server from the cluster; choose the next one
+            chosen_node = PlainNodeId::from(u32::from(chosen_node) % num_nodes + 1);
+        }
+
+        if configuration.contains(chosen_node) {
+            // remove metadata member
+            info!(
+                "Remove node {} from the metadata cluster at leader {}",
+                chosen_node, leader
+            );
+            cluster.nodes[usize::try_from(u32::from(leader)).expect("to fit into usize") - 1]
+                .remove_metadata_member(chosen_node)
+                .await?;
+        } else {
+            // add metadata member
+            info!("Add node {} to the metadata cluster", chosen_node);
+            cluster.nodes[usize::try_from(u32::from(chosen_node)).expect("to fit into usize") - 1]
+                .add_as_metadata_member()
+                .await?;
+        }
+
+        status_rx.mark_unchanged();
+
+        cluster
+            .wait_check_healthy(HealthCheck::MetadataServer, expected_recovery_duration)
+            .await
+            .expect("the cluster to be healthy within the recovery duration");
+
+        // wait for a successful read-modify-write operation
+        tokio::time::timeout(expected_recovery_duration, status_rx.changed()).await.expect("we should be able to perform our read-modify-write operation within the recovery duration").expect("the read-modify-write task should not fail");
+
+        Ok(())
+    };
+
+    while start_reconfiguration.elapsed() < test_duration {
+        if let Err(err) = step().await {
+            debug!("Test step failed with {err}. Retrying");
+            // let's wait until we obtain the metadata cluster status with a known leader
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        } else {
+            successful_reconfigurations += 1;
+        }
+    }
+
+    read_modify_write_task.cancel();
+    read_modify_write_task.await?.into_test_result()?;
+
+    assert!(
+        successful_reconfigurations > 2,
+        "We expect successfully reconfigure the metadata cluster"
+    );
+
+    // check one last time that all nodes are healthy
+    cluster.wait_healthy(expected_recovery_duration).await?;
+    cluster.graceful_shutdown(Duration::from_secs(3)).await?;
+
+    Ok(())
 }

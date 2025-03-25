@@ -8,4 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod status;
+use crate::commands::metadata_server::list_servers::ListMetadataServers;
+use crate::commands::metadata_server::nodes::{AddNodeOpts, RemoveNodeOpts};
+use clap::Subcommand;
+use cling::Run;
+
+pub mod list_servers;
+mod nodes;
+
+#[derive(Run, Subcommand, Clone)]
+#[clap(visible_alias = "ms")]
+pub enum MetadataServer {
+    /// Add a node to the metadata store cluster
+    AddNode(AddNodeOpts),
+    /// Remove a node from the metadata store cluster
+    RemoveNode(RemoveNodeOpts),
+    /// List metadata server status
+    ListServers(ListMetadataServers),
+}

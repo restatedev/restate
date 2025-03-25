@@ -23,10 +23,12 @@ use crate::raft::network::{ConnectionManager, MetadataServerNetworkHandler, Netw
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{RaftServerState, StorageMarker, network, storage, to_plain_node_id, to_raft_id};
 use crate::{
-    JoinClusterError, JoinClusterHandle, JoinClusterReceiver, JoinClusterRequest, JoinError,
-    KnownLeader, MemberId, MetadataServer, MetadataServerConfiguration, MetadataServerSummary,
-    MetadataStoreRequest, ProvisionError, ProvisionReceiver, RaftSummary, Request, RequestError,
-    RequestReceiver, SnapshotSummary, StatusSender, WriteRequest, grpc, local,
+    AddNodeError, CreatedAtMillis, JoinClusterError, JoinClusterHandle, JoinClusterReceiver,
+    JoinClusterRequest, JoinClusterResponseSender, JoinError, KnownLeader, MemberId,
+    MetadataCommand, MetadataCommandError, MetadataCommandReceiver, MetadataServer,
+    MetadataServerConfiguration, MetadataServerSummary, MetadataStoreRequest, ProvisionError,
+    ProvisionReceiver, RaftSummary, RemoveNodeError, RemoveNodeResponseSender, Request,
+    RequestError, RequestReceiver, SnapshotSummary, StatusSender, WriteRequest, grpc, local,
     prepare_initial_nodes_configuration,
 };
 use arc_swap::ArcSwapOption;
@@ -151,6 +153,8 @@ pub struct RaftMetadataServer {
     join_cluster_rx: JoinClusterReceiver,
 
     status_tx: StatusSender,
+
+    command_rx: MetadataCommandReceiver,
 }
 
 impl RaftMetadataServer {
@@ -162,6 +166,7 @@ impl RaftMetadataServer {
         health_status.update(MetadataServerStatus::StartingUp);
 
         let (request_tx, request_rx) = mpsc::channel(2);
+        let (command_tx, command_rx) = mpsc::channel(2);
         let (provision_tx, provision_rx) = mpsc::channel(1);
         let (join_cluster_tx, join_cluster_rx) = mpsc::channel(1);
         let (status_tx, status_rx) = watch::channel(MetadataServerSummary::default());
@@ -198,7 +203,7 @@ impl RaftMetadataServer {
             network::FILE_DESCRIPTOR_SET,
         );
         server_builder.register_grpc_service(
-            MetadataServerHandler::new(request_tx, Some(provision_tx), Some(status_rx))
+            MetadataServerHandler::new(request_tx, Some(provision_tx), Some(status_rx), command_tx)
                 .into_server(),
             grpc::FILE_DESCRIPTOR_SET,
         );
@@ -211,6 +216,7 @@ impl RaftMetadataServer {
             provision_rx: Some(provision_rx),
             join_cluster_rx,
             status_tx,
+            command_rx,
         })
     }
 
@@ -273,10 +279,20 @@ impl RaftMetadataServer {
             }
         })?;
 
-        let mut provisioned = if let RaftServerState::Member { my_member_id } =
-            self.storage.get_raft_server_state()?
+        let mut provisioned = if let RaftServerState::Member {
+            my_member_id,
+            min_expected_nodes_config_version,
+        } = self.storage.get_raft_server_state()?
         {
-            Provisioned::Member(self.become_member(my_member_id, metadata_writer)?)
+            Provisioned::Member(
+                self.become_member(
+                    my_member_id,
+                    min_expected_nodes_config_version
+                        .unwrap_or(Version::MIN)
+                        .max(Metadata::with_current(|m| m.nodes_config_version())),
+                    metadata_writer,
+                )?,
+            )
         } else {
             Provisioned::Standby(self.become_standby(metadata_writer))
         };
@@ -333,6 +349,9 @@ impl RaftMetadataServer {
                     // fail incoming requests while we are waiting for the provision signal
                     let request = request.into_request();
                     request.fail(RequestError::Unavailable("Metadata store has not been provisioned yet".into(), None))
+                },
+                Some(request) = self.command_rx.recv() => {
+                    request.fail(MetadataCommandError::Unavailable("Metadata store has not been been provisioned yet".to_owned()))
                 },
                 Some(request) = self.join_cluster_rx.recv() => {
                     let _ = request.response_tx.send(Err(JoinClusterError::NotMember(None)));
@@ -492,7 +511,12 @@ impl RaftMetadataServer {
         let mut txn = self.storage.txn();
         // it's important to first apply the snapshot so that the initial entry has the right index
         txn.apply_snapshot(&snapshot)?;
-        txn.store_raft_server_state(&RaftServerState::Member { my_member_id })?;
+        txn.store_raft_server_state(&RaftServerState::Member {
+            my_member_id,
+            min_expected_nodes_config_version: Some(
+                initial_state.last_seen_nodes_configuration().version(),
+            ),
+        })?;
         txn.store_marker(&storage_marker);
         txn.commit().await?;
 
@@ -530,6 +554,7 @@ impl RaftMetadataServer {
             request_rx,
             join_cluster_rx,
             status_tx,
+            command_rx,
             ..
         } = self;
 
@@ -540,12 +565,14 @@ impl RaftMetadataServer {
             join_cluster_rx,
             metadata_writer,
             status_tx,
+            command_rx,
         )
     }
 
     fn become_member(
         self,
         my_member_id: MemberId,
+        min_expected_nodes_config_version: Version,
         metadata_writer: Option<MetadataWriter>,
     ) -> Result<Member, Error> {
         let Self {
@@ -554,17 +581,20 @@ impl RaftMetadataServer {
             request_rx,
             join_cluster_rx,
             status_tx,
+            command_rx,
             ..
         } = self;
 
         Member::create(
             my_member_id,
+            min_expected_nodes_config_version,
             connection_manager,
             storage,
             request_rx,
             join_cluster_rx,
             metadata_writer,
             status_tx,
+            command_rx,
         )
     }
 }
@@ -588,6 +618,8 @@ enum Provisioned {
 struct Member {
     _logger: slog::Logger,
 
+    min_expected_nodes_config_version: Version,
+
     raw_node: RawNode<RocksDbStorage>,
     networking: Networking<Message>,
     raft_rx: mpsc::Receiver<Message>,
@@ -600,7 +632,8 @@ struct Member {
     configuration: MetadataServerConfiguration,
     kv_storage: KvMemoryStorage,
     is_leader: bool,
-    pending_join_requests: HashMap<MemberId, oneshot::Sender<Result<(), JoinClusterError>>>,
+    pending_join_requests: HashMap<MemberId, JoinClusterResponseSender>,
+    pending_remove_requests: HashMap<MemberId, RemoveNodeResponseSender>,
     read_index_to_request_id: VecDeque<(u64, Ulid)>,
     snapshot_summary: Option<SnapshotSummary>,
 
@@ -610,17 +643,21 @@ struct Member {
     request_rx: RequestReceiver,
     join_cluster_rx: JoinClusterReceiver,
     status_tx: StatusSender,
+    command_rx: MetadataCommandReceiver,
 }
 
 impl Member {
+    #[allow(clippy::too_many_arguments)]
     fn create(
         my_member_id: MemberId,
+        min_expected_nodes_config_version: Version,
         connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
         storage: RocksDbStorage,
         request_rx: RequestReceiver,
         join_cluster_rx: JoinClusterReceiver,
         metadata_writer: Option<MetadataWriter>,
         status_tx: StatusSender,
+        command_rx: MetadataCommandReceiver,
     ) -> Result<Self, Error> {
         let (raft_tx, raft_rx) = mpsc::channel(128);
         let new_connection_manager = ConnectionManager::new(my_member_id.node_id, raft_tx);
@@ -691,6 +728,7 @@ impl Member {
             _logger: logger,
             is_leader: false,
             my_member_id,
+            min_expected_nodes_config_version,
             configuration,
             raw_node,
             connection_manager,
@@ -704,7 +742,9 @@ impl Member {
             status_update_interval,
             log_trim_threshold: raft_options.log_trim_threshold.unwrap_or(1000),
             status_tx,
+            command_rx,
             pending_join_requests: HashMap::default(),
+            pending_remove_requests: HashMap::default(),
             read_index_to_request_id: VecDeque::default(),
             snapshot_summary,
         };
@@ -724,28 +764,115 @@ impl Member {
 
         loop {
             tokio::select! {
+                biased;
+                // It is important to always check for nodes config changes because that's our
+                // mechanism to remove ourselves from the cluster if we are supposed to leave.
+                // Otherwise, we might process a Raft response message which causes Raft to panic,
+                // because we removed ourselves from it.
+                Ok(()) = nodes_config_watch.changed() => {
+                    if self.should_leave() {
+                        break;
+                    }
+
+                    self.update_node_addresses();
+                },
+                _ = self.tick_interval.tick() => {
+                    self.raw_node.tick();
+                },
+                Some(raft) = self.raft_rx.recv() => {
+                    if let Err(err) = self.raw_node.step(raft) {
+                        match err {
+                            RaftError::StepPeerNotFound => {
+                                info!("Ignoring raft message from unknown node. This can happen if \
+                                the node has been removed from the cluster. If not, then this \
+                                indicates a misconfiguration of your cluster!");
+                            }
+                            // escalate, as we can't handle this error
+                            err => Err(err)?
+                        }
+                    }
+                },
                 Some(request) = self.request_rx.recv() => {
                     self.handle_request(request);
                 },
                 Some(request) = self.join_cluster_rx.recv() => {
                     self.handle_join_request(request);
                 }
-                Some(raft) = self.raft_rx.recv() => {
-                    self.raw_node.step(raft)?;
-                },
-                Ok(()) = nodes_config_watch.changed() => {
-                    self.update_node_addresses();
-                },
-                _ = self.tick_interval.tick() => {
-                    self.raw_node.tick();
-                },
+                Some(command) = self.command_rx.recv() => {
+                    self.handle_command(command);
+                }
                 _ = self.status_update_interval.tick() => {
                     self.update_status();
-                }
+                },
             }
 
             self.on_ready().await?;
             self.update_leadership();
+        }
+
+        self.fail_pending_requests();
+
+        let mut storage = self.raw_node.raft.r.raft_log.store;
+
+        // set our raft server state to standby so that we don't start as a member when restarting
+        let mut txn = storage.txn();
+        txn.delete_raft_server_state()?;
+        txn.commit().await?;
+
+        // todo if I am the leader, then tell others to immediately start campaigning to avoid the leader election timeout
+        Ok(Standby::new(
+            storage,
+            self.connection_manager,
+            self.request_rx,
+            self.join_cluster_rx,
+            self.metadata_writer,
+            self.status_tx,
+            self.command_rx,
+        ))
+    }
+
+    fn should_leave(&self) -> bool {
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+
+        if self.min_expected_nodes_config_version > nodes_config.version() {
+            // we haven't reached the min expected nodes_config version to act on yet
+            return false;
+        }
+
+        let node_config = match nodes_config.find_node_by_id(self.my_member_id.node_id) {
+            Ok(node_config) => node_config,
+            Err(_err) => {
+                warn!(
+                    "NodesConfiguration no longer contains node {}. This indicates that this node \
+                    was removed from the cluster without removing it first from the metadata \
+                    cluster. Leaving the metadata cluster now.",
+                    self.my_member_id.node_id
+                );
+                return true;
+            }
+        };
+
+        match node_config.metadata_server_config.metadata_server_state {
+            MetadataServerState::Standby => {
+                let is_member = self.is_member(self.my_member_id);
+
+                if is_member {
+                    info!(
+                        "Asked to leave the metadata store cluster as of NodesConfiguration '{}' while \
+                        still being a member of the configuration. This indicates that I missed the \
+                        configuration change to remove me. Leaving metadata store cluster now.",
+                        nodes_config.version()
+                    );
+                } else {
+                    info!(
+                        "Leaving metadata store cluster as of NodesConfiguration '{}'",
+                        nodes_config.version()
+                    );
+                }
+
+                true
+            }
+            MetadataServerState::Member => false,
         }
     }
 
@@ -754,25 +881,31 @@ impl Member {
         self.is_leader = self.raw_node.raft.leader_id == self.raw_node.raft.id;
 
         if previous_is_leader && !self.is_leader {
-            let known_leader = self.known_leader();
+            let known_leader = self.fail_pending_requests();
+
             info!(
                 possible_leader = ?known_leader,
                 "Lost metadata cluster leadership"
             );
-
-            // todo we might fail some of the request too eagerly here because the answer might be
-            //  stored in the unapplied log entries. Better to fail the callbacks based on
-            //  (term, index).
-            // we lost leadership :-( notify callers that their requests might not get committed
-            // because we don't know whether the leader will start with the same log as we have.
-            self.kv_storage.fail_pending_requests(|| {
-                RequestError::Unavailable("lost leadership".into(), known_leader.clone())
-            });
-            self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
-            self.read_index_to_request_id.clear();
         } else if !previous_is_leader && self.is_leader {
             info!("Won metadata cluster leadership");
         }
+    }
+
+    fn fail_pending_requests(&mut self) -> Option<KnownLeader> {
+        let known_leader = self.known_leader();
+        // todo we might fail some of the request too eagerly here because the answer might be
+        //  stored in the unapplied log entries. Better to fail the callbacks based on
+        //  (term, index).
+        // we lost leadership :-( notify callers that their requests might not get committed
+        // because we don't know whether the leader will start with the same log as we have.
+        self.kv_storage.fail_pending_requests(|| {
+            RequestError::Unavailable("lost leadership".into(), known_leader.clone())
+        });
+        self.fail_join_callbacks(|| JoinClusterError::NotLeader(known_leader.clone()));
+        self.fail_remove_callbacks(|| MetadataCommandError::NotLeader(known_leader.clone()));
+        self.read_index_to_request_id.clear();
+        known_leader
     }
 
     fn handle_request(&mut self, request: MetadataStoreRequest) {
@@ -844,7 +977,10 @@ impl Member {
         }
 
         if self.is_member(joining_member_id) {
-            let _ = response_tx.send(Ok(()));
+            let _ = response_tx.send(Ok(self
+                .kv_storage
+                .last_seen_nodes_configuration()
+                .version()));
             return;
         }
 
@@ -877,30 +1013,9 @@ impl Member {
             return;
         }
 
-        if joining_node_config
-            .metadata_server_config
-            .metadata_server_state
-            == MetadataServerState::Standby
-        {
-            let _ = response_tx.send(Err(JoinClusterError::Standby(joining_member_id.node_id)));
-            return;
-        }
-
         // It's possible to batch multiple new joining nodes into a single conf change if we want.
         // This will, however, require joint consensus.
-        let mut conf_change_single = ConfChangeSingle::new();
-        conf_change_single.change_type = ConfChangeType::AddNode;
-        conf_change_single.node_id = to_raft_id(joining_member_id.node_id);
-
-        let mut conf_change = ConfChangeV2::new();
-        conf_change.set_changes(vec![conf_change_single].into());
-
-        let mut next_configuration = self.configuration.clone();
-        next_configuration.version = next_configuration.version.next();
-        next_configuration.members.insert(
-            joining_member_id.node_id,
-            joining_member_id.created_at_millis,
-        );
+        let (conf_change, next_configuration) = self.add_member_conf_change(joining_member_id);
 
         let next_configuration_bytes =
             grpc::MetadataServerConfiguration::from(next_configuration).encode_to_vec();
@@ -917,11 +1032,55 @@ impl Member {
             let _ = response_tx.send(Err(response));
         } else {
             info!(
-                "Adding node '{}' to metadata cluster",
+                "Trying to add node '{}' to metadata cluster",
                 joining_member_id.node_id
             );
             self.register_join_callback(joining_member_id, response_tx);
         }
+    }
+
+    fn add_member_conf_change(
+        &self,
+        joining_member_id: MemberId,
+    ) -> (ConfChangeV2, MetadataServerConfiguration) {
+        let mut conf_change_single = ConfChangeSingle::new();
+        conf_change_single.change_type = ConfChangeType::AddNode;
+        conf_change_single.node_id = to_raft_id(joining_member_id.node_id);
+
+        let mut conf_change = ConfChangeV2::new();
+        conf_change.set_changes(vec![conf_change_single].into());
+
+        let mut next_configuration = self.configuration.clone();
+        next_configuration.version = next_configuration.version.next();
+        next_configuration.members.insert(
+            joining_member_id.node_id,
+            joining_member_id.created_at_millis,
+        );
+        (conf_change, next_configuration)
+    }
+
+    fn remove_member_conf_change(
+        &self,
+        leaving_member_id: MemberId,
+    ) -> (ConfChangeV2, MetadataServerConfiguration) {
+        let mut conf_change_single = ConfChangeSingle::new();
+        conf_change_single.change_type = ConfChangeType::RemoveNode;
+        conf_change_single.node_id = to_raft_id(leaving_member_id.node_id);
+
+        let mut conf_change = ConfChangeV2::new();
+        conf_change.set_changes(vec![conf_change_single].into());
+
+        let mut next_configuration = self.configuration.clone();
+        next_configuration.version = next_configuration.version.next();
+        assert!(
+            next_configuration
+                .members
+                .remove(&leaving_member_id.node_id,)
+                .is_some(),
+            "expect to remove member {leaving_member_id}"
+        );
+
+        (conf_change, next_configuration)
     }
 
     async fn on_ready(&mut self) -> Result<(), Error> {
@@ -1136,34 +1295,77 @@ impl Member {
             }
         };
 
-        self.raw_node.apply_conf_change(&cc_v2)?;
-
         let new_configuration = MetadataServerConfiguration::from(
             grpc::MetadataServerConfiguration::decode(entry.context)?,
         );
 
         // sanity checks
-        assert_eq!(
-            self.configuration.version.next(),
-            new_configuration.version,
-            "new configuration version must be '{}' but was '{}'",
-            self.configuration.version.next(),
-            new_configuration.version
-        );
-        self.configuration = new_configuration;
+        let mut config_change_rejections = Vec::default();
+        let nodes_config = self.kv_storage.last_seen_nodes_configuration();
 
-        info!(configuration = %self.configuration, "Applied new configuration");
+        for conf_change in &cc_v2.changes {
+            match conf_change.change_type {
+                ConfChangeType::AddNode => {
+                    let joining_node_id = to_plain_node_id(conf_change.node_id);
 
-        self.validate_metadata_server_configuration();
+                    // check whether joining node still exists
+                    let Ok(joining_node_config) = nodes_config.find_node_by_id(joining_node_id)
+                    else {
+                        config_change_rejections.push(format!("cannot add node '{}' because it is not part of the nodes configuration", joining_node_id));
+                        continue;
+                    };
 
-        self.update_membership_in_nodes_configuration();
+                    // check whether the joining node actually runs the metadata server role
+                    if !joining_node_config.has_role(Role::MetadataServer) {
+                        config_change_rejections.push(format!(
+                            "cannot add node '{}' because it does not run the metadata-server role",
+                            joining_node_id
+                        ));
+                    }
+                }
+                ConfChangeType::RemoveNode => {
+                    // removing nodes should always be ok as long as the resulting configuration is
+                    // non-empty which we checked before accepting the configuration change
+                }
+                ConfChangeType::AddLearnerNode => {
+                    unimplemented!("Restate does not support learner nodes yet");
+                }
+            }
+        }
 
-        self.create_snapshot(entry.index, entry.term).await?;
+        if config_change_rejections.is_empty() {
+            self.raw_node.apply_conf_change(&cc_v2)?;
+
+            // sanity checks
+            assert_eq!(
+                self.configuration.version.next(),
+                new_configuration.version,
+                "new configuration version must be '{}' but was '{}'",
+                self.configuration.version.next(),
+                new_configuration.version
+            );
+            self.configuration = new_configuration;
+
+            info!(configuration = %self.configuration, "Applied new configuration");
+
+            self.validate_metadata_server_configuration();
+
+            self.update_membership_in_nodes_configuration();
+
+            self.create_snapshot(entry.index, entry.term).await?;
+
+            self.update_leadership();
+            self.update_node_addresses();
+            self.update_status();
+        } else {
+            info!(
+                "Rejected configuration change because: {}",
+                config_change_rejections.join(", ")
+            );
+        }
 
         self.answer_join_callbacks();
-        self.update_leadership();
-        self.update_node_addresses();
-        self.update_status();
+        self.answer_remove_callbacks();
 
         Ok(())
     }
@@ -1255,11 +1457,11 @@ impl Member {
 
         for (node_id, node_config) in new_nodes_configuration.iter_mut() {
             if self.is_member_plain_node_id(node_id) {
-                // Should be a no-op since we currently use Member also to tell nodes to try join
-                // the cluster. This needs to change once we support removing nodes from the
-                // metadata store cluster.
                 node_config.metadata_server_config.metadata_server_state =
                     MetadataServerState::Member;
+            } else {
+                node_config.metadata_server_config.metadata_server_state =
+                    MetadataServerState::Standby;
             }
         }
 
@@ -1284,11 +1486,9 @@ impl Member {
     fn register_join_callback(
         &mut self,
         member_id: MemberId,
-        reconfiguration_callback: oneshot::Sender<Result<(), JoinClusterError>>,
+        join_callback: JoinClusterResponseSender,
     ) {
-        if let Some(previous_callback) = self
-            .pending_join_requests
-            .insert(member_id, reconfiguration_callback)
+        if let Some(previous_callback) = self.pending_join_requests.insert(member_id, join_callback)
         {
             let _ =
                 previous_callback.send(Err(JoinClusterError::ConcurrentRequest(member_id.node_id)));
@@ -1302,16 +1502,56 @@ impl Member {
     }
 
     fn answer_join_callbacks(&mut self) {
-        let pending_join_request: Vec<_> = self.pending_join_requests.drain().collect();
-        for (member_id, response_tx) in pending_join_request {
+        let pending_join_requests: Vec<_> = self.pending_join_requests.drain().collect();
+        for (member_id, response_tx) in pending_join_requests {
             if self.is_member(member_id) {
-                let _ = response_tx.send(Ok(()));
+                let _ = response_tx.send(Ok(self
+                    .kv_storage
+                    .last_seen_nodes_configuration()
+                    .version()));
             } else {
                 // latest reconfiguration didn't include this node, fail it so that caller can retry
                 let _ = response_tx.send(Err(JoinClusterError::Internal(format!(
                     "failed to include node '{}' in new configuration",
                     member_id
                 ))));
+            }
+        }
+    }
+
+    fn register_remove_callback(
+        &mut self,
+        member_id: MemberId,
+        remove_node_response_sender: RemoveNodeResponseSender,
+    ) {
+        if let Some(previous_sender) = self
+            .pending_remove_requests
+            .insert(member_id, remove_node_response_sender)
+        {
+            let _ = previous_sender.send(Err(MetadataCommandError::RemoveNode(
+                RemoveNodeError::ConcurrentRequest(member_id.node_id),
+            )));
+        }
+    }
+
+    fn fail_remove_callbacks<T: Into<MetadataCommandError>>(&mut self, cause: impl Fn() -> T) {
+        for (_, response_tx) in self.pending_remove_requests.drain() {
+            let _ = response_tx.send(Err(cause().into()));
+        }
+    }
+
+    fn answer_remove_callbacks(&mut self) {
+        let pending_remove_requests: Vec<_> = self.pending_remove_requests.drain().collect();
+        for (member_id, response_tx) in pending_remove_requests {
+            if self.is_member(member_id) {
+                let _ = response_tx.send(Err(MetadataCommandError::RemoveNode(
+                    RemoveNodeError::Internal(format!(
+                        "failed to remove node '{}' from new configuration",
+                        member_id
+                    )),
+                )));
+            } else {
+                let _ = response_tx.send(Ok(()));
             }
         }
     }
@@ -1329,6 +1569,7 @@ impl Member {
         for node_id in self.raw_node.raft.prs().conf().voters().ids().iter() {
             let plain_node_id = to_plain_node_id(node_id);
             if let Ok(node_config) = nodes_config.find_node_by_id(plain_node_id) {
+                // todo remove addresses from nodes that are no longer needed
                 self.networking
                     .register_address(plain_node_id, node_config.address.clone());
             }
@@ -1337,7 +1578,6 @@ impl Member {
 
     fn update_status(&self) {
         self.status_tx.send_modify(|current_status| {
-            // todo fix member id to contain correct storage id
             let current_leader = if self.raw_node.raft.leader_id == INVALID_ID {
                 None
             } else {
@@ -1370,6 +1610,118 @@ impl Member {
         });
 
         self.record_summary_metrics(&self.status_tx.borrow());
+    }
+
+    fn handle_command(&mut self, command: MetadataCommand) {
+        match command {
+            MetadataCommand::AddNode(result_tx) => {
+                let _ = result_tx.send(Err(MetadataCommandError::AddNode(
+                    AddNodeError::StillMember,
+                )));
+            }
+            MetadataCommand::RemoveNode {
+                response_tx: result_tx,
+                plain_node_id,
+                created_at_millis,
+            } => {
+                self.remove_member(result_tx, plain_node_id, created_at_millis);
+            }
+        }
+    }
+
+    fn remove_member(
+        &mut self,
+        response_tx: oneshot::Sender<Result<(), MetadataCommandError>>,
+        plain_node_id: PlainNodeId,
+        created_at_millis: Option<CreatedAtMillis>,
+    ) {
+        trace!("Handle removing node '{}'", plain_node_id);
+
+        if !self.is_leader {
+            let _ = response_tx.send(Err(MetadataCommandError::NotLeader(self.known_leader())));
+            return;
+        }
+
+        if self.raw_node.raft.has_pending_conf() {
+            let _ = response_tx.send(Err(MetadataCommandError::RemoveNode(
+                RemoveNodeError::PendingReconfiguration,
+            )));
+            return;
+        }
+
+        let leaving_member_id = if let Some(create_at_millis) = created_at_millis {
+            let member_id = MemberId::new(plain_node_id, create_at_millis);
+
+            if !self.is_member(member_id) {
+                let _ = response_tx.send(Err(MetadataCommandError::RemoveNode(
+                    RemoveNodeError::NotMember(member_id),
+                )));
+                return;
+            }
+
+            member_id
+        } else {
+            if !self.is_member_plain_node_id(plain_node_id) {
+                let _ = response_tx.send(Err(MetadataCommandError::RemoveNode(
+                    RemoveNodeError::NotMemberPlainNodeId(plain_node_id),
+                )));
+                return;
+            }
+
+            MemberId::new(
+                plain_node_id,
+                *self
+                    .configuration
+                    .members
+                    .get(&plain_node_id)
+                    .expect("to be present"),
+            )
+        };
+
+        if self.configuration.members.len() == 1 {
+            let _ = response_tx.send(Err(MetadataCommandError::RemoveNode(
+                RemoveNodeError::OnlyMember(leaving_member_id),
+            )));
+            return;
+        }
+
+        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
+
+        if nodes_config
+            .find_node_by_id(leaving_member_id.node_id)
+            .is_err()
+        {
+            let _ = response_tx.send(Err(MetadataCommandError::RemoveNode(
+                RemoveNodeError::UnknownNode(leaving_member_id.node_id),
+            )));
+            return;
+        }
+
+        let (conf_change, new_configuration) = self.remove_member_conf_change(leaving_member_id);
+
+        let next_configuration_bytes =
+            grpc::MetadataServerConfiguration::from(new_configuration).encode_to_vec();
+
+        match self
+            .raw_node
+            .propose_conf_change(next_configuration_bytes, conf_change)
+        {
+            Ok(()) => {
+                info!(
+                    "Trying to remove node '{}' from metadata cluster",
+                    leaving_member_id.node_id
+                );
+                self.register_remove_callback(leaving_member_id, response_tx);
+            }
+            Err(err) => {
+                let _ = response_tx.send(Err(MetadataCommandError::Internal(format!(
+                    "failed to propose conf change: {}",
+                    err
+                ))));
+            }
+        }
     }
 
     fn record_summary_metrics(&self, summary: &MetadataServerSummary) {
@@ -1463,6 +1815,7 @@ struct Standby {
     join_cluster_rx: JoinClusterReceiver,
     metadata_writer: Option<MetadataWriter>,
     status_tx: StatusSender,
+    command_rx: MetadataCommandReceiver,
 }
 
 impl Standby {
@@ -1473,6 +1826,7 @@ impl Standby {
         join_cluster_rx: JoinClusterReceiver,
         metadata_writer: Option<MetadataWriter>,
         status_tx: StatusSender,
+        command_rx: MetadataCommandReceiver,
     ) -> Self {
         connection_manager.store(None);
 
@@ -1483,6 +1837,7 @@ impl Standby {
             join_cluster_rx,
             metadata_writer,
             status_tx,
+            command_rx,
         }
     }
 
@@ -1497,18 +1852,10 @@ impl Standby {
             mut join_cluster_rx,
             metadata_writer,
             status_tx,
+            mut command_rx,
         } = self;
 
         let _ = status_tx.send(MetadataServerSummary::Standby);
-
-        // todo make configurable
-        let mut join_retry_policy = RetryPolicy::exponential(
-            Duration::from_millis(100),
-            2.0,
-            None,
-            Some(Duration::from_secs(5)),
-        )
-        .into_iter();
 
         let created_at_millis = storage
             .get_marker()?
@@ -1517,6 +1864,7 @@ impl Standby {
             .timestamp_millis();
 
         let mut join_cluster: std::pin::Pin<&mut OptionFuture<_>> = std::pin::pin!(None.into());
+        let mut pending_response_txs = Vec::default();
 
         let mut nodes_config_watcher =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
@@ -1534,60 +1882,63 @@ impl Standby {
                 },
                 Some(request) = join_cluster_rx.recv() => {
                     let _ = request.response_tx.send(Err(JoinClusterError::NotMember(Standby::random_member())));
-                }
-                Some(join_result) = &mut join_cluster => {
-                    match join_result {
-                        Ok(my_member_id) => {
-                            storage.store_raft_server_state(&RaftServerState::Member{ my_member_id }).await?;
+                },
+                Some(request) = command_rx.recv() => {
+                    match request {
+                        MetadataCommand::AddNode(result_tx) => {
+                            if my_member_id.is_some() {
+                                pending_response_txs.push(result_tx);
 
-                            return Member::create(
-                                my_member_id,
-                                connection_manager,
-                                storage,
-                                request_rx,
-                                join_cluster_rx,
-                                metadata_writer,
-                                status_tx);
-                        },
-                        Err(err) => {
-                            debug!("Failed joining raft cluster. Retrying. {err}");
-
-                            match err {
-                               JoinError::Rpc(_, known_leader) => {
-                                    // if we have learned about a new leader, then try immediately rejoining
-                                    join_cluster.set(Some(Self::join_cluster(known_leader, None, my_member_id.expect("to be known")).fuse()).into());
+                                if join_cluster.is_terminated() {
+                                    debug!("Node is asked to join the metadata cluster. Trying to join.");
+                                    join_cluster.set(Some(Self::join_cluster(my_member_id.expect("MemberId to be known")).fuse()).into());
                                 }
-                                _ => {
-                                    join_cluster.set(Some(Self::join_cluster(None, join_retry_policy.next(), my_member_id.expect("to be known")).fuse()).into());
-                                }
+                            } else {
+                                let _ = result_tx.send(Err(MetadataCommandError::AddNode(AddNodeError::NotReadyToJoin)));
                             }
-
+                        }
+                        MetadataCommand::RemoveNode{ .. } => {
+                            request.fail(MetadataCommandError::NotLeader(Standby::random_member()))
                         }
                     }
+                },
+                Some((my_member_id, min_expected_nodes_config_version)) = &mut join_cluster => {
+                    storage.store_raft_server_state(&RaftServerState::Member{ my_member_id, min_expected_nodes_config_version: Some(min_expected_nodes_config_version) }).await?;
+
+                    for response_tx in pending_response_txs {
+                        let _ = response_tx.send(Ok(()));
+                    }
+
+                    return Member::create(
+                        my_member_id,
+                        min_expected_nodes_config_version,
+                        connection_manager,
+                        storage,
+                        request_rx,
+                        join_cluster_rx,
+                        metadata_writer,
+                        status_tx,
+                        command_rx,);
                 }
                 _ = nodes_config_watcher.changed() => {
                     let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
                     if let Some(node_config) = nodes_config.find_node_by_name(&my_node_name) {
+                        // we first need to wait until we have joined the Restate cluster to obtain our node id and thereby our member id
                         if my_member_id.is_none() {
                             let member_id = MemberId::new(node_config.current_generation.as_plain(), created_at_millis);
                             Span::current().record("member_id", member_id.to_string());
                             my_member_id = Some(member_id);
                         }
 
-                        if matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
-                            if join_cluster.is_terminated() {
-                                debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
+                        if join_cluster.is_terminated() && matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
+                            debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
 
-                                // Persist latest NodesConfiguration so that we know about the MetadataServerState at least
-                                // as of now when restarting.
-                                storage
-                                    .store_nodes_configuration(&nodes_config)
-                                    .await?;
-                                join_cluster.set(Some(Self::join_cluster(None, None, my_member_id.expect("MemberId to be known")).fuse()).into());
-                            }
-                        } else {
-                            debug!("Node is not part of the metadata store cluster. Waiting to become a candidate.");
-                            join_cluster.set(None.into());
+                            // Persist latest NodesConfiguration so that we know about the MetadataServerState at least
+                            // as of now when restarting.
+                            storage
+                                .store_nodes_configuration(&nodes_config)
+                                .await?;
+                            join_cluster.set(Some(Self::join_cluster(my_member_id.expect("MemberId to be known")).fuse()).into());
                         }
                     } else {
                         trace!("Node '{}' has not joined the cluster yet :-(", my_node_name);
@@ -1597,14 +1948,43 @@ impl Standby {
         }
     }
 
-    async fn join_cluster(
-        known_leader: Option<KnownLeader>,
-        join_delay: Option<Duration>,
-        member_id: MemberId,
-    ) -> Result<MemberId, JoinError> {
-        if let Some(delay) = join_delay {
-            time::sleep(delay).await
+    async fn join_cluster(member_id: MemberId) -> (MemberId, Version) {
+        // todo make configurable
+        let mut join_retry_policy = RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.0,
+            None,
+            Some(Duration::from_secs(1)),
+        )
+        .into_iter();
+
+        let mut known_leader = None;
+
+        loop {
+            let err = match Self::attempt_to_join(known_leader.clone(), member_id).await {
+                Ok(version) => return (member_id, version),
+                Err(err) => err,
+            };
+
+            match err {
+                JoinError::Rpc(err, Some(new_known_leader)) => {
+                    trace!(%err, "Failed joining metadata cluster. Retrying at known leader");
+                    // try immediately again if there is a known leader
+                    known_leader = Some(new_known_leader);
+                }
+                err => {
+                    let delay = join_retry_policy.next().expect("infinite retry policy");
+                    trace!(%err, "Failed joining metadata cluster. Retrying in {}", humantime::Duration::from(delay));
+                    tokio::time::sleep(delay).await
+                }
+            }
         }
+    }
+
+    async fn attempt_to_join(
+        known_leader: Option<KnownLeader>,
+        member_id: MemberId,
+    ) -> Result<Version, JoinError> {
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
 
         let address = if let Some(known_leader) = known_leader {
@@ -1637,18 +2017,23 @@ impl Standby {
 
         let channel = create_tonic_channel(address, &Configuration::pinned().networking);
 
-        if let Err(status) = new_metadata_server_network_client(channel)
-            .join_cluster(crate::raft::network::grpc_svc::JoinClusterRequest {
+        match new_metadata_server_network_client(channel)
+            .join_cluster(network::grpc_svc::JoinClusterRequest {
                 node_id: u32::from(member_id.node_id),
                 created_at_millis: member_id.created_at_millis,
             })
             .await
         {
-            let known_leader = KnownLeader::from_status(&status);
-            Err(JoinError::Rpc(status, known_leader))?
-        };
-
-        Ok(member_id)
+            Ok(response) => Ok(response
+                .into_inner()
+                .nodes_config_version
+                .map(Version::from)
+                .unwrap_or(Metadata::with_current(|m| m.nodes_config_version()))),
+            Err(status) => {
+                let known_leader = KnownLeader::from_status(&status);
+                Err(JoinError::Rpc(status, known_leader))
+            }
+        }
     }
 
     /// Returns a random metadata store member from the current nodes configuration.
@@ -1656,7 +2041,7 @@ impl Standby {
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
 
         nodes_config
-            .iter()
+            .iter_role(Role::MetadataServer)
             .filter_map(|(node_id, node_config)| {
                 if node_config.metadata_server_config.metadata_server_state
                     == MetadataServerState::Member
