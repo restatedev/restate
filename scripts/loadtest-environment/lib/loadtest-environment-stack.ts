@@ -25,10 +25,12 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: LoadTestEnvironmentStackProps) {
     super(scope, id, props);
 
+    const keyPair = new ec2.KeyPair(this, "SshKeypair");
     const instanceRole = new iam.Role(this, "InstanceRole", {
       assumedBy: new iam.ServicePrincipal("ec2.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("AmazonSSMManagedInstanceCore")],
     });
+    const instanceProfile = new iam.InstanceProfile(this, "InstanceProfile", { role: instanceRole });
 
     const invokerRole = new iam.Role(this, "InvokerRole", {
       assumedBy: instanceRole,
@@ -47,52 +49,125 @@ export class LoadTestEnvironmentStack extends cdk.Stack {
     // Cloud init script. To run on every boot, make sure it's idempotent and change `once` to `always` below.
     const initScript = ec2.UserData.forLinux();
     initScript.addCommands(
-      "set -euf -o pipefail",
-      "apt update && apt upgrade",
-      "apt install -y make cmake clang protobuf-compiler npm wrk tmux htop",
+      "set -eufx -o pipefail",
+      "apt-get update",
+      "apt-get install -y make cmake clang protobuf-compiler rustup npm wrk tmux htop podman podman-docker jq prometheus-node-exporter",
+      "mkdir /restate-data",
     );
-    const cloudConfig = ec2.UserData.custom([`cloud_final_modules:`, `- [scripts-user, once]`].join("\n"));
 
+    const cloudConfig = ec2.UserData.custom([`cloud_final_modules:`, `- [scripts-user, once]`].join("\n"));
     const userData = new ec2.MultipartUserData();
     userData.addUserDataPart(cloudConfig, "text/cloud-config");
     userData.addUserDataPart(initScript, "text/x-shellscript");
 
     const vpc = ec2.Vpc.fromLookup(this, "Vpc", { isDefault: true });
-    const testInstance = new ec2.Instance(this, "TestInstance", {
+    const securityGroup = new ec2.SecurityGroup(this, "SecurityGroup", {
       vpc,
-      // Make sure to use an available subnet for the VPC.
+      description: "Restate servers",
+    });
+
+    const nodes: ec2.Instance[] = [];
+    const subnets = vpc.publicSubnets;
+    for (let n = 1; n <= 3; n++) {
+      const node = new ec2.Instance(this, `N${n}`, {
+        instanceProfile,
+        vpc,
+        vpcSubnets: {
+          subnets: [subnets[n % subnets.length]],
+        },
+        instanceType: props.instanceType,
+        machineImage: ec2.MachineImage.fromSsmParameter(
+          `/aws/service/canonical/ubuntu/server/24.04/stable/current/${
+            props.instanceType.architecture == ec2.InstanceArchitecture.X86_64
+              ? "amd64"
+              : props.instanceType.architecture
+          }/hvm/ebs-gp3/ami-id`,
+        ),
+        blockDevices: [
+          {
+            deviceName: "/dev/sda1",
+            volume: ec2.BlockDeviceVolume.ebs(200, {
+              volumeType: ec2.EbsDeviceVolumeType.GP2,
+            }),
+          },
+        ],
+        userData,
+        keyPair,
+      });
+      node.addSecurityGroup(securityGroup);
+      new cdk.CfnOutput(this, `InstanceId${n}`, { value: node.instanceId });
+      new cdk.CfnOutput(this, `Node${n}`, { value: node.instancePublicDnsName });
+      new cdk.CfnOutput(this, `NodeInternalIpAddress${n}`, { value: node.instancePrivateIp });
+      nodes.push(node); // NB: they will be zero-based here!
+    }
+
+    // Cloud init script. To run on every boot, make sure it's idempotent and change `once` to `always` below.
+    const grafanaInitScript = ec2.UserData.forLinux();
+    grafanaInitScript.addCommands(
+      "set -eufx -o pipefail",
+      "wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor > /etc/apt/trusted.gpg.d/grafana.gpg",
+      'add-apt-repository -y "deb https://packages.grafana.com/oss/deb stable main"',
+      "apt-get update",
+      "apt-get install -y grafana prometheus",
+      "",
+      "cat << EOF >> /etc/prometheus/prometheus.yml",
+      `
+  - job_name: 'restate-cluster-nodes'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['${nodes[0].instancePrivateIp}:9100']
+      - targets: ['${nodes[1].instancePrivateIp}:9100']
+      - targets: ['${nodes[2].instancePrivateIp}:9100']
+
+  - job_name: 'restate-cluster-restate'
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['${nodes[0].instancePrivateIp}:5122']
+      - targets: ['${nodes[1].instancePrivateIp}:5122']
+      - targets: ['${nodes[2].instancePrivateIp}:5122']
+`,
+      "EOF",
+      "",
+      "systemctl restart grafana-server",
+      "systemctl restart prometheus",
+    );
+
+    const grafanaCloudConfig = ec2.UserData.custom([`cloud_final_modules:`, `- [scripts-user, once]`].join("\n"));
+    const grafanaUserData = new ec2.MultipartUserData();
+    grafanaUserData.addUserDataPart(grafanaCloudConfig, "text/cloud-config");
+    grafanaUserData.addUserDataPart(grafanaInitScript, "text/x-shellscript");
+
+    const grafanaInstanceType = ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.LARGE);
+    const grafana = new ec2.Instance(this, `GrafanaInstance`, {
+      instanceProfile,
+      vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-      instanceType: props.instanceType,
+      instanceType: grafanaInstanceType,
       machineImage: ec2.MachineImage.fromSsmParameter(
         `/aws/service/canonical/ubuntu/server/24.04/stable/current/${
-          props.instanceType.architecture == ec2.InstanceArchitecture.X86_64 ? "amd64" : props.instanceType.architecture
+          grafanaInstanceType.architecture == ec2.InstanceArchitecture.X86_64
+            ? "amd64"
+            : grafanaInstanceType.architecture
         }/hvm/ebs-gp3/ami-id`,
       ),
-      role: instanceRole,
       blockDevices: [
         {
-          deviceName: "/dev/sde", // "e" for EBS
-          volume: {
-            ebsDevice: props.ebsVolume,
-            virtualName: "restate-data",
-          },
+          deviceName: "/dev/sda1", // root device
+          volume: ec2.BlockDeviceVolume.ebs(100),
         },
       ],
-      userData,
+      userData: grafanaUserData,
+      keyPair,
     });
+    grafana.addSecurityGroup(securityGroup);
+    new cdk.CfnOutput(this, "GrafanaNode", { value: grafana.instancePublicDnsName });
+    new cdk.CfnOutput(this, "GrafanaInstanceId", { value: grafana.instanceId });
+    new cdk.CfnOutput(this, "GrafanaAddress", { value: `http://${grafana.instancePublicDnsName}:3000` });
 
-    // In case you might want to enable remote access from within the VPC
-    const ingressSecurityGroup = new ec2.SecurityGroup(this, "IngressSecurityGroup", {
-      vpc,
-      description: "Restate Ingress ACLs",
-    });
-    testInstance.addSecurityGroup(ingressSecurityGroup);
-    const adminSecurityGroup = new ec2.SecurityGroup(this, "AdminSecurityGroup", {
-      vpc,
-      description: "Restate Admin ACLs",
-    });
-    testInstance.addSecurityGroup(adminSecurityGroup);
+    securityGroup.addIngressRule(securityGroup, ec2.Port.allTraffic());
+    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.allTraffic());
 
-    new cdk.CfnOutput(this, "InstanceId", { value: testInstance.instanceId });
+    new cdk.CfnOutput(this, "KeyArn", { value: keyPair.privateKey.parameterArn });
   }
 }

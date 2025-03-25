@@ -244,12 +244,12 @@ pub(crate) fn cf_options(
         //
         cf_options.set_num_levels(7);
         cf_options.set_compression_per_level(&[
-            DBCompressionType::None,
-            DBCompressionType::None,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
             DBCompressionType::Zstd,
         ]);
 
