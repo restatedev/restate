@@ -142,12 +142,12 @@ fn cf_data_options(
         opts.set_num_levels(7);
 
         opts.set_compression_per_level(&[
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
             DBCompressionType::Zstd,
         ]);
 
@@ -192,9 +192,9 @@ fn cf_metadata_options(
         //
         opts.set_num_levels(3);
         opts.set_compression_per_level(&[
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
         ]);
         opts.set_memtable_whole_key_filtering(true);
         opts.set_max_write_buffer_number(4);
