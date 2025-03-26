@@ -14,6 +14,7 @@ use std::{env, io};
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
+use restate_datafusion::table_docs::TableDocs;
 use schemars::r#gen::SchemaSettings;
 
 use restate_admin::service::AdminService;
@@ -22,7 +23,6 @@ use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
 use restate_core::{TaskCenterFutureExt, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
-use restate_storage_query_datafusion::table_docs;
 use restate_types::config::Configuration;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
@@ -142,17 +142,20 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
 }
 
 fn render_table_docs(mut write: impl Write) -> io::Result<()> {
-    for table_doc in restate_storage_query_datafusion::table_docs::ALL_TABLE_DOCS {
+    for table_doc in restate_storage_datafusion::table_docs::ALL_TABLE_DOCS {
         render_table_doc(table_doc, &mut write)?;
     }
 
     // sys_invocation is a view which was not registered at table_docs::TABLE_DOCS
-    render_table_doc(&table_docs::sys_invocation_table_docs(), &mut write)?;
+    render_table_doc(
+        &restate_storage_datafusion::table_docs::sys_invocation_table_docs(),
+        &mut write,
+    )?;
 
     Ok(())
 }
 
-fn render_table_doc(table_doc: &impl table_docs::TableDocs, w: &mut impl Write) -> io::Result<()> {
+fn render_table_doc(table_doc: &impl TableDocs, w: &mut impl Write) -> io::Result<()> {
     writeln!(w, "## Table: `{}`\n", table_doc.name())?;
     writeln!(w, "{}\n", table_doc.description())?;
     writeln!(w, "| Column name | Type | Description |")?;

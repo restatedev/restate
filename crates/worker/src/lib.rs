@@ -30,16 +30,16 @@ use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{Metadata, TaskKind};
+use restate_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
+use restate_datafusion::remote_query_scanner_client::create_remote_scanner_service;
+use restate_datafusion::remote_query_scanner_manager::{
+    RemoteScannerManager, create_partition_locator,
+};
+use restate_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_metadata_server::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
-use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
-use restate_storage_query_datafusion::remote_query_scanner_manager::{
-    RemoteScannerManager, create_partition_locator,
-};
-use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
@@ -65,7 +65,7 @@ pub enum BuildError {
     DataFusion(
         #[from]
         #[code]
-        restate_storage_query_datafusion::BuildError,
+        restate_datafusion::BuildError,
     ),
     #[error("failed creating worker: {0}")]
     RocksDB(
@@ -173,7 +173,8 @@ impl Worker {
             create_partition_locator(partition_routing, metadata.clone()),
         );
         let schema = metadata.updateable_schema();
-        let storage_query_context = QueryContext::with_user_tables(
+
+        let storage_query_context = restate_storage_datafusion::user_query_context(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata,
             Some(partition_store_manager.clone()),

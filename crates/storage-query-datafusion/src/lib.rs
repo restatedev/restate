@@ -13,45 +13,30 @@ pub mod context;
 
 pub mod remote_query_scanner_server;
 
-mod deployment;
-mod idempotency;
-mod inbox;
-mod invocation_state;
-mod invocation_status;
-mod journal;
-mod keyed_service_status;
-mod log;
-mod node;
-mod node_state;
-mod partition;
-mod partition_state;
-mod partition_store_scanner;
+pub mod partition_store_scanner;
 mod physical_optimizer;
-mod promise;
-mod service;
-mod state;
+pub mod prelude;
 #[cfg(feature = "table_docs")]
 pub mod table_docs;
 mod table_macro;
-mod table_providers;
-mod table_util;
+pub mod table_providers;
+pub mod table_util;
 
 pub use context::BuildError;
+pub use datafusion;
+
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::convert::IpcSchemaEncoder;
 use datafusion::arrow::ipc::writer::DictionaryTracker;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 
-#[cfg(test)]
-pub(crate) mod mocks;
-
-pub mod empty_invoker_status_handle;
-mod partition_filter;
+pub mod partition_filter;
 pub mod remote_query_scanner_client;
 pub mod remote_query_scanner_manager;
-#[cfg(test)]
-mod tests;
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod mocks;
 
 pub(crate) fn encode_schema(schema: &Schema) -> Vec<u8> {
     let mut dictionary_tracker = DictionaryTracker::new(true);
@@ -96,13 +81,23 @@ pub(crate) fn decode_record_batch(bytes: &[u8]) -> Result<RecordBatch, DataFusio
 
 #[cfg(test)]
 mod serde_tests {
+    #![allow(dead_code)]
+
     use datafusion::arrow::array::{Int32Array, RecordBatch};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
+    use crate::prelude::*;
+
+    define_table!(
+        test_table(
+            id: DataType::UInt32,
+        )
+    );
+
     #[test]
     pub fn round_trip_schema() {
-        let schema = crate::state::schema::StateBuilder::schema();
+        let schema = TestTableBuilder::schema();
         let buf = super::encode_schema(&schema);
 
         let got = super::decode_schema(&buf).expect("deserialization works");

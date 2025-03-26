@@ -20,14 +20,14 @@ use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
-use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
-use restate_service_protocol::discovery::ServiceDiscovery;
-use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
-use restate_storage_query_datafusion::empty_invoker_status_handle::EmptyInvokerStatusHandle;
-use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
-use restate_storage_query_datafusion::remote_query_scanner_manager::{
+use restate_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
+use restate_datafusion::remote_query_scanner_client::create_remote_scanner_service;
+use restate_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
 };
+use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_storage_datafusion::EmptyInvokerStatusHandle;
 use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
@@ -48,7 +48,7 @@ pub enum AdminRoleBuildError {
     ServiceClient(#[from] restate_service_client::BuildError),
     #[error("failed creating the datafusion query context: {0}")]
     #[code(unknown)]
-    QueryDataFusion(#[from] restate_storage_query_datafusion::BuildError),
+    QueryDataFusion(#[from] restate_datafusion::BuildError),
 }
 
 pub struct AdminRole<T> {
@@ -89,7 +89,7 @@ impl<T: TransportConnect> AdminRole<T> {
             );
 
             // need to create a remote query context since we are not co-located with a worker role
-            QueryContext::with_user_tables(
+            restate_storage_datafusion::user_query_context(
                 &config.admin.query_engine,
                 SelectPartitionsFromMetadata,
                 None,
