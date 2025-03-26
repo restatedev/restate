@@ -25,29 +25,31 @@ mod node;
 mod node_state;
 mod partition;
 mod partition_state;
-mod partition_store_scanner;
+pub mod partition_store_scanner;
 mod physical_optimizer;
+pub mod prelude;
 mod promise;
 mod service;
 mod state;
 #[cfg(feature = "table_docs")]
 pub mod table_docs;
 mod table_macro;
-mod table_providers;
-mod table_util;
+pub mod table_providers;
+pub mod table_util;
 
 pub use context::BuildError;
+pub use datafusion;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::convert::IpcSchemaEncoder;
 use datafusion::arrow::ipc::writer::DictionaryTracker;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 
-#[cfg(test)]
-pub(crate) mod mocks;
+#[cfg(any(test, feature = "test-util"))]
+pub mod mocks;
 
 pub mod empty_invoker_status_handle;
-mod partition_filter;
+pub mod partition_filter;
 pub mod remote_query_scanner_client;
 pub mod remote_query_scanner_manager;
 #[cfg(test)]

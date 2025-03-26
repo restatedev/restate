@@ -55,7 +55,7 @@ pub(crate) fn register_self(
             .with_invocation_id("invocation_id"),
     );
 
-    ctx.register_partitioned_table(NAME, Arc::new(status_table))
+    ctx.register_table(NAME, Arc::new(status_table))
 }
 
 #[derive(Debug, Clone)]

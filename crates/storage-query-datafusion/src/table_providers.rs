@@ -41,7 +41,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
 }
 
 #[derive(Debug)]
-pub(crate) struct PartitionedTableProvider<T, S> {
+pub struct PartitionedTableProvider<T, S> {
     partition_selector: S,
     schema: SchemaRef,
     ordering: Vec<String>,
@@ -50,7 +50,7 @@ pub(crate) struct PartitionedTableProvider<T, S> {
 }
 
 impl<T, S> PartitionedTableProvider<T, S> {
-    pub(crate) fn new(
+    pub fn new(
         partition_selector: S,
         schema: SchemaRef,
         ordering: Vec<String>,
@@ -258,7 +258,7 @@ where
 
 // Generic-based table provider that provides node-level or global data rather than
 // partition-keyed data.
-pub(crate) trait Scan: Debug + Send + Sync + 'static {
+pub trait Scan: Debug + Send + Sync + 'static {
     fn scan(
         &self,
         projection: SchemaRef,
@@ -267,16 +267,16 @@ pub(crate) trait Scan: Debug + Send + Sync + 'static {
     ) -> SendableRecordBatchStream;
 }
 
-pub(crate) type ScannerRef = Arc<dyn Scan>;
+pub type ScannerRef = Arc<dyn Scan>;
 
 #[derive(Debug)]
-pub(crate) struct GenericTableProvider {
+pub struct GenericTableProvider {
     schema: SchemaRef,
     scanner: ScannerRef,
 }
 
 impl GenericTableProvider {
-    pub(crate) fn new(schema: SchemaRef, scanner: ScannerRef) -> Self {
+    pub fn new(schema: SchemaRef, scanner: ScannerRef) -> Self {
         Self { schema, scanner }
     }
 }

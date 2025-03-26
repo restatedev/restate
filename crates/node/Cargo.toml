@@ -29,7 +29,7 @@ restate-metadata-server = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
-restate-storage-query-datafusion = { workspace = true }
+restate-datafusion = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["prometheus"] }
 restate-types = { workspace = true, features = ["clap"] }
 restate-worker = { workspace = true }

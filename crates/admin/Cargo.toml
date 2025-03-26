@@ -14,7 +14,7 @@ options_schema = ["restate-service-client/options_schema"]
 memory-loglet = ["restate-bifrost/memory-loglet"]
 replicated-loglet = ["restate-bifrost/replicated-loglet"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
-storage-query = ["dep:restate-storage-query-datafusion", "dep:datafusion"]
+storage-query = ["dep:restate-datafusion", "dep:datafusion"]
 metadata-api = []
 
 [dependencies]
@@ -29,7 +29,7 @@ restate-futures-util = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
-restate-storage-query-datafusion = { workspace = true, optional = true }
+restate-datafusion = { workspace = true, optional = true }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-utoipa = { workspace = true }
 restate-wal-protocol = { workspace = true }
@@ -66,7 +66,12 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
+tonic = { workspace = true, features = [
+    "transport",
+    "codegen",
+    "prost",
+    "gzip",
+] }
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 xxhash-rust = { workspace = true }
