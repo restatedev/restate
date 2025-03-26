@@ -8,15 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod decode;
+pub mod encode;
+
 use std::mem;
 use std::sync::Arc;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use chrono::Utc;
 use downcast_rs::{DowncastSync, impl_downcast};
-use serde::de::{DeserializeOwned, Error as DeserializationError};
-use serde::ser::Error as SerializationError;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::error;
 
 use crate::errors::GenericError;
@@ -37,15 +38,21 @@ pub enum StorageDecodeError {
     UnsupportedCodecKind(StorageCodecKind),
 }
 
-#[derive(Debug, strum::FromRepr, derive_more::Display)]
+#[derive(Debug, Copy, Clone, strum::FromRepr, derive_more::Display)]
 #[repr(u8)]
 pub enum StorageCodecKind {
-    // plain old protobuf
+    /// plain old protobuf
     Protobuf = 1,
-    // flexbuffers + serde
+    /// flexbuffers + serde (length-prefixed)
     FlexbuffersSerde = 2,
-    // length-prefixed raw-bytes. length is u32
+    /// length-prefixed raw-bytes. length is u32
     LengthPrefixedRawBytes = 3,
+    /// flexbuffers + serde (no length prefix, requires contiguous buffer)
+    FlexbuffersNoPrefix = 4,
+    /// bincode (with serde compatibility mode,  no length prefix)
+    BincodeSerde = 5,
+    /// Json (no length prefix)
+    Json = 6,
 }
 
 impl From<StorageCodecKind> for u8 {
@@ -150,8 +157,7 @@ macro_rules! flexbuffers_storage_encode_decode {
                 &self,
                 buf: &mut ::bytes::BytesMut,
             ) -> Result<(), $crate::storage::StorageEncodeError> {
-                $crate::storage::encode_as_flexbuffers(self, buf)
-                    .map_err(|err| $crate::storage::StorageEncodeError::EncodeValue(err.into()))
+                $crate::storage::encode::encode_serde(self, buf, self.default_codec())
             }
         }
 
@@ -163,17 +169,11 @@ macro_rules! flexbuffers_storage_encode_decode {
             where
                 Self: Sized,
             {
-                match kind {
-                    $crate::storage::StorageCodecKind::FlexbuffersSerde => {
-                        $crate::storage::decode_from_flexbuffers(buf).map_err(|err| {
-                            ::tracing::error!(%err, "Flexbuffers decode failure (decoding {})", stringify!($name));
-                            $crate::storage::StorageDecodeError::DecodeValue(err.into())
-                        })
-                    }
-                    codec => Err($crate::storage::StorageDecodeError::UnsupportedCodecKind(
-                        codec,
-                    )),
-                }
+                $crate::storage::decode::decode_serde(buf, kind).map_err(|err| {
+                    ::tracing::error!(%err, "{} decode failure (decoding {})", kind, stringify!($name));
+                    err
+                })
+
             }
         }
     };
@@ -338,70 +338,6 @@ impl StorageEncode for bytes::Bytes {
         }
         buf.put_slice(&self[..]);
         Ok(())
-    }
-}
-
-/// Utility method to encode a [`Serialize`] type as flexbuffers using serde.
-pub fn encode_as_flexbuffers<T: Serialize, B: BufMut>(
-    value: T,
-    buf: &mut B,
-) -> Result<(), flexbuffers::SerializationError> {
-    let vec = flexbuffers::to_vec(value)?;
-
-    let required_buffer_bytes = vec.len() + mem::size_of::<u32>();
-    if buf.remaining_mut() < required_buffer_bytes {
-        return Err(flexbuffers::SerializationError::custom(format!(
-            "not enough buffer space to serialize value; required {} bytes but free capacity was {}",
-            required_buffer_bytes,
-            buf.remaining_mut()
-        )));
-    }
-
-    // write the length
-    buf.put_u32_le(u32::try_from(vec.len()).map_err(|_| {
-        flexbuffers::SerializationError::custom("only support serializing types of size <= 4GB")
-    })?);
-    buf.put(&vec[..]);
-    Ok(())
-}
-
-/// Utility method to decode a [`DeserializeOwned`] type from flexbuffers using serde.
-pub fn decode_from_flexbuffers<T: DeserializeOwned, B: Buf>(
-    buf: &mut B,
-) -> Result<T, flexbuffers::DeserializationError> {
-    if buf.remaining() < mem::size_of::<u32>() {
-        return Err(flexbuffers::DeserializationError::custom(format!(
-            "insufficient data: expecting {} bytes for length",
-            mem::size_of::<u32>()
-        )));
-    }
-    let length = usize::try_from(buf.get_u32_le()).expect("u32 to fit into usize");
-
-    if buf.remaining() < length {
-        return Err(flexbuffers::DeserializationError::custom(format!(
-            "insufficient data: expecting {length} bytes for flexbuffers"
-        )));
-    }
-
-    if buf.chunk().len() >= length {
-        let deserializer = flexbuffers::Reader::get_root(buf.chunk())?;
-        // todo: inject the path into the error message and propagate upwards
-        let result = serde_path_to_error::deserialize(deserializer).map_err(|err| {
-            error!(%err, "Flexbuffers error at field {}", err.path());
-            err.into_inner()
-        })?;
-        buf.advance(length);
-        Ok(result)
-    } else {
-        // need to allocate contiguous buffer of length for flexbuffers
-        let bytes = buf.copy_to_bytes(length);
-        let deserializer = flexbuffers::Reader::get_root(bytes.chunk())?;
-        // todo: inject the path into the error message and propagate upwards
-        let result = serde_path_to_error::deserialize(deserializer).map_err(|err| {
-            error!(%err, "Flexbuffers error at field {}", err.path());
-            err.into_inner()
-        })?;
-        Ok(result)
     }
 }
 

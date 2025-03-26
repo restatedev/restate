@@ -32,6 +32,7 @@ base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+bincode = { version = "2.0.1", default-features = false, features = ["std", "serde"] }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
 codederror = { workspace = true }
