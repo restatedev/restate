@@ -63,7 +63,7 @@ pub(crate) fn register_self(
         remote_scanner_manager.create_distributed_scanner(NAME, local_partition_scanner),
         FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
     );
-    ctx.register_partitioned_table(NAME, Arc::new(status_table))
+    ctx.register_table(NAME, Arc::new(status_table))
 }
 
 async fn partition_key_range(

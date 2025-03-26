@@ -8,13 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod cluster_datafusion;
-pub mod cluster_state_refresher;
-pub mod grpc_svc_handler;
-mod logs_controller;
-mod observed_cluster_state;
-pub mod protobuf;
-pub mod scheduler;
-pub mod service;
-
-pub use service::{ClusterControllerHandle, Error, Service};
+pub use crate::table_macro::*;
+pub use datafusion::arrow::datatypes::DataType;
+pub use paste;

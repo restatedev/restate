@@ -16,8 +16,8 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use codederror::CodedError;
 use futures::never::Never;
-use restate_storage_query_datafusion::BuildError;
-use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
+use restate_datafusion::BuildError;
+use restate_datafusion::context::QueryContext;
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
@@ -58,6 +58,7 @@ use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, NodeId, Version};
 
 use self::state::ClusterControllerState;
+use super::cluster_datafusion::ClusterTables;
 use super::cluster_state_refresher::ClusterStateRefresher;
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
 use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
