@@ -241,7 +241,7 @@ pub struct ServiceSchemas {
     pub workflow_completion_retention: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
     pub abort_timeout: Option<Duration>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub documentation: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
