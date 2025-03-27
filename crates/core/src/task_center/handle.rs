@@ -97,6 +97,14 @@ impl Handle {
         self.inner.run_sync(f)
     }
 
+    pub async fn run_async<F, Fut, R>(&self, f: F) -> R
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = R>,
+    {
+        self.inner.run_async(f).await
+    }
+
     /// Sets the current task_center but doesn't create a task. Use this when you need to run a
     /// future within task_center scope.
     pub fn block_on<F, O>(&self, future: F) -> O

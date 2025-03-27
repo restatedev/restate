@@ -375,6 +375,27 @@ impl TaskCenterInner {
         })
     }
 
+    pub async fn run_async<F, Fut, R>(self: &Arc<Self>, f: F) -> R
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = R>,
+    {
+        CURRENT_TASK_CENTER
+            .scope(Handle::new(self), async {
+                OVERRIDES
+                    .scope(
+                        OVERRIDES.try_with(Clone::clone).unwrap_or_default(),
+                        async {
+                            TASK_CONTEXT
+                                .scope(self.with_task_context(Clone::clone), async { f().await })
+                                .await
+                        },
+                    )
+                    .await
+            })
+            .await
+    }
+
     /// Sets the current task_center but doesn't create a task. Use this when you need to run a
     /// future within task_center scope.
     pub fn block_on<F, O>(self: &Arc<Self>, future: F) -> O
