@@ -17,8 +17,8 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 arc-swap = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
-aws-sdk-lambda = {version = "1.36.0", default-features = false, features = ["rt-tokio"]}
-aws-sdk-sts = {version = "1.35.0", default-features = false, features = ["rt-tokio"]}
+aws-sdk-lambda = {version = "1.73.0", default-features = false, features = ["rt-tokio"]}
+aws-sdk-sts = {version = "1.63.0", default-features = false, features = ["rt-tokio"]}
 base64 = { workspace = true }
 bs58 = { version = "0.5.0" }
 bytes = { workspace = true }
