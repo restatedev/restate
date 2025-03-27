@@ -1033,7 +1033,7 @@ impl PartitionProcessorManager {
     ///
     /// This allows multiple partition processors to be started concurrently without holding
     /// and exclusive lock to [`Self`]
-    fn crate_start_partition_processor_task(
+    fn create_start_partition_processor_task(
         &mut self,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
