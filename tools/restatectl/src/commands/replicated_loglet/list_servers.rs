@@ -36,8 +36,8 @@ async fn list_servers(connection: &ConnectionInfo) -> anyhow::Result<()> {
         "NODE",
         "GEN",
         "STORAGE-STATE",
-        "HISTORICAL LOGLETS",
-        "ACTIVE LOGLETS",
+        "HISTORICAL-LOGLETS",
+        "ACTIVE-LOGLETS",
     ];
     servers_table.set_styled_header(header);
     for (node_id, config) in nodes_config.iter().sorted_by(|a, b| Ord::cmp(&a.0, &b.0)) {

@@ -138,9 +138,9 @@ async fn get_info(connection: &ConnectionInfo, opts: &InfoOpts) -> anyhow::Resul
     let mut info_table = Table::new_styled();
     info_table.set_styled_header(vec![
         "",
-        "LOCAL TAIL",
-        "GLOBAL TAIL",
-        "TRIM POINT",
+        "LOCAL-TAIL",
+        "GLOBAL-TAIL",
+        "TRIM-POINT",
         "SEALED",
     ]);
 

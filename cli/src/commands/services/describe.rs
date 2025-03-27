@@ -120,9 +120,9 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let headers = vec![
         "ADDRESS",
         "TYPE",
-        "SERVICE REVISION",
-        "ACTIVE INVOCATIONS",
-        "DEPLOYMENT ID",
+        "SERVICE-REVISION",
+        "ACTIVE-INVOCATIONS",
+        "DEPLOYMENT-ID",
     ];
     table.set_styled_header(headers);
     // sort other_endpoints by revision in descending order

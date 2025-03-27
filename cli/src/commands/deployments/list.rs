@@ -77,9 +77,9 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         "DEPLOYMENT",
         "TYPE",
         "STATUS",
-        "ACTIVE INVOCATIONS",
+        "ACTIVE-INVOCATIONS",
         "ID",
-        "CREATED AT",
+        "CREATED-AT",
     ];
     if list_opts.extra {
         header.push("SERVICES");

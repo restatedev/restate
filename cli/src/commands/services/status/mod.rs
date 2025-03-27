@@ -79,7 +79,7 @@ async fn render_services_status(
         "RUNNING",
         "BACKING-OFF",
         "SUSPENDED",
-        "OLDEST NON-SUSPENDED INVOCATION",
+        "OLDEST-NON-SUSPENDED-INVOCATION",
     ]);
     for svc in services {
         let svc_status = status_map.get_service_status(&svc.name).unwrap_or(&empty);
@@ -215,7 +215,7 @@ async fn render_locked_keys(
     }
 
     let mut table = Table::new_styled();
-    table.set_styled_header(vec!["", "QUEUE", "LOCKED BY", "HANDLER", "NOTES"]);
+    table.set_styled_header(vec!["", "QUEUE", "LOCKED-BY", "HANDLER", "NOTES"]);
     for (svc_name, locked_keys) in locked_keys {
         let mut keys: Vec<_> = locked_keys.into_iter().collect();
         keys.sort_by(|(_, a), (_, b)| b.num_pending.cmp(&a.num_pending));
