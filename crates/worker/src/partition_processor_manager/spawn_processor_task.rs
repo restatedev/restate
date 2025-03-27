@@ -233,7 +233,7 @@ async fn create_or_recreate_store(
     key_range: RangeInclusive<PartitionKey>,
 ) -> anyhow::Result<PartitionStore> {
     // Attempt to get the latest available snapshot from the snapshot repository:
-    let snapshot = match snapshot_repository {
+    let snapshot = match &snapshot_repository {
         Some(repository) => {
             debug!(
                 %partition_id,
@@ -296,18 +296,32 @@ async fn create_or_recreate_store(
         (maybe_snapshot, Some(fast_forward_lsn)) => {
             // Play it safe and keep the partition store intact; we can't do much else at this
             // point. We'll likely halt again as soon as the processor starts up.
+            let recovery_guide_msg =
+                "The partition's log is trimmed to a point from which this processor can not resume.
+                Visit https://docs.restate.dev/operate/clusters/#handling-missing-snapshots
+                to learn more about how to recover this processor.";
+
             if let Some(snapshot) = maybe_snapshot {
                 warn!(
                     %partition_id,
                     %snapshot.min_applied_lsn,
                     %fast_forward_lsn,
-                    "Latest available snapshot is older than the the fast-forward target LSN!",
+                    "The latest available snapshot is from an LSN before the target LSN! {}",
+                    recovery_guide_msg,
+                );
+            } else if snapshot_repository.is_none() {
+                warn!(
+                    %partition_id,
+                    %fast_forward_lsn,
+                    "A log trim gap was encountered, but no snapshot repository is configured! {}",
+                    recovery_guide_msg,
                 );
             } else {
                 warn!(
                     %partition_id,
                     %fast_forward_lsn,
-                    "A fast-forward target LSN is set, but no snapshot available for partition!",
+                    "A log trim gap was encountered, but no snapshot is available for this partition! {}",
+                    recovery_guide_msg,
                 );
             }
 
