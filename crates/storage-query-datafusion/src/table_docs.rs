@@ -149,6 +149,9 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
             .remove("journal_size")
             .expect("journal_size should exist"),
         sys_invocation_status
+            .remove("journal_commands_size")
+            .expect("journal_commands_size should exist"),
+        sys_invocation_status
             .remove("created_at")
             .expect("created_at should exist"),
         sys_invocation_status

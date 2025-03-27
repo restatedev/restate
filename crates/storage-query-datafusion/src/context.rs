@@ -56,6 +56,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.pinned_service_protocol_version,
             ss.trace_id,
             ss.journal_size,
+            ss.journal_commands_size,
             ss.created_at,
             ss.modified_at,
             ss.inboxed_at,

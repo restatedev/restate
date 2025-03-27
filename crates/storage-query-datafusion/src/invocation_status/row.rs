@@ -179,6 +179,7 @@ fn fill_journal_metadata(
 ) {
     fill_span_context(row, output, &journal_metadata.span_context);
     row.journal_size(journal_metadata.length);
+    row.journal_commands_size(journal_metadata.commands);
 }
 
 #[inline]
