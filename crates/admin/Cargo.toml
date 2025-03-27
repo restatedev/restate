@@ -14,7 +14,7 @@ options_schema = ["restate-service-client/options_schema"]
 memory-loglet = ["restate-bifrost/memory-loglet"]
 replicated-loglet = ["restate-bifrost/replicated-loglet"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
-storage-query = ["dep:restate-storage-query-datafusion", "dep:datafusion"]
+storage-query = []
 metadata-api = []
 
 [dependencies]
@@ -29,7 +29,7 @@ restate-futures-util = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
-restate-storage-query-datafusion = { workspace = true, optional = true }
+restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-utoipa = { workspace = true }
 restate-wal-protocol = { workspace = true }
@@ -41,7 +41,7 @@ axum = { workspace = true, features = ["json"] }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
-datafusion = { workspace = true, optional = true }
+datafusion = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enumset = { workspace = true }
