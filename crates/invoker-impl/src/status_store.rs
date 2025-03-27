@@ -12,8 +12,8 @@ use super::*;
 
 use restate_invoker_api::status_handle::{InvocationStatusReport, InvocationStatusReportInner};
 
-use std::time::SystemTime;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use std::time::SystemTime;
 
 #[derive(Default, Debug)]
 pub(super) struct InvocationStatusStore(

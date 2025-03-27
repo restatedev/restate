@@ -1529,7 +1529,8 @@ pub mod v1 {
             fn from(value: restate_storage_api::invocation_status_table::JournalMetadata) -> Self {
                 let restate_storage_api::invocation_status_table::JournalMetadata {
                     span_context,
-                    length, ..
+                    length,
+                    ..
                 } = value;
 
                 JournalMeta {

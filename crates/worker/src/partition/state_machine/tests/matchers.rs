@@ -37,23 +37,21 @@ pub mod storage {
             is.get_journal_metadata()
                 .is_some_and(|jm| jm.length == journal_length)
         })
-            .with_description(
-                format!("has journal length {}", journal_length),
-                format!("hasn't journal length {}", journal_length),
-            )
+        .with_description(
+            format!("has journal length {}", journal_length),
+            format!("hasn't journal length {}", journal_length),
+        )
     }
 
-    pub fn has_commands(
-        commands: EntryIndex,
-    ) -> impl Matcher<ActualT = InvocationStatus> {
+    pub fn has_commands(commands: EntryIndex) -> impl Matcher<ActualT = InvocationStatus> {
         predicate(move |is: &InvocationStatus| {
             is.get_journal_metadata()
                 .is_some_and(|jm| jm.commands == commands)
         })
-            .with_description(
-                format!("has commands {}", commands),
-                format!("hasn't commands {}", commands),
-            )
+        .with_description(
+            format!("has commands {}", commands),
+            format!("hasn't commands {}", commands),
+        )
     }
 
     pub fn invocation_inbox_entry(

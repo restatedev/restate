@@ -16,6 +16,8 @@ use futures::StreamExt;
 use googletest::all;
 use googletest::prelude::{assert_that, eq};
 
+use crate::mocks::*;
+use crate::row;
 use restate_invoker_api::status_handle::InvocationStatusReportInner;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::{InvocationErrorReport, InvocationStatusReport};
@@ -30,8 +32,6 @@ use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use crate::mocks::*;
-use crate::row;
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_sys_invocation() {
@@ -195,7 +195,7 @@ async fn query_sys_invocation_with_protocol_v4() {
         )),
         MockSchemas::default(),
     )
-        .await;
+    .await;
 
     let mut tx = engine.partition_store().transaction();
     tx.put_invocation_status(
@@ -206,8 +206,8 @@ async fn query_sys_invocation_with_protocol_v4() {
             ..InFlightInvocationMetadata::mock()
         }),
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let records = engine
@@ -216,7 +216,7 @@ async fn query_sys_invocation_with_protocol_v4() {
                 id,
                 last_failure_related_command_index,
                 last_failure_related_command_name,
-                last_failure_related_command_type,
+                last_failure_related_command_type
             FROM sys_invocation
             LIMIT 1",
         )

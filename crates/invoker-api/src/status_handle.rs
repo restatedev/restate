@@ -13,10 +13,10 @@ use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::journal::{EntryIndex, EntryType};
+use restate_types::service_protocol::ServiceProtocolVersion;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::time::SystemTime;
-use restate_types::service_protocol::ServiceProtocolVersion;
 
 // -- Status data structure
 

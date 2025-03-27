@@ -63,8 +63,12 @@ pub(crate) fn append_invocation_state_row(
                 }
 
                 if row.is_last_failure_related_entry_type_defined() {
-                    if let Some(related_entry_type) = &last_retry_attempt_failure.related_entry_type {
-                        row.last_failure_related_entry_type(format_using(output, related_entry_type));
+                    if let Some(related_entry_type) = &last_retry_attempt_failure.related_entry_type
+                    {
+                        row.last_failure_related_entry_type(format_using(
+                            output,
+                            related_entry_type,
+                        ));
                     }
                 }
             }
@@ -79,8 +83,13 @@ pub(crate) fn append_invocation_state_row(
                 }
 
                 if row.is_last_failure_related_command_type_defined() {
-                    if let Some(related_command_type) = &last_retry_attempt_failure.related_entry_type {
-                        row.last_failure_related_command_type(format_using(output, related_command_type));
+                    if let Some(related_command_type) =
+                        &last_retry_attempt_failure.related_entry_type
+                    {
+                        row.last_failure_related_command_type(format_using(
+                            output,
+                            related_command_type,
+                        ));
                     }
                 }
             }

@@ -365,7 +365,11 @@ pub struct JournalMetadata {
 }
 
 impl JournalMetadata {
-    pub fn new(length: EntryIndex, commands: EntryIndex, span_context: ServiceInvocationSpanContext) -> Self {
+    pub fn new(
+        length: EntryIndex,
+        commands: EntryIndex,
+        span_context: ServiceInvocationSpanContext,
+    ) -> Self {
         Self {
             span_context,
             length,

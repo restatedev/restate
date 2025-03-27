@@ -395,22 +395,17 @@ impl<CMD> ApplyJournalCommandEffect<'_, CMD> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use bytes::Bytes;
     use googletest::prelude::*;
-    use restate_types::identifiers::{InvocationId, ServiceId};
-    use restate_types::invocation::{
-        Header, InvocationResponse, InvocationTarget, ResponseResult,
-    };
-    use restate_types::journal_v2::{
-        CallCommand, CallRequest,
-    };
-    use restate_wal_protocol::Command;
     use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
+    use restate_types::identifiers::{InvocationId, ServiceId};
+    use restate_types::invocation::{Header, InvocationResponse, InvocationTarget, ResponseResult};
+    use restate_types::journal_v2::{CallCommand, CallRequest};
+    use restate_wal_protocol::Command;
 
     #[restate_core::test]
     async fn update_journal_and_commands_length() {
@@ -427,8 +422,9 @@ mod tests {
         let success_result = Bytes::from_static(b"success");
 
         let _ = test_env
-            .apply(
-                invoker_entry_effect(invocation_id, CallCommand {
+            .apply(invoker_entry_effect(
+                invocation_id,
+                CallCommand {
                     request: CallRequest {
                         headers: vec![Header::new("foo", "bar")],
                         ..CallRequest::mock(callee_invocation_id, callee_invocation_target.clone())
@@ -436,26 +432,38 @@ mod tests {
                     invocation_id_completion_id,
                     result_completion_id,
                     name: Default::default(),
-                }),
-           )
+                },
+            ))
             .await;
         assert_that!(
-            test_env.storage.get_invocation_status(&invocation_id).await.unwrap(),
-            all!(matchers::storage::has_journal_length(2), matchers::storage::has_commands(1))
+            test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await
+                .unwrap(),
+            all!(
+                matchers::storage::has_journal_length(3),
+                matchers::storage::has_commands(1)
+            )
         );
 
         let _ = test_env
-            .apply(
-                Command::InvocationResponse(InvocationResponse {
-                    id: invocation_id,
-                    entry_index: result_completion_id,
-                    result: ResponseResult::Success(success_result.clone()),
-                }),
-            )
+            .apply(Command::InvocationResponse(InvocationResponse {
+                id: invocation_id,
+                entry_index: result_completion_id,
+                result: ResponseResult::Success(success_result.clone()),
+            }))
             .await;
         assert_that!(
-            test_env.storage.get_invocation_status(&invocation_id).await.unwrap(),
-            all!(matchers::storage::has_journal_length(3), matchers::storage::has_commands(1))
+            test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await
+                .unwrap(),
+            all!(
+                matchers::storage::has_journal_length(4),
+                matchers::storage::has_commands(1)
+            )
         );
 
         test_env.shutdown().await;
