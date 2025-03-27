@@ -196,6 +196,15 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_state
             .remove("last_failure_related_entry_type")
             .expect("last_failure_related_entry_type should exist"),
+        sys_invocation_state
+            .remove("last_failure_related_command_index")
+            .expect("last_failure_related_command_index should exist"),
+        sys_invocation_state
+            .remove("last_failure_related_command_name")
+            .expect("last_failure_related_command_name should exist"),
+        sys_invocation_state
+            .remove("last_failure_related_command_type")
+            .expect("last_failure_related_command_type should exist"),
         TableColumn {
             name: "status",
             column_type: "Utf8",

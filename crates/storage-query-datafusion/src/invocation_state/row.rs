@@ -12,6 +12,7 @@ use crate::invocation_state::schema::SysInvocationStateBuilder;
 use crate::table_util::format_using;
 use restate_invoker_api::InvocationStatusReport;
 use restate_types::identifiers::WithPartitionKey;
+use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
 
 #[inline]
@@ -46,18 +47,42 @@ pub(crate) fn append_invocation_state_row(
         if let Some(doc_error_code) = last_retry_attempt_failure.doc_error_code {
             row.last_failure_error_code(doc_error_code.code())
         }
-        if let Some(name) = &last_retry_attempt_failure.related_entry_name {
-            if !name.is_empty() {
-                row.last_failure_related_entry_name(name);
-            }
-        }
-        if let Some(idx) = last_retry_attempt_failure.related_entry_index {
-            row.last_failure_related_entry_index(idx as u64);
-        }
 
-        if row.is_last_failure_related_entry_type_defined() {
-            if let Some(related_entry_type) = &last_retry_attempt_failure.related_entry_type {
-                row.last_failure_related_entry_type(format_using(output, related_entry_type));
+        match status_row.last_attempt_service_protocol_version() {
+            None => {}
+            Some(sp) if *sp <= ServiceProtocolVersion::V3 => {
+                // TODO remove this code branch when we remove protocol v3
+
+                if let Some(name) = &last_retry_attempt_failure.related_entry_name {
+                    if !name.is_empty() {
+                        row.last_failure_related_entry_name(name);
+                    }
+                }
+                if let Some(idx) = last_retry_attempt_failure.related_entry_index {
+                    row.last_failure_related_entry_index(idx as u64);
+                }
+
+                if row.is_last_failure_related_entry_type_defined() {
+                    if let Some(related_entry_type) = &last_retry_attempt_failure.related_entry_type {
+                        row.last_failure_related_entry_type(format_using(output, related_entry_type));
+                    }
+                }
+            }
+            _ => {
+                if let Some(name) = &last_retry_attempt_failure.related_entry_name {
+                    if !name.is_empty() {
+                        row.last_failure_related_command_name(name);
+                    }
+                }
+                if let Some(idx) = last_retry_attempt_failure.related_entry_index {
+                    row.last_failure_related_command_index(idx as u64);
+                }
+
+                if row.is_last_failure_related_command_type_defined() {
+                    if let Some(related_command_type) = &last_retry_attempt_failure.related_entry_type {
+                        row.last_failure_related_command_type(format_using(output, related_command_type));
+                    }
+                }
             }
         }
     }
