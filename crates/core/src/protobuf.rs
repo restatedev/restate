@@ -11,6 +11,7 @@
 use tonic::{Code, Status};
 
 use crate::metadata_store::{ReadError, WriteError};
+use restate_types::errors::SimpleStatus;
 
 pub mod node_ctl_svc {
     use tonic::codec::CompressionEncoding;
@@ -189,12 +190,14 @@ fn to_read_err(status: Status) -> ReadError {
     // Additionally, users of this proxy client (e.g., `restatectl`) are
     // unlikely to retry on errors and will typically attempt to use
     // another node instead.
-    ReadError::terminal(status)
+    ReadError::terminal(SimpleStatus::from(status))
 }
 
 fn to_write_err(status: Status) -> WriteError {
     match status.code() {
-        Code::FailedPrecondition => WriteError::FailedPrecondition(status.to_string()),
-        _ => WriteError::terminal(status),
+        Code::FailedPrecondition => {
+            WriteError::FailedPrecondition(SimpleStatus::from(status).to_string())
+        }
+        _ => WriteError::terminal(SimpleStatus::from(status)),
     }
 }

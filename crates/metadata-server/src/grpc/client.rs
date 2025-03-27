@@ -22,6 +22,7 @@ use restate_core::network::net_util::{CommonClientConnectionOptions, create_toni
 use restate_core::{Metadata, TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::config::Configuration;
 use restate_types::errors::ConversionError;
+use restate_types::errors::SimpleStatus;
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::net::AdvertisedAddress;
 use restate_types::net::metadata::MetadataKind;
@@ -359,12 +360,15 @@ fn map_status_to_provision_error(address: AdvertisedAddress, status: Status) -> 
 #[error("[{address}] {status}")]
 struct StatusError {
     address: AdvertisedAddress,
-    status: Status,
+    status: SimpleStatus,
 }
 
 impl StatusError {
     fn new(address: AdvertisedAddress, status: Status) -> Self {
-        Self { address, status }
+        Self {
+            address,
+            status: SimpleStatus(status),
+        }
     }
 }
 

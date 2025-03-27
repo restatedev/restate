@@ -15,12 +15,12 @@ use json_patch::Patch;
 use serde_json::Value;
 use tonic::Code;
 
-use restate_core::protobuf::metadata_proxy_svc::{PutRequest, new_metadata_proxy_client};
-use restate_types::Version;
-use restate_types::metadata::Precondition;
-
 use crate::commands::metadata::MetadataCommonOpts;
 use crate::connection::{ConnectionInfo, NodeOperationError};
+use restate_core::protobuf::metadata_proxy_svc::{PutRequest, new_metadata_proxy_client};
+use restate_types::Version;
+use restate_types::errors::SimpleStatus;
+use restate_types::metadata::Precondition;
 
 use super::GenericMetadataValue;
 
@@ -110,11 +110,11 @@ async fn patch_value_inner(
             new_metadata_proxy_client(channel)
                 .put(request.clone())
                 .await
-                .map_err(|err| {
-                    if err.code() == Code::FailedPrecondition {
-                        NodeOperationError::Terminal(err)
+                .map_err(|status| {
+                    if status.code() == Code::FailedPrecondition {
+                        NodeOperationError::Terminal(SimpleStatus::from(status))
                     } else {
-                        NodeOperationError::RetryElsewhere(err)
+                        NodeOperationError::RetryElsewhere(SimpleStatus::from(status))
                     }
                 })
         })
