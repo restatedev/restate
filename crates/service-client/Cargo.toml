@@ -56,4 +56,5 @@ aws-smithy-types = { workspace = true }
 pin-project-lite = { workspace = true }
 
 [dev-dependencies]
+googletest = { workspace = true }
 tempfile = { workspace = true }
