@@ -7744,7 +7744,6 @@ dependencies = [
  "tiny-gradient",
  "tokio",
  "toml",
- "tonic",
  "tracing",
  "tracing-opentelemetry",
  "typify 0.1.0",

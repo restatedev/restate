@@ -194,7 +194,6 @@ tempfile = "3.6.0"
 test-log = { version = "0.2.11", default-features = false, features = [
     "trace",
 ] }
-tonic = { version = "0.12.3", default-features = false }
 toml = { version = "0.8.12" }
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms", "profiling"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling"] }
@@ -207,6 +206,7 @@ tokio = { version = "1.41.1", default-features = false, features = [
 ] }
 tokio-stream = "0.1.16"
 tokio-util = { version = "0.7.12" }
+tonic = { version = "0.12.3", default-features = false }
 tonic-reflection = { version = "0.12.3" }
 tonic-health = { version = "0.12.3" }
 tonic-build = { version = "0.12.3" }
