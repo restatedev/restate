@@ -105,6 +105,10 @@ impl LambdaClient {
 
             let lambda_client_builder = aws_sdk_lambda::config::Builder::from(&config);
 
+            // Restate has its own retry mechanisms, and the built in retry policy in this library could just confuse things
+            let lambda_client_builder =
+                lambda_client_builder.retry_config(aws_config::retry::RetryConfig::disabled());
+
             let lambda_client =
                 aws_sdk_lambda::Client::from_conf(lambda_client_builder.clone().build());
 
