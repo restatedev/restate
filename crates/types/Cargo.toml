@@ -23,6 +23,7 @@ restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-utoipa = { workspace = true }
+tonic = { workspace = true }
 
 ahash = {workspace = true }
 anyhow = { workspace = true }
