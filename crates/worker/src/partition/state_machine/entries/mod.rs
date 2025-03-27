@@ -361,6 +361,9 @@ where
 
             // Update journal length
             journal_meta.length += 1;
+            if matches!(entry.ty(), EntryType::Command(_)) {
+                journal_meta.commands += 1;
+            }
         }
 
         // Update timestamps
@@ -389,5 +392,72 @@ impl<CMD> ApplyJournalCommandEffect<'_, CMD> {
     fn then_apply_completion(&mut self, e: impl Into<Completion>) {
         self.completions_to_process
             .push_back(Entry::from(e.into()).encode::<ServiceProtocolV4Codec>())
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use bytes::Bytes;
+    use googletest::prelude::*;
+    use restate_types::identifiers::{InvocationId, ServiceId};
+    use restate_types::invocation::{
+        Header, InvocationResponse, InvocationTarget, ResponseResult,
+    };
+    use restate_types::journal_v2::{
+        CallCommand, CallRequest,
+    };
+    use restate_wal_protocol::Command;
+    use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
+
+    #[restate_core::test]
+    async fn update_journal_and_commands_length() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+        let invocation_id_completion_id = 1;
+        let result_completion_id = 2;
+        let callee_service_id = ServiceId::mock_random();
+        let callee_invocation_target =
+            InvocationTarget::mock_from_service_id(callee_service_id.clone());
+        let callee_invocation_id = InvocationId::mock_generate(&callee_invocation_target);
+        let success_result = Bytes::from_static(b"success");
+
+        let _ = test_env
+            .apply(
+                invoker_entry_effect(invocation_id, CallCommand {
+                    request: CallRequest {
+                        headers: vec![Header::new("foo", "bar")],
+                        ..CallRequest::mock(callee_invocation_id, callee_invocation_target.clone())
+                    },
+                    invocation_id_completion_id,
+                    result_completion_id,
+                    name: Default::default(),
+                }),
+           )
+            .await;
+        assert_that!(
+            test_env.storage.get_invocation_status(&invocation_id).await.unwrap(),
+            all!(matchers::storage::has_journal_length(2), matchers::storage::has_commands(1))
+        );
+
+        let _ = test_env
+            .apply(
+                Command::InvocationResponse(InvocationResponse {
+                    id: invocation_id,
+                    entry_index: result_completion_id,
+                    result: ResponseResult::Success(success_result.clone()),
+                }),
+            )
+            .await;
+        assert_that!(
+            test_env.storage.get_invocation_status(&invocation_id).await.unwrap(),
+            all!(matchers::storage::has_journal_length(3), matchers::storage::has_commands(1))
+        );
+
+        test_env.shutdown().await;
     }
 }
