@@ -37,7 +37,7 @@ use crate::cluster_controller::protobuf::{
     FindTailResponse, ListLogsRequest, ListLogsResponse, SealAndExtendChainRequest,
     SealAndExtendChainResponse, SealedSegment, TailState, TrimLogRequest,
 };
-use crate::storage_query::WriteRecordBatchStream;
+use crate::query_utils::WriteRecordBatchStream;
 
 use super::ClusterControllerHandle;
 use super::protobuf::{
