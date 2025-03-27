@@ -25,6 +25,7 @@ use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::{BoundColumnFamily, SliceTransform};
 use static_assertions::const_assert_eq;
+use tracing::info;
 use tracing::trace;
 
 use restate_core::ShutdownError;
@@ -203,6 +204,7 @@ pub struct PartitionStore {
     key_range: RangeInclusive<PartitionKey>,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
+    idempotency_table_disabled: bool,
 }
 
 impl std::fmt::Debug for PartitionStore {
@@ -225,6 +227,7 @@ impl Clone for PartitionStore {
             key_range: self.key_range.clone(),
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
+            idempotency_table_disabled: self.idempotency_table_disabled,
         }
     }
 }
@@ -288,7 +291,72 @@ impl PartitionStore {
             key_range,
             key_buffer: BytesMut::new(),
             value_buffer: BytesMut::new(),
+            idempotency_table_disabled: false,
         }
+    }
+
+    /// Creates a new PartitionStore and checks if the idempotency table is empty,
+    /// disabling it when empty to avoid unnecessary operations.
+    pub(crate) async fn new_with_idempotency_check(
+        rocksdb: Arc<RocksDb>,
+        data_cf_name: CfName,
+        partition_id: PartitionId,
+        key_range: RangeInclusive<PartitionKey>,
+    ) -> Result<Self> {
+        let mut store = Self {
+            rocksdb,
+            partition_id,
+            data_cf_name,
+            key_range,
+            key_buffer: BytesMut::new(),
+            value_buffer: BytesMut::new(),
+            idempotency_table_disabled: false,
+        };
+        
+        // Check if the idempotency table is empty
+        let is_empty = store.is_idempotency_table_empty()?;
+        if is_empty {
+            info!(
+                "Idempotency table for partition {} is empty, disabling all idempotency table code paths for better performance",
+                partition_id
+            );
+            store.idempotency_table_disabled = true;
+        }
+        
+        Ok(store)
+    }
+
+    /// Checks if the idempotency table is empty for this partition
+    fn is_idempotency_table_empty(&self) -> Result<bool> {
+        let table = self.table_handle(TableKind::Idempotency)?;
+        let mut opts = ReadOptions::default();
+        
+        // Get the bytes representation of the KeyKind::Idempotency
+        let key_kind_bytes = KeyKind::Idempotency.as_bytes();
+        
+        // Configure the iterator options
+        opts.set_prefix_same_as_start(true);
+        opts.set_async_io(true);
+        opts.set_total_order_seek(false);
+        
+        let mut it = self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(&table, opts);
+        
+        // Seek to the first key with the idempotency prefix
+        it.seek(key_kind_bytes);
+        
+        // If the iterator is valid and the key has our prefix, the table is not empty
+        let is_empty = !it.valid() || !it.key().map_or(false, |k| TableKind::Idempotency.has_key_kind(k));
+        
+        Ok(is_empty)
+    }
+    
+    #[inline]
+    pub fn is_idempotency_table_disabled(&self) -> bool {
+        self.idempotency_table_disabled
     }
 
     #[inline]
@@ -415,14 +483,29 @@ impl PartitionStore {
                 )
             });
 
+        let partition_id = self.partition_id;
+        let partition_key_range = &self.key_range;
+        let idempotency_disabled = self.is_idempotency_table_disabled();
+        
+        let partition_store = PartitionStore {
+            rocksdb: self.rocksdb.clone(),
+            partition_id: self.partition_id,
+            data_cf_name: self.data_cf_name.clone(),
+            key_range: self.key_range.clone(),
+            key_buffer: BytesMut::new(),
+            value_buffer: BytesMut::new(),
+            idempotency_table_disabled: idempotency_disabled,
+        };
+
         PartitionStoreTransaction {
             write_batch_with_index: rocksdb::WriteBatchWithIndex::new(0, true),
             data_cf_handle,
             rocksdb,
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
-            partition_id: self.partition_id,
-            partition_key_range: &self.key_range,
+            partition_id,
+            partition_key_range,
+            partition_store,
         }
     }
 
@@ -600,6 +683,7 @@ pub struct PartitionStoreTransaction<'a> {
     data_cf_handle: Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
+    partition_store: PartitionStore,
 }
 
 impl PartitionStoreTransaction<'_> {
@@ -667,6 +751,11 @@ impl PartitionStoreTransaction<'_> {
     #[inline]
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.partition_key_range, partition_key)
+    }
+
+    #[inline]
+    pub fn is_idempotency_table_disabled(&self) -> bool {
+        self.partition_store.is_idempotency_table_disabled()
     }
 }
 
