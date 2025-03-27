@@ -16,7 +16,9 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use codederror::CodedError;
 use futures::never::Never;
+#[cfg(feature = "storage-query")]
 use restate_storage_query_datafusion::BuildError;
+#[cfg(feature = "storage-query")]
 use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use tokio::sync::{mpsc, oneshot};
@@ -70,6 +72,10 @@ pub enum Error {
     #[error("error")]
     #[code(unknown)]
     Error,
+    #[cfg(feature = "storage-query")]
+    #[error("build error")]
+    #[code(unknown)]
+    BuildError(#[from] BuildError),
 }
 
 pub struct Service<T> {
@@ -100,7 +106,7 @@ where
         router_builder: &mut MessageRouterBuilder,
         server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
-    ) -> Result<Self, BuildError> {
+    ) -> Result<Self, Error> {
         let (command_tx, command_rx) = mpsc::channel(2);
 
         let cluster_state_refresher =
@@ -112,6 +118,7 @@ where
         let options = configuration.live_load();
         let heartbeat_interval = Self::create_heartbeat_interval(&options.admin);
 
+        #[cfg(feature = "storage-query")]
         let cluster_query_context = QueryContext::create(
             &options.admin.query_engine,
             ClusterTables::new(cluster_state_refresher.cluster_state_watcher().watch()),
@@ -127,6 +134,7 @@ where
                     },
                     bifrost.clone(),
                     metadata_writer.clone(),
+                    #[cfg(feature = "storage-query")]
                     cluster_query_context,
                 ))
                 .accept_compressed(CompressionEncoding::Gzip)

@@ -9,8 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Bytes, BytesMut};
+#[cfg(feature = "storage-query")]
 use datafusion::arrow::ipc::writer::StreamWriter;
+#[cfg(feature = "storage-query")]
 use datafusion::error::DataFusionError;
+#[cfg(feature = "storage-query")]
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use tonic::{Request, Response, Status, async_trait};
@@ -19,6 +22,7 @@ use tracing::info;
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BiforstError};
 use restate_core::{Metadata, MetadataWriter};
+#[cfg(feature = "storage-query")]
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
@@ -37,6 +41,7 @@ use crate::cluster_controller::protobuf::{
     FindTailResponse, ListLogsRequest, ListLogsResponse, SealAndExtendChainRequest,
     SealAndExtendChainResponse, SealedSegment, TailState, TrimLogRequest,
 };
+#[cfg(feature = "storage-query")]
 use crate::storage_query::WriteRecordBatchStream;
 
 use super::ClusterControllerHandle;
@@ -50,6 +55,7 @@ pub(crate) struct ClusterCtrlSvcHandler {
     controller_handle: ClusterControllerHandle,
     bifrost: Bifrost,
     metadata_writer: MetadataWriter,
+    #[cfg(feature = "storage-query")]
     query_context: QueryContext,
 }
 
@@ -58,12 +64,13 @@ impl ClusterCtrlSvcHandler {
         controller_handle: ClusterControllerHandle,
         bifrost: Bifrost,
         metadata_writer: MetadataWriter,
-        query_context: QueryContext,
+        #[cfg(feature = "storage-query")] query_context: QueryContext,
     ) -> Self {
         Self {
             controller_handle,
             bifrost,
             metadata_writer,
+            #[cfg(feature = "storage-query")]
             query_context,
         }
     }
@@ -370,6 +377,15 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
     /// Server streaming response type for the Query method.
     type QueryStream = BoxStream<'static, Result<QueryResponse, Status>>;
 
+    #[cfg(not(feature = "storage-query"))]
+    async fn query(
+        &self,
+        _request: Request<QueryRequest>,
+    ) -> std::result::Result<Response<Self::QueryStream>, tonic::Status> {
+        Err(Status::unimplemented("Query is not supported"))
+    }
+
+    #[cfg(feature = "storage-query")]
     async fn query(
         &self,
         request: Request<QueryRequest>,
@@ -399,6 +415,7 @@ fn serialize_value<T: StorageEncode>(value: T) -> Bytes {
     buf.freeze()
 }
 
+#[cfg(feature = "storage-query")]
 fn datafusion_error_to_status(err: DataFusionError) -> Status {
     match err {
         DataFusionError::SQL(..)

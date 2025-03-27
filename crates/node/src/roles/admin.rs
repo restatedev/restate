@@ -49,6 +49,9 @@ pub enum AdminRoleBuildError {
     #[error("failed creating the datafusion query context: {0}")]
     #[code(unknown)]
     QueryDataFusion(#[from] restate_storage_query_datafusion::BuildError),
+    #[error("failed creating cluster controller: {0}")]
+    #[code(unknown)]
+    ClusterController(#[from] cluster_controller::Error),
 }
 
 pub struct AdminRole<T> {
