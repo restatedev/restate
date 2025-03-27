@@ -1159,8 +1159,6 @@ mod tests {
         })
         .await?;
 
-        // N2 does not react to messages and will be flagged as dead
-
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
             let lsn = appender.append(format!("record{i}")).await?;
@@ -1242,6 +1240,8 @@ mod tests {
                     .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
             })
             .await?;
+
+        // We don't set up a mock N2 message handler in this test, so it will implicitly be treated as dead
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
