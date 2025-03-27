@@ -25,6 +25,7 @@ use restate_core::protobuf::node_ctl_svc::{
 use restate_metadata_server::ReadModifyWriteError;
 use restate_types::{
     Version, Versioned,
+    errors::SimpleStatus,
     logs::metadata::Logs,
     net::AdvertisedAddress,
     nodes_config::{NodesConfiguration, Role},
@@ -185,7 +186,7 @@ impl ConnectionInfo {
             let response = match client.get_ident(()).await {
                 Ok(response) => response.into_inner(),
                 Err(status) => {
-                    errors.error(address.clone(), status);
+                    errors.error(address.clone(), SimpleStatus::from(status));
                     self.dead_nodes.write().unwrap().insert(address.clone());
                     continue;
                 }
@@ -224,7 +225,7 @@ impl ConnectionInfo {
             let mut response = match client.get_metadata(request).await {
                 Ok(response) => response.into_inner(),
                 Err(status) => {
-                    errors.error(address.clone(), status);
+                    errors.error(address.clone(), SimpleStatus::from(status));
                     continue;
                 }
             };
@@ -309,16 +310,16 @@ impl ConnectionInfo {
                 let result = node_operation(channel).await.map_err(Into::into);
                 match result {
                     Ok(response) => return Ok(response),
-                    Err(NodeOperationError::RetryElsewhere(status)) => {
-                        if status.code() == Code::Unavailable
-                            || status.code() == Code::DeadlineExceeded
+                    Err(NodeOperationError::RetryElsewhere(simple_status)) => {
+                        if simple_status.code() == Code::Unavailable
+                            || simple_status.code() == Code::DeadlineExceeded
                         {
                             self.dead_nodes
                                 .write()
                                 .unwrap()
                                 .insert(node.address.clone());
                         }
-                        errors.error(node.address.clone(), status);
+                        errors.error(node.address.clone(), simple_status);
                     }
                     Err(NodeOperationError::Terminal(status)) => {
                         errors.error(node.address.clone(), status);
@@ -328,10 +329,10 @@ impl ConnectionInfo {
             } else {
                 errors.error(
                     node.address.clone(),
-                    Status::unavailable(format!(
+                    SimpleStatus::from(Status::unavailable(format!(
                         "Node {} was previously flagged as unreachable, not attempting to connect",
                         node.address
-                    )),
+                    ))),
                 );
             }
         }
@@ -385,17 +386,17 @@ pub enum NodeOperationError {
     /// An error that can be retried on a different node
     /// but terminal on this node.
     #[error(transparent)]
-    RetryElsewhere(Status),
+    RetryElsewhere(SimpleStatus),
     /// Don not retry on any other node(s)
     #[error(transparent)]
-    Terminal(Status),
+    Terminal(SimpleStatus),
 }
 
 impl From<Status> for NodeOperationError {
     fn from(value: Status) -> Self {
         match value.code() {
-            Code::FailedPrecondition => Self::Terminal(value),
-            _ => Self::RetryElsewhere(value),
+            Code::FailedPrecondition => Self::Terminal(SimpleStatus(value)),
+            _ => Self::RetryElsewhere(SimpleStatus(value)),
         }
     }
 }
@@ -408,11 +409,11 @@ where
         match value {
             ReadModifyWriteError::FailedOperation(err) => {
                 // we don't ever try again
-                NodeOperationError::Terminal(Status::unknown(err.to_string()))
+                NodeOperationError::Terminal(SimpleStatus(Status::unknown(err.to_string())))
             }
             ReadModifyWriteError::ReadWrite(err) => {
                 // possible node failure, we can try the next reachable node
-                NodeOperationError::RetryElsewhere(Status::unknown(err.to_string()))
+                NodeOperationError::RetryElsewhere(SimpleStatus(Status::unknown(err.to_string())))
             }
         }
     }
@@ -463,12 +464,12 @@ impl Display for NoRoleError {
 
 #[derive(Debug, Default)]
 pub struct NodesErrors {
-    node_status: Vec<(AdvertisedAddress, Status)>,
+    node_status: Vec<(AdvertisedAddress, SimpleStatus)>,
 }
 
 impl NodesErrors {
-    fn error(&mut self, node: AdvertisedAddress, status: Status) {
-        self.node_status.push((node, status));
+    fn error(&mut self, node: AdvertisedAddress, simple_status: SimpleStatus) {
+        self.node_status.push((node, simple_status));
     }
 
     fn is_empty(&self) -> bool {

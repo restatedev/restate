@@ -82,6 +82,7 @@ thiserror = { workspace = true }
 tiny-gradient = { version = "0.1.0" }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
 toml = { workspace = true }
+tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }

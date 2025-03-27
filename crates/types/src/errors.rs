@@ -12,7 +12,9 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
-use std::fmt::Formatter;
+use std::fmt::{Debug, Display, Formatter};
+use tonic;
+use tracing::Level;
 
 /// Error type which abstracts away the actual [`std::error::Error`] type. Use this type
 /// if you don't know the actual error type or if it is not important.
@@ -355,5 +357,111 @@ impl ConversionError {
 
     pub fn invalid_data(field: &'static str) -> Self {
         ConversionError::InvalidData(field)
+    }
+}
+
+/// A simplified display wrapper around tonic::Status that only shows the status code and message,
+/// omitting the details and metadata fields for cleaner output unless log level DEBUG or higher is
+/// enabled.
+#[derive(Clone, derive_more::Debug)]
+#[debug("{}", _0)]
+pub struct SimpleStatus(pub tonic::Status);
+
+impl From<tonic::Status> for SimpleStatus {
+    fn from(status: tonic::Status) -> Self {
+        Self(status)
+    }
+}
+
+impl AsRef<tonic::Status> for SimpleStatus {
+    fn as_ref(&self) -> &tonic::Status {
+        &self.0
+    }
+}
+
+impl From<SimpleStatus> for tonic::Status {
+    fn from(status: SimpleStatus) -> Self {
+        status.0
+    }
+}
+
+impl SimpleStatus {
+    /// Returns the status code
+    pub fn code(&self) -> tonic::Code {
+        self.0.code()
+    }
+
+    /// Returns the status message
+    pub fn message(&self) -> &str {
+        self.0.message()
+    }
+}
+
+impl Display for SimpleStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if tracing::enabled!(Level::DEBUG) {
+            // display all details of status if DEBUG log level or higher is enabled
+            Display::fmt(&self.0, f)
+        } else {
+            write!(f, "{}: {}", self.0.code(), self.0.message())
+        }
+    }
+}
+
+impl std::error::Error for SimpleStatus {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tonic::Code;
+
+    #[test]
+    fn test_simple_status_display() {
+        let status = tonic::Status::new(Code::NotFound, "Resource not found");
+        let simple_status = SimpleStatus(status);
+        assert_eq!(
+            simple_status.to_string(),
+            "Some requested entity was not found: Resource not found"
+        );
+    }
+
+    #[test]
+    fn test_simple_status_from_tonic() {
+        let tonic_status = tonic::Status::new(Code::Internal, "Internal error");
+        let simple_status: SimpleStatus = tonic_status.clone().into();
+        assert_eq!(simple_status.to_string(), "Internal error: Internal error");
+    }
+
+    #[test]
+    fn test_simple_status_as_ref() {
+        let tonic_status = tonic::Status::new(Code::InvalidArgument, "Invalid argument");
+        let simple_status = SimpleStatus(tonic_status.clone());
+        assert_eq!(simple_status.as_ref().code(), tonic_status.code());
+        assert_eq!(simple_status.as_ref().message(), tonic_status.message());
+    }
+
+    #[test]
+    fn test_simple_status_into_tonic() {
+        let tonic_status = tonic::Status::new(Code::Unauthenticated, "Unauthenticated");
+        let simple_status = SimpleStatus(tonic_status.clone());
+        let converted: tonic::Status = simple_status.into();
+        assert_eq!(converted.code(), tonic_status.code());
+        assert_eq!(converted.message(), tonic_status.message());
+    }
+
+    #[test]
+    fn test_simple_status_omits_details_and_metadata() {
+        let mut status = tonic::Status::new(Code::Internal, "Error message");
+
+        status
+            .metadata_mut()
+            .insert("key", "value".parse().unwrap());
+
+        let simple_status = SimpleStatus(status);
+        assert_eq!(simple_status.to_string(), "Internal error: Error message")
     }
 }

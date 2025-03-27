@@ -901,11 +901,11 @@ pub mod test_util {
                         warn!("Error processing message: {:?}", e);
                     }
                 }
-                Err(status) => {
+                Err(error) => {
                     // terminate the stream
-                    info!("Error processing message, reporting error to peer: {status}");
+                    info!("Error processing message, reporting error to peer: {error}");
                     self.tx
-                        .unbounded_drain(DrainReason::CodecError(status.to_string()));
+                        .unbounded_drain(DrainReason::CodecError(error.to_string()));
                 }
             }
             Ok(())
