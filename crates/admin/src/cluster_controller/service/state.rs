@@ -391,6 +391,13 @@ impl TrimMode {
         }
 
         if snapshots_repository_configured || cluster_state.nodes.len() > 1 {
+            if !snapshots_repository_configured {
+                warn!(
+                    "Detected cluster environment with no snapshot repository configured. \
+                    Automatic log trimming is disabled, please refer to \
+                    https://docs.restate.dev/operate/snapshots/ for more."
+                );
+            }
             TrimMode::ArchivedLsn { partition_status }
         } else {
             TrimMode::PersistedLsn { partition_status }

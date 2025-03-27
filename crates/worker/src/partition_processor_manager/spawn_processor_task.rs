@@ -298,7 +298,7 @@ async fn create_or_recreate_store(
             // point. We'll likely halt again as soon as the processor starts up.
             let recovery_guide_msg =
                 "The partition's log is trimmed to a point from which this processor can not resume.
-                Visit https://docs.restate.dev/operate/troubleshooting#handling-missing-snapshots
+                Visit https://docs.restate.dev/operate/clusters/#handling-missing-snapshots
                 to learn more about how to recover this processor.";
 
             if let Some(snapshot) = maybe_snapshot {
