@@ -21,14 +21,16 @@ pub(crate) const BIFROST_REPLICATED_READ_TOTAL: &str =
 pub(crate) const BIFROST_RECORDS_ENQUEUED_TOTAL: &str =
     "restate.bifrost.replicatedloglet.enqueued_records.total";
 pub(crate) const BIFROST_RECORDS_ENQUEUED_BYTES: &str =
-    "restate.bifrost.replicatedloglet.enqueued_records.bytes";
+    "restate.bifrost.replicatedloglet.enqueued_records.bytes.total";
 
 pub(crate) const BIFROST_SEQ_RECORDS_COMMITTED_TOTAL: &str =
     "restate.bifrost.sequencer.committed_records.total";
 pub(crate) const BIFROST_SEQ_RECORDS_COMMITTED_BYTES: &str =
     "restate.bifrost.sequencer.committed_records.bytes";
-pub(crate) const BIFROST_SEQ_STORE_DURATION: &str = "restate.bifrost.sequencer.store_duration";
-pub(crate) const BIFROST_SEQ_APPEND_DURATION: &str = "restate.bifrost.sequencer.append_duration";
+pub(crate) const BIFROST_SEQ_STORE_DURATION: &str =
+    "restate.bifrost.sequencer.store_duration.seconds";
+pub(crate) const BIFROST_SEQ_APPEND_DURATION: &str =
+    "restate.bifrost.sequencer.append_duration.seconds";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
