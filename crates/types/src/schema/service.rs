@@ -280,7 +280,12 @@ impl ServiceSchemas {
                 Arc::clone(result)
             } else {
                 // Not present, compute it!
-                let computed = Arc::new(ServiceOpenAPI::infer(name, self.ty, &self.handlers));
+                let computed = Arc::new(ServiceOpenAPI::infer(
+                    name,
+                    self.ty,
+                    &self.metadata,
+                    &self.handlers,
+                ));
                 self.service_openapi_cache.store(Some(computed.clone()));
                 computed
             }
