@@ -24,7 +24,7 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_types::SharedString;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::config::{Configuration, WorkerOptions};
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::{ClusterId, PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::Lsn;
 use restate_types::schema::Schema;
@@ -205,9 +205,11 @@ async fn open_partition_store(
             )
             .await?)
     } else {
+        let cluster_id = Metadata::with_current(|m| m.nodes_config_ref().cluster_id());
         // We either don't have an existing local partition store initialized - or we have a
         // fast-forward LSN target for the local state (probably due to seeing a log trim-gap).
         Ok(create_or_recreate_store(
+            cluster_id,
             partition_id,
             partition_store_manager,
             snapshot_repository,
@@ -225,6 +227,7 @@ async fn open_partition_store(
 /// fail. An existing store will be dropped only if a snapshot is found in the repository with an
 /// LSN greater than the fast-forward target.
 async fn create_or_recreate_store(
+    cluster_id: Option<ClusterId>,
     partition_id: PartitionId,
     partition_store_manager: PartitionStoreManager,
     snapshot_repository: Option<SnapshotRepository>,
@@ -240,7 +243,7 @@ async fn create_or_recreate_store(
                 "Looking for partition snapshot from which to bootstrap partition store"
             );
             // todo(pavel): pass target LSN to repository
-            repository.get_latest(partition_id).await?
+            repository.get_latest(cluster_id, partition_id).await?
         }
         None => {
             debug!(%partition_id, "No snapshot repository configured");

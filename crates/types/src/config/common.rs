@@ -289,6 +289,15 @@ pub struct CommonOptions {
     /// Restate uses Scarf to collect anonymous usage data to help us understand how the software is being used.
     /// You can set this flag to true to disable this collection. It can also be set with the environment variable DO_NOT_TRACK=1.
     pub disable_telemetry: bool,
+
+    /// # Experimental feature to enable unique cluster ids
+    ///
+    /// This feature is experimental and should be used with caution. It enables a safety feature
+    /// which persists a unique cluster fingerprint which can be used to detect misconfigurations
+    /// such as importing snapshots from the wrong cluster. Enabling it is only safe if all current
+    /// and future member nodes are guaranteed to run Restate version >= 1.2.3.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub experimental_feature_enable_cluster_ids: bool,
 }
 
 impl CommonOptions {
@@ -444,6 +453,7 @@ impl Default for CommonOptions {
             ),
             initialization_timeout: Duration::from_secs(5 * 60).into(),
             disable_telemetry: false,
+            experimental_feature_enable_cluster_ids: false,
         }
     }
 }
@@ -836,6 +846,7 @@ pub struct CommonOptionsShadow {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     initialization_timeout: humantime::Duration,
     disable_telemetry: bool,
+    experimental_feature_enable_cluster_ids: bool,
 
     metadata_client: MetadataClientOptions,
     // todo drop in version 1.3
@@ -963,6 +974,7 @@ impl From<CommonOptionsShadow> for CommonOptions {
             network_error_retry_policy: value.network_error_retry_policy,
             initialization_timeout: value.initialization_timeout,
             disable_telemetry: value.disable_telemetry,
+            experimental_feature_enable_cluster_ids: value.experimental_feature_enable_cluster_ids,
 
             auto_provision,
             default_num_partitions,
