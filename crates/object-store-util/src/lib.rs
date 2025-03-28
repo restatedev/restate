@@ -42,7 +42,7 @@ pub async fn create_object_store_client(
             Some(profile) => {
                 debug!(profile, "Using AWS profile for object store access");
 
-                let sdk_config = aws_config::defaults(BehaviorVersion::v2025_01_17())
+                let sdk_config = aws_config::defaults(BehaviorVersion::latest())
                     .profile_name(profile)
                     .load()
                     .await;
@@ -71,9 +71,7 @@ pub async fn create_object_store_client(
 
             None => {
                 if options.aws_access_key_id.is_none() {
-                    let sdk_config = aws_config::defaults(BehaviorVersion::v2025_01_17())
-                        .load()
-                        .await;
+                    let sdk_config = aws_config::defaults(BehaviorVersion::latest()).load().await;
 
                     let region = options
                         .aws_region

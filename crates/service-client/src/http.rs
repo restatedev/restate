@@ -29,14 +29,18 @@ use rustls::ClientConfig;
 use std::error::Error;
 use std::fmt::Debug;
 use std::future::Future;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::{fmt, future};
 
 type ProxiedHttpsConnector = ProxyConnector<HttpsConnector<HttpConnector>>;
 type ProxiedHttpConnector = ProxyConnector<HttpConnector>;
 
 static TLS_CLIENT_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
-    ClientConfig::builder()
+    // We need to explicitly configure the crypto provider since we activate the ring as well as
+    // aws_lc_rs rustls feature, and they are mutually exclusive wrt auto installation
+    ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .with_protocol_versions(rustls::DEFAULT_VERSIONS)
+        .expect("default versions are supported")
         .with_native_roots()
         .expect("Can load native certificates")
         .with_no_client_auth()

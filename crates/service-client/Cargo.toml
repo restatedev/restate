@@ -17,24 +17,21 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 arc-swap = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
-aws-sdk-lambda = {version = "1.73.0", default-features = false, features = ["rt-tokio"]}
-aws-sdk-sts = {version = "1.63.0", default-features = false, features = ["rt-tokio"]}
+aws-sdk-lambda = {version = "1.73.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
+aws-sdk-sts = {version = "1.63.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
 base64 = { workspace = true }
 bs58 = { version = "0.5.0" }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-derive_builder = { workspace = true }
 futures = { workspace = true }
 h2 = "0.4.5"
 http = { workspace = true }
 http-body-util = { workspace = true }
 http-serde = { workspace = true }
-humantime = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client"] }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = ["client-legacy"] }
 jsonwebtoken = { version = "9.1.0" }
-parking_lot = { workspace = true }
 pem = { version = "3.0.3" }
 restate-types = { workspace = true }
 ring = { version = "0.17.8" }
@@ -47,13 +44,6 @@ thiserror = { workspace = true }
 tower = { workspace = true }
 tower-service = { version = "0.3" }
 tracing = { workspace = true }
-
-# dependencies for aws_hyper_client.rs until the aws hyper 1.0 connector supports setting nodelay...
-aws-smithy-async = { workspace = true }
-aws-smithy-runtime = {version = "1.6.2", default-features = false}
-aws-smithy-runtime-api = { workspace = true }
-aws-smithy-types = { workspace = true }
-pin-project-lite = { workspace = true }
 
 [dev-dependencies]
 googletest = { workspace = true }

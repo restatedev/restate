@@ -22,10 +22,10 @@ arrow-cast = { version = "53", default-features = false, features = ["prettyprin
 arrow-ipc = { version = "53", features = ["lz4"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
-aws-sdk-sts = { version = "1", default-features = false, features = ["rt-tokio"] }
+aws-sdk-sts = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
-aws-smithy-http = { version = "0.60", default-features = false, features = ["event-stream"] }
-aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "rt-tokio", "tls-rustls"] }
+aws-smithy-http = { version = "0.62", default-features = false, features = ["event-stream"] }
+aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "default-https-client", "rt-tokio"] }
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "http-auth", "test-util"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.7", features = ["http2"] }
@@ -57,8 +57,8 @@ hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", features = ["raw"] }
 hdrhistogram = { version = "7" }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
-hyper-582f2526e08bb6a0 = { package = "hyper", version = "0.14", features = ["client", "http1", "http2", "runtime", "server", "stream"] }
-hyper-dff4ba8e3ae991db = { package = "hyper", version = "1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
@@ -91,6 +91,8 @@ regex-automata = { version = "0.4", default-features = false, features = ["dfa",
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 ring = { version = "0.17", features = ["std"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs", "logging", "ring", "std", "tls12"] }
+rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
 schemars = { version = "0.8", features = ["bytes", "enumset", "preserve_order"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
@@ -132,10 +134,10 @@ arrow-cast = { version = "53", default-features = false, features = ["prettyprin
 arrow-ipc = { version = "53", features = ["lz4"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
-aws-sdk-sts = { version = "1", default-features = false, features = ["rt-tokio"] }
+aws-sdk-sts = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
-aws-smithy-http = { version = "0.60", default-features = false, features = ["event-stream"] }
-aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "rt-tokio", "tls-rustls"] }
+aws-smithy-http = { version = "0.62", default-features = false, features = ["event-stream"] }
+aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "default-https-client", "rt-tokio"] }
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "http-auth", "test-util"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.7", features = ["http2"] }
@@ -169,8 +171,8 @@ hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", features = ["raw"] }
 hdrhistogram = { version = "7" }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
-hyper-582f2526e08bb6a0 = { package = "hyper", version = "0.14", features = ["client", "http1", "http2", "runtime", "server", "stream"] }
-hyper-dff4ba8e3ae991db = { package = "hyper", version = "1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
@@ -203,6 +205,8 @@ regex-automata = { version = "0.4", default-features = false, features = ["dfa",
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 ring = { version = "0.17", features = ["std"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs", "logging", "ring", "std", "tls12"] }
+rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
 schemars = { version = "0.8", features = ["bytes", "enumset", "preserve_order"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
@@ -240,54 +244,50 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 [target.x86_64-unknown-linux-gnu.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
-rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
-rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
-rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 crossterm = { version = "0.28" }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
-rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
