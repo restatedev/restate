@@ -17,20 +17,11 @@ use opentelemetry::{Key, KeyValue, StringValue, Value};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::export::trace::{SpanData, SpanExporter};
 use opentelemetry_semantic_conventions::attribute::{RPC_SERVICE, SERVICE_NAME};
-use std::sync::OnceLock;
 
-use restate_types::GenerationalNodeId;
+use crate::GLOBAL_NODE_ID;
 
 /// `RPC_SERVICE` is used to override `service.name` on the `SpanBuilder`
 const RPC_SERVICE_KEY: Key = Key::from_static_str(RPC_SERVICE);
-
-static GLOBAL_NODE_ID: OnceLock<GenerationalNodeId> = OnceLock::new();
-
-pub fn set_global_node_id(node_id: GenerationalNodeId) {
-    GLOBAL_NODE_ID
-        .set(node_id)
-        .expect("Global NodeId is not set")
-}
 
 /// `UserServiceModifierSpanExporter` wraps a `opentelemetry::sdk::trace::SpanExporter` in order to allow mutating
 /// the service name which is within the resource field. As this field is set during export,

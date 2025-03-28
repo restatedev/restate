@@ -8,20 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use metrics_util::MetricKindMask;
+use std::sync::OnceLock;
 
 use metrics_exporter_prometheus::formatting;
-use restate_types::config::CommonOptions;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_util::MetricKindMask;
 use tokio::task::AbortHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace};
+
+use restate_types::config::CommonOptions;
+
+use crate::GLOBAL_NODE_ID;
 
 #[derive(Default)]
 pub struct Prometheus {
     handle: Option<PrometheusHandle>,
     upkeep_task: Option<AbortHandle>,
-    global_labels: Vec<String>,
+    static_labels: Vec<String>,
+    global_labels: OnceLock<Vec<String>>,
 }
 
 impl Prometheus {
@@ -35,7 +40,8 @@ impl Prometheus {
             return Self {
                 handle: None,
                 upkeep_task: None,
-                global_labels: vec![],
+                static_labels: vec![],
+                global_labels: OnceLock::new(),
             };
         }
         let builder = PrometheusBuilder::default()
@@ -56,7 +62,7 @@ impl Prometheus {
         Self {
             handle: Some(prometheus_handle),
             upkeep_task: None,
-            global_labels: vec![
+            static_labels: vec![
                 format!(
                     "cluster_name=\"{}\"",
                     formatting::sanitize_label_value(opts.cluster_name())
@@ -66,6 +72,7 @@ impl Prometheus {
                     formatting::sanitize_label_value(opts.node_name())
                 ),
             ],
+            global_labels: OnceLock::new(),
         }
     }
 
@@ -74,7 +81,23 @@ impl Prometheus {
     }
 
     pub fn global_labels(&self) -> &Vec<String> {
-        &self.global_labels
+        if let Some(global_labels) = self.global_labels.get() {
+            return global_labels;
+        }
+
+        let Some(node_id) = GLOBAL_NODE_ID.get() else {
+            return &self.static_labels;
+        };
+
+        self.global_labels.get_or_init(|| {
+            let mut labels = self.static_labels.clone();
+            let plain_node_id = node_id.as_plain().to_string();
+            labels.push(format!(
+                "node_id=\"{}\"",
+                formatting::sanitize_label_value(&plain_node_id)
+            ));
+            labels
+        })
     }
 
     /// Starts the upkeep task. Should typically be run once, but it'll abort
