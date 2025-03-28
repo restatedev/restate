@@ -56,6 +56,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.pinned_service_protocol_version,
             ss.trace_id,
             ss.journal_size,
+            ss.journal_commands_size,
             ss.created_at,
             ss.modified_at,
             ss.inboxed_at,
@@ -73,6 +74,9 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             sis.last_failure_related_entry_index,
             sis.last_failure_related_entry_name,
             sis.last_failure_related_entry_type,
+            sis.last_failure_related_command_index,
+            sis.last_failure_related_command_name,
+            sis.last_failure_related_command_type,
 
             arrow_cast(CASE
                 WHEN ss.status = 'inboxed' THEN 'pending'

@@ -359,19 +359,26 @@ pub enum InvocationStatusDiscriminants {
 #[derive(Debug, Clone, PartialEq)]
 pub struct JournalMetadata {
     pub length: EntryIndex,
+    /// Number of commands stored in the current journal
+    pub commands: EntryIndex,
     pub span_context: ServiceInvocationSpanContext,
 }
 
 impl JournalMetadata {
-    pub fn new(length: EntryIndex, span_context: ServiceInvocationSpanContext) -> Self {
+    pub fn new(
+        length: EntryIndex,
+        commands: EntryIndex,
+        span_context: ServiceInvocationSpanContext,
+    ) -> Self {
         Self {
             span_context,
             length,
+            commands,
         }
     }
 
     pub fn initialize(span_context: ServiceInvocationSpanContext) -> Self {
-        Self::new(0, span_context)
+        Self::new(0, 0, span_context)
     }
 }
 

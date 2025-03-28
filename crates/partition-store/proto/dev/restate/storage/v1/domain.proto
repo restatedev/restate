@@ -156,6 +156,7 @@ message InvocationStatusV2 {
 
   // Invoked/Suspended
   uint32 journal_length = 14;
+  uint32 commands = 26;
   optional string deployment_id = 15;
   optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
   bool hotfix_apply_cancellation_after_deployment_is_pinned = 25;

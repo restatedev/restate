@@ -631,6 +631,7 @@ where
                 &partition,
                 &invocation_id,
                 pinned_deployment.deployment_id,
+                pinned_deployment.service_protocol_version,
             );
             // If we think this selected deployment has been freshly picked, otherwise
             // we assume that we have stored it previously.

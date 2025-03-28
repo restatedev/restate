@@ -406,6 +406,7 @@ pub mod v1 {
                     idempotency_key,
                     inbox_sequence_number,
                     journal_length,
+                    commands,
                     deployment_id,
                     service_protocol_version,
                     waiting_for_completions,
@@ -495,6 +496,7 @@ pub mod v1 {
                                 invocation_target,
                                 journal_metadata: restate_storage_api::invocation_status_table::JournalMetadata {
                                     length: journal_length,
+                                    commands,
                                     span_context: expect_or_fail!(span_context)?.try_into()?,
                                 },
                                 pinned_deployment: derive_pinned_deployment(
@@ -518,6 +520,7 @@ pub mod v1 {
                                 invocation_target,
                                 journal_metadata: restate_storage_api::invocation_status_table::JournalMetadata {
                                     length: journal_length,
+                                    commands,
                                     span_context: expect_or_fail!(span_context)?.try_into()?,
                                 },
                                 pinned_deployment: derive_pinned_deployment(
@@ -622,6 +625,7 @@ pub mod v1 {
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: None,
                         journal_length: 0,
+                        commands: 0,
                         deployment_id: None,
                         service_protocol_version: None,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
@@ -678,6 +682,7 @@ pub mod v1 {
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: Some(inbox_sequence_number),
                         journal_length: 0,
+                        commands: 0,
                         deployment_id: None,
                         service_protocol_version: None,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
@@ -744,6 +749,7 @@ pub mod v1 {
                             idempotency_key: idempotency_key.map(|key| key.to_string()),
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
+                            commands: journal_metadata.commands,
                             deployment_id,
                             service_protocol_version,
                             waiting_for_completions: vec![],
@@ -829,6 +835,7 @@ pub mod v1 {
                             idempotency_key: idempotency_key.map(|key| key.to_string()),
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
+                            commands: journal_metadata.commands,
                             deployment_id,
                             service_protocol_version,
                             waiting_for_completions,
@@ -876,6 +883,7 @@ pub mod v1 {
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: None,
                         journal_length: 0,
+                        commands: 0,
                         deployment_id: None,
                         service_protocol_version: None,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
@@ -1510,6 +1518,7 @@ pub mod v1 {
                 Ok(
                     restate_storage_api::invocation_status_table::JournalMetadata {
                         length,
+                        commands: 0,
                         span_context,
                     },
                 )
@@ -1521,6 +1530,7 @@ pub mod v1 {
                 let restate_storage_api::invocation_status_table::JournalMetadata {
                     span_context,
                     length,
+                    ..
                 } = value;
 
                 JournalMeta {
