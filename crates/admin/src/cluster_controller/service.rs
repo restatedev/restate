@@ -25,7 +25,6 @@ use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, trace, warn};
 
-use restate_metadata_server::ReadModifyWriteError;
 use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
     ReplicatedLogletConfig, SegmentIndex,
@@ -44,7 +43,7 @@ use restate_core::network::{
 };
 use restate_core::{
     Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter, TaskKind,
-    cancellation_watcher,
+    cancellation_watcher, metadata_store::ReadModifyWriteError,
 };
 use restate_types::cluster::cluster_state::ClusterState;
 use restate_types::config::{AdminOptions, Configuration};

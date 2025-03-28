@@ -87,7 +87,7 @@ impl Bifrost {
         Self::init_with_factory(metadata_writer, memory_loglet::Factory::default()).await
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(all(any(test, feature = "test-util"), feature = "local-loglet"))]
     pub async fn init_local(metadata_writer: MetadataWriter) -> Self {
         use restate_types::config::Configuration;
 
@@ -604,7 +604,7 @@ impl MaybeLoglet {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local-loglet"))]
 mod tests {
     use super::*;
 

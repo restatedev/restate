@@ -24,8 +24,7 @@ use axum::{
 use bytestring::ByteString;
 use http::{HeaderMap, StatusCode, header::ToStrError};
 
-use restate_core::metadata_store::MetadataStore;
-use restate_metadata_server::{MetadataStoreClient, ReadError, WriteError};
+use restate_core::metadata_store::{MetadataStore, MetadataStoreClient, ReadError, WriteError};
 use restate_types::{
     Version,
     metadata::{Precondition, VersionedValue},
