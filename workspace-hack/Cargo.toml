@@ -99,6 +99,7 @@ serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["hex"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
+snafu = { version = "0.8" }
 stable_deref_trait = { version = "1" }
 strum = { version = "0.26", features = ["derive"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
@@ -110,9 +111,9 @@ tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt"] }
 toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
 toml_edit = { version = "0.22", features = ["serde"] }
 tonic = { version = "0.12", features = ["gzip", "tls-roots", "zstd"] }
-tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", features = ["balance", "buffer", "limit", "retry", "timeout", "util"] }
-tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["limit", "load-shed", "log", "make", "util"] }
-tower-http = { version = "0.6", default-features = false, features = ["cors", "normalize-path", "trace"] }
+tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", features = ["balance", "buffer", "limit", "util"] }
+tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["buffer", "limit", "load-shed", "log", "make", "retry", "timeout"] }
+tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
 tracing-log = { version = "0.2" }
@@ -213,9 +214,10 @@ serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["hex"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
+snafu = { version = "0.8" }
 stable_deref_trait = { version = "1" }
 strum = { version = "0.26", features = ["derive"] }
-syn-dff4ba8e3ae991db = { package = "syn", version = "1", features = ["extra-traits", "full", "visit"] }
+syn-dff4ba8e3ae991db = { package = "syn", version = "1", features = ["extra-traits", "visit"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
@@ -225,9 +227,9 @@ tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt"] }
 toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
 toml_edit = { version = "0.22", features = ["serde"] }
 tonic = { version = "0.12", features = ["gzip", "tls-roots", "zstd"] }
-tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", features = ["balance", "buffer", "limit", "retry", "timeout", "util"] }
-tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["limit", "load-shed", "log", "make", "util"] }
-tower-http = { version = "0.6", default-features = false, features = ["cors", "normalize-path", "trace"] }
+tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", features = ["balance", "buffer", "limit", "util"] }
+tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["buffer", "limit", "load-shed", "log", "make", "retry", "timeout"] }
+tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
 tracing-log = { version = "0.2" }
@@ -252,7 +254,6 @@ num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
-tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
@@ -265,7 +266,6 @@ num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
-tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
@@ -277,7 +277,6 @@ num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
-tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
@@ -289,6 +288,5 @@ num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
-tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["timeout"] }
 
 ### END HAKARI SECTION
