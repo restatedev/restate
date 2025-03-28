@@ -221,7 +221,7 @@ async fn download_asset_to_file(
     asset: Asset,
 ) -> Result<()> {
     let mut out_file = File::create(zip_out_file_path).await?;
-    let mut zip_stream = repo_handler.releases().stream_asset(asset.id).await?;
+    let mut zip_stream = repo_handler.release_assets().stream(*asset.id).await?;
     while let Some(res) = zip_stream.next().await {
         let mut buf = res?;
         out_file.write_buf(&mut buf).await?;
