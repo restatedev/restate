@@ -98,7 +98,11 @@ where
 
         // Merge Web UI router
         #[cfg(feature = "serve-web-ui")]
-        let router = router.merge(crate::web_ui::web_ui_router());
+        let router = if !opts.disable_web_ui {
+            router.merge(crate::web_ui::web_ui_router())
+        } else {
+            router
+        };
 
         // Merge meta API router
         let router = router.merge(rest_api::create_router(rest_state));
