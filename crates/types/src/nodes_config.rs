@@ -161,12 +161,15 @@ impl NodesConfiguration {
     /// means they shouldn't be part of any node set, be a member of the latest metadata cluster
     /// configuration, or run any partition processors. It is your responsibility to ensure this
     /// condition before removing a node!
-    pub fn remove_node_unchecked(&mut self, id: impl Into<NodeId>) {
+    pub fn remove_node_unchecked(&mut self, id: impl Into<PlainNodeId>) {
         let node_id = id.into();
         // only keep tombstones for known nodes
-        self.nodes
-            .entry(node_id.id())
-            .and_modify(|value| *value = MaybeNode::Tombstone);
+        if let Some(node_config) = self.nodes.get_mut(&node_id) {
+            if let MaybeNode::Node(node_config) = node_config {
+                self.name_lookup.remove(&node_config.name);
+            }
+            *node_config = MaybeNode::Tombstone;
+        }
     }
 
     /// Insert or replace a node with a config.
@@ -564,5 +567,49 @@ mod tests {
         // find by new name
         let found = config.find_node_by_name("nodeX").expect("known id");
         assert_eq!(&node, found);
+    }
+
+    #[test]
+    fn test_remove_node() {
+        let mut config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let address: AdvertisedAddress = "unix:/tmp/my_socket".parse().unwrap();
+        let node1 = NodeConfig::new(
+            "node1".to_owned(),
+            GenerationalNodeId::new(1, 1),
+            "region1.zone1".parse().unwrap(),
+            address.clone(),
+            Role::Worker.into(),
+            LogServerConfig::default(),
+            MetadataServerConfig::default(),
+        );
+        let node2 = NodeConfig::new(
+            "node2".to_owned(),
+            GenerationalNodeId::new(2, 1),
+            "region1.zone1".parse().unwrap(),
+            address.clone(),
+            Role::Worker.into(),
+            LogServerConfig::default(),
+            MetadataServerConfig::default(),
+        );
+        config.upsert_node(node1.clone());
+        config.upsert_node(node2.clone());
+
+        assert!(config.name_lookup.contains_key("node1"));
+        let found = config.find_node_by_name("node1").expect("known id");
+        assert_eq!(&node1, found);
+
+        let found = config.find_node_by_name("node2").expect("known id");
+        assert_eq!(&node2, found);
+        config.remove_node_unchecked(1);
+
+        assert_eq!(None, config.find_node_by_name("node1"));
+        assert!(matches!(
+            config.find_node_by_id(PlainNodeId::from(1)),
+            Err(NodesConfigError::Deleted(NodeId::Plain(id)))
+            if id == PlainNodeId::from(1)
+        ));
+
+        // really make sure we have removed it from the name lookup table
+        assert!(!config.name_lookup.contains_key("node1"));
     }
 }
