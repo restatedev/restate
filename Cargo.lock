@@ -5286,36 +5286,59 @@ dependencies = [
 ]
 
 [[package]]
-name = "opentelemetry-contrib"
-version = "0.19.0"
+name = "opentelemetry"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "479f996360292629038bbcb47e7cb9f083356bfa72b64aafa705d47812083131"
+checksum = "768ee97dc5cd695a4dd4a69a0678fb42789666b5a89e8c0af48bb06c6e427120"
 dependencies = [
- "async-trait",
  "futures-core",
- "futures-util",
- "once_cell",
- "opentelemetry",
- "opentelemetry-semantic-conventions",
- "opentelemetry_sdk",
+ "futures-sink",
+ "js-sys",
+ "pin-project-lite",
+ "thiserror 2.0.11",
+ "tracing",
+]
+
+[[package]]
+name = "opentelemetry-contrib"
+version = "0.20.0"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib?rev=eaa4250a346929f585539b2759e17a6e02f66920#eaa4250a346929f585539b2759e17a6e02f66920"
+dependencies = [
+ "opentelemetry 0.29.0",
+ "opentelemetry_sdk 0.29.0",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "opentelemetry-otlp"
-version = "0.27.0"
+name = "opentelemetry-http"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91cf61a1868dacc576bf2b2a1c3e9ab150af7272909e80085c3173384fe11f76"
+checksum = "46d7ab32b827b5b495bd90fa95a6cb65ccc293555dcc3199ae2937d2d237c8ed"
 dependencies = [
  "async-trait",
+ "bytes",
+ "http 1.2.0",
+ "opentelemetry 0.29.0",
+ "reqwest",
+ "tracing",
+]
+
+[[package]]
+name = "opentelemetry-otlp"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d899720fe06916ccba71c01d04ecd77312734e2de3467fd30d9d580c8ce85656"
+dependencies = [
  "futures-core",
  "http 1.2.0",
- "opentelemetry",
+ "opentelemetry 0.29.0",
+ "opentelemetry-http",
  "opentelemetry-proto",
- "opentelemetry_sdk",
+ "opentelemetry_sdk 0.29.0",
  "prost",
- "thiserror 1.0.69",
+ "reqwest",
+ "thiserror 2.0.11",
  "tokio",
  "tonic",
  "tracing",
@@ -5323,21 +5346,21 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-proto"
-version = "0.27.0"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6e05acbfada5ec79023c85368af14abd0b307c015e9064d249b2a950ef459a6"
+checksum = "8c40da242381435e18570d5b9d50aca2a4f4f4d8e146231adb4e7768023309b3"
 dependencies = [
- "opentelemetry",
- "opentelemetry_sdk",
+ "opentelemetry 0.29.0",
+ "opentelemetry_sdk 0.29.0",
  "prost",
  "tonic",
 ]
 
 [[package]]
 name = "opentelemetry-semantic-conventions"
-version = "0.27.0"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc1b6902ff63b32ef6c489e8048c5e253e2e4a803ea3ea7e783914536eb15c52"
+checksum = "84b29a9f89f1a954936d5aa92f19b2feec3c8f3971d3e96206640db7f9706ae3"
 
 [[package]]
 name = "opentelemetry_sdk"
@@ -5350,11 +5373,31 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "glob",
- "opentelemetry",
+ "opentelemetry 0.27.1",
  "percent-encoding",
  "rand 0.8.5",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "opentelemetry_sdk"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afdefb21d1d47394abc1ba6c57363ab141be19e27cc70d0e422b7f303e4d290b"
+dependencies = [
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "glob",
+ "opentelemetry 0.29.0",
+ "percent-encoding",
+ "rand 0.9.0",
+ "serde_json",
+ "thiserror 2.0.11",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -6503,6 +6546,7 @@ checksum = "43e734407157c3c2034e0258f5e4473ddb361b1e85f95a66690d67264d7cd1da"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -6834,8 +6878,8 @@ dependencies = [
  "hyper-util",
  "metrics",
  "object_store 0.12.0",
- "opentelemetry",
- "opentelemetry_sdk",
+ "opentelemetry 0.29.0",
+ "opentelemetry_sdk 0.29.0",
  "parking_lot",
  "pin-project-lite",
  "prost",
@@ -6943,8 +6987,8 @@ dependencies = [
  "hyper-util",
  "metrics",
  "mockall",
- "opentelemetry",
- "opentelemetry_sdk",
+ "opentelemetry 0.29.0",
+ "opentelemetry_sdk 0.29.0",
  "pin-project-lite",
  "restate-core",
  "restate-errors",
@@ -6979,7 +7023,7 @@ dependencies = [
  "derive_builder",
  "derive_more",
  "metrics",
- "opentelemetry",
+ "opentelemetry 0.29.0",
  "parking_lot",
  "rdkafka",
  "restate-bifrost",
@@ -7034,7 +7078,7 @@ dependencies = [
  "humantime",
  "itertools 0.14.0",
  "metrics",
- "opentelemetry",
+ "opentelemetry 0.29.0",
  "restate-core",
  "restate-errors",
  "restate-futures-util",
@@ -7272,7 +7316,7 @@ dependencies = [
  "googletest",
  "humantime",
  "num-bigint",
- "opentelemetry",
+ "opentelemetry 0.29.0",
  "paste",
  "prost",
  "prost-build",
@@ -7665,11 +7709,11 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-util",
  "nu-ansi-term 0.50.1",
- "opentelemetry",
+ "opentelemetry 0.29.0",
  "opentelemetry-contrib",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
- "opentelemetry_sdk",
+ "opentelemetry_sdk 0.29.0",
  "restate-types",
  "schemars",
  "serde",
@@ -7722,7 +7766,7 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "num-traits",
- "opentelemetry",
+ "opentelemetry 0.29.0",
  "parking_lot",
  "paste",
  "prettyplease",
@@ -7838,7 +7882,7 @@ dependencies = [
  "itertools 0.14.0",
  "metrics",
  "object_store 0.12.0",
- "opentelemetry",
+ "opentelemetry 0.29.0",
  "parking_lot",
  "pin-project",
  "prost",
@@ -9407,14 +9451,14 @@ dependencies = [
 
 [[package]]
 name = "tracing-opentelemetry"
-version = "0.28.0"
+version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97a971f6058498b5c0f1affa23e7ea202057a7301dbff68e968b2d578bcbd053"
+checksum = "fd8e764bd6f5813fd8bebc3117875190c5b0415be8f7f8059bffb6ecd979c444"
 dependencies = [
  "js-sys",
  "once_cell",
- "opentelemetry",
- "opentelemetry_sdk",
+ "opentelemetry 0.29.0",
+ "opentelemetry_sdk 0.29.0",
  "smallvec",
  "tracing",
  "tracing-core",
@@ -10353,7 +10397,7 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
- "opentelemetry_sdk",
+ "opentelemetry_sdk 0.27.1",
  "petgraph",
  "phf_shared",
  "pprof",

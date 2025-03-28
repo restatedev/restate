@@ -173,6 +173,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/apache/arrow-rs.git",
     "https://github.com/tikv/raft-rs.git",
+    # needed until 0.21 has been released
+    "https://github.com/open-telemetry/opentelemetry-rust-contrib",
 ]
 
 [sources.allow-org]
