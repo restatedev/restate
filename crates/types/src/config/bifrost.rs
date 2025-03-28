@@ -96,6 +96,11 @@ impl BifrostOptions {
             Some(self.append_retry_max_interval.into()),
         )
     }
+
+    pub fn apply_common(&mut self, common: &CommonOptions) {
+        self.local.apply_common(common);
+        self.replicated_loglet.apply_common(common);
+    }
 }
 
 impl Default for BifrostOptions {
@@ -163,7 +168,7 @@ pub struct LocalLogletOptions {
 }
 
 impl LocalLogletOptions {
-    pub fn apply_common(&mut self, common: &CommonOptions) {
+    fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
         if self.rocksdb_memory_budget.is_none() {
             self.rocksdb_memory_budget = Some(
@@ -292,14 +297,9 @@ pub struct ReplicatedLogletOptions {
     /// the cluster has been provisioned.
     ///
     /// To update existing clusters use the `restatectl` utility.
-    // Also allow to specify the replication property as non-zero u8 value to make it simpler to
-    // pass it in via an env variable.
-    #[serde_as(
-        as = "serde_with::PickFirst<(serde_with::DisplayFromStr, crate::replication::ReplicationPropertyFromNonZeroU8)>"
-    )]
-    #[serde(default = "default_log_replication")]
+    #[serde_as(as = "Option<crate::replication::ReplicationPropertyFromTo>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub default_log_replication: ReplicationProperty,
+    pub default_log_replication: Option<ReplicationProperty>,
 
     /// # Default nodeset size
     ///
@@ -316,6 +316,20 @@ pub struct ReplicatedLogletOptions {
     // hide the configuration option by excluding it from the Json schema
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub default_nodeset_size: NodeSetSize,
+}
+
+impl ReplicatedLogletOptions {
+    fn apply_common(&mut self, common: &CommonOptions) {
+        if self.default_log_replication.is_none() {
+            self.default_log_replication = Some(common.default_replication.clone());
+        }
+    }
+
+    pub fn default_log_replication(&self) -> ReplicationProperty {
+        self.default_log_replication
+            .clone()
+            .unwrap_or_else(default_log_replication)
+    }
 }
 
 fn nodeset_size_is_zero(i: &NodeSetSize) -> bool {
@@ -348,7 +362,7 @@ impl Default for ReplicatedLogletOptions {
             readahead_records: NonZeroUsize::new(100).unwrap(),
             readahead_trigger_ratio: 0.5,
             default_nodeset_size: NodeSetSize::default(),
-            default_log_replication: default_log_replication(),
+            default_log_replication: None,
         }
     }
 }

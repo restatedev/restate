@@ -145,8 +145,7 @@ impl ProviderConfiguration {
             configuration
                 .bifrost
                 .replicated_loglet
-                .default_log_replication
-                .clone(),
+                .default_log_replication(),
             configuration.bifrost.replicated_loglet.default_nodeset_size,
         ))
     }

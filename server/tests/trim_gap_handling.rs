@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::net::SocketAddr;
+use std::num::NonZeroU8;
 use std::time::Duration;
 
 use enumset::enum_set;
@@ -35,6 +36,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
 use restate_types::protobuf::cluster::RunMode;
 use restate_types::protobuf::cluster::node_state::State;
+use restate_types::replication::ReplicationProperty;
 use restate_types::retries::RetryPolicy;
 use restate_types::{config::Configuration, nodes_config::Role};
 
@@ -47,7 +49,11 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     base_config.bifrost.default_provider = Replicated;
     base_config.common.log_filter = "restate=debug,warn".to_owned();
     base_config.common.log_format = LogFormat::Compact;
-
+    // since default partition replication is not "everywhere" anymore,
+    // we need to explicitly set this to 3
+    base_config.admin.default_partition_replication = Some(ReplicationProperty::new(
+        NonZeroU8::new(3).expect("is non zero"),
+    ));
     let no_snapshot_repository_config = base_config.clone();
 
     let snapshots_dir = TempDir::new()?;
