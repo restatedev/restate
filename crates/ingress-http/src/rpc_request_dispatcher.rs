@@ -73,7 +73,7 @@ impl<C> RpcRequestDispatcher<C> {
                 retry
             })
             .await
-            .map_err(|e| anyhow!("Error when trying to route the request internally: {e}"))?)
+            .map_err(|e| anyhow!(e))?)
     }
 }
 

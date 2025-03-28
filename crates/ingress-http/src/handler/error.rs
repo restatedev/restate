@@ -84,7 +84,9 @@ pub(crate) enum HandlerError {
     BadAwakeableId(String, IdDecodeError),
     #[error("bad invocation id '{0}': {1}")]
     BadInvocationId(String, IdDecodeError),
-    #[error("dispatcher error: {0}")]
+    #[error(
+        "internal routing error: {0}. The ingress was not able to acknowledge the invocation submission, and will not retry because the request is missing an 'idempotency-key'. Please note that the request may have been correctly submitted and executed."
+    )]
     DispatcherError(#[from] RequestDispatcherError),
 }
 
