@@ -199,14 +199,14 @@ toml = { version = "0.8.12" }
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms", "profiling"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling"] }
 thiserror = "2.0"
-tokio = { version = "1.41.1", default-features = false, features = [
+tokio = { version = "1.44.1", default-features = false, features = [
     "rt-multi-thread",
     "signal",
     "macros",
     "parking_lot",
 ] }
-tokio-stream = "0.1.16"
-tokio-util = { version = "0.7.12" }
+tokio-stream = "0.1.17"
+tokio-util = { version = "0.7.14" }
 tonic = { version = "0.12.3", default-features = false }
 tonic-reflection = { version = "0.12.3" }
 tonic-health = { version = "0.12.3" }
