@@ -11,7 +11,6 @@
 //! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-config/src/sts/assume_role.rs
 //! License Apache-2.0
 
-use crate::aws_hyper_client::{CryptoMode, HyperClientBuilder};
 use crate::utils::ErrorExt;
 use arc_swap::ArcSwap;
 use assume_role::AssumeRoleProvider;
@@ -92,11 +91,6 @@ impl LambdaClient {
         if let Some(profile_name) = profile_name {
             config = config.profile_name(profile_name);
         };
-        config = config.http_client(
-            HyperClientBuilder::new()
-                .crypto_mode(CryptoMode::Ring)
-                .build_https(),
-        );
 
         let inner = async move {
             let config = config.load().await;
