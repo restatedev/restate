@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZero;
+
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
 
@@ -55,10 +57,14 @@ pub enum Role {
 }
 
 #[serde_as]
-#[derive(derive_more::Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodesConfiguration {
     version: Version,
     cluster_name: String,
+    // a unique fingerprint for this cluster. Introduced in v1.3 for forward compatibility. Will be
+    // used to uniquely identify this cluster instance in future versions.
+    #[serde(default)]
+    cluster_fingerprint: Option<NonZero<u64>>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     nodes: HashMap<PlainNodeId, MaybeNode>,
@@ -70,6 +76,7 @@ impl Default for NodesConfiguration {
     fn default() -> Self {
         Self {
             version: Version::INVALID,
+            cluster_fingerprint: None,
             cluster_name: "Unspecified".to_owned(),
             nodes: Default::default(),
             name_lookup: Default::default(),
@@ -127,6 +134,7 @@ impl NodesConfiguration {
     pub fn new(version: Version, cluster_name: String) -> Self {
         Self {
             version,
+            cluster_fingerprint: None,
             cluster_name,
             nodes: HashMap::default(),
             name_lookup: HashMap::default(),
