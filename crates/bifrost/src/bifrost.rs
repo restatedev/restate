@@ -604,7 +604,7 @@ impl MaybeLoglet {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local-loglet"))]
 mod tests {
     use super::*;
 

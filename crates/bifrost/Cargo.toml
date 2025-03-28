@@ -54,6 +54,10 @@ tracing = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
+# Enable local-loglet for use in various tests in this package. This allows us to not have it enabled by default,
+# which benefits importing libraries that don't need rocksdb.
+restate-bifrost = {path = ".", default-features = false, features = ["local-loglet"]}
+
 restate-core = { workspace = true, features = ["test-util"] }
 restate-log-server = { workspace = true }
 restate-rocksdb = { workspace = true }

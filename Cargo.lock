@@ -6665,6 +6665,7 @@ dependencies = [
  "pprof",
  "prost",
  "rand 0.9.0",
+ "restate-bifrost",
  "restate-core",
  "restate-futures-util",
  "restate-log-server",
