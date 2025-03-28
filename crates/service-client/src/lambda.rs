@@ -11,7 +11,6 @@
 //! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-config/src/sts/assume_role.rs
 //! License Apache-2.0
 
-use crate::aws_hyper_client::{CryptoMode, HyperClientBuilder};
 use crate::utils::ErrorExt;
 use arc_swap::ArcSwap;
 use assume_role::AssumeRoleProvider;
@@ -34,7 +33,8 @@ use restate_types::config::AwsOptions;
 use restate_types::identifiers::LambdaARN;
 use serde::ser::Error as _;
 use serde::ser::SerializeMap;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_with::{DeserializeAs, SerializeAs, serde_as};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
@@ -91,11 +91,6 @@ impl LambdaClient {
         if let Some(profile_name) = profile_name {
             config = config.profile_name(profile_name);
         };
-        config = config.http_client(
-            HyperClientBuilder::new()
-                .crypto_mode(CryptoMode::Ring)
-                .build_https(),
-        );
 
         let inner = async move {
             let config = config.load().await;
@@ -309,15 +304,36 @@ pub struct ApiGatewayProxyRequest {
     pub is_base64_encoded: bool,
 }
 
+#[serde_as]
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiGatewayProxyResponse {
     pub status_code: u16,
-    #[serde(with = "http_serde::header_map")]
-    pub headers: HeaderMap,
+    #[serde_as(as = "Option<HttpHeaderMap>")]
+    pub headers: Option<HeaderMap>,
     pub body: Option<String>,
     #[serde(default)]
     pub is_base64_encoded: bool,
+}
+
+struct HttpHeaderMap;
+
+impl SerializeAs<HeaderMap> for HttpHeaderMap {
+    fn serialize_as<S>(source: &HeaderMap, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        http_serde::header_map::serialize(source, serializer)
+    }
+}
+
+impl<'de> DeserializeAs<'de, HeaderMap> for HttpHeaderMap {
+    fn deserialize_as<D>(deserializer: D) -> Result<HeaderMap, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        http_serde::header_map::deserialize(deserializer)
+    }
 }
 
 impl TryFrom<ApiGatewayProxyResponse> for Response<Full<Bytes>> {
@@ -339,10 +355,14 @@ impl TryFrom<ApiGatewayProxyResponse> for Response<Full<Bytes>> {
         };
 
         let builder = Response::builder().status(response.status_code);
-        let builder = response
-            .headers
-            .iter()
-            .fold(builder, |builder, (k, v)| builder.header(k, v));
+
+        let builder = if let Some(headers) = response.headers {
+            headers
+                .iter()
+                .fold(builder, |builder, (k, v)| builder.header(k, v))
+        } else {
+            builder
+        };
 
         Ok(builder.body(body.into()).expect("response must be created"))
     }
@@ -471,5 +491,32 @@ mod assume_role {
             Some(expiration),
             provider_name,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::lambda::ApiGatewayProxyResponse;
+
+    #[test]
+    fn serde_api_gateway_proxy_response_wo_headers() -> googletest::Result<()> {
+        let api_gateway_proxy_response: ApiGatewayProxyResponse = serde_json::from_str(
+            r#"{"statusCode":200,"multiValueHeaders":null,"body":"foobar\n"}"#,
+        )?;
+
+        assert_eq!(api_gateway_proxy_response.status_code, 200);
+
+        Ok(())
+    }
+
+    #[test]
+    fn serde_api_gateway_proxy_response_headers_null() -> googletest::Result<()> {
+        let api_gateway_proxy_response: ApiGatewayProxyResponse = serde_json::from_str(
+            r#"{"statusCode":200,"headers":null,"multiValueHeaders":null,"body":"foobar\n"}"#,
+        )?;
+
+        assert_eq!(api_gateway_proxy_response.status_code, 200);
+
+        Ok(())
     }
 }
