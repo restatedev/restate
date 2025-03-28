@@ -82,13 +82,7 @@ impl NodeCtlSvcHandler {
             .log_replication
             .map(ReplicationProperty::try_from)
             .transpose()?
-            .unwrap_or_else(|| {
-                config
-                    .bifrost
-                    .replicated_loglet
-                    .default_log_replication
-                    .clone()
-            });
+            .unwrap_or_else(|| config.bifrost.replicated_loglet.default_log_replication());
 
         let provider_configuration =
             ProviderConfiguration::from((log_provider, log_replication, target_nodeset_size));

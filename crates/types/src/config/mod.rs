@@ -226,9 +226,10 @@ impl Configuration {
 
     pub fn apply_cascading_values(mut self) -> Self {
         self.worker.storage.apply_common(&self.common);
-        self.bifrost.local.apply_common(&self.common);
+        self.bifrost.apply_common(&self.common);
         self.metadata_server.apply_common(&self.common);
         self.log_server.apply_common(&self.common);
+        self.admin.apply_common(&self.common);
         self
     }
 
@@ -325,4 +326,11 @@ fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<
     } else {
         eprintln!("Using the deprecated config option '{deprecated}'.");
     }
+}
+
+fn print_warning_deprecated_config_value(option: &str, value: &str) {
+    // we can't use tracing since config loading happens before tracing is initialized
+    eprintln!(
+        "The configuration option '{option}' is set to the deprecated value '{value}'. Reverting to default settings."
+    );
 }

@@ -105,8 +105,9 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
     base_config
         .bifrost
         .replicated_loglet
-        .default_log_replication =
-        ReplicationProperty::new(NonZeroU8::new(2).expect("to be non-zero"));
+        .default_log_replication = Some(ReplicationProperty::new(
+        NonZeroU8::new(2).expect("to be non-zero"),
+    ));
 
     let nodes = Node::new_test_nodes(
         base_config,
