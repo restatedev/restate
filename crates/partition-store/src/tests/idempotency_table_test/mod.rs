@@ -69,7 +69,7 @@ async fn test_idempotency_key() {
             .get_idempotency_metadata(&IDEMPOTENCY_ID_1)
             .await
             .unwrap(),
-            None
+        None
     );
     assert_eq!(
         rocksdb

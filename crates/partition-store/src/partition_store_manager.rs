@@ -127,10 +127,13 @@ impl PartitionStoreManager {
             partition_id,
             partition_key_range.clone(),
         )
-        .await {
+        .await
+        {
             Ok(store) => store,
             Err(e) => {
-                warn!("Failed to check idempotency table: {e}, continuing with standard initialization");
+                warn!(
+                    "Failed to check idempotency table: {e}, continuing with standard initialization"
+                );
                 PartitionStore::new(
                     self.rocksdb.clone(),
                     cf_name,
@@ -139,7 +142,7 @@ impl PartitionStoreManager {
                 )
             }
         };
-        
+
         guard.live.insert(partition_id, partition_store.clone());
 
         Ok(partition_store)
@@ -203,7 +206,7 @@ impl PartitionStoreManager {
             .await?;
 
         assert!(self.rocksdb.inner().cf_handle(&cf_name).is_some());
-        
+
         // Use the new method that checks if idempotency table is empty
         let partition_store = match PartitionStore::new_with_idempotency_check(
             self.rocksdb.clone(),
@@ -211,11 +214,13 @@ impl PartitionStoreManager {
             partition_id,
             partition_key_range.clone(),
         )
-        .await {
+        .await
+        {
             Ok(store) => store,
             Err(e) => {
-            // TODO: This is a temporary fix to avoid the issue.
-                warn!("Failed to check idempotency table: {e}, continuing with standard initialization");
+                warn!(
+                    "Failed to check idempotency table: {e}, continuing with standard initialization"
+                );
                 PartitionStore::new(
                     self.rocksdb.clone(),
                     cf_name,
@@ -224,7 +229,7 @@ impl PartitionStoreManager {
                 )
             }
         };
-        
+
         guard.live.insert(partition_id, partition_store.clone());
 
         Ok(partition_store)

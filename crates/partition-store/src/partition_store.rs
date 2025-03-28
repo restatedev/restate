@@ -312,7 +312,7 @@ impl PartitionStore {
             value_buffer: BytesMut::new(),
             idempotency_table_disabled: false,
         };
-        
+
         // Check if the idempotency table is empty
         let is_empty = store.is_idempotency_table_empty()?;
         if is_empty {
@@ -322,7 +322,7 @@ impl PartitionStore {
             );
             store.idempotency_table_disabled = true;
         }
-        
+
         Ok(store)
     }
 
@@ -330,30 +330,33 @@ impl PartitionStore {
     fn is_idempotency_table_empty(&self) -> Result<bool> {
         let table = self.table_handle(TableKind::Idempotency)?;
         let mut opts = ReadOptions::default();
-        
+
         // Get the bytes representation of the KeyKind::Idempotency
         let key_kind_bytes = KeyKind::Idempotency.as_bytes();
-        
+
         // Configure the iterator options
         opts.set_prefix_same_as_start(true);
         opts.set_async_io(true);
         opts.set_total_order_seek(false);
-        
+
         let mut it = self
             .rocksdb
             .inner()
             .as_raw_db()
             .raw_iterator_cf_opt(&table, opts);
-        
+
         // Seek to the first key with the idempotency prefix
         it.seek(key_kind_bytes);
-        
+
         // If the iterator is valid and the key has our prefix, the table is not empty
-        let is_empty = !it.valid() || !it.key().map_or(false, |k| TableKind::Idempotency.has_key_kind(k));
-        
+        let is_empty = !it.valid()
+            || !it
+                .key()
+                .map_or(false, |k| TableKind::Idempotency.has_key_kind(k));
+
         Ok(is_empty)
     }
-    
+
     #[inline]
     pub fn is_idempotency_table_disabled(&self) -> bool {
         self.idempotency_table_disabled
@@ -486,7 +489,7 @@ impl PartitionStore {
         let partition_id = self.partition_id;
         let partition_key_range = &self.key_range;
         let idempotency_disabled = self.is_idempotency_table_disabled();
-        
+
         let partition_store = PartitionStore {
             rocksdb: self.rocksdb.clone(),
             partition_id: self.partition_id,

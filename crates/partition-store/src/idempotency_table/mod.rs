@@ -17,8 +17,8 @@ use crate::{PartitionStoreTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
-use futures_util::stream;
 use futures_util::future::Either;
+use futures_util::stream;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
@@ -119,7 +119,7 @@ impl ReadOnlyIdempotencyTable for PartitionStore {
         if self.is_idempotency_table_disabled() {
             return Ok(None);
         }
-        
+
         self.assert_partition_key(idempotency_id)?;
         get_idempotency_metadata(self, idempotency_id)
     }
@@ -144,7 +144,7 @@ impl ReadOnlyIdempotencyTable for PartitionStoreTransaction<'_> {
         if self.is_idempotency_table_disabled() {
             return Ok(None);
         }
-        
+
         self.assert_partition_key(idempotency_id)?;
         get_idempotency_metadata(self, idempotency_id)
     }
@@ -170,7 +170,7 @@ impl IdempotencyTable for PartitionStoreTransaction<'_> {
         if self.is_idempotency_table_disabled() {
             return Ok(());
         }
-        
+
         self.assert_partition_key(idempotency_id)?;
         put_idempotency_metadata(self, idempotency_id, metadata)
     }
@@ -179,7 +179,7 @@ impl IdempotencyTable for PartitionStoreTransaction<'_> {
         if self.is_idempotency_table_disabled() {
             return Ok(());
         }
-        
+
         self.assert_partition_key(idempotency_id)?;
         delete_idempotency_metadata(self, idempotency_id)
     }
