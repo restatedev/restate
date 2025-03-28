@@ -72,8 +72,8 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         "NAME",
         "REVISION",
         "FLAVOR",
-        "DEPLOYMENT TYPE",
-        "DEPLOYMENT ID",
+        "DEPLOYMENT-TYPE",
+        "DEPLOYMENT-ID",
     ];
     if list_opts.extra {
         header.push("ENDPOINT");
