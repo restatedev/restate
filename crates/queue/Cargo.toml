@@ -12,7 +12,7 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-fs-util = { workspace = true }
 
-bincode = { version = "2.0.0-rc", default-features = false, features = ["std", "serde"] }
+bincode = { workspace = true, default-features = false, features = ["std", "serde"] }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util"] }
 

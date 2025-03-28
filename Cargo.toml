@@ -92,6 +92,7 @@ aws-smithy-async = {version = "1.2.1", default-features = false}
 aws-smithy-runtime-api = "1.7.3"
 aws-smithy-types = "1.2.9"
 base64 = "0.22"
+bincode = { version = "2.0.1", default-features = false }
 bitflags = { version = "2.6.0" }
 bytes = { version = "1.7", features = ["serde"] }
 bytes-utils = "0.1.3"
