@@ -11,6 +11,7 @@
 use tonic::{Code, Status};
 
 use crate::metadata_store::{ReadError, WriteError};
+use restate_types::errors::SimpleStatus;
 
 pub mod node_ctl_svc {
     use restate_types::protobuf::cluster::ClusterConfiguration;
@@ -166,7 +167,7 @@ fn to_read_err(status: Status) -> ReadError {
 
 fn to_write_err(status: Status) -> WriteError {
     match status.code() {
-        Code::FailedPrecondition => WriteError::FailedPrecondition(status.to_string()),
+        Code::FailedPrecondition => WriteError::FailedPrecondition(SimpleStatus::from(status).to_string()),
         _ => WriteError::terminal(status),
     }
 }
