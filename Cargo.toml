@@ -116,7 +116,7 @@ datafusion = { version = "44.0.0", default-features = false, features = [
 ] }
 datafusion-expr = { version = "44.0.0" }
 derive_builder = "0.20.0"
-derive_more = { version = "1", features = ["full"] }
+derive_more = { version = "2.0.1", features = ["full"] }
 dialoguer = { version = "0.11.0" }
 downcast-rs = { version = "2.0.1" }
 enum-map = { version = "2.7.3" }
