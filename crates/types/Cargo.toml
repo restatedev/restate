@@ -23,7 +23,6 @@ restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-utoipa = { workspace = true }
-tonic = { workspace = true }
 
 ahash = {workspace = true }
 anyhow = { workspace = true }
@@ -81,6 +80,7 @@ thiserror = { workspace = true }
 tiny-gradient = { version = "0.1.0" }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
 toml = { workspace = true }
+tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }

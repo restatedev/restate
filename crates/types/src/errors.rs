@@ -360,7 +360,7 @@ impl ConversionError {
 
 /// A simplified display wrapper around tonic::Status that only shows the status code and message,
 /// omitting the details and metadata fields for cleaner output.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SimpleStatus(pub tonic::Status);
 
 impl From<tonic::Status> for SimpleStatus {
@@ -381,9 +381,27 @@ impl From<SimpleStatus> for tonic::Status {
     }
 }
 
+impl SimpleStatus {
+    /// Returns the status code
+    pub fn code(&self) -> tonic::Code {
+        self.0.code()
+    }
+
+    /// Returns the status message
+    pub fn message(&self) -> &str {
+        self.0.message()
+    }
+}
+
 impl Display for SimpleStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.0.code(), self.0.message())
+    }
+}
+
+impl std::error::Error for SimpleStatus {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
     }
 }
 

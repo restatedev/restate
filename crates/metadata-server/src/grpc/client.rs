@@ -34,6 +34,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::{Code, Status};
 use tracing::{debug, instrument};
+use restate_types::errors::SimpleStatus;
 
 const MAX_RETRY_ATTEMPTS: usize = 3;
 
@@ -360,12 +361,12 @@ fn map_status_to_provision_error(address: AdvertisedAddress, status: Status) -> 
 #[error("[{address}] {status}")]
 struct StatusError {
     address: AdvertisedAddress,
-    status: Status,
+    status: SimpleStatus,
 }
 
 impl StatusError {
     fn new(address: AdvertisedAddress, status: Status) -> Self {
-        Self { address, status }
+        Self { address, status: SimpleStatus(status) }
     }
 }
 
