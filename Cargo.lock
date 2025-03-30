@@ -4611,8 +4611,7 @@ dependencies = [
 [[package]]
 name = "metrics"
 version = "0.24.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a7deb012b3b2767169ff203fadb4c6b0b82b947512e5eb9e0b78c2e186ad9e3"
+source = "git+https://github.com/pcholakov/metrics-rs?branch=mutable-global-labels#7c820d81b8def60884457b464aafa44cdeef40f4"
 dependencies = [
  "ahash 0.8.11",
  "portable-atomic",
@@ -4621,8 +4620,7 @@ dependencies = [
 [[package]]
 name = "metrics-exporter-prometheus"
 version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd7399781913e5393588a8d8c6a2867bf85fb38eaf2502fdce465aad2dc6f034"
+source = "git+https://github.com/pcholakov/metrics-rs?branch=mutable-global-labels#7c820d81b8def60884457b464aafa44cdeef40f4"
 dependencies = [
  "base64 0.22.1",
  "hyper-util",
@@ -4637,8 +4635,7 @@ dependencies = [
 [[package]]
 name = "metrics-util"
 version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbd4884b1dd24f7d6628274a2f5ae22465c337c5ba065ec9b6edccddf8acc673"
+source = "git+https://github.com/pcholakov/metrics-rs?branch=mutable-global-labels#7c820d81b8def60884457b464aafa44cdeef40f4"
 dependencies = [
  "aho-corasick",
  "crossbeam-epoch",

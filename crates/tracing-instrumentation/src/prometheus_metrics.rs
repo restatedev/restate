@@ -8,20 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::{Arc, OnceLock, RwLock};
+
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use metrics_util::MetricKindMask;
 
 use metrics_exporter_prometheus::formatting;
-use restate_types::config::CommonOptions;
+use restate_types::{PlainNodeId, config::CommonOptions};
 use tokio::task::AbortHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace};
 
-#[derive(Default)]
+use crate::GLOBAL_PROMETHEUS;
+
+#[derive(Clone, Debug, Default)]
 pub struct Prometheus {
     handle: Option<PrometheusHandle>,
     upkeep_task: Option<AbortHandle>,
-    global_labels: Vec<String>,
+    global_labels: Arc<RwLock<Vec<String>>>,
+    node_id_initialized: OnceLock<bool>,
 }
 
 impl Prometheus {
@@ -35,7 +40,8 @@ impl Prometheus {
             return Self {
                 handle: None,
                 upkeep_task: None,
-                global_labels: vec![],
+                global_labels: Arc::new(RwLock::new(vec![])),
+                node_id_initialized: OnceLock::new(),
             };
         }
         let builder = PrometheusBuilder::default()
@@ -53,10 +59,10 @@ impl Prometheus {
         // which should never happen in practice.
         metrics::set_global_recorder(recorder)
             .expect("no global metrics recorder should be installed");
-        Self {
+        let prometheus = Self {
             handle: Some(prometheus_handle),
             upkeep_task: None,
-            global_labels: vec![
+            global_labels: Arc::new(RwLock::new(vec![
                 format!(
                     "cluster_name=\"{}\"",
                     formatting::sanitize_label_value(opts.cluster_name())
@@ -65,16 +71,41 @@ impl Prometheus {
                     "node_name=\"{}\"",
                     formatting::sanitize_label_value(opts.node_name())
                 ),
-            ],
-        }
+            ])),
+            node_id_initialized: OnceLock::new(),
+        };
+
+        GLOBAL_PROMETHEUS
+            .set(prometheus.clone())
+            .expect("no global metrics recorder should be installed");
+
+        prometheus
     }
 
     pub fn handle(&self) -> Option<&PrometheusHandle> {
         self.handle.as_ref()
     }
 
-    pub fn global_labels(&self) -> &Vec<String> {
-        &self.global_labels
+    /// Obtain a copy of global labels for metric lines that get generated outside of Prometheus
+    pub fn global_labels(&self) -> Vec<String> {
+        self.global_labels.read().unwrap().clone()
+    }
+
+    /// Since the node_id may not be known when the metrics recorder is installed early on node
+    /// start, this method allows us to inject it when it becomes available without delaying metrics
+    /// startup.
+    pub fn set_node_id(&self, node_id: PlainNodeId) {
+        self.node_id_initialized.get_or_init(|| {
+            let node_id_str = node_id.to_string();
+            if let Some(recorder) = &self.handle {
+                self.global_labels.write().unwrap().push(format!(
+                    "node_id=\"{}\"",
+                    formatting::sanitize_label_value(&node_id_str)
+                ));
+                recorder.add_global_label("node_id", node_id_str);
+            }
+            true
+        });
     }
 
     /// Starts the upkeep task. Should typically be run once, but it'll abort
