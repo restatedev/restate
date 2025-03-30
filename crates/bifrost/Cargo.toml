@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+local-loglet = ["dep:restate-rocksdb", "dep:rocksdb"]
 replicated-loglet = ["auto-extend"]
 memory-loglet = ["restate-types/memory-loglet"]
 test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util"]
@@ -20,8 +21,7 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
-restate-metadata-server = { workspace = true }
-restate-rocksdb = { workspace = true }
+restate-rocksdb = { workspace = true, optional = true }
 restate-test-util = { workspace = true, optional = true }
 restate-types = { workspace = true }
 
@@ -40,7 +40,7 @@ metrics = { workspace = true }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }
 rand = { workspace = true }
-rocksdb = { workspace = true }
+rocksdb = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
@@ -54,9 +54,13 @@ tracing = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
+# Enable local-loglet for use in various tests in this package. This allows us to not have it enabled by default,
+# which benefits importing libraries that don't need rocksdb.
+restate-bifrost = {path = ".", default-features = false, features = ["local-loglet"]}
+
 restate-core = { workspace = true, features = ["test-util"] }
 restate-log-server = { workspace = true }
-restate-metadata-server = { workspace = true }
+restate-rocksdb = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }

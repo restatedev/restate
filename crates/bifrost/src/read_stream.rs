@@ -434,7 +434,7 @@ fn deliver_trim_gap(
     record
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local-loglet"))]
 mod tests {
     use super::*;
 
