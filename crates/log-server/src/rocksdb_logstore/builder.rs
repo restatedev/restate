@@ -122,6 +122,8 @@ fn db_options() -> rocksdb::Options {
     // set.
     opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::TolerateCorruptedTailRecords);
     opts.set_wal_compression_type(DBCompressionType::Zstd);
+    // most reads are sequential
+    opts.set_advise_random_on_open(false);
 
     opts
 }
@@ -153,8 +155,6 @@ fn cf_data_options(
 
         opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(KeyPrefix::size()));
         opts.set_memtable_prefix_bloom_ratio(0.2);
-        // most reads are sequential
-        opts.set_advise_random_on_open(false);
         opts
     }
 }

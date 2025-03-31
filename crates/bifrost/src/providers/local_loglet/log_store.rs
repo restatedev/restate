@@ -146,6 +146,8 @@ fn db_options() -> rocksdb::Options {
     // we can use absolute consistency but on a single-node setup, we don't have a way to recover
     // from it, so it's not useful for us.
     opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::TolerateCorruptedTailRecords);
+    // most reads are sequential
+    opts.set_advise_random_on_open(false);
 
     opts
 }
@@ -178,8 +180,6 @@ fn cf_data_options(
 
         opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(DATA_KEY_PREFIX_LENGTH));
         opts.set_memtable_prefix_bloom_ratio(0.2);
-        // most reads are sequential
-        opts.set_advise_random_on_open(false);
         //
         opts
     }
