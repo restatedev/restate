@@ -15,18 +15,19 @@ use std::collections::HashMap;
 use anyhow::Result;
 use bytes::Bytes;
 use chrono::{DateTime, Local};
-
-use crate::clients::DataFusionHttpClient;
-use restate_types::identifiers::DeploymentId;
-use restate_types::identifiers::{AwakeableIdentifier, InvocationId, ServiceId};
 use serde::Deserialize;
 use serde_with::serde_as;
+
+use restate_types::identifiers::DeploymentId;
+use restate_types::identifiers::{AwakeableIdentifier, InvocationId, ServiceId};
 
 use super::{
     HandlerStateStats, Invocation, InvocationCompletion, InvocationState, JournalEntry,
     JournalEntryTypeV1, JournalEntryV1, JournalEntryV2, LockedKeyInfo, OutgoingInvoke,
     ServiceHandlerLockedKeysMap, ServiceHandlerUsage, ServiceStatusMap, SimpleInvocation,
 };
+
+use crate::clients::DataFusionHttpClient;
 
 static JOURNAL_QUERY_LIMIT: usize = 100;
 
@@ -96,8 +97,8 @@ pub async fn get_service_status(
     {
         let query = format!(
             "SELECT
-                target_service_name as service,
-                target_handler_name as handler,
+                target_service_name,
+                target_handler_name,
                 'pending' as status,
                 COUNT(id) as num_invocations,
                 MIN(created_at) as oldest_at,
