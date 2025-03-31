@@ -13,8 +13,6 @@ mod persisted_lsn_watchdog;
 mod processor_state;
 mod spawn_processor_task;
 
-use restate_bifrost::loglet::FindTailOptions;
-use restate_types::identifiers::SnapshotId;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
@@ -23,6 +21,7 @@ use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use metrics::gauge;
+use rand::Rng;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
@@ -30,6 +29,7 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, info_span, instrument, warn};
 
 use restate_bifrost::Bifrost;
+use restate_bifrost::loglet::FindTailOptions;
 use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
 use restate_core::worker_api::{
     ProcessorsManagerCommand, ProcessorsManagerHandle, SnapshotCreated, SnapshotError,
@@ -50,6 +50,7 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
+use restate_types::identifiers::SnapshotId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -913,6 +914,10 @@ impl PartitionProcessorManager {
             return;
         };
 
+        // Limit the number of snapshots we schedule automatically
+        const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
+        let limit = MAX_CONCURRENT_SNAPSHOTS.saturating_sub(self.pending_snapshots.len());
+
         let snapshot_partitions: Vec<_> = self
             .processor_states
             .iter()
@@ -928,18 +933,19 @@ impl PartitionProcessorManager {
                         >= self
                             .archived_lsns
                             .get(partition_id)
-                            .cloned()
-                            .unwrap_or(Lsn::OLDEST)
+                            .copied()
+                            .unwrap_or(Lsn::INVALID)
                             .add(Lsn::from(records_per_snapshot.get()))
             })
+            .take(limit)
             .collect();
 
         for (partition_id, status) in snapshot_partitions {
             debug!(
                 %partition_id,
-                last_archived_lsn = %status.last_archived_log_lsn.unwrap_or(SequenceNumber::OLDEST),
-                last_applied_lsn = %status.last_applied_log_lsn.unwrap_or(SequenceNumber::INVALID),
-                "Requesting partition snapshot",
+                last_archived_lsn = %status.last_archived_log_lsn.unwrap_or(Lsn::OLDEST),
+                last_applied_lsn = %status.last_applied_log_lsn.unwrap_or(Lsn::INVALID),
+                "Creating periodic partition snapshot",
             );
             self.spawn_create_snapshot_task(partition_id, None, snapshot_repository.clone(), None);
         }
@@ -995,10 +1001,15 @@ impl PartitionProcessorManager {
                     snapshot_repository,
                 };
 
+                let jitter_start = if sender.is_some() {
+                    Duration::ZERO
+                } else {
+                    Duration::from_millis(rand::rng().random_range(0..10_000))
+                };
                 let spawn_task_result = TaskCenter::spawn_unmanaged(
                     TaskKind::PartitionSnapshotProducer,
                     "create-snapshot",
-                    create_snapshot_task.run(),
+                    create_snapshot_task.run(jitter_start),
                 );
 
                 match spawn_task_result {
