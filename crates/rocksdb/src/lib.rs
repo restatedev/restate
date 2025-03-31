@@ -458,7 +458,7 @@ impl RocksDb {
             if let Err(e) = self.db.flush_wal(true) {
                 warn!(
                     db = %self.name,
-                    "Failed to flush local loglet rocksdb WAL: {}",
+                    "Failed to flush rocksdb WAL: {}",
                     e
                 );
             }
