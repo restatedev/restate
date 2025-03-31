@@ -265,6 +265,9 @@ impl LogStoreWriter {
         let mut write_opts = rocksdb::WriteOptions::new();
         write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
         write_opts.set_sync(!opts.rocksdb_disable_wal_fsync());
+        // hint to rocksdb to insert the memtable position hint for the batch, our writes per batch
+        // are mostly ordered.
+        write_opts.set_memtable_insert_hint_per_batch(true);
 
         trace!(
             "Committing loglet current write batch: {} items",
