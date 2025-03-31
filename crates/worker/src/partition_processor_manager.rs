@@ -1002,7 +1002,7 @@ impl PartitionProcessorManager {
                     snapshot_repository,
                 };
 
-                let jitter_start = if sender.is_some() {
+                let jitter = if sender.is_some() {
                     Duration::ZERO
                 } else {
                     Duration::from_millis(rand::rng().random_range(0..10_000))
@@ -1010,7 +1010,10 @@ impl PartitionProcessorManager {
                 let spawn_task_result = TaskCenter::spawn_unmanaged(
                     TaskKind::PartitionSnapshotProducer,
                     "create-snapshot",
-                    create_snapshot_task.run(jitter_start),
+                    async move {
+                        tokio::time::sleep(jitter).await;
+                        create_snapshot_task.run().await
+                    },
                 );
 
                 match spawn_task_result {
