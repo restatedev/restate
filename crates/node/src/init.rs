@@ -172,7 +172,7 @@ impl<'a> NodeInit<'a> {
             Duration::from_millis(100),
             2.0,
             None,
-            Some(Duration::from_secs(5)),
+            Some(Duration::from_secs(1)),
         );
 
         let join_start = Instant::now();
