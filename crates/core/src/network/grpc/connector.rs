@@ -60,7 +60,7 @@ impl TransportConnect for GrpcConnector {
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Zstd);
+            .send_compressed(CompressionEncoding::Gzip);
         let incoming = client.create_connection(output_stream).await?.into_inner();
         Ok(incoming.map_while(|x| x.ok()))
     }
