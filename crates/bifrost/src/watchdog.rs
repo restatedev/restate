@@ -19,7 +19,7 @@ use tracing::{debug, trace, warn};
 use restate_core::metadata_store::{
     ReadModifyWriteError, ReadWriteError, retry_on_retryable_error,
 };
-use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
+use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, cancellation_watcher};
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Logs, ProviderKind};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -170,7 +170,7 @@ impl Watchdog {
             providers
                 .build_task()
                 .name("shutdown-loglet-provider")
-                .spawn(async move { provider.shutdown().await })
+                .spawn(async move { provider.shutdown().await }.in_current_tc())
                 .expect("to spawn provider shutdown");
         }
 

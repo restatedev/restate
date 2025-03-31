@@ -15,7 +15,7 @@
 use std::collections::{HashMap, hash_map};
 
 use anyhow::Context;
-use futures::stream::FuturesUnordered;
+use tokio::task::JoinSet;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, trace};
 
@@ -227,12 +227,12 @@ impl RequestPump {
 
     pub async fn shutdown(loglet_workers: LogletWorkerMap) {
         // stop all writers
-        let mut tasks = FuturesUnordered::new();
+        let mut tasks = JoinSet::new();
         for (_, task) in loglet_workers {
-            tasks.push(task.cancel());
+            tasks.spawn(task.cancel());
         }
         // await all tasks to shutdown
-        while tasks.next().await.is_some() {}
+        let _ = tasks.join_all().await;
         trace!("All loglet workers have terminated");
     }
 
