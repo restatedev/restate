@@ -194,8 +194,8 @@ pub async fn run(State(env): State<CliEnv>) {
 
     c_println!();
     // Get admin client, don't fail completely if we can't get one!
-    if let Ok(client) = crate::clients::AdminClient::new(&env).await {
-        match client.health().await {
+    match crate::clients::AdminClient::new(&env).await {
+        Ok(client) => match client.health().await {
             Ok(envelope) if envelope.status_code().is_success() => {
                 c_success!("Admin Service '{}' is healthy!", client.base_url);
                 if let Some(advertised_ingress_address) = client.advertised_ingress_address {
@@ -220,6 +220,10 @@ pub async fn run(State(env): State<CliEnv>) {
                 c_error!("Admin Service '{}' is unhealthy:", client.base_url);
                 c_eprintln!("   >> {}", e);
             }
+        },
+        Err(e) => {
+            c_error!("Could not connect to Admin Service:");
+            c_eprintln!("   >> {}", e);
         }
     }
 
