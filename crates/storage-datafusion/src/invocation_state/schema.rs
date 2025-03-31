@@ -1,0 +1,63 @@
+// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+#![allow(dead_code)]
+
+use restate_datafusion::prelude::*;
+
+define_table!(sys_invocation_state(
+    /// Internal column that is used for partitioning the services invocations. Can be ignored.
+    partition_key: DataType::UInt64,
+
+    /// [Invocation ID](/operate/invocation#invocation-identifier).
+    id: DataType::LargeUtf8,
+
+    /// If true, the invocation is currently in-flight
+    in_flight: DataType::Boolean,
+
+    /// The number of invocation attempts since the current leader started executing it. Increments
+    /// on start, so a value greater than 1 means a failure occurred. Note: the value is not a
+    /// global attempt counter across invocation suspensions and leadership changes.
+    retry_count: DataType::UInt64,
+
+    /// Timestamp indicating the start of the most recent attempt of this invocation.
+    last_start_at: TimestampMillisecond,
+
+    // The deployment that was selected in the last invocation attempt. This is
+    // guaranteed to be set unlike in `sys_status` table which require that the
+    // deployment to be committed before it is set.
+
+    /// The ID of the service deployment that executed the most recent attempt of this invocation;
+    /// this is set before a journal entry is stored, but can change later.
+    last_attempt_deployment_id: DataType::LargeUtf8,
+
+    /// Server/SDK version, e.g. `restate-sdk-java/1.0.1`
+    last_attempt_server: DataType::LargeUtf8,
+
+    /// Timestamp indicating the start of the next attempt of this invocation.
+    next_retry_at: TimestampMillisecond,
+
+    /// An error message describing the most recent failed attempt of this invocation, if any.
+    last_failure: DataType::LargeUtf8,
+
+    /// The error code of the most recent failed attempt of this invocation, if any.
+    last_failure_error_code: DataType::LargeUtf8,
+
+    /// The index of the journal entry that caused the failure, if any. It may be out-of-bound
+    /// of the currently stored entries in `sys_journal`.
+    last_failure_related_entry_index: DataType::UInt64,
+
+    /// The name of the journal entry that caused the failure, if any.
+    last_failure_related_entry_name: DataType::LargeUtf8,
+
+    /// The type of the journal entry that caused the failure, if any. You can check all the
+    /// available entry types in [`entries.rs`](https://github.com/restatedev/restate/blob/main/crates/types/src/journal/entries.rs).
+    last_failure_related_entry_type: DataType::LargeUtf8,
+));

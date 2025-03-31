@@ -173,7 +173,8 @@ impl Worker {
             create_partition_locator(partition_routing, metadata.clone()),
         );
         let schema = metadata.updateable_schema();
-        let storage_query_context = QueryContext::with_user_tables(
+
+        let storage_query_context = restate_storage_datafusion::user_query_context(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata,
             Some(partition_store_manager.clone()),

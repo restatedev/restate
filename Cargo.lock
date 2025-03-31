@@ -7199,6 +7199,7 @@ dependencies = [
  "restate-rocksdb",
  "restate-service-client",
  "restate-service-protocol",
+ "restate-storage-datafusion",
  "restate-storage-query-datafusion",
  "restate-tracing-instrumentation",
  "restate-types",
@@ -7529,6 +7530,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-storage-datafusion"
+version = "1.3.0-dev"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "bytestring",
+ "datafusion",
+ "derive_more",
+ "futures",
+ "googletest",
+ "prost",
+ "restate-core",
+ "restate-invoker-api",
+ "restate-partition-store",
+ "restate-rocksdb",
+ "restate-service-protocol",
+ "restate-service-protocol-v4",
+ "restate-storage-api",
+ "restate-storage-query-datafusion",
+ "restate-types",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "restate-storage-query-datafusion"
 version = "1.3.0-dev"
 dependencies = [
@@ -7549,11 +7578,7 @@ dependencies = [
  "paste",
  "prost",
  "restate-core",
- "restate-invoker-api",
  "restate-partition-store",
- "restate-rocksdb",
- "restate-service-protocol",
- "restate-service-protocol-v4",
  "restate-storage-api",
  "restate-types",
  "schemars",
@@ -7847,6 +7872,7 @@ dependencies = [
  "restate-service-protocol",
  "restate-service-protocol-v4",
  "restate-storage-api",
+ "restate-storage-datafusion",
  "restate-storage-query-datafusion",
  "restate-storage-query-postgres",
  "restate-test-util",
@@ -10542,6 +10568,7 @@ dependencies = [
  "restate-metadata-server",
  "restate-service-client",
  "restate-service-protocol",
+ "restate-storage-datafusion",
  "restate-storage-query-datafusion",
  "restate-types",
  "restate-worker",

@@ -11,10 +11,11 @@ publish = false
 restate-admin = { workspace = true, features = ["options_schema", "memory-loglet", "storage-query"] }
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
+restate-datafusion = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"]}
-restate-datafusion = { workspace = true, features = ["table_docs"] }
+restate-storage-datafusion = { workspace = true, features = ["table_docs"] }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-worker = { workspace = true, features = ["options_schema"] }
 

@@ -39,6 +39,7 @@ restate-service-client = { workspace = true }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"]  }
 restate-service-protocol = { workspace = true, features = ["codec", "message"] }
 restate-storage-api = { workspace = true }
+restate-storage-datafusion = { workspace = true }
 restate-datafusion = { workspace = true }
 restate-tracing-instrumentation = { workspace = true }
 restate-storage-query-postgres = { workspace = true }

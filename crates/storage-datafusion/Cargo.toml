@@ -1,0 +1,44 @@
+[package]
+name = "restate-storage-datafusion"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+table_docs = ["restate-datafusion/table_docs"]
+
+[dependencies]
+anyhow = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+datafusion = { workspace = true }
+derive_more = { workspace = true }
+futures = { workspace = true }
+prost = { workspace = true }
+restate-datafusion = { workspace = true }
+restate-core = { workspace = true }
+restate-invoker-api = { workspace = true }
+restate-partition-store = { workspace = true }
+restate-service-protocol = { workspace = true, features = ["codec"] }
+restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
+restate-storage-api = { workspace = true }
+restate-types = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+[dev-dependencies]
+restate-core = { workspace = true, features = ["test-util"] }
+restate-invoker-api = { workspace = true, features = ["test-util"] }
+restate-rocksdb = { workspace = true, features = ["test-util"] }
+restate-storage-api = { workspace = true, features = ["test-util"] }
+restate-service-protocol = { workspace = true, features = ["test-util"] }
+restate-types = { workspace = true, features = ["test-util"] }
+restate-datafusion = { workspace = true, features = ["test-util"] }
+
+googletest = { workspace = true }

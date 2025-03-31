@@ -10,31 +10,19 @@
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
 
-use super::context::QueryContext;
 use crate::context::SelectPartitions;
 use crate::remote_query_scanner_client::RemoteScannerService;
-use crate::remote_query_scanner_manager::{
-    PartitionLocation, PartitionLocator, RemoteScannerManager,
-};
+use crate::remote_query_scanner_manager::{PartitionLocation, PartitionLocator};
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
-use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
-use restate_invoker_api::StatusHandle;
-use restate_invoker_api::status_handle::test_util::MockStatusHandle;
-use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
-use restate_rocksdb::RocksDbManager;
 use restate_types::NodeId;
-use restate_types::config::{CommonOptions, QueryEngineOptions, WorkerOptions};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
 use restate_types::invocation::ServiceType;
-use restate_types::live::{Constant, Live};
 use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
     RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened,
@@ -107,11 +95,8 @@ impl SelectPartitions for MockPartitionSelector {
     }
 }
 
-#[allow(dead_code)]
-pub struct MockQueryEngine(PartitionStoreManager, PartitionStore, QueryContext);
-
 #[derive(Debug)]
-struct NoopSvc;
+pub struct NoopSvc;
 
 #[async_trait]
 impl RemoteScannerService for NoopSvc {
@@ -140,7 +125,7 @@ impl RemoteScannerService for NoopSvc {
     }
 }
 
-struct AlwaysLocalPartitionLocator;
+pub struct AlwaysLocalPartitionLocator;
 
 impl PartitionLocator for AlwaysLocalPartitionLocator {
     fn get_partition_target_node(
@@ -148,70 +133,6 @@ impl PartitionLocator for AlwaysLocalPartitionLocator {
         _partition_id: PartitionId,
     ) -> anyhow::Result<PartitionLocation> {
         Ok(PartitionLocation::Local)
-    }
-}
-
-impl MockQueryEngine {
-    pub async fn create_with(
-        status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
-        schemas: impl DeploymentResolver
-        + ServiceMetadataResolver
-        + Send
-        + Sync
-        + Debug
-        + Clone
-        + 'static,
-    ) -> Self {
-        // Prepare Rocksdb
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let worker_options = Live::from_value(WorkerOptions::default());
-        let manager = PartitionStoreManager::create(
-            worker_options.clone().map(|c| &c.storage),
-            worker_options.clone().map(|c| &c.storage.rocksdb).boxed(),
-            &[(PartitionId::MIN, RangeInclusive::new(0, PartitionKey::MAX))],
-        )
-        .await
-        .expect("DB creation succeeds");
-        let partition_store = manager
-            .open_partition_store(
-                PartitionId::MIN,
-                PartitionKey::MIN..=PartitionKey::MAX,
-                OpenMode::OpenExisting,
-                &worker_options.pinned().storage.rocksdb,
-            )
-            .await
-            .unwrap();
-
-        // Matches MockPartitionSelector's single partition
-        Self(
-            manager.clone(),
-            partition_store,
-            QueryContext::with_user_tables(
-                &QueryEngineOptions::default(),
-                MockPartitionSelector,
-                Some(manager),
-                Some(status),
-                Live::from_value(schemas),
-                RemoteScannerManager::new(Arc::new(NoopSvc), Arc::new(AlwaysLocalPartitionLocator)),
-            )
-            .await
-            .unwrap(),
-        )
-    }
-
-    pub async fn create() -> Self {
-        Self::create_with(MockStatusHandle::default(), MockSchemas::default()).await
-    }
-
-    pub fn partition_store(&mut self) -> &mut PartitionStore {
-        &mut self.1
-    }
-
-    pub async fn execute(
-        &self,
-        sql: impl AsRef<str> + Send,
-    ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        self.2.execute(sql.as_ref()).await
     }
 }
 
