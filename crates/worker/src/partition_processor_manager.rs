@@ -23,6 +23,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use metrics::gauge;
 use rand::Rng;
 use rand::seq::SliceRandom;
+use restate_types::retries::with_jitter;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
@@ -245,7 +246,8 @@ impl PartitionProcessorManager {
         let mut logs_version_watcher = metadata.watch(MetadataKind::Logs);
         let mut partition_table_version_watcher = metadata.watch(MetadataKind::PartitionTable);
 
-        let mut latest_snapshot_check_interval = tokio::time::interval(Duration::from_secs(5));
+        let mut latest_snapshot_check_interval =
+            tokio::time::interval(with_jitter(Duration::from_secs(1), 0.1));
         latest_snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut update_target_tail_lsns = tokio::time::interval(Duration::from_secs(1));
