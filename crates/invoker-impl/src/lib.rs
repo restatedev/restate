@@ -54,7 +54,7 @@ use tracing::instrument;
 use tracing::{debug, trace};
 
 use crate::metric_definitions::{
-    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
+    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
     TASK_OP_SUSPENDED,
 };
 use error::InvokerError;
@@ -904,7 +904,7 @@ where
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
-            counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_COMPLETED).increment(1);
+            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_COMPLETED).increment(1);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Invocation task closed correctly");
@@ -940,7 +940,7 @@ where
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
-            counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_SUSPENDED).increment(1);
+            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED).increment(1);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Suspending invocation");
@@ -978,7 +978,7 @@ where
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
-            counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_SUSPENDED).increment(1);
+            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED).increment(1);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Suspending invocation"
@@ -1104,7 +1104,7 @@ where
             error.should_bump_start_message_retry_count_since_last_stored_entry(),
         ) {
             Some(next_retry_timer_duration) if error.is_transient() => {
-                counter!(INVOKER_INVOCATION_TASK,
+                counter!(INVOKER_INVOCATION_TASKS,
                     "status" => TASK_OP_FAILED,
                     "transient" => "true"
                 )
@@ -1145,7 +1145,7 @@ where
                     .sleep_until(next_retry_at, (partition, invocation_id));
             }
             _ => {
-                counter!(INVOKER_INVOCATION_TASK,
+                counter!(INVOKER_INVOCATION_TASKS,
                     "status" => TASK_OP_FAILED,
                     "transient" => "false"
                 )
@@ -1203,7 +1203,7 @@ where
             "Invocation task started state. Invocation state: {:?}",
             ism.invocation_state_debug()
         );
-        counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_STARTED).increment(1);
+        counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_STARTED).increment(1);
         self.invocation_state_machine_manager
             .register_invocation(partition, invocation_id, ism);
     }
