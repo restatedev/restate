@@ -12,6 +12,7 @@ use crate::identifiers::ServiceRevision;
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::schema::invocation_target::{InputValidationRule, OutputContentTypeRule};
 use crate::schema::service::HandlerSchemas;
+use restate_utoipa::openapi::extensions::Extensions;
 use restate_utoipa::openapi::path::{Operation, Parameter, ParameterIn};
 use restate_utoipa::openapi::request_body::RequestBody;
 use restate_utoipa::openapi::*;
@@ -25,6 +26,7 @@ pub struct ServiceOpenAPI {
     send_paths: Paths,
     attach_paths: Paths,
     get_output_paths: Paths,
+    extensions: Option<Extensions>,
     components: Components,
 }
 
@@ -32,6 +34,7 @@ impl ServiceOpenAPI {
     pub fn infer(
         service_name: &str,
         service_type: ServiceType,
+        service_metadata: &HashMap<String, String>,
         handlers: &HashMap<String, HandlerSchemas>,
     ) -> Self {
         let mut schemas_collector = Vec::new();
@@ -72,6 +75,20 @@ impl ServiceOpenAPI {
             let response =
                 infer_handler_response(operation_id, handler_schemas, &mut schemas_collector);
 
+            let extensions = if !handler_schemas.metadata.is_empty() {
+                Some(
+                    Extensions::builder()
+                        .add(
+                            "x-restate-extensions",
+                            serde_json::to_value(&handler_schemas.metadata)
+                                .expect("Serialization of map<string, string> should never fail!"),
+                        )
+                        .build(),
+                )
+            } else {
+                None
+            };
+
             let call_item = PathItem::builder()
                 .operation(
                     HttpMethod::Post,
@@ -93,6 +110,7 @@ impl ServiceOpenAPI {
                         .request_body(request_body.clone())
                         .response("200", response.clone())
                         .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                        .extensions(extensions.clone())
                         .build(),
                 )
                 .build();
@@ -120,6 +138,7 @@ impl ServiceOpenAPI {
                         .response("200", responses_ref(SEND_RESPONSE_REF_NAME))
                         .response("202", responses_ref(SEND_RESPONSE_REF_NAME))
                         .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                        .extensions(extensions.clone())
                         .build(),
                 )
                 .build();
@@ -152,6 +171,7 @@ impl ServiceOpenAPI {
                                 .response("200", response.clone())
                                 .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
                                 .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                                .extensions(extensions.clone())
                                 .build(),
                         )
                         .build();
@@ -183,6 +203,7 @@ impl ServiceOpenAPI {
                                 .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
                                 .response("470", responses_ref(INVOCATION_NOT_READY_RESPONSE_REF_NAME))
                                 .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                                .extensions(extensions)
                                 .build(),
                         )
                         .build();
@@ -215,6 +236,7 @@ impl ServiceOpenAPI {
                             .response("200", response.clone())
                             .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
                             .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                            .extensions(extensions.clone())
                             .build(),
                     )
                     .build();
@@ -248,6 +270,7 @@ impl ServiceOpenAPI {
                             .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
                             .response("470", responses_ref(INVOCATION_NOT_READY_RESPONSE_REF_NAME))
                             .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                            .extensions(extensions)
                             .build(),
                     )
                     .build();
@@ -265,6 +288,19 @@ impl ServiceOpenAPI {
             send_paths: send_paths.build(),
             attach_paths: attach_paths.build(),
             get_output_paths: get_output_paths.build(),
+            extensions: if !service_metadata.is_empty() {
+                Some(
+                    Extensions::builder()
+                        .add(
+                            "x-restate-extensions",
+                            serde_json::to_value(service_metadata)
+                                .expect("Serialization of map<string, string> should never fail!"),
+                        )
+                        .build(),
+                )
+            } else {
+                None
+            },
             components: Components::builder()
                 .schemas_from_iter(schemas_collector.into_iter().map(|(schema_name, schema)| {
                     let ref_refix = format!("#/components/schemas/{schema_name}");
@@ -313,6 +349,7 @@ impl ServiceOpenAPI {
                         .title(service_name.to_owned())
                         .version(revision.to_string())
                         .description(documentation)
+                        .extensions(self.extensions.clone())
                         .build(),
                 )
                 .servers(servers)
@@ -330,6 +367,7 @@ impl ServiceOpenAPI {
             send_paths: Default::default(),
             attach_paths: Default::default(),
             get_output_paths: Default::default(),
+            extensions: Default::default(),
             components: Default::default(),
         }
     }
