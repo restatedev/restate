@@ -14,8 +14,8 @@ use crate::grpc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
 use async_trait::async_trait;
 use bytes::BytesMut;
 use bytestring::ByteString;
+use indexmap::IndexMap;
 use parking_lot::Mutex;
-use rand::prelude::IteratorRandom;
 use restate_core::metadata_store::{MetadataStore, ProvisionError, ReadError, WriteError};
 use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
 use restate_core::{Metadata, TaskCenter, TaskKind, cancellation_watcher};
@@ -27,7 +27,6 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
 use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};
-use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 use tonic::transport::Channel;
@@ -74,7 +73,7 @@ impl GrpcMetadataServerClient {
         let channel_manager = ChannelManager::new(metadata_store_addresses, connection_options);
         let svc_client = Arc::new(Mutex::new(
             channel_manager
-                .choose_random()
+                .choose_channel()
                 .map(MetadataServerSvcClientWithAddress::new),
         ));
 
@@ -107,7 +106,7 @@ impl GrpcMetadataServerClient {
         // let's try another endpoint
         *self.current_leader.lock() = self
             .channel_manager
-            .choose_random()
+            .choose_channel()
             .map(MetadataServerSvcClientWithAddress::new);
     }
 
@@ -124,7 +123,7 @@ impl GrpcMetadataServerClient {
         if svc_client_guard.is_none() {
             *svc_client_guard = self
                 .channel_manager
-                .choose_random()
+                .choose_channel()
                 .map(MetadataServerSvcClientWithAddress::new);
         }
 
@@ -411,8 +410,8 @@ impl ChannelManager {
         channel
     }
 
-    fn choose_random(&self) -> Option<ChannelWithAddress> {
-        self.channels.lock().choose_random()
+    fn choose_channel(&self) -> Option<ChannelWithAddress> {
+        self.channels.lock().choose_next_round_robin()
     }
 
     /// Watches the [`NodesConfiguration`] and updates the channels based on which nodes run the
@@ -497,14 +496,17 @@ impl ChannelWithAddress {
 #[derive(Debug)]
 struct Channels {
     initial_channels: Vec<ChannelWithAddress>,
-    channels: HashMap<PlainNodeId, ChannelWithAddress>,
+    channels: IndexMap<PlainNodeId, ChannelWithAddress>,
+    channel_index: usize,
 }
 
 impl Channels {
     fn new(initial_channels: Vec<ChannelWithAddress>) -> Self {
+        assert!(!initial_channels.is_empty());
         Channels {
             initial_channels,
-            channels: HashMap::default(),
+            channels: IndexMap::default(),
+            channel_index: 0,
         }
     }
 
@@ -512,13 +514,14 @@ impl Channels {
         self.channels.insert(plain_node_id, channel);
     }
 
-    fn choose_random(&self) -> Option<ChannelWithAddress> {
-        let mut rng = rand::rng();
+    fn choose_next_round_robin(&mut self) -> Option<ChannelWithAddress> {
+        self.channel_index =
+            (self.channel_index + 1) % (self.channels.len() + self.initial_channels.len());
         let chosen_channel = self
             .channels
             .values()
             .chain(self.initial_channels.iter())
-            .choose(&mut rng)
+            .nth(self.channel_index)
             .cloned();
         chosen_channel
     }
