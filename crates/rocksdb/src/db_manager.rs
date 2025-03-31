@@ -352,7 +352,7 @@ impl RocksDbManager {
         block_opts.set_index_block_restart_interval(4);
         block_opts.set_cache_index_and_filter_blocks(true);
         block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-        block_opts.set_block_size(32 * 1024);
+        block_opts.set_block_size(opts.rocksdb_block_size().get());
 
         block_opts.set_block_cache(&self.cache);
         cf_options.set_block_based_table_factory(&block_opts);
