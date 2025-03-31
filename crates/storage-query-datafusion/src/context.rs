@@ -26,7 +26,6 @@ use datafusion::sql::TableReference;
 use restate_core::Metadata;
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
-use restate_types::cluster::cluster_state::ClusterState;
 use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -34,7 +33,6 @@ use restate_types::live::Live;
 use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
-use tokio::sync::watch;
 use tracing::warn;
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -88,12 +86,6 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
         FROM sys_invocation_status ss
         LEFT JOIN sys_invocation_state sis ON ss.id = sis.id";
 
-const CLUSTER_LOGS_TAIL_SEGMENTS_VIEW: &str = "CREATE VIEW logs_tail_segments as SELECT
-        l.* FROM logs AS l JOIN (
-            SELECT log_id, max(segment_index) AS segment_index FROM logs GROUP BY log_id
-        ) m
-        ON m.log_id=l.log_id AND l.segment_index=m.segment_index";
-
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum BuildError {
     #[error(transparent)]
@@ -110,6 +102,16 @@ pub trait SelectPartitions: Send + Sync + Debug + 'static {
 /// on the QueryContext.
 pub trait RegisterTable: Send + Sync + 'static {
     fn register(&self, ctx: &QueryContext) -> impl Future<Output = Result<(), BuildError>>;
+
+    /// Helper function during registration to run any DDL statement mainly
+    /// a `CREATE VIEW`
+    fn create_view(
+        &self,
+        ctx: &QueryContext,
+        sql: impl AsRef<str> + 'static,
+    ) -> impl Future<Output = Result<(), DataFusionError>> {
+        async move { ctx.datafusion_context.sql(sql.as_ref()).await.map(|_| ()) }
+    }
 }
 
 /// A query context registerer for user tables
@@ -200,36 +202,7 @@ where
             &self.remote_scanner_manager,
         )?;
 
-        ctx.datafusion_context.sql(SYS_INVOCATION_VIEW).await?;
-
-        Ok(())
-    }
-}
-
-pub struct ClusterTables {
-    cluster_state_watch: watch::Receiver<Arc<ClusterState>>,
-}
-
-impl ClusterTables {
-    pub fn new(cluster_state_watch: watch::Receiver<Arc<ClusterState>>) -> Self {
-        Self {
-            cluster_state_watch,
-        }
-    }
-}
-
-impl RegisterTable for ClusterTables {
-    async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
-        let metadata = Metadata::current();
-        crate::node::register_self(ctx, metadata.clone())?;
-        crate::partition::register_self(ctx, metadata.clone())?;
-        crate::log::register_self(ctx, metadata)?;
-        crate::node_state::register_self(ctx, self.cluster_state_watch.clone())?;
-        crate::partition_state::register_self(ctx, self.cluster_state_watch.clone())?;
-
-        ctx.datafusion_context
-            .sql(CLUSTER_LOGS_TAIL_SEGMENTS_VIEW)
-            .await?;
+        self.create_view(ctx, SYS_INVOCATION_VIEW).await?;
 
         Ok(())
     }

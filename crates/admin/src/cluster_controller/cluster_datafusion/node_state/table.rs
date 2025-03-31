@@ -15,36 +15,37 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use restate_types::cluster::cluster_state::ClusterState;
 use tokio::sync::mpsc::Sender;
-
 use tokio::sync::watch;
 
-use crate::context::QueryContext;
-use crate::table_providers::{GenericTableProvider, Scan};
-use crate::table_util::Builder;
+use restate_datafusion::{
+    context::QueryContext,
+    table_providers::{GenericTableProvider, Scan},
+    table_util::Builder,
+};
+use restate_types::cluster::cluster_state::ClusterState;
 
-use super::row::append_partition_row;
-use super::schema::PartitionStateBuilder;
+use super::row::append_node_row;
+use super::schema::NodeStateBuilder;
 
 pub fn register_self(
     ctx: &QueryContext,
     watch: watch::Receiver<Arc<ClusterState>>,
 ) -> datafusion::common::Result<()> {
     let table = GenericTableProvider::new(
-        PartitionStateBuilder::schema(),
-        Arc::new(PartitionStateScanner { watch }),
+        NodeStateBuilder::schema(),
+        Arc::new(NodesStatusScanner { watch }),
     );
-    ctx.register_table("partition_state", Arc::new(table))
+    ctx.register_table("node_state", Arc::new(table))
 }
 
 #[derive(Clone, derive_more::Debug)]
 #[debug("DeploymentMetadataScanner")]
-struct PartitionStateScanner {
+struct NodesStatusScanner {
     watch: watch::Receiver<Arc<ClusterState>>,
 }
 
-impl Scan for PartitionStateScanner {
+impl Scan for NodesStatusScanner {
     fn scan(
         &self,
         projection: SchemaRef,
@@ -55,44 +56,35 @@ impl Scan for PartitionStateScanner {
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 2);
         let tx = stream_builder.tx();
 
-        let state = self.watch.borrow().clone();
+        let current = self.watch.borrow().clone();
         stream_builder.spawn(async move {
-            for_each_partition(schema, tx, &state).await;
+            for_each_state(schema, tx, &current).await;
             Ok(())
         });
         stream_builder.build()
     }
 }
 
-async fn for_each_partition(
+async fn for_each_state(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
-    state: &ClusterState,
+    cluster_state: &ClusterState,
 ) {
-    let mut builder = PartitionStateBuilder::new(schema.clone());
+    let mut builder = NodeStateBuilder::new(schema.clone());
     let mut output = String::new();
-    for alive in state.alive_nodes() {
-        for (partition_id, partition_status) in alive.partitions.iter() {
-            append_partition_row(
-                &mut builder,
-                &mut output,
-                alive.generational_node_id,
-                *partition_id,
-                partition_status,
-            );
-            if builder.full() {
-                let batch = builder.finish();
-                if tx.send(batch).await.is_err() {
-                    // not sure what to do here?
-                    // the other side has hung up on us.
-                    // we probably don't want to panic, is it will cause the entire process to exit
-                    return;
-                }
-                builder = PartitionStateBuilder::new(schema.clone());
+    for (id, node_state) in cluster_state.nodes.iter() {
+        append_node_row(&mut builder, &mut output, *id, node_state);
+        if builder.full() {
+            let batch = builder.finish();
+            if tx.send(batch).await.is_err() {
+                // not sure what to do here?
+                // the other side has hung up on us.
+                // we probably don't want to panic, is it will cause the entire process to exit
+                return;
             }
+            builder = NodeStateBuilder::new(schema.clone());
         }
     }
-
     if !builder.empty() {
         let result = builder.finish();
         let _ = tx.send(result).await;

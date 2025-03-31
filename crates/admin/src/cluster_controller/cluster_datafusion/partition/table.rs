@@ -18,11 +18,12 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tokio::sync::mpsc::Sender;
 
 use restate_core::Metadata;
+use restate_datafusion::{
+    context::QueryContext,
+    table_providers::{GenericTableProvider, Scan},
+    table_util::Builder,
+};
 use restate_types::partition_table::PartitionTable;
-
-use crate::context::QueryContext;
-use crate::table_providers::{GenericTableProvider, Scan};
-use crate::table_util::Builder;
 
 use super::row::append_partition_rows;
 use super::schema::PartitionBuilder;

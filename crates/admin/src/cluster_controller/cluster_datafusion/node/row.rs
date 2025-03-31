@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use super::schema::NodeBuilder;
-use crate::table_util::format_using;
 use enumset::EnumSet;
+use restate_datafusion::table_util::format_using;
 use restate_types::{
     PlainNodeId, Version,
     nodes_config::{NodeConfig, Role},

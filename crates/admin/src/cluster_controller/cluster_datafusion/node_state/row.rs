@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::table_util::format_using;
-
 use super::schema::NodeStateBuilder;
+use restate_datafusion::table_util::format_using;
 use restate_types::{PlainNodeId, cluster::cluster_state::NodeState};
 
 #[inline]

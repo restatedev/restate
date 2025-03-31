@@ -20,11 +20,12 @@ use restate_types::logs::LogletId;
 use tokio::sync::mpsc::Sender;
 
 use restate_core::Metadata;
+use restate_datafusion::{
+    context::QueryContext,
+    table_providers::{GenericTableProvider, Scan},
+    table_util::Builder,
+};
 use restate_types::logs::metadata::Logs;
-
-use crate::context::QueryContext;
-use crate::table_providers::{GenericTableProvider, Scan};
-use crate::table_util::Builder;
 
 use super::row::append_segment_row;
 use super::schema::LogBuilder;

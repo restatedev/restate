@@ -10,9 +10,7 @@
 
 #![allow(dead_code)]
 
-use datafusion::arrow::datatypes::DataType;
-
-use crate::table_macro::*;
+use restate_datafusion::prelude::*;
 
 define_table!(
     /// Observed partition state

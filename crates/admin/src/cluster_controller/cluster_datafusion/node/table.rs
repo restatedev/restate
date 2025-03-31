@@ -18,11 +18,12 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tokio::sync::mpsc::Sender;
 
 use restate_core::Metadata;
+use restate_datafusion::{
+    context::QueryContext,
+    table_providers::{GenericTableProvider, Scan},
+    table_util::Builder,
+};
 use restate_types::nodes_config::NodesConfiguration;
-
-use crate::context::QueryContext;
-use crate::table_providers::{GenericTableProvider, Scan};
-use crate::table_util::Builder;
 
 use super::row::append_node_row;
 use super::schema::NodeBuilder;
