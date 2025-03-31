@@ -15,13 +15,11 @@ use clap::Parser;
 use cling::{Collect, Run};
 use restate_cli_util::ui::console::confirm_or_exit;
 use restate_cli_util::{c_error, c_println, c_warn};
-use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest;
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_core::protobuf::node_ctl_svc::{ProvisionClusterRequest, new_node_ctl_client};
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
 use restate_types::replication::ReplicationProperty;
 use std::cmp::Ordering;
 use tonic::Code;
-use tonic::codec::CompressionEncoding;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "provision_cluster")]
@@ -70,9 +68,7 @@ async fn provision_cluster(
 
     let channel = grpc_channel(address.clone());
 
-    let mut client = NodeCtlSvcClient::new(channel)
-        .accept_compressed(CompressionEncoding::Gzip)
-        .send_compressed(CompressionEncoding::Gzip);
+    let mut client = new_node_ctl_client(channel);
 
     let request = ProvisionClusterRequest {
         dry_run: true,

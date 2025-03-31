@@ -16,14 +16,13 @@ use futures_util::StreamExt;
 use googletest::fail;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
-use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tracing::{error, info};
 use url::Url;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, CreatePartitionSnapshotRequest,
+    ClusterStateRequest, CreatePartitionSnapshotRequest, new_cluster_ctrl_client,
 };
 use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
 use restate_local_cluster_runner::{
@@ -82,11 +81,10 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     tokio::time::timeout(Duration::from_secs(10), worker_1_ready.next()).await?;
     tokio::time::timeout(Duration::from_secs(10), worker_2_ready.next()).await?;
 
-    let mut client = ClusterCtrlSvcClient::new(create_tonic_channel(
+    let mut client = new_cluster_ctrl_client(create_tonic_channel(
         cluster.nodes[0].node_address().clone(),
         &TestNetworkOptions::default(),
-    ))
-    .accept_compressed(CompressionEncoding::Gzip);
+    ));
 
     tokio::time::timeout(Duration::from_secs(5), any_partition_active(&mut client)).await??;
 

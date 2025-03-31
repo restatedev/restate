@@ -18,8 +18,11 @@ use arc_swap::access::Access;
 use restate_types::PlainNodeId;
 use std::str::FromStr;
 use std::sync::Arc;
+use tonic::codec::CompressionEncoding;
 use tonic::codegen::BoxStream;
 use tonic::{Request, Response, Status, Streaming};
+
+use super::MetadataServerNetworkSvcServer;
 
 #[derive(Debug)]
 pub struct MetadataServerNetworkHandler<M> {
@@ -36,6 +39,18 @@ impl<M> MetadataServerNetworkHandler<M> {
             connection_manager,
             join_cluster_handle,
         }
+    }
+
+    pub fn into_server(self) -> MetadataServerNetworkSvcServer<Self> {
+        MetadataServerNetworkSvcServer::new(self)
+            // note: the order of those calls defines the priority
+            .accept_compressed(CompressionEncoding::Zstd)
+            .accept_compressed(CompressionEncoding::Gzip)
+            // note: the order of those calls defines the priority
+            // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
+            // so we prefer zstd over gzip.
+            .send_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Gzip)
     }
 }
 

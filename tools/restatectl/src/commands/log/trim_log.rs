@@ -10,11 +10,9 @@
 
 use anyhow::Context;
 use cling::prelude::*;
-use tonic::codec::CompressionEncoding;
 use tracing::error;
 
-use restate_admin::cluster_controller::protobuf::TrimLogRequest;
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
+use restate_admin::cluster_controller::protobuf::{TrimLogRequest, new_cluster_ctrl_client};
 use restate_cli_util::c_println;
 use restate_types::nodes_config::Role;
 
@@ -56,10 +54,9 @@ async fn trim_log_inner(
 
     connection
         .try_each(Some(Role::Admin), |channel| async {
-            let mut client =
-                ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
-
-            client.trim_log(trim_request).await
+            new_cluster_ctrl_client(channel)
+                .trim_log(trim_request)
+                .await
         })
         .await
         .with_context(|| "failed to submit trim request")?
