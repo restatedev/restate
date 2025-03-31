@@ -22,6 +22,7 @@ use std::time::Duration;
 use futures::stream::{FuturesUnordered, StreamExt};
 use metrics::gauge;
 use rand::Rng;
+use rand::seq::SliceRandom;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
@@ -918,7 +919,7 @@ impl PartitionProcessorManager {
         const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
         let limit = MAX_CONCURRENT_SNAPSHOTS.saturating_sub(self.pending_snapshots.len());
 
-        let snapshot_partitions: Vec<_> = self
+        let mut snapshot_partitions: Vec<_> = self
             .processor_states
             .iter()
             .filter_map(|(partition_id, state)| {
@@ -937,10 +938,10 @@ impl PartitionProcessorManager {
                             .unwrap_or(Lsn::INVALID)
                             .add(Lsn::from(records_per_snapshot.get()))
             })
-            .take(limit)
             .collect();
+        snapshot_partitions.shuffle(&mut rand::rng());
 
-        for (partition_id, status) in snapshot_partitions {
+        for (partition_id, status) in snapshot_partitions.into_iter().take(limit) {
             debug!(
                 %partition_id,
                 last_archived_lsn = %status.last_archived_log_lsn.unwrap_or(Lsn::OLDEST),
