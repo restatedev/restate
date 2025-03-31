@@ -281,16 +281,7 @@ impl QueryContext {
         Self::create(options, tables).await
     }
 
-    pub(crate) fn register_partitioned_table(
-        &self,
-        name: impl Into<TableReference>,
-        provider: Arc<dyn TableProvider>,
-    ) -> Result<(), DataFusionError> {
-        self.datafusion_context
-            .register_table(name, provider)
-            .map(|_| ())
-    }
-    pub(crate) fn register_non_partitioned_table(
+    pub fn register_table(
         &self,
         name: impl Into<TableReference>,
         provider: Arc<dyn TableProvider>,

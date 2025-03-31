@@ -12,38 +12,39 @@
 #[allow(dead_code)]
 pub struct TimestampMillisecond;
 
+#[macro_export]
 macro_rules! define_builder {
     (DataType::Utf8) => {
-        ::datafusion::arrow::array::StringBuilder
+        $crate::datafusion::arrow::array::StringBuilder
     };
     (DataType::LargeUtf8) => {
-        ::datafusion::arrow::array::LargeStringBuilder
+        $crate::datafusion::arrow::array::LargeStringBuilder
     };
     (DataType::Binary) => {
-        ::datafusion::arrow::array::BinaryBuilder
+        $crate::datafusion::arrow::array::BinaryBuilder
     };
     (DataType::LargeBinary) => {
-        ::datafusion::arrow::array::LargeBinaryBuilder
+        $crate::datafusion::arrow::array::LargeBinaryBuilder
     };
     (DataType::UInt32) => {
-        ::datafusion::arrow::array::UInt32Builder
+        $crate::datafusion::arrow::array::UInt32Builder
     };
     (DataType::UInt64) => {
-        ::datafusion::arrow::array::UInt64Builder
+        $crate::datafusion::arrow::array::UInt64Builder
     };
     (DataType::Int32) => {
-        ::datafusion::arrow::array::Int32Builder
+        $crate::datafusion::arrow::array::Int32Builder
     };
     (TimestampMillisecond) => {
         TimestampMillisecondUTCBuilder
     };
     (DataType::Boolean) => {
-        ::datafusion::arrow::array::BooleanBuilder
+        $crate::datafusion::arrow::array::BooleanBuilder
     };
 }
 
 // This newtype is necessary to generate values with a UTC timezone, as it will default to having no timezone which can confuse downstream clients
-pub struct TimestampMillisecondUTCBuilder(::datafusion::arrow::array::TimestampMillisecondBuilder);
+pub struct TimestampMillisecondUTCBuilder(datafusion::arrow::array::TimestampMillisecondBuilder);
 
 impl Default for TimestampMillisecondUTCBuilder {
     fn default() -> Self {
@@ -95,6 +96,7 @@ impl ::datafusion::arrow::array::ArrayBuilder for TimestampMillisecondUTCBuilder
     }
 }
 
+#[macro_export]
 macro_rules! define_primitive_trait {
     (DataType::Utf8) => {
         impl AsRef<str>
@@ -128,6 +130,7 @@ macro_rules! define_primitive_trait {
 pub static TIMEZONE_UTC: std::sync::LazyLock<std::sync::Arc<str>> =
     std::sync::LazyLock::new(|| std::sync::Arc::from("+00:00"));
 
+#[macro_export]
 macro_rules! define_data_type {
     (DataType::Utf8) => {
         DataType::Utf8
@@ -149,7 +152,7 @@ macro_rules! define_data_type {
     };
     (TimestampMillisecond) => {
         DataType::Timestamp(
-            ::datafusion::arrow::datatypes::TimeUnit::Millisecond,
+            $crate::datafusion::arrow::datatypes::TimeUnit::Millisecond,
             Some(TIMEZONE_UTC.clone()),
         )
     };
@@ -162,6 +165,7 @@ macro_rules! define_data_type {
 }
 
 #[cfg(feature = "table_docs")]
+#[macro_export]
 macro_rules! document_type {
     (DataType::Utf8) => {
         "Utf8"
@@ -406,6 +410,7 @@ macro_rules! document_type {
 /// ```
 ///
 /// And it can be used to create RecordBatches from rows.
+#[macro_export]
 macro_rules! define_table {
 
     (
@@ -413,13 +418,13 @@ macro_rules! define_table {
         $table_name: ident (
         $(
             $(#[doc = $doc:expr])*
-            $element:ident: $ty:expr
+            $element:ident: $ty:ty
         ),+ $(,)?)
     ) => (paste::paste! {
 
         pub struct [< $table_name:camel Builder >] {
             rows_inserted_so_far: usize,
-            projected_schema: ::datafusion::arrow::datatypes::SchemaRef,
+            projected_schema: $crate::datafusion::arrow::datatypes::SchemaRef,
             arrays: [< $table_name:camel ArrayBuilder >],
         }
 
@@ -485,13 +490,13 @@ macro_rules! define_table {
 
         impl [< $table_name:camel ArrayBuilder >] {
 
-             fn new(projected_schema: &::datafusion::arrow::datatypes::SchemaRef) -> Self {
+             fn new(projected_schema: &$crate::datafusion::arrow::datatypes::SchemaRef) -> Self {
                 Self {
                     $($element : Self::new_builder(&projected_schema, &stringify!($element)) ,)+
                 }
             }
 
-             fn new_builder<T: ::datafusion::arrow::array::ArrayBuilder + Default>(projected_schema: &::datafusion::arrow::datatypes::SchemaRef, me: &str) -> Option<T> {
+             fn new_builder<T: $crate::datafusion::arrow::array::ArrayBuilder + Default>(projected_schema: &$crate::datafusion::arrow::datatypes::SchemaRef, me: &str) -> Option<T> {
                     if projected_schema.column_with_name(me).is_some() {
                        Some(T::default())
                     } else {
@@ -500,11 +505,11 @@ macro_rules! define_table {
              }
 
 
-             fn finish(mut self) -> Vec<::datafusion::arrow::array::ArrayRef> {
+             fn finish(mut self) -> Vec<$crate::datafusion::arrow::array::ArrayRef> {
                 let arrays = [
                     $(  {
                         self.$element.as_mut().map(|e| {
-                            let builder: &mut dyn ::datafusion::arrow::array::ArrayBuilder = e;
+                            let builder: &mut dyn $crate::datafusion::arrow::array::ArrayBuilder = e;
                             builder.finish()
                         })
 
@@ -531,10 +536,10 @@ macro_rules! define_table {
                  }
             }
 
-            pub fn schema() -> ::datafusion::arrow::datatypes::SchemaRef {
-                std::sync::Arc::new(::datafusion::arrow::datatypes::Schema::new(
+            pub fn schema() -> $crate::datafusion::arrow::datatypes::SchemaRef {
+                std::sync::Arc::new($crate::datafusion::arrow::datatypes::Schema::new(
                     vec![
-                        $(::datafusion::arrow::datatypes::Field::new(stringify!($element), define_data_type!($ty), true),)+
+                        $($crate::datafusion::arrow::datatypes::Field::new(stringify!($element), define_data_type!($ty), true),)+
                     ])
                 )
             }
@@ -546,7 +551,7 @@ macro_rules! define_table {
         }
 
         impl $crate::table_util::Builder for [< $table_name:camel Builder >] {
-            fn new(projected_schema: ::datafusion::arrow::datatypes::SchemaRef) -> Self {
+            fn new(projected_schema: $crate::datafusion::arrow::datatypes::SchemaRef) -> Self {
                 Self {
                     rows_inserted_so_far: 0,
                     arrays:  [< $table_name:camel ArrayBuilder >]::new(&projected_schema),
@@ -563,12 +568,12 @@ macro_rules! define_table {
                 self.rows_inserted_so_far == 0
             }
 
-            fn finish(self) -> ::datafusion::common::Result<::datafusion::arrow::record_batch::RecordBatch> {
+            fn finish(self) -> $crate::datafusion::common::Result<$crate::datafusion::arrow::record_batch::RecordBatch> {
                 let arrays = self.arrays.finish();
                 // We add the row count as it wouldn't otherwise work with queries that
                 // just run aggregate functions (e.g. COUNT(*)) without selecting fields.
-                let options = ::datafusion::arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(self.rows_inserted_so_far));
-                Ok(::datafusion::arrow::record_batch::RecordBatch::try_new_with_options(self.projected_schema, arrays, &options)?)
+                let options = $crate::datafusion::arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(self.rows_inserted_so_far));
+                Ok($crate::datafusion::arrow::record_batch::RecordBatch::try_new_with_options(self.projected_schema, arrays, &options)?)
             }
         }
 
@@ -593,6 +598,7 @@ macro_rules! define_table {
     })
 }
 
+#[macro_export]
 macro_rules! define_sort_order {
 
     ($table_name: ident (
@@ -608,10 +614,10 @@ macro_rules! define_sort_order {
         })
 }
 
-pub(crate) use define_builder;
-pub(crate) use define_data_type;
-pub(crate) use define_primitive_trait;
-pub(crate) use define_sort_order;
-pub(crate) use define_table;
+pub use define_builder;
+pub use define_data_type;
+pub use define_primitive_trait;
+pub use define_sort_order;
+pub use define_table;
 #[cfg(feature = "table_docs")]
-pub(crate) use document_type;
+pub use document_type;

@@ -50,7 +50,7 @@ pub(crate) fn register_self(
             .with_service_key("service_key")
             .with_invocation_id("invocation_id"),
     );
-    ctx.register_partitioned_table(NAME, Arc::new(table))
+    ctx.register_table(NAME, Arc::new(table))
 }
 
 #[derive(Clone, Debug)]

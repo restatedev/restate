@@ -11,6 +11,7 @@ publish = false
 default = []
 options_schema = ["dep:schemars"]
 table_docs = []
+test-util = ["dep:googletest", "restate-rocksdb/test-util"]
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
@@ -18,6 +19,7 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 restate-core = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-partition-store = { workspace = true }
+restate-rocksdb = { workspace = true, optional = true }
 restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"]  }
 restate-storage-api = { workspace = true }
@@ -34,6 +36,7 @@ datafusion-functions-json = { version = "0.44.2" }
 derive_more = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
+googletest = { workspace = true, optional = true }
 itertools = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }

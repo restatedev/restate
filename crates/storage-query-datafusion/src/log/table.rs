@@ -32,7 +32,7 @@ use super::schema::LogBuilder;
 pub fn register_self(ctx: &QueryContext, metadata: Metadata) -> datafusion::common::Result<()> {
     let logs_table =
         GenericTableProvider::new(LogBuilder::schema(), Arc::new(LogScanner(metadata)));
-    ctx.register_non_partitioned_table("logs", Arc::new(logs_table))
+    ctx.register_table("logs", Arc::new(logs_table))
 }
 
 #[derive(Clone, derive_more::Debug)]

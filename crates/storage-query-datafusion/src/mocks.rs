@@ -47,7 +47,7 @@ use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 use serde_json::Value;
 
 #[derive(Default, Clone, Debug)]
-pub(crate) struct MockSchemas(
+pub struct MockSchemas(
     pub(crate) MockServiceMetadataResolver,
     pub(crate) MockDeploymentMetadataRegistry,
 );
@@ -95,7 +95,7 @@ impl DeploymentResolver for MockSchemas {
 }
 
 #[derive(Clone, Debug)]
-struct MockPartitionSelector;
+pub struct MockPartitionSelector;
 
 #[async_trait]
 impl SelectPartitions for MockPartitionSelector {
@@ -108,7 +108,7 @@ impl SelectPartitions for MockPartitionSelector {
 }
 
 #[allow(dead_code)]
-pub(crate) struct MockQueryEngine(PartitionStoreManager, PartitionStore, QueryContext);
+pub struct MockQueryEngine(PartitionStoreManager, PartitionStore, QueryContext);
 
 #[derive(Debug)]
 struct NoopSvc;

@@ -35,7 +35,7 @@ pub fn register_self(
         PartitionStateBuilder::schema(),
         Arc::new(PartitionStateScanner { watch }),
     );
-    ctx.register_non_partitioned_table("partition_state", Arc::new(table))
+    ctx.register_table("partition_state", Arc::new(table))
 }
 
 #[derive(Clone, derive_more::Debug)]

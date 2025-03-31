@@ -49,7 +49,7 @@ pub(crate) fn register_self(
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
     );
-    ctx.register_partitioned_table(NAME, Arc::new(journal_table))
+    ctx.register_table(NAME, Arc::new(journal_table))
 }
 
 pub(crate) enum ScannedEntry {
