@@ -13,20 +13,21 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use restate_types::PlainNodeId;
-use restate_types::nodes_config::{NodeConfig, Role, StorageState};
-use restate_types::replication::{NodeSet, NodeSetSelector, NodeSetSelectorOptions};
-use tracing::{debug, warn};
+use tokio::task::JoinSet;
+use tracing::{debug, info, warn};
 
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
-use restate_core::{Metadata, TaskCenter, TaskKind, my_node_id};
+use restate_core::{Metadata, TaskCenter, TaskCenterFutureExt, TaskKind, my_node_id};
+use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
 use restate_types::logs::{LogId, LogletId, RecordCache};
+use restate_types::nodes_config::{NodeConfig, Role, StorageState};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replication::{NodeSet, NodeSetSelector, NodeSetSelectorOptions};
 
 use super::loglet::ReplicatedLoglet;
 use super::metric_definitions;
@@ -310,6 +311,19 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
     }
 
     async fn shutdown(&self) -> Result<(), OperationError> {
+        let mut tasks = JoinSet::new();
+        // Drain and seal loglets with local sequencers
+        for loglet in &self.active_loglets {
+            let loglet = loglet.clone();
+            tasks
+                .build_task()
+                .name("shutdown-loglet")
+                .spawn(async move { loglet.shutdown().await }.in_current_tc())
+                .expect("to spawn loglet shutdown");
+        }
+
+        let _ = tasks.join_all().await;
+        info!("All sequencers were stopped");
         Ok(())
     }
 }

@@ -161,7 +161,7 @@ impl BifrostService {
 
         // We spawn the watchdog as a background long-running task
         TaskCenter::spawn(
-            TaskKind::BifrostBackgroundHighPriority,
+            TaskKind::BifrostWatchdog,
             "bifrost-watchdog",
             self.watchdog.run(),
         )?;
