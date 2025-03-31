@@ -16,6 +16,7 @@ pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
 pub const INVOKER_PENDING_TASKS: &str = "restate.invoker.pending_tasks";
 pub const INVOKER_INVOCATION_TASKS: &str = "restate.invoker.invocation_tasks.total";
 pub const INVOKER_AVAILABLE_SLOTS: &str = "restate.invoker.available_slots";
+pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";
 pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
 pub const INVOKER_TASKS_IN_FLIGHT: &str = "restate.invoker.inflight_tasks";
 
@@ -35,6 +36,12 @@ pub(crate) fn describe_metrics() {
         INVOKER_PENDING_TASKS,
         Unit::Count,
         "Number of pending invocation tasks queued"
+    );
+
+    describe_gauge!(
+        INVOKER_CONCURRENCY_LIMIT,
+        Unit::Count,
+        "Concurrency limit (slots) for invoker tasks"
     );
 
     describe_counter!(
