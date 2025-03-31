@@ -106,7 +106,7 @@ impl LogStoreWriter {
         // the backlog while we process this one.
         let (sender, receiver) = mpsc::channel(batch_size * 2);
 
-        TaskCenter::spawn_child(
+        TaskCenter::spawn(
             TaskKind::SystemService,
             "log-server-rocksdb-writer",
             async move {
@@ -124,6 +124,9 @@ impl LogStoreWriter {
                         }
                         Some(cmds) = TokioStreamExt::next(&mut receiver) => {
                                 self.handle_commands(opts.live_load(), cmds).await;
+                        }
+                        else => {
+                            break;
                         }
                     }
                 }

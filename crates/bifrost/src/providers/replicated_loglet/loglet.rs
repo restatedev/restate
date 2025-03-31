@@ -128,7 +128,7 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
     }
 
     pub(crate) fn is_sequencer_local(&self) -> bool {
-        matches!(self.sequencer, SequencerAccess::Local { .. })
+        self.sequencer.is_local()
     }
 
     pub(crate) fn known_global_tail(&self) -> &TailOffsetWatch {
@@ -175,6 +175,18 @@ pub(crate) enum FindTailFlags {
 impl<T: TransportConnect> ReplicatedLoglet<T> {
     pub fn last_known_global_tail(&self) -> TailState<LogletOffset> {
         *self.known_global_tail.get()
+    }
+
+    pub async fn shutdown(&self) {
+        if self.sequencer.is_local() {
+            if !self.known_global_tail().is_sealed() {
+                debug!(
+                    loglet_id = %self.my_params.loglet_id,
+                    "Attempting to seal loglet due to shutdown"
+                );
+            }
+            let _ = self.seal().await;
+        }
     }
 
     pub async fn find_tail_inner(

@@ -177,7 +177,7 @@ impl<S: LogStore> LogletWorker<S> {
                     // todo: consider a draining shutdown if needed
                     // this might include sending notifications of shutdown to allow graceful
                     // handoff
-                    trace!(loglet_id = %self.loglet_id, "Loglet writer shutting down");
+                    trace!(loglet_id = %self.loglet_id, "Loglet worker shutting down");
                     break;
                 }
                 // GET_DIGEST

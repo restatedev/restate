@@ -811,9 +811,12 @@ impl TaskCenterInner {
         self.cancel_tasks(Some(TaskKind::PartitionProcessorManager), None)
             .await;
         self.initiate_managed_runtimes_shutdown();
+        // Ask bifrost to shutdown providers and loglets
+        self.cancel_tasks(Some(TaskKind::BifrostWatchdog), None)
+            .await;
+        self.shutdown_managed_runtimes();
         // global shutdown trigger
         self.cancel_tasks(None, None).await;
-        self.shutdown_managed_runtimes();
         // notify outer components that we have completed the shutdown.
         self.global_cancel_token.cancel();
         info!("** Shutdown completed in {:?}", start.elapsed());
