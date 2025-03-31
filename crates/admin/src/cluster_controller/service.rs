@@ -22,7 +22,6 @@ use restate_types::replication::{NodeSet, ReplicationProperty};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
-use tonic::codec::CompressionEncoding;
 use tracing::{debug, info, trace, warn};
 
 use restate_types::logs::metadata::{
@@ -59,7 +58,6 @@ use restate_types::{GenerationalNodeId, NodeId, Version};
 use self::state::ClusterControllerState;
 use super::cluster_state_refresher::ClusterStateRefresher;
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
-use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use crate::cluster_controller::logs_controller::{self, NodeSetSelectorHints};
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler::PartitionTableNodeSetSelectorHints;
@@ -120,16 +118,15 @@ where
         // Registering ClusterCtrlSvc grpc service to network server
         server_builder.register_grpc_service(
             TonicServiceFilter::new(
-                ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(
+                ClusterCtrlSvcHandler::new(
                     ClusterControllerHandle {
                         tx: command_tx.clone(),
                     },
                     bifrost.clone(),
                     metadata_writer.clone(),
                     cluster_query_context,
-                ))
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
+                )
+                .into_server(),
                 WaitForReady::new(health_status.clone(), AdminStatus::Ready),
             ),
             crate::cluster_controller::protobuf::FILE_DESCRIPTOR_SET,

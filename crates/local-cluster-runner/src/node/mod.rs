@@ -15,9 +15,10 @@ use futures::{FutureExt, Stream, StreamExt, TryStreamExt, stream};
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
 use restate_core::network::net_util::create_tonic_channel;
-use restate_core::protobuf::node_ctl_svc::ProvisionClusterRequest as ProtoProvisionClusterRequest;
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
-use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
+use restate_core::protobuf::node_ctl_svc::{
+    ProvisionClusterRequest as ProtoProvisionClusterRequest, new_node_ctl_client,
+};
+use restate_metadata_server::grpc::new_metadata_server_client;
 use restate_types::config::{InvalidConfigurationError, MetadataServerKind, RaftOptions};
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::partition_table::PartitionReplication;
@@ -795,7 +796,7 @@ impl StartedNode {
 
     /// Check to see if the metadata server has joined the metadata cluster.
     pub async fn metadata_server_joined_cluster(&self) -> bool {
-        let mut metadata_server_client = MetadataServerSvcClient::new(create_tonic_channel(
+        let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
             self.config().common.advertised_address.clone(),
             &self.config().networking,
         ));
@@ -848,7 +849,7 @@ impl StartedNode {
             Some(10),
             Some(Duration::from_secs(1)),
         );
-        let client = NodeCtlSvcClient::new(channel);
+        let client = new_node_ctl_client(channel);
 
         let response = retry_policy
             .retry(|| {

@@ -14,10 +14,8 @@ use cling::{Collect, Run};
 use json_patch::Patch;
 use serde_json::Value;
 use tonic::Code;
-use tonic::codec::CompressionEncoding;
 
-use restate_core::protobuf::metadata_proxy_svc::PutRequest;
-use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_client::MetadataProxySvcClient;
+use restate_core::protobuf::metadata_proxy_svc::{PutRequest, new_metadata_proxy_client};
 use restate_types::Version;
 use restate_types::metadata::Precondition;
 
@@ -109,17 +107,16 @@ async fn patch_value_inner(
 
     connection
         .try_each(None, |channel| async {
-            let mut client = MetadataProxySvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip);
-
-            client.put(request.clone()).await.map_err(|err| {
-                if err.code() == Code::FailedPrecondition {
-                    NodeOperationError::Terminal(err)
-                } else {
-                    NodeOperationError::RetryElsewhere(err)
-                }
-            })
+            new_metadata_proxy_client(channel)
+                .put(request.clone())
+                .await
+                .map_err(|err| {
+                    if err.code() == Code::FailedPrecondition {
+                        NodeOperationError::Terminal(err)
+                    } else {
+                        NodeOperationError::RetryElsewhere(err)
+                    }
+                })
         })
         .await?;
 

@@ -37,6 +37,9 @@ impl CoreNodeSvcHandler {
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip)
+            // note: the order of those calls defines the priority
+            // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
+            // so we prefer zstd over gzip.
             .send_compressed(CompressionEncoding::Zstd)
             .send_compressed(CompressionEncoding::Gzip)
     }

@@ -13,8 +13,7 @@ use cling::prelude::*;
 use itertools::Itertools;
 use log::render_loglet_params;
 
-use restate_admin::cluster_controller::protobuf::DescribeLogRequest;
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
+use restate_admin::cluster_controller::protobuf::{DescribeLogRequest, new_cluster_ctrl_client};
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
@@ -23,7 +22,6 @@ use restate_types::logs::LogId;
 use restate_types::logs::metadata::{Logs, ProviderKind, Segment, SegmentIndex};
 use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
-use tonic::codec::CompressionEncoding;
 
 use crate::commands::log;
 use crate::connection::ConnectionInfo;
@@ -112,10 +110,9 @@ async fn describe_log(
 
         let describe_log_response = connection
             .try_each(Some(Role::Admin), |channel| async {
-                let mut client =
-                    ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
-
-                client.describe_log(describe_log_request).await
+                new_cluster_ctrl_client(channel)
+                    .describe_log(describe_log_request)
+                    .await
             })
             .await
             .with_context(|| "failed to send describe log request")?

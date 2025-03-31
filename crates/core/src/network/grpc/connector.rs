@@ -23,6 +23,7 @@ use tonic::transport::Endpoint;
 use tracing::debug;
 
 use super::MAX_MESSAGE_SIZE;
+use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
 use crate::network::transport_connector::find_node;
@@ -60,7 +61,7 @@ impl TransportConnect for GrpcConnector {
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Gzip);
+            .send_compressed(DEFAULT_GRPC_COMPRESSION);
         let incoming = client.create_connection(output_stream).await?.into_inner();
         Ok(incoming.map_while(|x| x.ok()))
     }

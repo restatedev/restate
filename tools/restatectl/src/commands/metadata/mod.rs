@@ -15,10 +15,8 @@ mod put;
 use std::path::PathBuf;
 
 use cling::prelude::*;
-use tonic::codec::CompressionEncoding;
 
-use restate_core::protobuf::metadata_proxy_svc::GetRequest;
-use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_client::MetadataProxySvcClient;
+use restate_core::protobuf::metadata_proxy_svc::{GetRequest, new_metadata_proxy_client};
 use restate_types::protobuf::metadata::VersionedValue;
 use restate_types::storage::StorageCodec;
 use restate_types::{Version, Versioned, flexbuffers_storage_encode_decode};
@@ -120,10 +118,7 @@ async fn get_value(
     let key = key.as_ref();
     let response = connection
         .try_each(None, |channel| async {
-            let mut client = MetadataProxySvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip);
-            client
+            new_metadata_proxy_client(channel)
                 .get(GetRequest {
                     key: key.to_owned(),
                 })

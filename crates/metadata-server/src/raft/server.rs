@@ -10,7 +10,6 @@
 
 use crate::grpc::MetadataServerSnapshot;
 use crate::grpc::handler::MetadataServerHandler;
-use crate::grpc::metadata_server_svc_server::MetadataServerSvcServer;
 use crate::local::migrate_nodes_configuration;
 use crate::metric_definitions::{
     METADATA_SERVER_REPLICATED_APPLIED_LSN, METADATA_SERVER_REPLICATED_COMMITTED_LSN,
@@ -19,10 +18,7 @@ use crate::metric_definitions::{
     METADATA_SERVER_REPLICATED_TERM,
 };
 use crate::raft::kv_memory_storage::KvMemoryStorage;
-use crate::raft::network::grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient;
-use crate::raft::network::{
-    ConnectionManager, MetadataServerNetworkHandler, MetadataServerNetworkSvcServer, Networking,
-};
+use crate::raft::network::{ConnectionManager, MetadataServerNetworkHandler, Networking};
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{RaftServerState, StorageMarker, network, storage, to_plain_node_id, to_raft_id};
 use crate::{
@@ -76,10 +72,11 @@ use thiserror::__private::AsDisplay;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time;
 use tokio::time::{Interval, MissedTickBehavior};
-use tonic::codec::CompressionEncoding;
 use tracing::{Span, debug, error, info, instrument, trace, warn};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
+
+use super::network::grpc_svc::new_metadata_server_network_client;
 
 const RAFT_INITIAL_LOG_TERM: u64 = 1;
 const RAFT_INITIAL_LOG_INDEX: u64 = 1;
@@ -199,22 +196,16 @@ impl RaftMetadataServer {
         let connection_manager = Arc::default();
 
         server_builder.register_grpc_service(
-            MetadataServerNetworkSvcServer::new(MetadataServerNetworkHandler::new(
+            MetadataServerNetworkHandler::new(
                 Arc::clone(&connection_manager),
                 Some(JoinClusterHandle::new(join_cluster_tx)),
-            ))
-            .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Gzip),
+            )
+            .into_server(),
             network::FILE_DESCRIPTOR_SET,
         );
         server_builder.register_grpc_service(
-            MetadataServerSvcServer::new(MetadataServerHandler::new(
-                request_tx,
-                Some(provision_tx),
-                Some(status_rx),
-            ))
-            .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Gzip),
+            MetadataServerHandler::new(request_tx, Some(provision_tx), Some(status_rx))
+                .into_server(),
             grpc::FILE_DESCRIPTOR_SET,
         );
 
@@ -1627,11 +1618,7 @@ impl Standby {
 
         let channel = create_tonic_channel(address, &Configuration::pinned().networking);
 
-        let mut client = MetadataServerNetworkSvcClient::new(channel)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(CompressionEncoding::Gzip);
-
-        if let Err(status) = client
+        if let Err(status) = new_metadata_server_network_client(channel)
             .join_cluster(crate::raft::network::grpc_svc::JoinClusterRequest {
                 node_id: u32::from(member_id.node_id),
                 created_at_millis: member_id.created_at_millis,
