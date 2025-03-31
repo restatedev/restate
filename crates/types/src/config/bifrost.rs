@@ -81,7 +81,7 @@ pub struct BifrostOptions {
     ///
     /// Optional size of record cache in bytes.
     /// If set to 0, record cache will be disabled.
-    /// Defaults: 20M
+    /// Defaults: 250MB
     #[cfg_attr(feature = "schemars", schemars(with = "ByteCount"))]
     pub record_cache_memory_size: ByteCount,
 }
@@ -114,7 +114,7 @@ impl Default for BifrostOptions {
             append_retry_max_interval: Duration::from_secs(1).into(),
             auto_recovery_interval: Duration::from_secs(3).into(),
             seal_retry_interval: Duration::from_secs(2).into(),
-            record_cache_memory_size: 20_000_000u64.into(), // 20MB
+            record_cache_memory_size: 250_000_000u64.into(), // 20MB
         }
     }
 }
