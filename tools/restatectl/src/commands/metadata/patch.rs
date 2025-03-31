@@ -20,7 +20,7 @@ use restate_core::protobuf::metadata_proxy_svc::PutRequest;
 use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_client::MetadataProxySvcClient;
 use restate_types::Version;
 use restate_types::metadata::Precondition;
-
+use restate_types::errors::SimpleStatus;
 use crate::commands::metadata::MetadataCommonOpts;
 use crate::connection::{ConnectionInfo, NodeOperationError};
 
@@ -113,11 +113,11 @@ async fn patch_value_inner(
                 .accept_compressed(CompressionEncoding::Gzip)
                 .send_compressed(CompressionEncoding::Gzip);
 
-            client.put(request.clone()).await.map_err(|err| {
-                if err.code() == Code::FailedPrecondition {
-                    NodeOperationError::Terminal(err)
+            client.put(request.clone()).await.map_err(|status| {
+                if status.code() == Code::FailedPrecondition {
+                    NodeOperationError::Terminal(SimpleStatus::from(status))
                 } else {
-                    NodeOperationError::RetryElsewhere(err)
+                    NodeOperationError::RetryElsewhere(SimpleStatus::from(status))
                 }
             })
         })
