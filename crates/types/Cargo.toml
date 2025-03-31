@@ -11,6 +11,7 @@ publish = false
 default = []
 
 memory-loglet = []
+local-loglet = []
 schemars = ["dep:schemars", "restate-serde-util/schema"]
 unsafe-mutable-config = []
 test-util = ["memory-loglet", "unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util"]

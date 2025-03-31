@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-local-loglet = ["dep:restate-rocksdb", "dep:rocksdb"]
+local-loglet = ["dep:restate-rocksdb", "dep:rocksdb", "restate-types/local-loglet"]
 replicated-loglet = ["auto-extend"]
 memory-loglet = ["restate-types/memory-loglet"]
 test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util"]
