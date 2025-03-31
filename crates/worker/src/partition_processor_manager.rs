@@ -928,18 +928,19 @@ impl PartitionProcessorManager {
             return;
         };
 
-        let potential_snapshot_partitions =
-            self.processor_states
-                .iter()
-                .filter_map(|(partition_id, state)| {
-                    state
-                        .partition_processor_status()
-                        .filter(|status| {
-                            status.effective_mode == RunMode::Leader
-                                && status.replay_status == ReplayStatus::Active
-                        })
-                        .map(|status| (*partition_id, status))
-                });
+        let potential_snapshot_partitions = self
+            .processor_states
+            .iter()
+            .filter(|(partition_id, _)| !self.pending_snapshots.contains_key(partition_id))
+            .filter_map(|(partition_id, state)| {
+                state
+                    .partition_processor_status()
+                    .filter(|status| {
+                        status.effective_mode == RunMode::Leader
+                            && status.replay_status == ReplayStatus::Active
+                    })
+                    .map(|status| (*partition_id, status))
+            });
 
         let (mut known_archived_lsn, unknown_archived_lsn): (Vec<_>, Vec<_>) =
             potential_snapshot_partitions.partition_map(|(partition_id, status)| {
