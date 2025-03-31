@@ -189,7 +189,10 @@ where
         this.delay.as_mut().reset(new_deadline);
         // to make sure we register the waker
         let r = this.delay.poll(cx);
-        assert!(r.is_pending());
+        if !r.is_pending() {
+            // we need to wake up the future to make sure it's polled again
+            cx.waker().wake_by_ref();
+        }
         Poll::Pending
     }
 }
