@@ -8,16 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::{Arc, OnceLock, RwLock};
-
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use metrics_util::MetricKindMask;
+use std::sync::{Arc, OnceLock};
 
 use metrics_exporter_prometheus::formatting;
-use restate_types::{PlainNodeId, config::CommonOptions};
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_util::MetricKindMask;
+use parking_lot::RwLock;
 use tokio::task::AbortHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace};
+
+use restate_types::{PlainNodeId, config::CommonOptions};
 
 use crate::GLOBAL_PROMETHEUS;
 
@@ -88,7 +89,7 @@ impl Prometheus {
 
     /// Obtain a copy of global labels for metric lines that get generated outside of Prometheus
     pub fn global_labels(&self) -> Vec<String> {
-        self.global_labels.read().unwrap().clone()
+        self.global_labels.read().clone()
     }
 
     /// Since the node_id may not be known when the metrics recorder is installed early on node
@@ -98,7 +99,7 @@ impl Prometheus {
         self.node_id_initialized.get_or_init(|| {
             let node_id_str = node_id.to_string();
             if let Some(recorder) = &self.handle {
-                self.global_labels.write().unwrap().push(format!(
+                self.global_labels.write().push(format!(
                     "node_id=\"{}\"",
                     formatting::sanitize_label_value(&node_id_str)
                 ));

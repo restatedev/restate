@@ -7656,6 +7656,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
+ "parking_lot",
  "restate-types",
  "schemars",
  "serde",
