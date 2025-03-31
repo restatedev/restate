@@ -98,6 +98,16 @@ pub struct RocksDbOptions {
     /// Default: 64MB
     #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
     rocksdb_log_max_file_size: Option<NonZeroByteCount>,
+
+    /// # RocksDB block size
+    ///
+    /// Uncompressed block size
+    ///
+    /// Default: 64KiB
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<NonZeroByteCount>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
+    rocksdb_block_size: Option<NonZeroUsize>,
 }
 
 /// Verbosity of the LOG.
@@ -154,6 +164,9 @@ impl RocksDbOptions {
         if self.rocksdb_log_max_file_size.is_none() {
             self.rocksdb_log_max_file_size = Some(common.rocksdb_log_max_file_size());
         }
+        if self.rocksdb_block_size.is_none() {
+            self.rocksdb_block_size = Some(common.rocksdb_block_size());
+        }
     }
 
     pub fn rocksdb_disable_wal(&self) -> bool {
@@ -205,6 +218,11 @@ impl RocksDbOptions {
             .unwrap_or(NonZeroByteCount::new(
                 NonZeroUsize::new(64_000_000).expect("is valid size"),
             ))
+    }
+
+    pub fn rocksdb_block_size(&self) -> NonZeroUsize {
+        self.rocksdb_block_size
+            .unwrap_or(NonZeroUsize::new(64 * 1024).unwrap())
     }
 }
 
