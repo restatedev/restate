@@ -125,6 +125,7 @@ fn db_options(log_server_opts: &LogServerOptions) -> rocksdb::Options {
     // most reads are sequential
     opts.set_advise_random_on_open(false);
 
+    opts.set_enable_pipelined_write(true);
     opts.set_max_subcompactions(log_server_opts.rocksdb_max_sub_compactions());
 
     opts
