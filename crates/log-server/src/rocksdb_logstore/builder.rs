@@ -49,7 +49,7 @@ impl RocksDbLogStoreBuilder {
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
 
-        let db_spec = DbSpecBuilder::new(db_name, data_dir, db_options())
+        let db_spec = DbSpecBuilder::new(db_name, data_dir, db_options(&options))
             .add_cf_pattern(
                 CfExactPattern::new(DATA_CF),
                 cf_data_options(options.rocksdb_memory_budget()),
@@ -103,7 +103,7 @@ impl RocksDbLogStoreBuilder {
     }
 }
 
-fn db_options() -> rocksdb::Options {
+fn db_options(log_server_opts: &LogServerOptions) -> rocksdb::Options {
     let mut opts = rocksdb::Options::default();
 
     // Enable atomic flushes.
@@ -124,6 +124,8 @@ fn db_options() -> rocksdb::Options {
     opts.set_wal_compression_type(DBCompressionType::Zstd);
     // most reads are sequential
     opts.set_advise_random_on_open(false);
+
+    opts.set_max_subcompactions(log_server_opts.rocksdb_max_sub_compactions());
 
     opts
 }
