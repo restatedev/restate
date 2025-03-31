@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -51,6 +51,13 @@ pub struct LogServerOptions {
     /// Disable fsync of WAL on every batch
     rocksdb_disable_wal_fsync: bool,
 
+    /// The maximum number of subcompactions to run in parallel.
+    ///
+    /// Setting this to 1 means no sub-compactions are allowed (i.e. only 1 thread will do the compaction).
+    ///
+    /// Default is 0 which maps to floor(number of CPU cores / 2)
+    rocksdb_max_sub_compactions: u32,
+
     /// Whether to perform commits in background IO thread pools eagerly or not
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -86,6 +93,20 @@ impl LogServerOptions {
         self.rocksdb_disable_wal_fsync
     }
 
+    pub fn rocksdb_max_sub_compactions(&self) -> u32 {
+        if self.rocksdb_max_sub_compactions == 0 {
+            let parallelism: NonZeroU32 = std::thread::available_parallelism()
+                .unwrap_or(NonZeroUsize::new(2).unwrap())
+                .try_into()
+                .expect("number of cpu cores fits in u32");
+
+            // floor(number of CPU cores / 2)
+            parallelism.get() / 2
+        } else {
+            self.rocksdb_max_sub_compactions
+        }
+    }
+
     pub fn rocksdb_memory_budget(&self) -> usize {
         self.rocksdb_memory_budget
             .unwrap_or_else(|| {
@@ -112,6 +133,7 @@ impl Default for LogServerOptions {
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.5,
+            rocksdb_max_sub_compactions: 0,
             writer_batch_commit_count: 5000,
             rocksdb_disable_wal_fsync: false,
             always_commit_in_background: false,
