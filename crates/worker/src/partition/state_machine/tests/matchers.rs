@@ -24,10 +24,35 @@ pub mod storage {
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
     use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
+    use restate_storage_api::invocation_status_table::InvocationStatus;
     use restate_storage_api::journal_table::JournalEntry;
     use restate_types::identifiers::InvocationId;
     use restate_types::invocation::InvocationTarget;
     use restate_types::journal::Entry;
+
+    pub fn has_journal_length(
+        journal_length: EntryIndex,
+    ) -> impl Matcher<ActualT = InvocationStatus> {
+        predicate(move |is: &InvocationStatus| {
+            is.get_journal_metadata()
+                .is_some_and(|jm| jm.length == journal_length)
+        })
+        .with_description(
+            format!("has journal length {}", journal_length),
+            format!("hasn't journal length {}", journal_length),
+        )
+    }
+
+    pub fn has_commands(commands: EntryIndex) -> impl Matcher<ActualT = InvocationStatus> {
+        predicate(move |is: &InvocationStatus| {
+            is.get_journal_metadata()
+                .is_some_and(|jm| jm.commands == commands)
+        })
+        .with_description(
+            format!("has commands {}", commands),
+            format!("hasn't commands {}", commands),
+        )
+    }
 
     pub fn invocation_inbox_entry(
         invocation_id: InvocationId,

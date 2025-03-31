@@ -15,14 +15,14 @@ use std::{cmp::Ordering, fmt::Display, sync::Arc};
 use cling::{Collect, prelude::Parser};
 use itertools::{Either, Itertools, Position};
 use rand::{rng, seq::SliceRandom};
-use restate_metadata_server::ReadModifyWriteError;
 use tokio::sync::{Mutex, MutexGuard};
-use tonic::{Code, Status, codec::CompressionEncoding, transport::Channel};
+use tonic::{Code, Status, transport::Channel};
 use tracing::{debug, info};
 
 use restate_core::protobuf::node_ctl_svc::{
-    GetMetadataRequest, IdentResponse, node_ctl_svc_client::NodeCtlSvcClient,
+    GetMetadataRequest, IdentResponse, new_node_ctl_client,
 };
+use restate_metadata_server::ReadModifyWriteError;
 use restate_types::{
     Version, Versioned,
     logs::metadata::Logs,
@@ -180,9 +180,7 @@ impl ConnectionInfo {
                 grpc_channel(address.clone())
             });
 
-            let mut client = NodeCtlSvcClient::new(channel.clone())
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip);
+            let mut client = new_node_ctl_client(channel.clone());
 
             let response = match client.get_ident(()).await {
                 Ok(response) => response.into_inner(),

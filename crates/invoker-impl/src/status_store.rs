@@ -12,6 +12,7 @@ use super::*;
 
 use restate_invoker_api::status_handle::{InvocationStatusReport, InvocationStatusReportInner};
 
+use restate_types::service_protocol::ServiceProtocolVersion;
 use std::time::SystemTime;
 
 #[derive(Default, Debug)]
@@ -62,10 +63,12 @@ impl InvocationStatusStore {
         partition: &PartitionLeaderEpoch,
         invocation_id: &InvocationId,
         deployment_id: DeploymentId,
+        protocol_version: ServiceProtocolVersion,
     ) {
         if let Some(inner) = self.0.get_mut(partition) {
             if let Some(report) = inner.get_mut(invocation_id) {
                 report.last_attempt_deployment_id = Some(deployment_id);
+                report.last_attempt_protocol_version = Some(protocol_version)
             }
         }
     }

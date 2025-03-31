@@ -12,11 +12,11 @@ use std::num::NonZeroU32;
 
 use anyhow::{Context, bail};
 use cling::prelude::*;
-use tonic::codec::CompressionEncoding;
 use tracing::error;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{ChainExtension, SealAndExtendChainRequest};
+use restate_admin::cluster_controller::protobuf::{
+    ChainExtension, SealAndExtendChainRequest, new_cluster_ctrl_client,
+};
 use restate_cli_util::{c_eprintln, c_println};
 use restate_types::logs::LogId;
 use restate_types::logs::metadata::{Logs, ProviderKind, Segment};
@@ -129,10 +129,9 @@ async fn inner_reconfigure(
 
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            let mut client =
-                ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
-
-            client.seal_and_extend_chain(request.clone()).await
+            new_cluster_ctrl_client(channel)
+                .seal_and_extend_chain(request.clone())
+                .await
         })
         .await?
         .into_inner();

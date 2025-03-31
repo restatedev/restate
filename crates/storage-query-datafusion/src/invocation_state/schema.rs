@@ -52,14 +52,28 @@ define_table!(sys_invocation_state(
     /// The error code of the most recent failed attempt of this invocation, if any.
     last_failure_error_code: DataType::LargeUtf8,
 
+    /// The index of the command in the journal that caused the failure, if any. It may be out-of-bound
+    /// of the currently stored commands in `sys_journal`.
+    last_failure_related_command_index: DataType::UInt64,
+
+    /// The name of the command that caused the failure, if any.
+    last_failure_related_command_name: DataType::LargeUtf8,
+
+    /// The type of the command that caused the failure, if any. You can check all the
+    /// available command types in [`entries.rs`](https://github.com/restatedev/restate/blob/main/crates/types/src/journal_v2/command.rs).
+    last_failure_related_command_type: DataType::LargeUtf8,
+
     /// The index of the journal entry that caused the failure, if any. It may be out-of-bound
     /// of the currently stored entries in `sys_journal`.
+    /// DEPRECATED: you should not use this field anymore, but last_failure_related_command_index instead.
     last_failure_related_entry_index: DataType::UInt64,
 
     /// The name of the journal entry that caused the failure, if any.
+    /// DEPRECATED: you should not use this field anymore, but last_failure_related_command_name instead.
     last_failure_related_entry_name: DataType::LargeUtf8,
 
     /// The type of the journal entry that caused the failure, if any. You can check all the
     /// available entry types in [`entries.rs`](https://github.com/restatedev/restate/blob/main/crates/types/src/journal/entries.rs).
+    /// DEPRECATED: you should not use this field anymore, but last_failure_related_command_type instead.
     last_failure_related_entry_type: DataType::LargeUtf8,
 ));

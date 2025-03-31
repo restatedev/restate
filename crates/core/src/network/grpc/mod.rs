@@ -13,7 +13,12 @@ mod svc_handler;
 
 pub use connector::GrpcConnector;
 pub use svc_handler::CoreNodeSvcHandler;
+use tonic::codec::CompressionEncoding;
 
 /// The maximum size for a grpc message for core networking service.
 /// This impacts the buffer limit for prost codec.
-const MAX_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
+pub const MAX_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
+
+/// Default send compression for grpc clients
+// todo: change this to zstd in v1.4
+pub const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Gzip;

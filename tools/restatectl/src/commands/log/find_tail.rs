@@ -11,10 +11,10 @@
 use std::time::Duration;
 
 use cling::prelude::*;
-use tonic::codec::CompressionEncoding;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{FindTailRequest, TailState};
+use restate_admin::cluster_controller::protobuf::{
+    FindTailRequest, TailState, new_cluster_ctrl_client,
+};
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
@@ -43,13 +43,12 @@ async fn find_tail(connection: &ConnectionInfo, opts: &FindTailOpts) -> anyhow::
 
         let response = match connection
             .try_each(Some(Role::Admin), |channel| async {
-                let mut client = ClusterCtrlSvcClient::new(channel)
-                    .accept_compressed(CompressionEncoding::Gzip)
-                    .send_compressed(CompressionEncoding::Gzip);
                 let mut find_tail_request = find_tail_request.into_request();
                 find_tail_request.set_timeout(Duration::from_secs(10));
 
-                client.find_tail(find_tail_request).await
+                new_cluster_ctrl_client(channel)
+                    .find_tail(find_tail_request)
+                    .await
             })
             .await
         {

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::raft::network::connection_manager::ConnectionManager;
+use crate::raft::network::grpc_svc::new_metadata_server_network_client;
 use crate::raft::network::{PEER_METADATA_KEY, grpc_svc};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::FutureExt;
@@ -22,7 +23,6 @@ use std::collections::hash_map::Entry;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::IntoStreamingRequest;
-use tonic::codec::CompressionEncoding;
 use tonic::metadata::MetadataValue;
 use tracing::{debug, trace};
 
@@ -162,8 +162,7 @@ where
                 let channel = net_util::create_tonic_channel(address.clone(), networking_options);
 
                 async move {
-                    let mut network_client = grpc_svc::metadata_server_network_svc_client::MetadataServerNetworkSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip)
-                        .send_compressed(CompressionEncoding::Gzip);
+                    let mut network_client = new_metadata_server_network_client(channel);
                     let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
 
                     let mut request = ReceiverStream::new(outgoing_rx).into_streaming_request();

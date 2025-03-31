@@ -11,10 +11,10 @@
 use axum::Json;
 use http::StatusCode;
 use okapi_operation::openapi;
+use restate_core::protobuf::node_ctl_svc::new_node_ctl_client;
 
 use crate::rest_api::error::GenericRestError;
 use restate_core::network::net_util::create_tonic_channel;
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
 use restate_core::{Metadata, my_node_id};
 use restate_types::config::Configuration;
 use restate_types::{NodeId, PlainNodeId};
@@ -37,7 +37,7 @@ pub async fn cluster_health() -> Result<Json<ClusterHealthResponse>, GenericRest
             )
         })?;
 
-    let mut node_ctl_svc_client = NodeCtlSvcClient::new(create_tonic_channel(
+    let mut node_ctl_svc_client = new_node_ctl_client(create_tonic_channel(
         node_config.address.clone(),
         &Configuration::pinned().networking,
     ));
