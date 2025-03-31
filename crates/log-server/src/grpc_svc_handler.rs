@@ -9,14 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use async_trait::async_trait;
+use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
 
+use restate_core::network::grpc::MAX_MESSAGE_SIZE;
 use restate_types::logs::{LogletId, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetDigest, LogServerResponseHeader, LogletInfo};
 
 use crate::logstore::LogStore;
 use crate::metadata::LogletStateMap;
-use crate::protobuf::log_server_svc_server::LogServerSvc;
+use crate::protobuf::log_server_svc_server::{LogServerSvc, LogServerSvcServer};
 use crate::protobuf::{
     GetDigestRequest, GetDigestResponse, GetLogletInfoRequest, GetLogletInfoResponse,
 };
@@ -37,6 +39,20 @@ where
             state_map,
             _record_cache,
         }
+    }
+
+    pub fn into_server(self) -> LogServerSvcServer<Self> {
+        LogServerSvcServer::new(self)
+            .max_decoding_message_size(MAX_MESSAGE_SIZE)
+            .max_encoding_message_size(MAX_MESSAGE_SIZE)
+            // note: the order of those calls defines the priority
+            .accept_compressed(CompressionEncoding::Zstd)
+            .accept_compressed(CompressionEncoding::Gzip)
+            // note: the order of those calls defines the priority
+            // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
+            // so we prefer zstd over gzip.
+            .send_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Gzip)
     }
 }
 

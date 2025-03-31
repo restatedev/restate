@@ -30,10 +30,11 @@ use restate_types::{PlainNodeId, Version};
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
-use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 use tonic::{Code, Status};
 use tracing::{debug, instrument};
+
+use super::new_metadata_server_client;
 
 const MAX_RETRY_ATTEMPTS: usize = 3;
 
@@ -48,9 +49,7 @@ struct MetadataServerSvcClientWithAddress {
 impl MetadataServerSvcClientWithAddress {
     fn new(channel: ChannelWithAddress) -> Self {
         Self {
-            client: MetadataServerSvcClient::new(channel.channel.clone())
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
+            client: new_metadata_server_client(channel.channel.clone()),
             address: channel.address,
         }
     }

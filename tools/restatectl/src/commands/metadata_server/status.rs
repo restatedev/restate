@@ -12,14 +12,13 @@ use std::collections::BTreeMap;
 
 use futures::future::join_all;
 use itertools::Itertools;
-use tonic::codec::CompressionEncoding;
 use tonic::{IntoRequest, Status};
 use tracing::debug;
 
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
+use restate_metadata_server::grpc::new_metadata_server_client;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{PlainNodeId, Version};
@@ -61,11 +60,10 @@ pub async fn list_metadata_servers(connection: &ConnectionInfo) -> anyhow::Resul
                         }
                     };
 
-                    let mut metadata_client = MetadataServerSvcClient::new(channel)
-                        .accept_compressed(CompressionEncoding::Gzip);
-
                     debug!("Querying metadata service status on node {address}");
-                    let metadata_store_status = metadata_client.status(().into_request()).await;
+                    let metadata_store_status = new_metadata_server_client(channel)
+                        .status(().into_request())
+                        .await;
 
                     (node_id, metadata_store_status)
                 }

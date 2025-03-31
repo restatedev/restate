@@ -12,12 +12,10 @@ use anyhow::Context;
 use clap::Parser;
 use cling::{Collect, Run};
 use itertools::Itertools;
-use tonic::codec::CompressionEncoding;
 
 use restate_cli_util::c_println;
 use restate_core::metadata_store::serialize_value;
-use restate_core::protobuf::metadata_proxy_svc::PutRequest;
-use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_client::MetadataProxySvcClient;
+use restate_core::protobuf::metadata_proxy_svc::{PutRequest, new_metadata_proxy_client};
 use restate_types::PlainNodeId;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -66,11 +64,9 @@ pub async fn remove_nodes(
 
     connection
         .try_each(None, |channel| async {
-            let mut client = MetadataProxySvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip);
-
-            client.put(request.clone()).await
+            new_metadata_proxy_client(channel)
+                .put(request.clone())
+                .await
         })
         .await?;
 

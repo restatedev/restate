@@ -10,11 +10,9 @@
 
 use clap::Parser;
 use cling::{Collect, Run};
-use tonic::codec::CompressionEncoding;
+use restate_admin::cluster_controller::protobuf::new_cluster_ctrl_client;
 
-use restate_admin::cluster_controller::protobuf::{
-    GetClusterConfigurationRequest, cluster_ctrl_svc_client::ClusterCtrlSvcClient,
-};
+use restate_admin::cluster_controller::protobuf::GetClusterConfigurationRequest;
 use restate_cli_util::c_println;
 use restate_types::nodes_config::Role;
 
@@ -28,10 +26,7 @@ pub struct ConfigGetOpts {}
 async fn config_get(connection: &ConnectionInfo, _get_opts: &ConfigGetOpts) -> anyhow::Result<()> {
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            let mut client =
-                ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
-
-            client
+            new_cluster_ctrl_client(channel)
                 .get_cluster_configuration(GetClusterConfigurationRequest {})
                 .await
         })

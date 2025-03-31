@@ -15,17 +15,15 @@ use clap::Parser;
 use cling::{Collect, Run};
 use enumset::EnumSet;
 use itertools::Itertools;
-use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
-use restate_types::health::MetadataServerStatus;
-use tonic::codec::CompressionEncoding;
 use tonic::{Code, IntoRequest};
 use tracing::{error, warn};
 
-use restate_admin::cluster_controller::protobuf::ClusterStateRequest;
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
+use restate_admin::cluster_controller::protobuf::{ClusterStateRequest, new_cluster_ctrl_client};
 use restate_cli_util::_comfy_table::{Cell, Color, Row, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_metadata_server::grpc::new_metadata_server_client;
+use restate_types::health::MetadataServerStatus;
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::protobuf::cluster::node_state::State;
@@ -99,11 +97,7 @@ async fn compact_cluster_status(
 
     let cluster_state = connection
         .try_each(Some(Role::Admin), |channel| async {
-            let mut client = ClusterCtrlSvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip);
-
-            client
+            new_cluster_ctrl_client(channel)
                 .get_cluster_state(ClusterStateRequest::default())
                 .await
         })
@@ -230,10 +224,9 @@ async fn alive_node_status(
 
     if node_config.has_role(Role::MetadataServer) {
         let metadata_channel = grpc_channel(node_config.address.clone());
-        let mut metadata_client = MetadataServerSvcClient::new(metadata_channel)
-            .accept_compressed(CompressionEncoding::Gzip);
-
-        let metadata_store_status = metadata_client.status(().into_request()).await;
+        let metadata_store_status = new_metadata_server_client(metadata_channel)
+            .status(().into_request())
+            .await;
 
         let metadata_cell = match metadata_store_status {
             Ok(response) => {

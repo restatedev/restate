@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use metrics::{counter, histogram};
 use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
+use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
 
 use restate_core::metadata_store::serialize_value;
@@ -40,6 +41,8 @@ use crate::{
     RequestError, RequestSender, StatusWatch, prepare_initial_nodes_configuration,
 };
 
+use super::metadata_server_svc_server::MetadataServerSvcServer;
+
 /// Grpc svc handler for the metadata server.
 #[derive(Debug)]
 pub struct MetadataServerHandler {
@@ -59,6 +62,18 @@ impl MetadataServerHandler {
             provision_tx,
             status_watch,
         }
+    }
+
+    pub fn into_server(self) -> MetadataServerSvcServer<Self> {
+        MetadataServerSvcServer::new(self)
+            // note: the order of those calls defines the priority
+            .accept_compressed(CompressionEncoding::Zstd)
+            .accept_compressed(CompressionEncoding::Gzip)
+            // note: the order of those calls defines the priority
+            // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
+            // so we prefer zstd over gzip.
+            .send_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Gzip)
     }
 }
 

@@ -25,7 +25,7 @@ use arrow_ipc::reader::StreamDecoder;
 use cling::prelude::*;
 use futures::{Stream, StreamExt, ready};
 use restate_admin::cluster_controller::protobuf::{
-    QueryRequest, QueryResponse, cluster_ctrl_svc_client::ClusterCtrlSvcClient,
+    QueryRequest, QueryResponse, new_cluster_ctrl_client,
 };
 use restate_cli_util::{
     _comfy_table::{Cell, Table},
@@ -35,7 +35,7 @@ use restate_cli_util::{
         stylesheet::Style,
     },
 };
-use tonic::{Status, Streaming, codec::CompressionEncoding};
+use tonic::{Status, Streaming};
 
 use crate::connection::ConnectionInfo;
 
@@ -52,9 +52,7 @@ async fn query(connection: &ConnectionInfo, args: &SqlOpts) -> anyhow::Result<()
         .context("Failed to connect to node")?;
 
     let start_time = Instant::now();
-    let mut client = ClusterCtrlSvcClient::new(channel)
-        .accept_compressed(CompressionEncoding::Gzip)
-        .send_compressed(CompressionEncoding::Gzip);
+    let mut client = new_cluster_ctrl_client(channel);
 
     let response = client
         .query(QueryRequest {

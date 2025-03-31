@@ -13,6 +13,7 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::error::DataFusionError;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status, async_trait};
 use tracing::info;
 
@@ -40,6 +41,7 @@ use crate::cluster_controller::protobuf::{
 use crate::query_utils::WriteRecordBatchStream;
 
 use super::ClusterControllerHandle;
+use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use super::protobuf::{
     GetClusterConfigurationRequest, GetClusterConfigurationResponse, QueryRequest, QueryResponse,
     SetClusterConfigurationRequest, SetClusterConfigurationResponse,
@@ -66,6 +68,18 @@ impl ClusterCtrlSvcHandler {
             metadata_writer,
             query_context,
         }
+    }
+
+    pub fn into_server(self) -> ClusterCtrlSvcServer<Self> {
+        ClusterCtrlSvcServer::new(self)
+            // note: the order of those calls defines the priority
+            .accept_compressed(CompressionEncoding::Zstd)
+            .accept_compressed(CompressionEncoding::Gzip)
+            // note: the order of those calls defines the priority
+            // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
+            // so we prefer zstd over gzip.
+            .send_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Gzip)
     }
 
     async fn get_logs(&self) -> Result<Logs, Status> {

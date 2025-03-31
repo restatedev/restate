@@ -11,9 +11,9 @@
 use anyhow::Context;
 use clap::Parser;
 use cling::{Collect, Run};
-use restate_admin::cluster_controller::protobuf::SetClusterConfigurationRequest;
+use restate_admin::cluster_controller::protobuf::GetClusterConfigurationRequest;
 use restate_admin::cluster_controller::protobuf::{
-    GetClusterConfigurationRequest, cluster_ctrl_svc_client::ClusterCtrlSvcClient,
+    SetClusterConfigurationRequest, new_cluster_ctrl_client,
 };
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
@@ -21,7 +21,6 @@ use restate_cli_util::{c_println, c_warn};
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::nodes_config::Role;
 use restate_types::replication::ReplicationProperty;
-use tonic::codec::CompressionEncoding;
 
 use super::cluster_config_string;
 use crate::connection::ConnectionInfo;
@@ -59,11 +58,7 @@ pub struct ConfigSetOpts {
 async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> anyhow::Result<()> {
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            let mut client = ClusterCtrlSvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip);
-
-            client
+            new_cluster_ctrl_client(channel)
                 .get_cluster_configuration(GetClusterConfigurationRequest {})
                 .await
         })
@@ -149,11 +144,9 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
 
     connection
         .try_each(Some(Role::Admin), |channel| async {
-            let mut client = ClusterCtrlSvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip);
-
-            client.set_cluster_configuration(request.clone()).await
+            new_cluster_ctrl_client(channel)
+                .set_cluster_configuration(request.clone())
+                .await
         })
         .await
         .context("Failed to set configuration")?;

@@ -63,7 +63,7 @@ strum = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true, features = ["transport", "prost"] }
+tonic = { workspace = true, features = ["transport", "prost", "zstd"] }
 tracing = { workspace = true }
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
