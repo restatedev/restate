@@ -46,7 +46,7 @@ use pgwire::tokio::process_socket;
 
 use crate::extended_query::NoopExtendedQueryHandler;
 use restate_core::{TaskCenter, TaskKind};
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_datafusion::context::QueryContext;
 
 pub(crate) struct HandlerFactory {
     processor: Arc<DfSessionService>,

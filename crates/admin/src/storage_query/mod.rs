@@ -15,7 +15,7 @@ mod query;
 use axum::{Router, routing::post};
 use std::sync::Arc;
 
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_datafusion::context::QueryContext;
 
 #[derive(Clone)]
 pub struct QueryServiceState {

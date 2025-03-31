@@ -19,7 +19,7 @@ use tracing::info;
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BiforstError};
 use restate_core::{Metadata, MetadataWriter};
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_datafusion::context::QueryContext;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};

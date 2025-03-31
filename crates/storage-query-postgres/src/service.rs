@@ -11,7 +11,7 @@
 use crate::pgwire_server::{HandlerFactory, spawn_connection};
 use codederror::CodedError;
 use restate_core::cancellation_watcher;
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_datafusion::context::QueryContext;
 
 use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;

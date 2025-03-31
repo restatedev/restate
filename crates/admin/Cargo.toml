@@ -27,9 +27,10 @@ restate-core = { workspace = true, features = ["options_schema"] }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
+restate-metadata-server = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
-restate-storage-query-datafusion = { workspace = true }
+restate-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-utoipa = { workspace = true }
 restate-wal-protocol = { workspace = true }

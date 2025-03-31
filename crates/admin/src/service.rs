@@ -34,7 +34,7 @@ pub struct AdminService<V> {
     bifrost: Bifrost,
     schema_registry: SchemaRegistry<V>,
     #[cfg(feature = "storage-query")]
-    query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
+    query_context: Option<restate_datafusion::context::QueryContext>,
     #[cfg(feature = "metadata-api")]
     metadata_writer: MetadataWriter,
 }
@@ -66,7 +66,7 @@ where
     #[cfg(feature = "storage-query")]
     pub fn with_query_context(
         self,
-        query_context: restate_storage_query_datafusion::context::QueryContext,
+        query_context: restate_datafusion::context::QueryContext,
     ) -> Self {
         Self {
             query_context: Some(query_context),
