@@ -11,7 +11,6 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use tonic::codec::CompressionEncoding;
 use tracing::{debug, instrument, warn};
 
 use restate_core::metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
@@ -33,7 +32,6 @@ use crate::logstore::LogStore;
 use crate::metadata::{LogStoreMarker, LogletStateMap};
 use crate::metric_definitions::describe_metrics;
 use crate::network::RequestPump;
-use crate::protobuf::log_server_svc_server::LogServerSvcServer;
 use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};
 
 pub struct LogServerService {
@@ -84,13 +82,8 @@ impl LogServerService {
         // 3. Register the log-server grpc service
         server_builder.register_grpc_service(
             TonicServiceFilter::new(
-                LogServerSvcServer::new(LogServerSvcHandler::new(
-                    log_store.clone(),
-                    state_map.clone(),
-                    record_cache,
-                ))
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
+                LogServerSvcHandler::new(log_store.clone(), state_map.clone(), record_cache)
+                    .into_server(),
                 WaitForReady::new(health_status.clone(), LogServerStatus::Ready),
             ),
             crate::protobuf::FILE_DESCRIPTOR_SET,

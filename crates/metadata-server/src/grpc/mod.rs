@@ -8,11 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
+
+use restate_core::network::grpc::DEFAULT_GRPC_COMPRESSION;
+
 pub mod client;
 pub(crate) mod handler;
 
 tonic::include_proto!("restate.metadata_server_svc");
 pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("metadata_server_svc");
+
+/// Creates a new MetadataServerSvcClient with appropriate configuration
+pub fn new_metadata_server_client(
+    channel: Channel,
+) -> metadata_server_svc_client::MetadataServerSvcClient<Channel> {
+    metadata_server_svc_client::MetadataServerSvcClient::new(channel)
+        // note: the order of those calls defines the priority
+        .accept_compressed(CompressionEncoding::Zstd)
+        .accept_compressed(CompressionEncoding::Gzip)
+        .send_compressed(DEFAULT_GRPC_COMPRESSION)
+}
 
 pub mod pb_conversions {
     use restate_types::Version;

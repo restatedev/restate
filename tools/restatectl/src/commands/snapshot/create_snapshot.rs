@@ -11,17 +11,16 @@
 use cling::prelude::*;
 use tracing::error;
 
-use restate_admin::cluster_controller::protobuf::CreatePartitionSnapshotRequest;
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
+use restate_admin::cluster_controller::protobuf::{
+    CreatePartitionSnapshotRequest, new_cluster_ctrl_client,
+};
 use restate_cli_util::c_println;
-use restate_core::protobuf::node_ctl_svc::GetMetadataRequest;
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_client::NodeCtlSvcClient;
+use restate_core::protobuf::node_ctl_svc::{GetMetadataRequest, new_node_ctl_client};
 use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::MetadataKind;
 use restate_types::storage::StorageCodec;
-use tonic::codec::CompressionEncoding;
 
 use crate::connection::ConnectionInfo;
 use crate::util::RangeParam;
@@ -50,9 +49,7 @@ async fn create_snapshot(
     let ids: Vec<_> = if opts.partition_id.is_empty() {
         let mut response = connection
             .try_each(None, |channel| async move {
-                let mut client = NodeCtlSvcClient::new(channel.clone())
-                    .accept_compressed(CompressionEncoding::Gzip)
-                    .send_compressed(CompressionEncoding::Gzip);
+                let mut client = new_node_ctl_client(channel.clone());
                 client
                     .get_metadata(GetMetadataRequest {
                         kind: MetadataKind::PartitionTable.into(),
@@ -97,11 +94,9 @@ async fn inner_create_snapshot(
 
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            let mut client = ClusterCtrlSvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip);
-
-            client.create_partition_snapshot(request).await
+            new_cluster_ctrl_client(channel)
+                .create_partition_snapshot(request)
+                .await
         })
         .await?
         .into_inner();

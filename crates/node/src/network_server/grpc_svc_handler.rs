@@ -12,25 +12,28 @@ use std::cmp::max_by_key;
 
 use anyhow::Context;
 use bytes::BytesMut;
+use tonic::codec::CompressionEncoding;
+use tonic::{Request, Response, Status};
+use tracing::debug;
 
-use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::MetadataProxySvc;
+use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::{
+    MetadataProxySvc, MetadataProxySvcServer,
+};
 use restate_core::protobuf::metadata_proxy_svc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest,
 };
-use tonic::{Request, Response, Status};
-use tracing::debug;
+use restate_metadata_server::grpc::new_metadata_server_client;
 
 use restate_core::Identification;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util::create_tonic_channel;
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvc;
+use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
 use restate_core::protobuf::node_ctl_svc::{
     ClusterHealthResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest, GetMetadataResponse,
     IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse,
 };
 use restate_core::{Metadata, MetadataKind, TargetVersion};
 use restate_metadata_server::WriteError;
-use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::errors::ConversionError;
@@ -52,6 +55,18 @@ impl NodeCtlSvcHandler {
         Self {
             metadata_store_client,
         }
+    }
+
+    pub fn into_server(self) -> NodeCtlSvcServer<Self> {
+        NodeCtlSvcServer::new(self)
+            // note: the order of those calls defines the priority
+            .accept_compressed(CompressionEncoding::Zstd)
+            .accept_compressed(CompressionEncoding::Gzip)
+            // note: the order of those calls defines the priority
+            // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
+            // so we prefer zstd over gzip.
+            .send_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Gzip)
     }
 
     fn resolve_cluster_configuration(
@@ -200,7 +215,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let mut max_metadata_cluster_configuration = None;
 
         for (node_id, node_config) in nodes_configuration.iter_role(Role::MetadataServer) {
-            let mut metadata_server_client = MetadataServerSvcClient::new(create_tonic_channel(
+            let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
                 node_config.address.clone(),
                 &Configuration::pinned().networking,
             ));
@@ -255,6 +270,18 @@ impl MetadataProxySvcHandler {
         Self {
             metadata_store_client,
         }
+    }
+
+    pub fn into_server(self) -> MetadataProxySvcServer<Self> {
+        MetadataProxySvcServer::new(self)
+            // note: the order of those calls defines the priority
+            .accept_compressed(CompressionEncoding::Zstd)
+            .accept_compressed(CompressionEncoding::Gzip)
+            // note: the order of those calls defines the priority
+            // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
+            // so we prefer zstd over gzip.
+            .send_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Gzip)
     }
 }
 

@@ -13,7 +13,14 @@ use tonic::{Code, Status};
 use crate::metadata_store::{ReadError, WriteError};
 
 pub mod node_ctl_svc {
+    use tonic::codec::CompressionEncoding;
+    use tonic::transport::Channel;
+
     use restate_types::protobuf::cluster::ClusterConfiguration;
+
+    use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
+
+    use self::node_ctl_svc_client::NodeCtlSvcClient;
 
     tonic::include_proto!("restate.node_ctl_svc");
 
@@ -35,6 +42,15 @@ pub mod node_ctl_svc {
             }
         }
     }
+
+    /// Creates a new NodeCtlSvcClient with appropriate configuration
+    pub fn new_node_ctl_client(channel: Channel) -> NodeCtlSvcClient<Channel> {
+        node_ctl_svc_client::NodeCtlSvcClient::new(channel)
+            // note: the order of those calls defines the priority
+            .accept_compressed(CompressionEncoding::Zstd)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(DEFAULT_GRPC_COMPRESSION)
+    }
 }
 
 pub mod metadata_proxy_svc {
@@ -49,7 +65,10 @@ pub mod metadata_proxy_svc {
         nodes_config::NodesConfiguration,
     };
 
-    use crate::metadata_store::{MetadataStore, ProvisionError, ReadError, WriteError};
+    use crate::{
+        metadata_store::{MetadataStore, ProvisionError, ReadError, WriteError},
+        network::grpc::DEFAULT_GRPC_COMPRESSION,
+    };
 
     use super::{to_read_err, to_write_err};
 
@@ -58,6 +77,17 @@ pub mod metadata_proxy_svc {
     pub const FILE_DESCRIPTOR_SET: &[u8] =
         tonic::include_file_descriptor_set!("metadata_proxy_svc_descriptor");
 
+    /// Creates a new MetadataProxySvcClient with appropriate configuration
+    pub fn new_metadata_proxy_client(
+        channel: Channel,
+    ) -> metadata_proxy_svc_client::MetadataProxySvcClient<Channel> {
+        metadata_proxy_svc_client::MetadataProxySvcClient::new(channel)
+            // note: the order of those calls defines the priority
+            .accept_compressed(CompressionEncoding::Zstd)
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(DEFAULT_GRPC_COMPRESSION)
+    }
+
     pub struct MetadataStoreProxy {
         client: MetadataProxySvcClient<Channel>,
     }
@@ -65,9 +95,7 @@ pub mod metadata_proxy_svc {
     impl MetadataStoreProxy {
         pub fn new(channel: Channel) -> Self {
             Self {
-                client: MetadataProxySvcClient::new(channel)
-                    .send_compressed(CompressionEncoding::Gzip)
-                    .accept_compressed(CompressionEncoding::Gzip),
+                client: new_metadata_proxy_client(channel),
             }
         }
     }

@@ -10,8 +10,6 @@
 
 use axum::Json;
 use axum::routing::{MethodFilter, get, on};
-use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::MetadataProxySvcServer;
-use tonic::codec::CompressionEncoding;
 
 use restate_core::Identification;
 use restate_core::TaskCenter;
@@ -19,7 +17,6 @@ use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::grpc::CoreNodeSvcHandler;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{ConnectionManager, NetworkServerBuilder};
-use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::NodeCtlSvcServer;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::CommonOptions;
 use restate_types::protobuf::common::NodeStatus;
@@ -71,16 +68,12 @@ impl NetworkServer {
         });
 
         server_builder.register_grpc_service(
-            NodeCtlSvcServer::new(NodeCtlSvcHandler::new(metadata_store_client.clone()))
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
+            NodeCtlSvcHandler::new(metadata_store_client.clone()).into_server(),
             restate_core::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder.register_grpc_service(
-            MetadataProxySvcServer::new(MetadataProxySvcHandler::new(metadata_store_client))
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip),
+            MetadataProxySvcHandler::new(metadata_store_client).into_server(),
             restate_core::protobuf::metadata_proxy_svc::FILE_DESCRIPTOR_SET,
         );
 

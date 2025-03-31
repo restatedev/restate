@@ -13,17 +13,17 @@ use std::collections::{BTreeMap, HashMap};
 
 use cling::prelude::*;
 use itertools::Itertools;
-use restate_types::nodes_config::Role;
-use tonic::codec::CompressionEncoding;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{ClusterStateRequest, ListLogsRequest};
+use restate_admin::cluster_controller::protobuf::{
+    ClusterStateRequest, ListLogsRequest, new_cluster_ctrl_client,
+};
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::Tense;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::logs::metadata::{Chain, Logs};
 use restate_types::logs::{LogId, Lsn};
+use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::{
     DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode, SuspectNode, node_state,
 };
@@ -73,11 +73,7 @@ pub async fn list_partitions(
 ) -> anyhow::Result<()> {
     let cluster_state = connection
         .try_each(Some(Role::Admin), |channel| async {
-            let mut client = ClusterCtrlSvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip);
-
-            client
+            new_cluster_ctrl_client(channel)
                 .get_cluster_state(ClusterStateRequest::default())
                 .await
         })
@@ -89,11 +85,9 @@ pub async fn list_partitions(
     // we need the logs to show the current sequencer for each partition's log
     let list_logs_response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            let mut client = ClusterCtrlSvcClient::new(channel)
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip);
-
-            client.list_logs(ListLogsRequest::default()).await
+            new_cluster_ctrl_client(channel)
+                .list_logs(ListLogsRequest::default())
+                .await
         })
         .await?
         .into_inner();

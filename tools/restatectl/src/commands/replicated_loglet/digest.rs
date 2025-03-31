@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 
 use cling::prelude::*;
-use tonic::codec::CompressionEncoding;
 use tracing::{info, warn};
 
 use restate_bifrost::loglet::util::TailOffsetWatch;
@@ -19,8 +18,7 @@ use restate_bifrost::providers::replicated_loglet::replication::NodeSetChecker;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_log_server::protobuf::log_server_svc_client::LogServerSvcClient;
-use restate_log_server::protobuf::{GetDigestRequest, GetLogletInfoRequest};
+use restate_log_server::protobuf::{GetDigestRequest, GetLogletInfoRequest, new_log_server_client};
 use restate_types::PlainNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::log_server::RecordStatus;
@@ -85,7 +83,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
     // get loglet info
     let mut loglet_infos: HashMap<PlainNodeId, _> = HashMap::default();
     for (node_id, channel) in nodeset_channels.iter() {
-        let mut client = LogServerSvcClient::new(channel.clone());
+        let mut client = new_log_server_client(channel.clone());
         let Ok(Some(loglet_info)) = client
             .get_loglet_info(GetLogletInfoRequest {
                 loglet_id: opts.loglet_id.into(),
@@ -128,14 +126,12 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
         (to_offset + 1).into(),
     );
     for (node_id, channel) in nodeset_channels.iter() {
-        let mut client =
-            LogServerSvcClient::new(channel.clone()).accept_compressed(CompressionEncoding::Gzip);
-
         let req = GetDigestRequest {
             loglet_id: opts.loglet_id.into(),
             from_offset,
             to_offset,
         };
+        let mut client = new_log_server_client(channel.clone());
         let digest = match client.get_digest(req).await {
             Ok(response) => response.into_inner().digest.expect("always set by servers"),
             Err(err) => {
