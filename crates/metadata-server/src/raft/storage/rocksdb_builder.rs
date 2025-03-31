@@ -70,6 +70,8 @@ pub fn db_options(_options: &MetadataServerOptions) -> rocksdb::Options {
     opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::AbsoluteConsistency);
 
     opts.set_wal_compression_type(DBCompressionType::Zstd);
+    // most reads are sequential
+    opts.set_advise_random_on_open(false);
 
     opts
 }
@@ -99,8 +101,6 @@ fn cf_data_options(
             DBCompressionType::Zstd,
         ]);
 
-        // most reads are sequential
-        opts.set_advise_random_on_open(false);
         opts
     }
 }
