@@ -45,6 +45,11 @@ impl ReplicationProperty {
         Self(map)
     }
 
+    /// Similar to [`Self::new`] but panics if replication_factor is zero
+    pub fn new_unchecked(replication_factor: u8) -> Self {
+        Self::new(NonZeroU8::new(replication_factor).expect("is non zero"))
+    }
+
     pub fn with_scope(scope: LocationScope, replication_factor: NonZeroU8) -> Self {
         assert!(scope < LocationScope::Root);
         let mut map = BTreeMap::default();
