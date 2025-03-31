@@ -92,7 +92,7 @@ impl Default for WorkerOptions {
             cleanup_interval: Duration::from_secs(60 * 60).into(),
             storage: StorageOptions::default(),
             invoker: Default::default(),
-            max_command_batch_size: NonZeroUsize::new(4).expect("Non zero number"),
+            max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
             snapshots: SnapshotsOptions::default(),
         }
     }
