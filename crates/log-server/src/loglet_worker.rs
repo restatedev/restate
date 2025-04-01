@@ -11,14 +11,14 @@
 use futures::StreamExt;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
-use tokio::sync::mpsc;
-use tracing::{Instrument, debug, trace, trace_span, warn};
-
+use restate_bifrost::loglet::OperationError;
 use restate_core::network::Incoming;
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher};
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::*;
+use tokio::sync::mpsc;
+use tracing::{Instrument, debug, trace, trace_span, warn};
 
 use crate::logstore::{AsyncToken, LogStore};
 use crate::metadata::LogletState;
@@ -199,11 +199,15 @@ impl<S: LogStore> LogletWorker<S> {
                 }
                 Some(_) = in_flight_stores.next() => {}
                 // The in-flight seal (if any)
-                Some(Ok(_)) = &mut in_flight_seal => {
+                Some(result) = &mut in_flight_seal => {
                     sealing_in_progress = false;
+                    in_flight_seal.set(None.into());
+
+                    // somehow rustc can't infer the types here :-(
+                    (result as Result<(), OperationError>).expect("Seal operation failed. This indicates that RocksDB failed.");
+
                     self.loglet_state.get_local_tail_watch().notify_seal();
                     debug!(loglet_id = %self.loglet_id, "Loglet is now sealed on this log-server node");
-                    in_flight_seal.set(None.into());
                 }
                 // The set of requests waiting for seal to complete
                 Some(_) = waiting_for_seal.next() => {}
@@ -315,10 +319,14 @@ impl<S: LogStore> LogletWorker<S> {
         tracing::debug!(loglet_id = %self.loglet_id, "Draining loglet worker");
         loop {
             tokio::select! {
-                Some(Ok(_)) = &mut in_flight_seal => {
-                    self.loglet_state.get_local_tail_watch().notify_seal();
-                    debug!(loglet_id = %self.loglet_id, "Loglet is now sealed on this log-server node");
+                Some(result) = &mut in_flight_seal => {
                     in_flight_seal.set(None.into());
+                    if let Err(err) = result {
+                        trace!(loglet_id = %self.loglet_id, %err, "Seal operation has been aborted");
+                    } else {
+                        self.loglet_state.get_local_tail_watch().notify_seal();
+                        debug!(loglet_id = %self.loglet_id, "Loglet is now sealed on this log-server node");
+                    }
                 }
                 Some(_) = in_flight_stores.next() => {}
                 Some(_) = in_flight_network_sends.next() => {}

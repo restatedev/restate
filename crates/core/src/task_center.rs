@@ -814,6 +814,9 @@ impl TaskCenterInner {
         // Ask bifrost to shutdown providers and loglets
         self.cancel_tasks(Some(TaskKind::BifrostWatchdog), None)
             .await;
+        // Make sure that LogletWriters (LogletWorker) are stopped before stopping the RocksDB
+        // LogStoreWriter. Otherwise, we risk some panics during shutdown.
+        self.cancel_tasks(Some(TaskKind::LogletWriter), None).await;
         self.shutdown_managed_runtimes();
         // global shutdown trigger
         self.cancel_tasks(None, None).await;
