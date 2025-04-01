@@ -128,6 +128,8 @@ impl RequestPump {
                     drop(seal_stream);
                     drop(get_loglet_info_stream);
                     drop(get_records_stream);
+                    drop(trim_stream);
+                    drop(get_digest_stream);
                     // shutdown all workers.
                     Self::shutdown(loglet_workers).await;
                     health_status.update(LogServerStatus::Unknown);
