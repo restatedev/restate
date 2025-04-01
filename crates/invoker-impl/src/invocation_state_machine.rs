@@ -80,10 +80,10 @@ impl JournalTracker {
                 // We're always good to retry in this case.
                 true
             }
-            (Some(last_acked), Some(last_sent)) => {
+            (Some(last_acked_command), Some(last_proposed_command)) => {
                 // Last acked must be higher than last sent,
                 // otherwise we'll end up retrying when not all the commands have been stored.
-                last_acked >= last_sent
+                last_acked_command >= last_proposed_command
             }
             _ => false,
         };
@@ -227,7 +227,7 @@ impl InvocationStateMachine {
         }
     }
 
-    pub(super) fn notify_new_command(&mut self, entry_index: CommandIndex, requires_ack: bool) {
+    pub(super) fn notify_new_command(&mut self, command_index: CommandIndex, requires_ack: bool) {
         debug_assert!(matches!(
             &self.invocation_state,
             InvocationState::InFlight { .. }
@@ -242,9 +242,9 @@ impl InvocationStateMachine {
         } = &mut self.invocation_state
         {
             if requires_ack {
-                entries_to_ack.insert(entry_index);
+                entries_to_ack.insert(command_index);
             }
-            journal_tracker.notify_command_sent_to_partition_processor(entry_index);
+            journal_tracker.notify_command_sent_to_partition_processor(command_index);
         }
     }
 
@@ -294,17 +294,26 @@ impl InvocationStateMachine {
     }
 
     pub(super) fn notify_entry(&mut self, entry: RawEntry) {
-        if let InvocationState::InFlight {
-            notifications_tx,
-            journal_tracker,
-            ..
-        } = &mut self.invocation_state
-        {
-            if let journal_v2::raw::RawEntryInner::Notification(notif) = &entry.inner {
-                journal_tracker.notify_acked_notification_from_partition_processor(notif.id());
-            }
+        match &mut self.invocation_state {
+            InvocationState::InFlight {
+                journal_tracker,
+                notifications_tx,
+                ..
+            } => {
+                if let journal_v2::raw::RawEntryInner::Notification(notif) = &entry.inner {
+                    journal_tracker.notify_acked_notification_from_partition_processor(notif.id());
+                }
 
-            Self::try_send_notification(notifications_tx, Notification::Entry(entry));
+                Self::try_send_notification(notifications_tx, Notification::Entry(entry));
+            }
+            InvocationState::WaitingRetry {
+                journal_tracker, ..
+            } => {
+                if let journal_v2::raw::RawEntryInner::Notification(notif) = &entry.inner {
+                    journal_tracker.notify_acked_notification_from_partition_processor(notif.id());
+                }
+            }
+            _ => {}
         }
     }
 
@@ -393,15 +402,16 @@ impl InvocationStateMachine {
 mod tests {
     use super::*;
 
-    use std::time::Duration;
-
+    use bytes::Bytes;
     use googletest::matchers::{eq, some};
     use googletest::prelude::err;
     use googletest::{assert_that, pat};
+    use std::time::Duration;
     use test_log::test;
     use tokio::sync::mpsc::error::TryRecvError;
 
-    use restate_test_util::check;
+    use restate_test_util::{assert, check, let_assert};
+    use restate_types::journal_v2::{CompletionType, NotificationType};
 
     #[test]
     fn handle_error_when_waiting_for_retry() {
@@ -515,5 +525,97 @@ mod tests {
         // Channel should be empty
         let try_recv = rx.try_recv();
         assert_that!(try_recv, err(eq(TryRecvError::Empty)));
+    }
+
+    #[test(tokio::test)]
+    async fn journal_tracker_correctly_tracks_commands() {
+        let mut invocation_state_machine = InvocationStateMachine::create(
+            InvocationTarget::mock_service(),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
+        );
+
+        let abort_handle = tokio::spawn(async {}).abort_handle();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        invocation_state_machine.start(abort_handle, tx);
+
+        // Invoker generates entry 1
+        invocation_state_machine.notify_new_command(1, false);
+        let_assert!(Some(_) = invocation_state_machine.handle_task_error(None, true));
+
+        // PP sends ack for command 1
+        invocation_state_machine.notify_stored_ack(1);
+
+        // Still waiting retry timer fired
+        assert!(!invocation_state_machine.is_ready_to_retry());
+        assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+
+        // After the retry timer fires, we're ready to retry
+        invocation_state_machine.notify_retry_timer_fired();
+        assert!(invocation_state_machine.is_ready_to_retry());
+    }
+
+    #[test(tokio::test)]
+    async fn journal_tracker_correctly_tracks_notification_proposals() {
+        let mut invocation_state_machine = InvocationStateMachine::create(
+            InvocationTarget::mock_service(),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
+        );
+
+        let abort_handle = tokio::spawn(async {}).abort_handle();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        invocation_state_machine.start(abort_handle, tx);
+        invocation_state_machine.notify_new_notification_proposal(NotificationId::SignalIndex(18));
+        invocation_state_machine.notify_new_notification_proposal(NotificationId::CompletionId(1));
+        let_assert!(Some(_) = invocation_state_machine.handle_task_error(None, true));
+
+        // Waiting notifications acks and retry timer fired
+        assert!(!invocation_state_machine.is_ready_to_retry());
+        assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+
+        // Got signal 18
+        invocation_state_machine.notify_entry(RawEntry::new(
+            RawEntryHeader::default(),
+            RawNotification::new(
+                NotificationType::Signal,
+                NotificationId::SignalIndex(18),
+                Bytes::default(),
+            ),
+        ));
+
+        // Retry timer fired
+        invocation_state_machine.notify_retry_timer_fired();
+
+        // Waiting notifications acks
+        assert!(!invocation_state_machine.is_ready_to_retry());
+        assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+
+        // For whatever reason notification index 2
+        invocation_state_machine.notify_entry(RawEntry::new(
+            RawEntryHeader::default(),
+            RawNotification::new(
+                NotificationType::Completion(CompletionType::Run),
+                NotificationId::CompletionId(2),
+                Bytes::default(),
+            ),
+        ));
+
+        // Still waiting completion id 1
+        assert!(!invocation_state_machine.is_ready_to_retry());
+        assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+
+        // Send notification index 1
+        invocation_state_machine.notify_entry(RawEntry::new(
+            RawEntryHeader::default(),
+            RawNotification::new(
+                NotificationType::Completion(CompletionType::Run),
+                NotificationId::CompletionId(1),
+                Bytes::default(),
+            ),
+        ));
+
+        // Ready to retry
+        assert!(invocation_state_machine.is_ready_to_retry());
     }
 }
