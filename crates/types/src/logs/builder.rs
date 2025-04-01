@@ -48,6 +48,8 @@ impl LogsBuilder {
             return Err(BuilderError::LogAlreadyExists(log_id));
         }
         for loglet_config in chain.chain.values() {
+            // needed if other loglets than the replicated one are enabled
+            #[allow(irrefutable_let_patterns)]
             if let ProviderKind::Replicated = loglet_config.kind {
                 let params =
                     ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())?;
@@ -157,6 +159,8 @@ impl ChainBuilder<'_> {
             *self.modified = true;
 
             for loglet_config in self.inner.chain.values() {
+                // needed if other loglets than the replicated one are enabled
+                #[allow(irrefutable_let_patterns)]
                 if let ProviderKind::Replicated = loglet_config.kind {
                     // if it was inserted correctly before, we shouldn't fail to deserialize it.
                     // validation happens at original insert time.
@@ -199,6 +203,8 @@ impl ChainBuilder<'_> {
             key if key < base_lsn => {
                 // append
                 let new_index = SegmentIndex(last_entry.get().index().0 + 1);
+                // needed if other loglets than the replicated one are enabled
+                #[allow(irrefutable_let_patterns)]
                 if let ProviderKind::Replicated = provider {
                     let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
                     self.lookup_index
@@ -215,6 +221,8 @@ impl ChainBuilder<'_> {
                 {
                     // Let's remove the loglet from the index if it's a replicated loglet
                     let old = last_entry.get();
+                    // needed if other loglets than the replicated one are enabled
+                    #[allow(irrefutable_let_patterns)]
                     if let ProviderKind::Replicated = old.kind {
                         let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
                         self.lookup_index.rm_replicated_loglet_reference(
@@ -225,6 +233,8 @@ impl ChainBuilder<'_> {
                     }
                 }
                 let new_index = SegmentIndex(last_entry.get().index().0 + 1);
+                // needed if other loglets than the replicated one are enabled
+                #[allow(irrefutable_let_patterns)]
                 if let ProviderKind::Replicated = provider {
                     let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
                     self.lookup_index

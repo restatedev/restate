@@ -15,7 +15,6 @@ use std::str::FromStr;
 use anyhow::Context;
 use bytestring::ByteString;
 use enum_map::Enum;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use smallvec::SmallVec;
@@ -383,6 +382,8 @@ impl TryFrom<LogsSerde> for Logs {
         let mut config = value.config;
         for (log_id, chain) in value.logs {
             for loglet_config in chain.chain.values() {
+                // needed if other loglets than the replicated one are enabled
+                #[allow(irrefutable_let_patterns)]
                 if let ProviderKind::Replicated = loglet_config.kind {
                     let params =
                         ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())?;
@@ -766,12 +767,19 @@ flexbuffers_storage_encode_decode!(Chain);
 /// This is used in single-node bootstrap scenarios and assumes a non-running system.
 /// It must generate params that uniquely identify the new loglet instance on every call.
 pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletParams {
-    let loglet_id = rand::rng().next_u64().to_string();
     match default_provider {
         #[cfg(any(test, feature = "local-loglet"))]
-        ProviderKind::Local => LogletParams::from(loglet_id),
+        ProviderKind::Local => {
+            use rand::RngCore;
+            let loglet_id = rand::rng().next_u64().to_string();
+            LogletParams::from(loglet_id)
+        }
         #[cfg(any(test, feature = "memory-loglet"))]
-        ProviderKind::InMemory => LogletParams::from(loglet_id),
+        ProviderKind::InMemory => {
+            use rand::RngCore;
+            let loglet_id = rand::rng().next_u64().to_string();
+            LogletParams::from(loglet_id)
+        }
         ProviderKind::Replicated => panic!(
             "replicated-loglet is still in development and cannot be used as default-provider in this version. Please use 'local' instead."
         ),
