@@ -105,14 +105,6 @@ impl RocksDbLogStoreBuilder {
 
 fn db_options(log_server_opts: &LogServerOptions) -> rocksdb::Options {
     let mut opts = rocksdb::Options::default();
-
-    // Enable atomic flushes.
-    // If WAL is disabled, this ensure we do not persist inconsistent data.
-    // If WAL is enabled, this ensures that flushing either cf flushes both.
-    // This is valuable because otherwise the metadata cf will flush rarely, and that would keep the WAL around
-    // until shutdown, full of data cf bytes that have already been flushed, wasting disk space.
-    opts.set_atomic_flush(true);
-
     // This is Rocksdb's default, it's added here for clarity.
     //
     // Rationale: If WAL tail is corrupted, it's likely that it has failed during write, that said,
@@ -124,6 +116,13 @@ fn db_options(log_server_opts: &LogServerOptions) -> rocksdb::Options {
     opts.set_wal_compression_type(DBCompressionType::Zstd);
     // most reads are sequential
     opts.set_advise_random_on_open(false);
+
+    opts.set_max_total_wal_size(
+        log_server_opts
+            .rocksdb_max_wal_size()
+            .try_into()
+            .expect("fits into u64"),
+    );
 
     opts.set_max_subcompactions(log_server_opts.rocksdb_max_sub_compactions());
 

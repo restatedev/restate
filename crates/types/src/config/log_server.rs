@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
@@ -58,6 +58,16 @@ pub struct LogServerOptions {
     /// Default is 0 which maps to floor(number of CPU cores / 2)
     rocksdb_max_sub_compactions: u32,
 
+    /// The maximum size of the active WAL file
+    ///
+    /// Default is 0 which translates into 2 times the memory allocated for membtables for this
+    /// database.
+    #[serde(skip_serializing_if = "is_zero")]
+    #[serde_as(as = "ByteCount")]
+    #[serde(default)]
+    #[cfg_attr(feature = "schemars", schemars(with = "ByteCount"))]
+    rocksdb_max_wal_size: usize,
+
     /// Whether to perform commits in background IO thread pools eagerly or not
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -70,6 +80,10 @@ pub struct LogServerOptions {
 
     /// The number of messages that can queue up on input network stream while request processor is busy.
     pub incoming_network_queue_length: NonZeroUsize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl LogServerOptions {
@@ -91,6 +105,14 @@ impl LogServerOptions {
 
     pub fn rocksdb_disable_wal_fsync(&self) -> bool {
         self.rocksdb_disable_wal_fsync
+    }
+
+    pub fn rocksdb_max_wal_size(&self) -> usize {
+        if self.rocksdb_max_wal_size == 0 {
+            2 * self.rocksdb_memory_budget()
+        } else {
+            self.rocksdb_max_wal_size
+        }
     }
 
     pub fn rocksdb_max_sub_compactions(&self) -> u32 {
@@ -134,6 +156,7 @@ impl Default for LogServerOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.5,
             rocksdb_max_sub_compactions: 0,
+            rocksdb_max_wal_size: 0,
             writer_batch_commit_count: 5000,
             rocksdb_disable_wal_fsync: false,
             always_commit_in_background: false,
