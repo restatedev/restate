@@ -15,31 +15,37 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use restate_types::Versioned;
-use restate_types::logs::LogletId;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::watch;
 
-use restate_core::Metadata;
-use restate_types::logs::metadata::Logs;
+use restate_datafusion::{
+    context::QueryContext,
+    table_providers::{GenericTableProvider, Scan},
+    table_util::Builder,
+};
+use restate_types::cluster::cluster_state::ClusterState;
 
-use crate::context::QueryContext;
-use crate::table_providers::{GenericTableProvider, Scan};
-use crate::table_util::Builder;
+use super::row::append_partition_row;
+use super::schema::PartitionStateBuilder;
 
-use super::row::append_segment_row;
-use super::schema::LogBuilder;
-
-pub fn register_self(ctx: &QueryContext, metadata: Metadata) -> datafusion::common::Result<()> {
-    let logs_table =
-        GenericTableProvider::new(LogBuilder::schema(), Arc::new(LogScanner(metadata)));
-    ctx.register_non_partitioned_table("logs", Arc::new(logs_table))
+pub fn register_self(
+    ctx: &QueryContext,
+    watch: watch::Receiver<Arc<ClusterState>>,
+) -> datafusion::common::Result<()> {
+    let table = GenericTableProvider::new(
+        PartitionStateBuilder::schema(),
+        Arc::new(PartitionStateScanner { watch }),
+    );
+    ctx.register_table("partition_state", Arc::new(table))
 }
 
 #[derive(Clone, derive_more::Debug)]
 #[debug("DeploymentMetadataScanner")]
-struct LogScanner(Metadata);
+struct PartitionStateScanner {
+    watch: watch::Receiver<Arc<ClusterState>>,
+}
 
-impl Scan for LogScanner {
+impl Scan for PartitionStateScanner {
     fn scan(
         &self,
         projection: SchemaRef,
@@ -50,36 +56,31 @@ impl Scan for LogScanner {
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 2);
         let tx = stream_builder.tx();
 
-        let logs = self.0.logs_snapshot();
+        let state = self.watch.borrow().clone();
         stream_builder.spawn(async move {
-            for_each_log(schema, tx, logs).await;
+            for_each_partition(schema, tx, &state).await;
             Ok(())
         });
         stream_builder.build()
     }
 }
 
-async fn for_each_log(
+async fn for_each_partition(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
-    logs: Arc<Logs>,
+    state: &ClusterState,
 ) {
-    let mut builder = LogBuilder::new(schema.clone());
+    let mut builder = PartitionStateBuilder::new(schema.clone());
     let mut output = String::new();
-    for (id, chain) in logs.iter() {
-        for segment in chain.iter() {
-            let loglet_id = LogletId::new(*id, segment.index());
-            let replicated_loglet = logs.get_replicated_loglet(&loglet_id);
-
-            append_segment_row(
+    for alive in state.alive_nodes() {
+        for (partition_id, partition_status) in alive.partitions.iter() {
+            append_partition_row(
                 &mut builder,
                 &mut output,
-                logs.version(),
-                *id,
-                &segment,
-                replicated_loglet,
+                alive.generational_node_id,
+                *partition_id,
+                partition_status,
             );
-
             if builder.full() {
                 let batch = builder.finish();
                 if tx.send(batch).await.is_err() {
@@ -88,7 +89,7 @@ async fn for_each_log(
                     // we probably don't want to panic, is it will cause the entire process to exit
                     return;
                 }
-                builder = LogBuilder::new(schema.clone());
+                builder = PartitionStateBuilder::new(schema.clone());
             }
         }
     }

@@ -16,35 +16,29 @@ use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tokio::sync::mpsc::Sender;
-use tokio::sync::watch;
 
-use restate_types::cluster::cluster_state::ClusterState;
-
-use crate::context::QueryContext;
-use crate::table_providers::{GenericTableProvider, Scan};
-use crate::table_util::Builder;
+use restate_core::Metadata;
+use restate_datafusion::{
+    context::QueryContext,
+    table_providers::{GenericTableProvider, Scan},
+    table_util::Builder,
+};
+use restate_types::nodes_config::NodesConfiguration;
 
 use super::row::append_node_row;
-use super::schema::NodeStateBuilder;
+use super::schema::NodeBuilder;
 
-pub fn register_self(
-    ctx: &QueryContext,
-    watch: watch::Receiver<Arc<ClusterState>>,
-) -> datafusion::common::Result<()> {
-    let table = GenericTableProvider::new(
-        NodeStateBuilder::schema(),
-        Arc::new(NodesStatusScanner { watch }),
-    );
-    ctx.register_non_partitioned_table("node_state", Arc::new(table))
+pub fn register_self(ctx: &QueryContext, metadata: Metadata) -> datafusion::common::Result<()> {
+    let nodes_table =
+        GenericTableProvider::new(NodeBuilder::schema(), Arc::new(NodesScanner(metadata)));
+    ctx.register_table("nodes", Arc::new(nodes_table))
 }
 
 #[derive(Clone, derive_more::Debug)]
 #[debug("DeploymentMetadataScanner")]
-struct NodesStatusScanner {
-    watch: watch::Receiver<Arc<ClusterState>>,
-}
+struct NodesScanner(Metadata);
 
-impl Scan for NodesStatusScanner {
+impl Scan for NodesScanner {
     fn scan(
         &self,
         projection: SchemaRef,
@@ -55,9 +49,9 @@ impl Scan for NodesStatusScanner {
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 2);
         let tx = stream_builder.tx();
 
-        let current = self.watch.borrow().clone();
+        let nodes_config = self.0.nodes_config_snapshot();
         stream_builder.spawn(async move {
-            for_each_state(schema, tx, &current).await;
+            for_each_state(schema, tx, nodes_config).await;
             Ok(())
         });
         stream_builder.build()
@@ -67,12 +61,19 @@ impl Scan for NodesStatusScanner {
 async fn for_each_state(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
-    cluster_state: &ClusterState,
+    nodes_config: Arc<NodesConfiguration>,
 ) {
-    let mut builder = NodeStateBuilder::new(schema.clone());
+    let mut builder = NodeBuilder::new(schema.clone());
     let mut output = String::new();
-    for (id, node_state) in cluster_state.nodes.iter() {
-        append_node_row(&mut builder, &mut output, *id, node_state);
+    for (id, node_config) in nodes_config.iter() {
+        append_node_row(
+            &mut builder,
+            &mut output,
+            nodes_config.version(),
+            id,
+            node_config,
+        );
+
         if builder.full() {
             let batch = builder.finish();
             if tx.send(batch).await.is_err() {
@@ -81,7 +82,7 @@ async fn for_each_state(
                 // we probably don't want to panic, is it will cause the entire process to exit
                 return;
             }
-            builder = NodeStateBuilder::new(schema.clone());
+            builder = NodeBuilder::new(schema.clone());
         }
     }
     if !builder.empty() {

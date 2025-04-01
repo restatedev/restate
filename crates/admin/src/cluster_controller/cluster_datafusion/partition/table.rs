@@ -18,11 +18,12 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tokio::sync::mpsc::Sender;
 
 use restate_core::Metadata;
+use restate_datafusion::{
+    context::QueryContext,
+    table_providers::{GenericTableProvider, Scan},
+    table_util::Builder,
+};
 use restate_types::partition_table::PartitionTable;
-
-use crate::context::QueryContext;
-use crate::table_providers::{GenericTableProvider, Scan};
-use crate::table_util::Builder;
 
 use super::row::append_partition_rows;
 use super::schema::PartitionBuilder;
@@ -32,7 +33,7 @@ pub fn register_self(ctx: &QueryContext, metadata: Metadata) -> datafusion::comm
         PartitionBuilder::schema(),
         Arc::new(PartitionScanner(metadata)),
     );
-    ctx.register_non_partitioned_table("partitions", Arc::new(partitions_table))
+    ctx.register_table("partitions", Arc::new(partitions_table))
 }
 
 #[derive(Clone, derive_more::Debug)]

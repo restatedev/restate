@@ -17,6 +17,7 @@ replicated-loglet = ["restate-bifrost/replicated-loglet"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
 storage-query = []
 metadata-api = []
+table_docs = ["restate-datafusion/table_docs"]
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
@@ -27,9 +28,10 @@ restate-core = { workspace = true, features = ["options_schema"] }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
+restate-metadata-server = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
-restate-storage-query-datafusion = { workspace = true }
+restate-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-utoipa = { workspace = true }
 restate-wal-protocol = { workspace = true }
