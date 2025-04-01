@@ -28,6 +28,7 @@ derive_more = { workspace = true }
 flexbuffers = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
+indexmap = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true}
