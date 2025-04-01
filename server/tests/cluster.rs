@@ -102,18 +102,13 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
         }));
     base_config.common.default_num_partitions = 4;
     base_config.bifrost.default_provider = ProviderKind::Replicated;
-    base_config
-        .bifrost
-        .replicated_loglet
-        .default_log_replication =
-        ReplicationProperty::new(NonZeroU8::new(2).expect("to be non-zero"));
 
     let nodes = Node::new_test_nodes(
         base_config,
         BinarySource::CargoTest,
         enum_set!(Role::Admin | Role::Worker | Role::LogServer | Role::MetadataServer),
         num_nodes,
-        true,
+        false,
     );
     let mut cluster = Cluster::builder()
         .cluster_name("cluster_chaos_test")
@@ -122,6 +117,20 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
         .build()
         .start()
         .await?;
+
+    let replicated_loglet_config = ReplicatedLogletConfig {
+        target_nodeset_size: NodeSetSize::default(),
+        replication_property: ReplicationProperty::new(NonZeroU8::new(2).expect("to be non-zero")),
+    };
+
+    cluster.nodes[0]
+        .provision_cluster(
+            None,
+            PartitionReplication::Everywhere,
+            Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
+        )
+        .await
+        .into_test_result()?;
 
     let ingress_addresses: Vec<_> = cluster
         .nodes

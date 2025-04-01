@@ -64,8 +64,9 @@ mod tests {
         config.common.default_num_partitions = 1.try_into()?;
         config.common.auto_provision = true;
         config.bifrost.default_provider = ProviderKind::Replicated;
-        config.bifrost.replicated_loglet.default_log_replication =
+        config.common.default_replication =
             ReplicationProperty::new(NonZeroU8::new(1).expect("non-zero"));
+
         let roles = *config.roles();
 
         let mut cluster = Cluster::builder()

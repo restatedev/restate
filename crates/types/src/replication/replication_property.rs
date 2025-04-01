@@ -18,7 +18,7 @@ use crate::locality::LocationScope;
 use anyhow::Context;
 use regex::Regex;
 use serde::{Deserialize, Deserializer};
-use serde_with::DeserializeAs;
+use serde_with::{DeserializeAs, SerializeAs};
 
 static REPLICATION_PROPERTY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -230,8 +230,7 @@ impl FromStr for ReplicationProperty {
     }
 }
 
-/// Helper struct to support deserializing the ReplicationProperty from a [`NonZeroU8`].
-pub struct ReplicationPropertyFromNonZeroU8;
+struct ReplicationPropertyFromNonZeroU8;
 
 impl<'de> DeserializeAs<'de, ReplicationProperty> for ReplicationPropertyFromNonZeroU8 {
     fn deserialize_as<D>(deserializer: D) -> Result<ReplicationProperty, D::Error>
@@ -239,6 +238,48 @@ impl<'de> DeserializeAs<'de, ReplicationProperty> for ReplicationPropertyFromNon
         D: Deserializer<'de>,
     {
         NonZeroU8::deserialize(deserializer).map(ReplicationProperty::new)
+    }
+}
+
+/// Helper struct to support serializing and deserializing the ReplicationProperty from all supported formats
+///
+/// Serialization:
+/// - If property holds only simple replication factor `{node: N}` it's serialized as `N`
+/// - Else, it's serialized using its Display implementation
+///
+/// Deserialization supported formats:
+/// - From digits
+/// - From strings as "N" and "{(<scope>: N,)+}"
+/// - From map
+pub struct ReplicationPropertyFromTo;
+
+impl<'de> DeserializeAs<'de, ReplicationProperty> for ReplicationPropertyFromTo {
+    fn deserialize_as<D>(deserializer: D) -> Result<ReplicationProperty, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        serde_with::PickFirst::<(
+            ReplicationPropertyFromNonZeroU8,
+            serde_with::DisplayFromStr,
+            serde_with::Same,
+        )>::deserialize_as(deserializer)
+    }
+}
+
+impl SerializeAs<ReplicationProperty> for ReplicationPropertyFromTo {
+    fn serialize_as<S>(source: &ReplicationProperty, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if source.greatest_defined_scope() == LocationScope::Node {
+            return serializer.serialize_u8(
+                source
+                    .copies_at_scope(LocationScope::Node)
+                    .expect("must be set"),
+            );
+        }
+
+        serde_with::DisplayFromStr::serialize_as(source, serializer)
     }
 }
 

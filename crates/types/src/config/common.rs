@@ -28,6 +28,7 @@ use crate::PlainNodeId;
 use crate::locality::NodeLocation;
 use crate::net::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
+use crate::replication::ReplicationProperty;
 use crate::retries::RetryPolicy;
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
@@ -137,6 +138,18 @@ pub struct CommonOptions {
     ///
     /// Default: 24
     pub default_num_partitions: u16,
+
+    /// # Default replication factor
+    ///
+    /// Configures the global default replication factor to be used by the the system.
+    ///
+    /// Note that this value only impacts the cluster initial provisioning and will not be respected after
+    /// the cluster has been provisioned.
+    ///
+    /// To update existing clusters use the `restatectl` utility.
+    #[serde_as(as = "crate::replication::ReplicationPropertyFromTo")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub default_replication: ReplicationProperty,
 
     /// # Shutdown grace timeout
     ///
@@ -415,6 +428,7 @@ impl Default for CommonOptions {
             bind_address: None,
             advertised_address: AdvertisedAddress::from_str(DEFAULT_ADVERTISED_ADDRESS).unwrap(),
             default_num_partitions: 24,
+            default_replication: ReplicationProperty::new_unchecked(1),
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
             service_client: Default::default(),
@@ -836,6 +850,8 @@ pub struct CommonOptionsShadow {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     initialization_timeout: humantime::Duration,
     disable_telemetry: bool,
+    #[serde_as(as = "crate::replication::ReplicationPropertyFromTo")]
+    pub default_replication: ReplicationProperty,
 
     metadata_client: MetadataClientOptions,
     // todo drop in version 1.3
@@ -941,6 +957,7 @@ impl From<CommonOptionsShadow> for CommonOptions {
             advertised_address: value.advertised_address,
             shutdown_timeout: value.shutdown_timeout,
             default_thread_pool_size: value.default_thread_pool_size,
+            default_replication: value.default_replication,
             tracing: value.tracing,
             log_filter: value.log_filter,
             log_format: value.log_format,

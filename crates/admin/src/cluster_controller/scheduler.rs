@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use itertools::Itertools;
 use rand::seq::IteratorRandom;
-use tracing::{Level, debug, enabled, info, instrument, trace};
+use tracing::{Level, debug, enabled, info, instrument, trace, warn};
 
 use restate_core::metadata_store::{ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
@@ -296,11 +296,9 @@ impl<T: TransportConnect> Scheduler<T> {
                 target_state.node_set.extend(alive_workers.iter().cloned());
             }
             PartitionReplication::Limit(replication_factor) => {
-                assert_eq!(
-                    replication_factor.greatest_defined_scope(),
-                    LocationScope::Node,
-                    "Location aware partition replication is not supported yet"
-                );
+                if replication_factor.greatest_defined_scope() > LocationScope::Node {
+                    warn!("Location aware partition replication is not supported yet");
+                }
 
                 let replication_factor = usize::from(replication_factor.num_copies());
 

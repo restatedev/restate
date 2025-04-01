@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU8, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -22,7 +22,9 @@ use crate::logs::metadata::{NodeSetSize, ProviderKind};
 use crate::replication::ReplicationProperty;
 use crate::retries::RetryPolicy;
 
-use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use super::{
+    CommonOptions, RocksDbOptions, RocksDbOptionsBuilder, print_warning_deprecated_config_option,
+};
 
 /// # Bifrost options
 #[serde_as]
@@ -96,6 +98,10 @@ impl BifrostOptions {
             Some(self.append_retry_max_interval.into()),
         )
     }
+
+    pub fn apply_common(&mut self, common: &CommonOptions) {
+        self.local.apply_common(common);
+    }
 }
 
 impl Default for BifrostOptions {
@@ -163,7 +169,7 @@ pub struct LocalLogletOptions {
 }
 
 impl LocalLogletOptions {
-    pub fn apply_common(&mut self, common: &CommonOptions) {
+    fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
         if self.rocksdb_memory_budget.is_none() {
             self.rocksdb_memory_budget = Some(
@@ -221,7 +227,7 @@ impl Default for LocalLogletOptions {
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "ReplicatedLoglet", default))]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", from = "ReplicatedLogletOptionsShadow")]
 #[builder(default)]
 pub struct ReplicatedLogletOptions {
     /// Maximum number of inflight records sequencer can accept
@@ -294,12 +300,13 @@ pub struct ReplicatedLogletOptions {
     /// To update existing clusters use the `restatectl` utility.
     // Also allow to specify the replication property as non-zero u8 value to make it simpler to
     // pass it in via an env variable.
-    #[serde_as(
-        as = "serde_with::PickFirst<(serde_with::DisplayFromStr, crate::replication::ReplicationPropertyFromNonZeroU8)>"
-    )]
-    #[serde(default = "default_log_replication")]
+    #[serde_as(as = "Option<crate::replication::ReplicationPropertyFromTo>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub default_log_replication: ReplicationProperty,
+    #[deprecated(
+        since = "1.3.0",
+        note = "common.default_replication should be used instead. Will be removed with 1.4.0"
+    )]
+    pub default_log_replication: Option<ReplicationProperty>,
 
     /// # Default nodeset size
     ///
@@ -322,12 +329,9 @@ fn nodeset_size_is_zero(i: &NodeSetSize) -> bool {
     *i == NodeSetSize::ZERO
 }
 
-fn default_log_replication() -> ReplicationProperty {
-    ReplicationProperty::new(NonZeroU8::new(1).expect("to be non-zero"))
-}
-
 impl Default for ReplicatedLogletOptions {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             maximum_inflight_records: NonZeroUsize::new(1000).unwrap(),
 
@@ -348,7 +352,57 @@ impl Default for ReplicatedLogletOptions {
             readahead_records: NonZeroUsize::new(100).unwrap(),
             readahead_trigger_ratio: 0.5,
             default_nodeset_size: NodeSetSize::default(),
-            default_log_replication: default_log_replication(),
+            default_log_replication: None,
+        }
+    }
+}
+
+/// Used to deserialize the [`ReplicatedLogletOptions`] in backwards compatible way.
+///
+/// | Current Name                    | Backwards Compatible            | Since   |
+/// |---------------------------------|---------------------------------|---------|
+/// |                                 | `default_log_replication`       | 1.3     |
+///
+/// Once we no longer support the backwards compatible aliases, we can remove this struct.
+#[serde_as]
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ReplicatedLogletOptionsShadow {
+    maximum_inflight_records: NonZeroUsize,
+    sequencer_retry_policy: RetryPolicy,
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    sequencer_inactivity_timeout: humantime::Duration,
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    log_server_rpc_timeout: humantime::Duration,
+    log_server_retry_policy: RetryPolicy,
+    readahead_records: NonZeroUsize,
+    readahead_trigger_ratio: f32,
+    #[serde_as(as = "Option<crate::replication::ReplicationPropertyFromTo>")]
+    default_log_replication: Option<ReplicationProperty>,
+    #[serde(default, skip_serializing_if = "nodeset_size_is_zero")]
+    default_nodeset_size: NodeSetSize,
+}
+
+impl From<ReplicatedLogletOptionsShadow> for ReplicatedLogletOptions {
+    fn from(value: ReplicatedLogletOptionsShadow) -> Self {
+        if value.default_log_replication.is_some() {
+            print_warning_deprecated_config_option(
+                "admin.replicated-loglet.default-log-replication",
+                Some("default-replication"),
+            );
+        }
+
+        #[allow(deprecated)]
+        Self {
+            maximum_inflight_records: value.maximum_inflight_records,
+            sequencer_retry_policy: value.sequencer_retry_policy,
+            sequencer_inactivity_timeout: value.sequencer_inactivity_timeout,
+            log_server_rpc_timeout: value.log_server_rpc_timeout,
+            log_server_retry_policy: value.log_server_retry_policy,
+            readahead_records: value.readahead_records,
+            readahead_trigger_ratio: value.readahead_trigger_ratio,
+            default_log_replication: value.default_log_replication,
+            default_nodeset_size: value.default_nodeset_size,
         }
     }
 }
