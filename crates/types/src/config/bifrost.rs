@@ -120,7 +120,7 @@ impl Default for BifrostOptions {
             append_retry_max_interval: Duration::from_secs(1).into(),
             auto_recovery_interval: Duration::from_secs(3).into(),
             seal_retry_interval: Duration::from_secs(2).into(),
-            record_cache_memory_size: 250_000_000u64.into(),
+            record_cache_memory_size: ByteCount::from(250u64 * 1024 * 1024), // 250 MiB
         }
     }
 }
