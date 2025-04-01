@@ -81,8 +81,19 @@ impl NodeCtlSvcHandler {
             })
             .transpose()?
             .unwrap_or(config.common.default_num_partitions);
-        let partition_replication = request.partition_replication.try_into()?;
 
+        let partition_replication: ReplicationProperty = request
+            .partition_replication
+            .map(TryInto::try_into)
+            .transpose()?
+            .unwrap_or_else(|| {
+                #[allow(deprecated)]
+                config
+                    .admin
+                    .default_partition_replication
+                    .clone()
+                    .unwrap_or_else(|| config.common.default_replication.clone())
+            });
         let log_provider = request
             .log_provider
             .map(|log_provider| log_provider.parse())
@@ -112,7 +123,7 @@ impl NodeCtlSvcHandler {
 
         Ok(ClusterConfiguration {
             num_partitions,
-            partition_replication,
+            partition_replication: partition_replication.into(),
             bifrost_provider: provider_configuration,
         })
     }

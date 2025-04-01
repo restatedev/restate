@@ -114,19 +114,6 @@ pub mod cluster {
         }
     }
 
-    impl TryFrom<Option<ReplicationProperty>> for PartitionReplication {
-        type Error = anyhow::Error;
-
-        fn try_from(value: Option<ReplicationProperty>) -> Result<Self, Self::Error> {
-            Ok(value
-                .map(TryFrom::try_from)
-                .transpose()?
-                .map_or(PartitionReplication::Everywhere, |p| {
-                    PartitionReplication::Limit(p)
-                }))
-        }
-    }
-
     impl From<PartitionReplication> for Option<ReplicationProperty> {
         fn from(value: PartitionReplication) -> Self {
             match value {

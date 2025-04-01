@@ -70,9 +70,9 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
 
     let current_config_string = cluster_config_string(&current)?;
 
-    // todo: It's a bit confusing that not specifying the partition replication sets the partition
-    //  replication to everywhere. Everywhere should probably be an explicit value.
-    current.partition_replication = set_opts.partition_replication.clone().map(Into::into);
+    if let Some(replication_property) = &set_opts.partition_replication {
+        current.partition_replication = Some(replication_property.clone().into());
+    }
 
     set_opts.log_provider.inspect(|provider| {
         match provider {

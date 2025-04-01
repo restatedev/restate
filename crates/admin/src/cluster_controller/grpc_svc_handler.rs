@@ -357,7 +357,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .update_cluster_configuration(
                 cluster_configuration
                     .partition_replication
-                    .try_into()
+                    .map(TryInto::try_into)
+                    .transpose()
                     .map_err(|err| {
                         Status::invalid_argument(format!("invalid partition_replication: {err}"))
                     })?,

@@ -15,7 +15,6 @@ use enumset::enum_set;
 use futures_util::StreamExt;
 use googletest::{IntoTestResult, fail};
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig};
-use restate_types::partition_table::PartitionReplication;
 use restate_types::replication::ReplicationProperty;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -83,7 +82,9 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     cluster.nodes[0]
         .provision_cluster(
             None,
-            PartitionReplication::Everywhere,
+            // Since there is noway we can describe "everywhere" cluster replication
+            // we set the value directly to 3.
+            ReplicationProperty::new_unchecked(3),
             Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
         )
         .await

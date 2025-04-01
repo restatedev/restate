@@ -182,7 +182,7 @@ enum ClusterControllerCommand {
         response_tx: oneshot::Sender<anyhow::Result<Snapshot>>,
     },
     UpdateClusterConfiguration {
-        partition_replication: PartitionReplication,
+        partition_replication: Option<ReplicationProperty>,
         default_provider: ProviderConfiguration,
         num_partitions: u16,
         response_tx: oneshot::Sender<anyhow::Result<()>>,
@@ -266,7 +266,7 @@ impl ClusterControllerHandle {
 
     pub async fn update_cluster_configuration(
         &self,
-        partition_replication: PartitionReplication,
+        partition_replication: Option<ReplicationProperty>,
         default_provider: ProviderConfiguration,
         num_partitions: u16,
     ) -> Result<anyhow::Result<()>, ShutdownError> {
@@ -456,7 +456,7 @@ impl<T: TransportConnect> Service<T> {
 
     async fn update_cluster_configuration(
         &self,
-        partition_replication: PartitionReplication,
+        partition_replication: Option<ReplicationProperty>,
         default_provider: ProviderConfiguration,
         num_partitions: u16,
     ) -> anyhow::Result<()> {
@@ -513,9 +513,12 @@ impl<T: TransportConnect> Service<T> {
 
                     let mut builder: PartitionTableBuilder = partition_table.into();
 
-                    if builder.partition_replication() != &partition_replication {
-                        builder.set_partition_replication(partition_replication.clone());
+                    if let Some(partition_replication) = &partition_replication {
+                        if !matches!(builder.partition_replication(), PartitionReplication::Limit(current) if current == partition_replication) {
+                            builder.set_partition_replication(partition_replication.clone().into());
+                        }
                     }
+
 
                     if builder.num_partitions() != num_partitions {
                         if builder.num_partitions() != 0 {
