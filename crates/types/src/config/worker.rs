@@ -211,7 +211,7 @@ impl Default for InvokerOptions {
             in_memory_queue_length_limit: NonZeroUsize::new(66_049).unwrap(),
             inactivity_timeout: Duration::from_secs(60).into(),
             abort_timeout: Duration::from_secs(60).into(),
-            message_size_warning: NonZeroUsize::new(10_000_000).unwrap(), // 10MB
+            message_size_warning: NonZeroUsize::new(10 * 1024 * 1024).unwrap(), // 10MiB
             message_size_limit: None,
             tmp_dir: None,
             concurrent_invocations_limit: Some(NonZeroUsize::new(100).unwrap()),

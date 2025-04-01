@@ -55,7 +55,7 @@ impl QueryEngineOptions {
 impl Default for QueryEngineOptions {
     fn default() -> Self {
         Self {
-            memory_size: NonZeroUsize::new(4_000_000_000).unwrap(), // 4GB
+            memory_size: NonZeroUsize::new(4 * 1024 * 1024 * 1024).unwrap(), // 4GiB
             tmp_dir: None,
             query_parallelism: None,
             pgsql_bind_address: "0.0.0.0:9071".parse().unwrap(),
