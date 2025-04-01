@@ -39,7 +39,6 @@ impl SnapshotPartitionTask {
     #[instrument(level = "info", skip_all, fields(snapshot_id = %self.snapshot_id, partition_id = %self.partition_id))]
     pub async fn run(self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
         debug!("Creating partition snapshot");
-
         let result = self.create_snapshot_inner().await;
 
         result
