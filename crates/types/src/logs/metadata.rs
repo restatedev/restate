@@ -152,11 +152,13 @@ impl ProviderConfiguration {
     pub fn from_configuration(configuration: &Configuration) -> Self {
         ProviderConfiguration::from((
             configuration.bifrost.default_provider,
+            #[allow(deprecated)]
             configuration
                 .bifrost
                 .replicated_loglet
                 .default_log_replication
-                .clone(),
+                .clone()
+                .unwrap_or_else(|| configuration.common.default_replication.clone()),
             configuration.bifrost.replicated_loglet.default_nodeset_size,
         ))
     }

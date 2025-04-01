@@ -13,7 +13,10 @@ use std::time::Duration;
 
 use enumset::enum_set;
 use futures_util::StreamExt;
-use googletest::fail;
+use googletest::{IntoTestResult, fail};
+use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig};
+use restate_types::partition_table::PartitionReplication;
+use restate_types::replication::ReplicationProperty;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tonic::transport::Channel;
@@ -61,25 +64,43 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         BinarySource::CargoTest,
         enum_set!(Role::MetadataServer | Role::Admin | Role::Worker | Role::LogServer),
         2,
-        true,
+        false,
     );
 
-    let worker_1 = &nodes[0];
-    let worker_2 = &nodes[1];
-
-    let mut worker_1_ready = worker_1.lines("Partition [0-9]+ started".parse()?);
-    let mut worker_2_ready = worker_2.lines("Partition [0-0]+ started".parse()?);
-
     let mut cluster = Cluster::builder()
+        .cluster_name("cluster-1")
+        .nodes(nodes)
         .temp_base_dir()
-        .nodes(nodes.clone())
         .build()
         .start()
         .await?;
 
+    let replicated_loglet_config = ReplicatedLogletConfig {
+        target_nodeset_size: NodeSetSize::default(),
+        replication_property: ReplicationProperty::new_unchecked(1),
+    };
+
+    cluster.nodes[0]
+        .provision_cluster(
+            None,
+            PartitionReplication::Everywhere,
+            Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
+        )
+        .await
+        .into_test_result()?;
+
+    let worker_1 = &cluster.nodes[0];
+    let worker_2 = &cluster.nodes[1];
+
+    let mut worker_1_ready = worker_1.lines("Partition [0-9]+ started".parse()?);
+    let mut worker_2_ready = worker_2.lines("Partition [0-0]+ started".parse()?);
+
     cluster.wait_healthy(Duration::from_secs(10)).await?;
     tokio::time::timeout(Duration::from_secs(10), worker_1_ready.next()).await?;
     tokio::time::timeout(Duration::from_secs(10), worker_2_ready.next()).await?;
+
+    drop(worker_1_ready);
+    drop(worker_2_ready);
 
     let mut client = new_cluster_ctrl_client(create_tonic_channel(
         cluster.nodes[0].node_address().clone(),
