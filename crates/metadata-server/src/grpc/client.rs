@@ -16,6 +16,7 @@ use bytes::BytesMut;
 use bytestring::ByteString;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
+use rand::Rng;
 use restate_core::metadata_store::{MetadataStore, ProvisionError, ReadError, WriteError};
 use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
 use restate_core::{Metadata, TaskCenter, TaskKind, cancellation_watcher};
@@ -503,10 +504,11 @@ struct Channels {
 impl Channels {
     fn new(initial_channels: Vec<ChannelWithAddress>) -> Self {
         assert!(!initial_channels.is_empty());
+        let initial_index = rand::rng().random_range(..initial_channels.len());
         Channels {
             initial_channels,
             channels: IndexMap::default(),
-            channel_index: 0,
+            channel_index: initial_index,
         }
     }
 
@@ -515,15 +517,25 @@ impl Channels {
     }
 
     fn choose_next_round_robin(&mut self) -> Option<ChannelWithAddress> {
-        self.channel_index =
-            (self.channel_index + 1) % (self.channels.len() + self.initial_channels.len());
-        let chosen_channel = self
-            .channels
-            .values()
-            .chain(self.initial_channels.iter())
-            .nth(self.channel_index)
-            .cloned();
-        chosen_channel
+        let num_channels = self.channels.len();
+
+        self.channel_index += 1;
+        if self.channel_index >= num_channels + self.initial_channels.len() {
+            self.channel_index = 0;
+        }
+
+        if self.channel_index < num_channels {
+            self.channels
+                .get_index(self.channel_index)
+                .map(|(_, channel)| channel)
+                .cloned()
+        } else if !self.initial_channels.is_empty() {
+            self.initial_channels
+                .get(self.channel_index - num_channels)
+                .cloned()
+        } else {
+            None
+        }
     }
 
     /// Returns true if there are no channels. It ignores the initial channels.
@@ -543,5 +555,89 @@ impl Channels {
     ) {
         self.channels.clear();
         self.channels.extend(new_channels);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_types::{PlainNodeId, net::AdvertisedAddress};
+    use test_log::test;
+    use tonic::transport::Channel;
+
+    use super::{ChannelWithAddress, Channels};
+
+    #[test]
+    #[should_panic(expected = "!initial_channels.is_empty()")]
+    fn empty_initial_channels() {
+        Channels::new(vec![]);
+    }
+
+    #[test(restate_core::test)]
+    async fn update_channels() {
+        let initial_addr: AdvertisedAddress = "http://localhost".parse().unwrap();
+        let mut channels = Channels::new(vec![ChannelWithAddress::new(
+            initial_addr.clone(),
+            Channel::from_static("http://localhost").connect_lazy(),
+        )]);
+
+        assert!(channels.choose_next_round_robin().is_some());
+
+        // Define node addresses for easier comparison later
+        let node1_addr: AdvertisedAddress = "http://node1".parse().unwrap();
+        let node2_addr: AdvertisedAddress = "http://node2".parse().unwrap();
+        let node3_addr: AdvertisedAddress = "http://node3".parse().unwrap();
+
+        channels.update_channels(vec![
+            (
+                PlainNodeId::new(1),
+                ChannelWithAddress::new(
+                    node1_addr.clone(),
+                    Channel::from_static("http://node1").connect_lazy(),
+                ),
+            ),
+            (
+                PlainNodeId::new(2),
+                ChannelWithAddress::new(
+                    node2_addr.clone(),
+                    Channel::from_static("http://node2").connect_lazy(),
+                ),
+            ),
+            (
+                PlainNodeId::new(3),
+                ChannelWithAddress::new(
+                    node3_addr.clone(),
+                    Channel::from_static("http://node3").connect_lazy(),
+                ),
+            ),
+        ]);
+
+        let mut seen_addresses = Vec::new();
+        for _ in 0..4 {
+            if let Some(channel) = channels.choose_next_round_robin() {
+                seen_addresses.push(channel.address);
+            }
+        }
+
+        assert!(seen_addresses.contains(&initial_addr));
+        assert!(seen_addresses.contains(&node1_addr));
+        assert!(seen_addresses.contains(&node2_addr));
+        assert!(seen_addresses.contains(&node3_addr));
+
+        channels.drop_initial_channels();
+
+        seen_addresses.clear();
+        for _ in 0..3 {
+            if let Some(channel) = channels.choose_next_round_robin() {
+                seen_addresses.push(channel.address);
+            }
+        }
+
+        assert!(seen_addresses.contains(&node1_addr));
+        assert!(seen_addresses.contains(&node2_addr));
+        assert!(seen_addresses.contains(&node3_addr));
+
+        channels.update_channels(vec![]);
+
+        assert!(channels.choose_next_round_robin().is_none());
     }
 }
