@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
@@ -58,6 +58,24 @@ pub struct LogServerOptions {
     /// Default is 0 which maps to floor(number of CPU cores / 2)
     rocksdb_max_sub_compactions: u32,
 
+    /// The size limit of all WAL files
+    ///
+    /// Use this to limit the size of WAL files. If the size of all WAL files exceeds this limit,
+    /// the oldest WAL file will be deleted and if needed, memtable flush will be triggered.
+    ///
+    /// Note: RocksDB internally counts the uncompressed bytes to determine the WAL size, and since the WAL
+    /// is compressed, the actual size on disk will be significantly smaller than this value (~1/4
+    /// depending on the compression ratio). For instance, if this is set to "1 MiB", then rocksdb
+    /// might decide to flush if the total WAL (on disk) reached ~260 KiB (compressed).
+    ///
+    /// Default is `0` which translates into 6 times the memory allocated for membtables for this
+    /// database.
+    #[serde(skip_serializing_if = "is_zero")]
+    #[serde_as(as = "ByteCount")]
+    #[serde(default)]
+    #[cfg_attr(feature = "schemars", schemars(with = "ByteCount"))]
+    rocksdb_max_wal_size: usize,
+
     /// Whether to perform commits in background IO thread pools eagerly or not
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -70,6 +88,10 @@ pub struct LogServerOptions {
 
     /// The number of messages that can queue up on input network stream while request processor is busy.
     pub incoming_network_queue_length: NonZeroUsize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl LogServerOptions {
@@ -91,6 +113,14 @@ impl LogServerOptions {
 
     pub fn rocksdb_disable_wal_fsync(&self) -> bool {
         self.rocksdb_disable_wal_fsync
+    }
+
+    pub fn rocksdb_max_wal_size(&self) -> usize {
+        if self.rocksdb_max_wal_size == 0 {
+            6 * self.rocksdb_memory_budget()
+        } else {
+            self.rocksdb_max_wal_size
+        }
     }
 
     pub fn rocksdb_max_sub_compactions(&self) -> u32 {
@@ -134,6 +164,7 @@ impl Default for LogServerOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.5,
             rocksdb_max_sub_compactions: 0,
+            rocksdb_max_wal_size: 0,
             writer_batch_commit_count: 5000,
             rocksdb_disable_wal_fsync: false,
             always_commit_in_background: false,
