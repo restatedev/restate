@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-restate-admin = { workspace = true, features = ["options_schema", "memory-loglet"] }
+restate-admin = { workspace = true, features = ["options_schema", "memory-loglet", "clients"] }
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-metadata-server = { workspace = true }
