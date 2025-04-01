@@ -28,9 +28,8 @@ pub struct ProvisionOpts {
     #[clap(long)]
     num_partitions: Option<u16>,
 
-    /// Optional partition placement strategy. By default replicates
-    /// partitions on all nodes. Accepts replication property
-    /// string as a value
+    /// Partition replication. If unset, uses
+    /// the default `admin.default-partition-replication`
     #[clap(long)]
     partition_replication: Option<ReplicationProperty>,
 

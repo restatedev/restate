@@ -21,8 +21,8 @@ use restate_core::protobuf::node_ctl_svc::{
 use restate_metadata_server::grpc::new_metadata_server_client;
 use restate_types::config::{InvalidConfigurationError, MetadataServerKind, RaftOptions};
 use restate_types::logs::metadata::ProviderConfiguration;
-use restate_types::partition_table::PartitionReplication;
 use restate_types::protobuf::common::MetadataServerStatus;
+use restate_types::replication::ReplicationProperty;
 use restate_types::retries::RetryPolicy;
 use restate_types::{
     PlainNodeId,
@@ -817,7 +817,7 @@ impl StartedNode {
     pub async fn provision_cluster(
         &self,
         num_partitions: Option<NonZeroU16>,
-        partition_replication: PartitionReplication,
+        partition_replication: ReplicationProperty,
         provider_configuration: Option<ProviderConfiguration>,
     ) -> anyhow::Result<bool> {
         let channel = create_tonic_channel(
@@ -828,7 +828,7 @@ impl StartedNode {
         let request = ProtoProvisionClusterRequest {
             dry_run: false,
             num_partitions: num_partitions.map(|num| u32::from(num.get())),
-            partition_replication: partition_replication.into(),
+            partition_replication: Some(partition_replication.into()),
             log_provider: provider_configuration
                 .as_ref()
                 .map(|config| config.kind().to_string()),
