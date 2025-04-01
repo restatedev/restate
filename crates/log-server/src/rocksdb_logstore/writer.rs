@@ -106,7 +106,7 @@ impl LogStoreWriter {
         // the backlog while we process this one.
         let (sender, receiver) = mpsc::channel(batch_size * 2);
 
-        TaskCenter::spawn(
+        TaskCenter::spawn_unmanaged(
             TaskKind::SystemService,
             "log-server-rocksdb-writer",
             async move {
@@ -116,22 +116,10 @@ impl LogStoreWriter {
                     std::pin::pin!(ReceiverStream::new(receiver).ready_chunks(batch_size));
                 let mut cancel = std::pin::pin!(cancellation_watcher());
 
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = &mut cancel => {
-                            break;
-                        }
-                        Some(cmds) = TokioStreamExt::next(&mut receiver) => {
-                                self.handle_commands(opts.live_load(), cmds).await;
-                        }
-                        else => {
-                            break;
-                        }
-                    }
+                while let Some(cmds) = TokioStreamExt::next(&mut receiver).await {
+                    self.handle_commands(opts.live_load(), cmds).await;
                 }
                 debug!("LogStore loglet writer task finished");
-                Ok(())
             },
         )?;
         Ok(RocksDbLogWriterHandle { sender })
