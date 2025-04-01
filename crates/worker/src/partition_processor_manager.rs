@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
+use itertools::{Either, Itertools};
 use metrics::gauge;
 use rand::Rng;
 use rand::seq::SliceRandom;
@@ -246,9 +247,11 @@ impl PartitionProcessorManager {
         let mut logs_version_watcher = metadata.watch(MetadataKind::Logs);
         let mut partition_table_version_watcher = metadata.watch(MetadataKind::PartitionTable);
 
-        let mut latest_snapshot_check_interval =
-            tokio::time::interval(with_jitter(Duration::from_secs(1), 0.1));
-        latest_snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut snapshot_check_interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(rand::rng().random_range(30..60)), // delay scheduled snapshots on startup
+            with_jitter(Duration::from_secs(1), 0.1),
+        );
+        snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut update_target_tail_lsns = tokio::time::interval(Duration::from_secs(1));
         update_target_tail_lsns.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -259,7 +262,7 @@ impl PartitionProcessorManager {
                 Some(command) = self.rx.recv() => {
                     self.on_command(command);
                 }
-                _ = latest_snapshot_check_interval.tick() => {
+                _ = snapshot_check_interval.tick() => {
                     self.trigger_periodic_partition_snapshots();
                 }
                 _ = update_target_tail_lsns.tick() => {
@@ -553,6 +556,12 @@ impl PartitionProcessorManager {
                         v.insert(tail_lsn);
                     }
                 }
+            }
+            EventKind::NewArchivedLsn { archived_lsn } => {
+                self.archived_lsns
+                    .entry(partition_id)
+                    .and_modify(|lsn| *lsn = archived_lsn.max(*lsn))
+                    .or_insert(archived_lsn);
             }
         }
     }
@@ -917,39 +926,53 @@ impl PartitionProcessorManager {
             return;
         };
 
+        let potential_snapshot_partitions = self
+            .processor_states
+            .iter()
+            .filter(|(partition_id, _)| !self.pending_snapshots.contains_key(partition_id))
+            .filter_map(|(partition_id, state)| {
+                state
+                    .partition_processor_status()
+                    .filter(|status| {
+                        status.effective_mode == RunMode::Leader
+                            && status.replay_status == ReplayStatus::Active
+                    })
+                    .map(|status| (*partition_id, status))
+            });
+
+        let (mut known_archived_lsn, unknown_archived_lsn): (Vec<_>, Vec<_>) =
+            potential_snapshot_partitions.partition_map(|(partition_id, status)| {
+                match self.archived_lsns.get(&partition_id) {
+                    Some(&archived_lsn) => Either::Left((
+                        partition_id,
+                        status.last_applied_log_lsn.unwrap_or(Lsn::INVALID),
+                        archived_lsn,
+                    )),
+                    None => Either::Right(partition_id),
+                }
+            });
+
+        for partition_id in unknown_archived_lsn {
+            self.spawn_update_archived_lsn_task(partition_id, snapshot_repository.clone());
+        }
+
         // Limit the number of snapshots we schedule automatically
         const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
         let limit = MAX_CONCURRENT_SNAPSHOTS.saturating_sub(self.pending_snapshots.len());
 
-        let mut snapshot_partitions: Vec<_> = self
-            .processor_states
-            .iter()
-            .filter_map(|(partition_id, state)| {
-                state
-                    .partition_processor_status()
-                    .map(|status| (*partition_id, status))
+        known_archived_lsn.shuffle(&mut rand::rng());
+        let snapshot_partitions = known_archived_lsn
+            .into_iter()
+            .filter_map(|(partition_id, applied_lsn, archived_lsn)| {
+                if applied_lsn >= archived_lsn.add(Lsn::from(records_per_snapshot.get())) {
+                    Some(partition_id)
+                } else {
+                    None
+                }
             })
-            .filter(|(partition_id, status)| {
-                status.effective_mode == RunMode::Leader
-                    && status.replay_status == ReplayStatus::Active
-                    && status.last_applied_log_lsn.unwrap_or(Lsn::INVALID)
-                        >= self
-                            .archived_lsns
-                            .get(partition_id)
-                            .copied()
-                            .unwrap_or(Lsn::INVALID)
-                            .add(Lsn::from(records_per_snapshot.get()))
-            })
-            .collect();
-        snapshot_partitions.shuffle(&mut rand::rng());
+            .take(limit);
 
-        for (partition_id, status) in snapshot_partitions.into_iter().take(limit) {
-            debug!(
-                %partition_id,
-                last_archived_lsn = %status.last_archived_log_lsn.unwrap_or(Lsn::OLDEST),
-                last_applied_lsn = %status.last_applied_log_lsn.unwrap_or(Lsn::INVALID),
-                "Creating periodic partition snapshot",
-            );
+        for partition_id in snapshot_partitions {
             self.spawn_create_snapshot_task(partition_id, None, snapshot_repository.clone(), None);
         }
     }
@@ -1046,6 +1069,35 @@ impl PartitionProcessorManager {
         }
     }
 
+    fn spawn_update_archived_lsn_task(
+        &mut self,
+        partition_id: PartitionId,
+        snapshot_repository: SnapshotRepository,
+    ) {
+        self.asynchronous_operations
+            .build_task()
+            .name(&format!("update-archived-lsn-{}", partition_id))
+            .spawn(
+                async move {
+                    let archived_lsn = snapshot_repository
+                        .get_latest_archived_lsn(partition_id)
+                        .await
+                        .inspect_err(|err| {
+                            info!(?partition_id, "Unable to get latest archived LSN: {}", err)
+                        })
+                        .ok()
+                        .unwrap_or(Lsn::INVALID);
+
+                    AsynchronousEvent {
+                        partition_id,
+                        inner: EventKind::NewArchivedLsn { archived_lsn },
+                    }
+                }
+                .in_current_tc(),
+            )
+            .expect("to spawn update archived LSN task");
+    }
+
     /// Creates a task that when started will spawn a new partition processor.
     ///
     /// This allows multiple partition processors to be started concurrently without holding
@@ -1129,6 +1181,9 @@ enum EventKind {
     },
     NewTargetTail {
         tail: Option<Lsn>,
+    },
+    NewArchivedLsn {
+        archived_lsn: Lsn,
     },
 }
 

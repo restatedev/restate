@@ -33,7 +33,7 @@ use restate_partition_store::snapshots::{
 };
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
-use restate_types::logs::Lsn;
+use restate_types::logs::{Lsn, SequenceNumber};
 
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
@@ -490,6 +490,35 @@ impl SnapshotRepository {
             files: snapshot_metadata.files,
             key_range: snapshot_metadata.key_range.clone(),
         }))
+    }
+
+    /// Retrieve the latest known LSN to be archived to the snapshot repository.
+    /// Response of `Ok(Lsn::INVALID)` indicates no existing snapshot for the partition.
+    #[instrument(
+        level = "debug",
+        skip_all,
+        err,
+        fields(%partition_id),
+    )]
+    pub(crate) async fn get_latest_archived_lsn(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<Lsn> {
+        let latest_path = self.get_latest_snapshot_pointer(partition_id);
+
+        let latest = match self.object_store.get(&latest_path).await {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => {
+                debug!("Latest snapshot data not found in repository");
+                return Ok(Lsn::INVALID);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
+        debug!("Latest snapshot metadata: {:?}", latest);
+
+        Ok(latest.min_applied_lsn)
     }
 
     async fn get_latest_snapshot_metadata_for_update(
