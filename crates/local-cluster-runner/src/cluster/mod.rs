@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use typed_builder::TypedBuilder;
 
-use restate_types::errors::GenericError;
+use restate_types::{errors::GenericError, nodes_config::Role};
 
 use crate::node::{HealthCheck, HealthError, Node, NodeStartError, StartedNode};
 
@@ -171,8 +171,19 @@ impl StartedCluster {
     /// Wait for all ingress, admin, logserver roles in the cluster to be healthy/provisioned and
     /// the embedded metadata cluster to include all nodes.
     pub async fn wait_healthy(&self, dur: Duration) -> Result<(), HealthError> {
+        let metadata_cluster_size = self
+            .nodes
+            .iter()
+            .filter(|node| node.config().has_role(Role::MetadataServer))
+            .count();
+
         tokio::try_join!(
-            self.wait_check_healthy(HealthCheck::MetadataServer, dur),
+            self.wait_check_healthy(
+                HealthCheck::MetadataServer {
+                    metadata_cluster_size
+                },
+                dur
+            ),
             self.wait_check_healthy(HealthCheck::Admin, dur),
             self.wait_check_healthy(HealthCheck::Ingress, dur),
             self.wait_check_healthy(HealthCheck::LogServer, dur),

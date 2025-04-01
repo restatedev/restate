@@ -795,7 +795,7 @@ impl StartedNode {
     }
 
     /// Check to see if the metadata server has joined the metadata cluster.
-    pub async fn metadata_server_joined_cluster(&self) -> bool {
+    pub async fn metadata_server_joined_cluster(&self, cluster_size: usize) -> bool {
         let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
             self.config().common.advertised_address.clone(),
             &self.config().networking,
@@ -809,7 +809,19 @@ impl StartedNode {
             return false;
         };
 
-        response.status() == MetadataServerStatus::Member
+        if response.status() != MetadataServerStatus::Member {
+            return false;
+        }
+
+        let configuration = response.configuration.expect("must be set");
+        if configuration.members.len() != cluster_size {
+            info!(
+                "Expecting cluster size {cluster_size} found only {} member(s)",
+                configuration.members.len(),
+            )
+        }
+
+        configuration.members.len() == cluster_size
     }
 
     /// Provisions the cluster on this node with the given configuration. Returns true if the
@@ -906,7 +918,7 @@ pub enum HealthCheck {
     Admin,
     Ingress,
     LogServer,
-    MetadataServer,
+    MetadataServer { metadata_cluster_size: usize },
 }
 
 impl HealthCheck {
@@ -915,7 +927,7 @@ impl HealthCheck {
             HealthCheck::Admin => node.admin_address().is_some(),
             HealthCheck::Ingress => node.ingress_address().is_some(),
             HealthCheck::LogServer => node.config().has_role(Role::LogServer),
-            HealthCheck::MetadataServer => node.config().has_role(Role::MetadataServer),
+            HealthCheck::MetadataServer { .. } => node.config().has_role(Role::MetadataServer),
         }
     }
 
@@ -924,7 +936,12 @@ impl HealthCheck {
             HealthCheck::Admin => node.admin_healthy().await,
             HealthCheck::Ingress => node.ingress_healthy().await,
             HealthCheck::LogServer => node.logserver_provisioned().await,
-            HealthCheck::MetadataServer => node.metadata_server_joined_cluster().await,
+            HealthCheck::MetadataServer {
+                metadata_cluster_size,
+            } => {
+                node.metadata_server_joined_cluster(*metadata_cluster_size)
+                    .await
+            }
         }
     }
 

@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["clients"]
 clients = []
 test-util = []
 

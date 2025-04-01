@@ -190,6 +190,11 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
             expected_recovery_duration: Duration,
         ) -> anyhow::Result<Infallible> {
             loop {
+                let metadata_cluster_size = cluster
+                    .nodes
+                    .iter()
+                    .filter(|node| node.config().has_role(Role::MetadataServer))
+                    .count();
                 let node = cluster
                     .nodes
                     .choose_mut(&mut rand::rng())
@@ -197,7 +202,12 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
                 node.restart().await?;
                 success_rx.mark_unchanged();
                 cluster
-                    .wait_check_healthy(HealthCheck::MetadataServer, Duration::from_secs(10))
+                    .wait_check_healthy(
+                        HealthCheck::MetadataServer {
+                            metadata_cluster_size,
+                        },
+                        Duration::from_secs(10),
+                    )
                     .await?;
                 tokio::time::timeout(expected_recovery_duration, success_rx.changed())
                     .await
