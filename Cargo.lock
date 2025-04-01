@@ -7024,7 +7024,6 @@ name = "restate-invoker-impl"
 version = "1.3.1-dev"
 dependencies = [
  "anyhow",
- "assert2",
  "bytes",
  "bytestring",
  "codederror",
