@@ -19,6 +19,7 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
     tonic::include_file_descriptor_set!("cluster_ctrl_svc_descriptor");
 
 /// Creates a new ClusterCtrlSvcClient with appropriate configuration
+#[cfg(feature = "clients")]
 pub fn new_cluster_ctrl_client(
     channel: Channel,
 ) -> cluster_ctrl_svc_client::ClusterCtrlSvcClient<Channel> {
