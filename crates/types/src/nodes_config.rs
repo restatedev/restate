@@ -45,9 +45,7 @@ pub enum Role {
     /// Serves the metadata store
     // For backwards-compatibility also accept the old name
     #[serde(alias = "metadata-store")]
-    #[cfg_attr(feature = "clap", clap(alias = "metadata-store"))]
-    // todo switch to serializing as "metadata-server" in version 1.3
-    #[serde(rename(serialize = "metadata-store"))]
+    #[serde(rename(serialize = "metadata-server"))]
     MetadataServer,
     /// Serves a log-server for replicated loglets
     LogServer,
