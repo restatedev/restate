@@ -220,7 +220,8 @@ impl From<ProviderConfiguration> for crate::protobuf::cluster::BifrostProvider {
                 result.provider = ProviderKind::Replicated.to_string();
                 result.replication_property = Some(cluster::ReplicationProperty {
                     replication_property: config.replication_property.to_string(),
-                })
+                });
+                result.target_nodeset_size = config.target_nodeset_size.as_u32();
             }
         };
 
