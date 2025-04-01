@@ -558,12 +558,10 @@ impl PartitionProcessorManager {
                 }
             }
             EventKind::NewArchivedLsn { archived_lsn } => {
-                if let Some(archived_lsn) = archived_lsn {
-                    self.archived_lsns
-                        .entry(partition_id)
-                        .and_modify(|lsn| *lsn = archived_lsn.max(*lsn))
-                        .or_insert(archived_lsn);
-                }
+                self.archived_lsns
+                    .entry(partition_id)
+                    .and_modify(|lsn| *lsn = archived_lsn.max(*lsn))
+                    .or_insert(archived_lsn);
             }
         }
     }
@@ -1087,7 +1085,9 @@ impl PartitionProcessorManager {
                         .inspect_err(|err| {
                             info!(?partition_id, "Unable to get latest archived LSN: {}", err)
                         })
-                        .unwrap_or_default();
+                        .ok()
+                        .unwrap_or(Lsn::INVALID);
+
                     AsynchronousEvent {
                         partition_id,
                         inner: EventKind::NewArchivedLsn { archived_lsn },
@@ -1183,7 +1183,7 @@ enum EventKind {
         tail: Option<Lsn>,
     },
     NewArchivedLsn {
-        archived_lsn: Option<Lsn>,
+        archived_lsn: Lsn,
     },
 }
 
