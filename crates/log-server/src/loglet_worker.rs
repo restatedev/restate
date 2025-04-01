@@ -12,7 +12,7 @@ use futures::StreamExt;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
-use tracing::{Instrument, debug, trace, trace_span, warn};
+use tracing::{Instrument, debug, error, trace, trace_span, warn};
 
 use restate_core::network::Incoming;
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher};
@@ -199,11 +199,17 @@ impl<S: LogStore> LogletWorker<S> {
                 }
                 Some(_) = in_flight_stores.next() => {}
                 // The in-flight seal (if any)
-                Some(Ok(_)) = &mut in_flight_seal => {
+                Some(res) = &mut in_flight_seal => {
                     sealing_in_progress = false;
-                    self.loglet_state.get_local_tail_watch().notify_seal();
-                    debug!(loglet_id = %self.loglet_id, "Loglet is now sealed on this log-server node");
                     in_flight_seal.set(None.into());
+                    if let Err(e) = res {
+                        error!(loglet_id = %self.loglet_id, ?e, "Rocksdb writer terminated before we can seal the loglet, terminating the loglet worker");
+                        in_flight_seal.set(None.into());
+                        break;
+                    } else {
+                        self.loglet_state.get_local_tail_watch().notify_seal();
+                        debug!(loglet_id = %self.loglet_id, "Loglet is now sealed on this log-server node");
+                    }
                 }
                 // The set of requests waiting for seal to complete
                 Some(_) = waiting_for_seal.next() => {}
@@ -315,10 +321,12 @@ impl<S: LogStore> LogletWorker<S> {
         tracing::debug!(loglet_id = %self.loglet_id, "Draining loglet worker");
         loop {
             tokio::select! {
-                Some(Ok(_)) = &mut in_flight_seal => {
-                    self.loglet_state.get_local_tail_watch().notify_seal();
-                    debug!(loglet_id = %self.loglet_id, "Loglet is now sealed on this log-server node");
+                Some(res) = &mut in_flight_seal => {
                     in_flight_seal.set(None.into());
+                    if res.is_ok() {
+                        self.loglet_state.get_local_tail_watch().notify_seal();
+                        debug!(loglet_id = %self.loglet_id, "Loglet is now sealed on this log-server node");
+                    }
                 }
                 Some(_) = in_flight_stores.next() => {}
                 Some(_) = in_flight_network_sends.next() => {}
