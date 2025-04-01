@@ -12,7 +12,7 @@ default = []
 local-loglet = ["dep:restate-rocksdb", "dep:rocksdb", "restate-types/local-loglet"]
 replicated-loglet = ["auto-extend"]
 memory-loglet = ["restate-types/memory-loglet"]
-test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util"]
+test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util", "restate-core/test-util"]
 # enables bifrost to auto seal and extend. This is a transitional feature that will be removed soon.
 auto-extend = []
 
