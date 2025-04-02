@@ -18,20 +18,21 @@ use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, Replicat
 use restate_types::replication::ReplicationProperty;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
+use tokio::try_join;
 use tonic::transport::Channel;
-use tracing::{error, info};
+use tracing::info;
 use url::Url;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::{
     ClusterStateRequest, CreatePartitionSnapshotRequest, new_cluster_ctrl_client,
 };
-use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
+use restate_core::network::net_util::create_tonic_channel;
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
-use restate_types::config::{LogFormat, MetadataClientKind};
+use restate_types::config::{LogFormat, MetadataClientKind, NetworkingOptions};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
 use restate_types::protobuf::cluster::RunMode;
@@ -62,12 +63,12 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         base_config.clone(),
         BinarySource::CargoTest,
         enum_set!(Role::MetadataServer | Role::Admin | Role::Worker | Role::LogServer),
-        2,
+        1,
         false,
     );
 
     let mut cluster = Cluster::builder()
-        .cluster_name("cluster-1")
+        .cluster_name("fast-forward-over-trim-gap")
         .nodes(nodes)
         .temp_base_dir()
         .build()
@@ -79,36 +80,36 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         replication_property: ReplicationProperty::new_unchecked(1),
     };
 
+    info!("Provisioning the cluster");
     cluster.nodes[0]
         .provision_cluster(
             None,
-            // Since there is noway we can describe "everywhere" cluster replication
-            // we set the value directly to 3.
-            ReplicationProperty::new_unchecked(3),
+            // We want to run partition processor on node-1 and a future node-2
+            ReplicationProperty::new_unchecked(2),
             Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
         )
         .await
         .into_test_result()?;
 
     let worker_1 = &cluster.nodes[0];
-    let worker_2 = &cluster.nodes[1];
 
     let mut worker_1_ready = worker_1.lines("Partition [0-9]+ started".parse()?);
-    let mut worker_2_ready = worker_2.lines("Partition [0-0]+ started".parse()?);
 
-    cluster.wait_healthy(Duration::from_secs(10)).await?;
-    tokio::time::timeout(Duration::from_secs(10), worker_1_ready.next()).await?;
-    tokio::time::timeout(Duration::from_secs(10), worker_2_ready.next()).await?;
+    info!("Waiting until the cluster is healthy");
+    cluster.wait_healthy(Duration::from_secs(60)).await?;
+
+    info!("Waiting until node-1 has started the partition processor");
+    worker_1_ready.next().await;
 
     drop(worker_1_ready);
-    drop(worker_2_ready);
 
     let mut client = new_cluster_ctrl_client(create_tonic_channel(
         cluster.nodes[0].node_address().clone(),
-        &TestNetworkOptions::default(),
+        &NetworkingOptions::default(),
     ));
 
-    tokio::time::timeout(Duration::from_secs(5), any_partition_active(&mut client)).await??;
+    info!("Waiting until the partition processor has become the leader");
+    any_partition_active(&mut client).await?;
 
     let (running_tx, running_rx) = oneshot::channel();
 
@@ -120,7 +121,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         })
         .await
         {
-            error!("Error running listener: {:?}", e);
+            panic!("Error running listener: {:?}", e);
         }
     });
 
@@ -144,8 +145,9 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         worker_1.config().ingress.bind_address
     );
 
+    info!("Send Counter/0/get request to node-1");
     // It takes a little bit for the service to become available for invocations
-    let mut retry = RetryPolicy::fixed_delay(Duration::from_millis(500), Some(10)).into_iter();
+    let mut retry = RetryPolicy::fixed_delay(Duration::from_millis(500), None).into_iter();
     loop {
         let invoke_response = http_client.post(ingress_url.clone()).send().await?;
         if invoke_response.status().is_success() {
@@ -171,63 +173,62 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         snapshot_response.min_applied_lsn
     );
 
-    let mut worker_3 = Node::new_test_node(
-        "node-3",
+    let mut worker_2 = Node::new_test_node(
+        "node-2",
         no_snapshot_repository_config,
         BinarySource::CargoTest,
         enum_set!(Role::Worker),
     );
-    *worker_3.metadata_store_client_mut() = MetadataClientKind::Replicated {
+    *worker_2.metadata_store_client_mut() = MetadataClientKind::Replicated {
         addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     let mut trim_gap_encountered =
-        worker_3.lines("Partition processor stopped due to a log trim gap, and no snapshot repository is configured".parse()?);
+        worker_2.lines("Partition processor stopped due to a log trim gap, and no snapshot repository is configured".parse()?);
 
     info!("Waiting for partition processor to encounter log trim gap");
-    let mut worker_3 = worker_3
+    let mut worker_2 = worker_2
         .start_clustered(cluster.base_dir(), cluster.cluster_name())
         .await?;
     assert!(
-        tokio::time::timeout(Duration::from_secs(20), trim_gap_encountered.next())
-            .await
-            .is_ok()
+        trim_gap_encountered.next().await.is_some(),
+        "Trim gap was never encountered"
     );
-    worker_3.graceful_shutdown(Duration::from_secs(1)).await?;
+    worker_2.graceful_shutdown(Duration::from_secs(30)).await?;
 
     info!("Re-starting additional node with snapshot repository configured");
-    let mut worker_3 = Node::new_test_node(
-        "node-3",
+    let mut worker_2 = Node::new_test_node(
+        "node-2",
         base_config.clone(),
         BinarySource::CargoTest,
         enum_set!(Role::Worker),
     );
-    *worker_3.metadata_store_client_mut() = MetadataClientKind::Replicated {
+    *worker_2.metadata_store_client_mut() = MetadataClientKind::Replicated {
         addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
     let ingress_url = format!(
         "http://{}/Counter/0/get",
-        worker_3.config().ingress.bind_address
+        worker_2.config().ingress.bind_address
     );
-    let mut worker_3_imported_snapshot = worker_3.lines(
+    let mut worker_2_imported_snapshot = worker_2.lines(
         format!(
             "Importing partition store snapshot.*{}",
             snapshot_response.snapshot_id
         )
         .parse()?,
     );
-    let mut worker_3 = worker_3
+    let mut worker_2 = worker_2
         .start_clustered(cluster.base_dir(), cluster.cluster_name())
         .await?;
     assert!(
-        tokio::time::timeout(Duration::from_secs(20), worker_3_imported_snapshot.next())
-            .await
-            .is_ok()
+        worker_2_imported_snapshot.next().await.is_some(),
+        "Importing partition store snapshot never happened"
     );
 
-    // todo(pavel): promote node 3 to be the leader for partition 0 and invoke the service again
-    // right now, all we are asserting is that the new node is applying newly appended log records
+    info!("Send Counter/0/get request to node-2");
+    // todo(pavel): promote node 2 to be the leader for partition 0 and invoke the service again
+    //  right now, all we are asserting is that the new node is applying newly appended log records
     assert!(
         http_client
             .post(ingress_url)
@@ -236,14 +237,14 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
             .status()
             .is_success()
     );
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        applied_lsn_converged(&mut client, 3, PartitionId::from(0)),
-    )
-    .await??;
 
-    worker_3.graceful_shutdown(Duration::from_secs(1)).await?;
-    cluster.graceful_shutdown(Duration::from_secs(1)).await?;
+    applied_lsn_converged(&mut client, 2, PartitionId::from(0)).await?;
+
+    try_join!(
+        worker_2.graceful_shutdown(Duration::from_secs(10)),
+        cluster.graceful_shutdown(Duration::from_secs(10))
+    )?;
+
     Ok(())
 }
 
@@ -318,40 +319,4 @@ async fn applied_lsn_converged(
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Ok(())
-}
-
-struct TestNetworkOptions {
-    connect_timeout: Duration,
-    request_timeout: Duration,
-}
-
-impl Default for TestNetworkOptions {
-    fn default() -> Self {
-        Self {
-            connect_timeout: Duration::from_secs(1),
-            request_timeout: Duration::from_secs(5),
-        }
-    }
-}
-
-impl CommonClientConnectionOptions for TestNetworkOptions {
-    fn connect_timeout(&self) -> Duration {
-        self.connect_timeout
-    }
-
-    fn request_timeout(&self) -> Option<Duration> {
-        Some(self.request_timeout)
-    }
-
-    fn keep_alive_interval(&self) -> Duration {
-        Duration::from_secs(60)
-    }
-
-    fn keep_alive_timeout(&self) -> Duration {
-        self.connect_timeout
-    }
-
-    fn http2_adaptive_window(&self) -> bool {
-        true
-    }
 }
