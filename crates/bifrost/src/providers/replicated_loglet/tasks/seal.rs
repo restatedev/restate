@@ -10,7 +10,7 @@
 
 use tokio::task::JoinSet;
 use tokio::time::Instant;
-use tracing::{Instrument, debug, instrument, trace, warn};
+use tracing::{Instrument, debug, info, instrument, trace, warn};
 
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{Incoming, Networking, TransportConnect};
@@ -142,7 +142,7 @@ impl SealTask {
             {
                 let mut nodeset_status = DecoratedNodeSet::from_iter(effective_nodeset);
                 nodeset_status.extend(&nodeset_checker);
-                tracing::info!(
+                info!(
                     loglet_id = %my_params.loglet_id,
                     replication = %my_params.replication,
                     %max_local_tail,

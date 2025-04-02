@@ -250,7 +250,7 @@ impl ConnectionManager {
             Some(peer_metadata),
         )?;
 
-        info!(
+        debug!(
             direction_at_peer = %hello.direction(),
             task_id = %task_id,
             peer = %peer_node_id,
@@ -539,7 +539,7 @@ impl ConnectionTracking for ConnectionManager {
     }
 
     fn connection_dropped(&self, conn: &Connection) {
-        info!(
+        debug!(
             "Connection terminated, connection lived for {:?}",
             conn.created.elapsed()
         );
