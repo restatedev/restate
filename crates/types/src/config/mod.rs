@@ -45,6 +45,7 @@ pub use query_engine::*;
 pub use rocksdb::*;
 pub use worker::*;
 
+use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
@@ -327,6 +328,11 @@ fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<
     }
 }
 
-fn print_warning_deprecated_value(option: &str, value: &str) {
-    eprintln!("Option {option} does no longer support config value {value}. Using default value");
+fn print_warning_deprecated_value<D>(option: &str, value: &str, default: &D)
+where
+    D: Display,
+{
+    eprintln!(
+        "Option {option} does no longer support config value {value}. Using default value of {default}"
+    );
 }

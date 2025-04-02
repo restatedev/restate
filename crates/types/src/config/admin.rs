@@ -205,11 +205,14 @@ impl From<AdminOptionsShadow> for AdminOptions {
 
             match value {
                 PartitionReplication::Everywhere => {
+                    let replication_property = ReplicationProperty::new_unchecked(u8::MAX);
                     print_warning_deprecated_value(
                         "admin.default-partition-replication",
                         "everywhere",
+                        &replication_property,
                     );
-                    ReplicationProperty::new_unchecked(1)
+
+                    replication_property
                 }
                 PartitionReplication::Limit(replication_property) => replication_property,
             }
