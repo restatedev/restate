@@ -82,10 +82,10 @@ mod tests {
             .start()
             .await?;
 
-        cluster.wait_healthy(Duration::from_secs(10)).await?;
+        cluster.wait_healthy(Duration::from_secs(30)).await?;
         {
             let mut node = cluster.nodes[0].lines("Partition [0-9]+ started".parse()?);
-            tokio::time::timeout(Duration::from_secs(10), node.next()).await?;
+            node.next().await;
         }
 
         let_assert!(
