@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::random_socket_address;
+use anyhow::bail;
 use arc_swap::ArcSwapOption;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt, stream};
@@ -846,7 +847,7 @@ impl StartedNode {
         let retry_policy = RetryPolicy::exponential(
             Duration::from_millis(100),
             2.0,
-            Some(10),
+            Some(60), // our test infra is sometimes slow until the node starts up
             Some(Duration::from_secs(1)),
         );
         let client = new_node_ctl_client(channel);
@@ -870,7 +871,10 @@ impl StartedNode {
                 if status.code() == Code::AlreadyExists {
                     Ok(false)
                 } else {
-                    Err(status.into())
+                    bail!(
+                        "failed to provision the cluster at node {}: {status}",
+                        self.node_address()
+                    );
                 }
             }
         }

@@ -68,6 +68,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
         replication_property: ReplicationProperty::new(NonZeroU8::new(2).expect("to be non-zero")),
     };
 
+    info!("Provisioning the cluster");
     cluster.nodes[0]
         .provision_cluster(
             None,
