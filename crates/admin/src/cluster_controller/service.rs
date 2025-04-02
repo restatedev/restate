@@ -19,10 +19,11 @@ use futures::never::Never;
 use restate_storage_query_datafusion::BuildError;
 use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
 use restate_types::replication::{NodeSet, ReplicationProperty};
+use restate_types::retries::with_jitter;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
@@ -149,8 +150,8 @@ where
 
     fn create_heartbeat_interval(options: &AdminOptions) -> Interval {
         let mut heartbeat_interval = time::interval_at(
-            Instant::now() + options.heartbeat_interval.into(),
-            options.heartbeat_interval.into(),
+            Instant::now() + with_jitter(options.heartbeat_interval.into(), 0.5),
+            with_jitter(options.heartbeat_interval.into(), 0.2),
         );
         heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -350,7 +351,7 @@ impl<T: TransportConnect> Service<T> {
                 },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     self.observed_cluster_state.update(&cluster_state);
-                    trace!(observed_cluster_state = ?self.observed_cluster_state, "Observed cluster state updated");
+                    debug!(observed_cluster_state = ?self.observed_cluster_state, "Observed cluster state updated");
                     // todo quarantine this cluster controller if errors re-occur too often so that
                     //  another cluster controller can take over
                     if let Err(err) = state.update(&self) {
@@ -637,7 +638,7 @@ impl<T: TransportConnect> Service<T> {
 
 async fn sync_cluster_controller_metadata() -> anyhow::Result<()> {
     // todo make this configurable
-    let mut interval = time::interval(Duration::from_secs(10));
+    let mut interval = time::interval(with_jitter(Duration::from_millis(500), 0.1));
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut cancel = std::pin::pin!(cancellation_watcher());
