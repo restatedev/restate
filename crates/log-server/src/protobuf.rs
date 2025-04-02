@@ -8,11 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
-
-use restate_core::network::grpc::{DEFAULT_GRPC_COMPRESSION, MAX_MESSAGE_SIZE};
-
 tonic::include_proto!("restate.log_server");
 
 pub const FILE_DESCRIPTOR_SET: &[u8] =
@@ -21,13 +16,14 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// Creates a new ClusterCtrlSvcClient with appropriate configuration
 #[cfg(feature = "clients")]
 pub fn new_log_server_client(
-    channel: Channel,
-) -> log_server_svc_client::LogServerSvcClient<Channel> {
+    channel: tonic::transport::Channel,
+) -> log_server_svc_client::LogServerSvcClient<tonic::transport::Channel> {
+    use restate_core::network::grpc::{DEFAULT_GRPC_COMPRESSION, MAX_MESSAGE_SIZE};
     log_server_svc_client::LogServerSvcClient::new(channel)
         .max_decoding_message_size(MAX_MESSAGE_SIZE)
         .max_encoding_message_size(MAX_MESSAGE_SIZE)
         // note: the order of those calls defines the priority
-        .accept_compressed(CompressionEncoding::Zstd)
-        .accept_compressed(CompressionEncoding::Gzip)
+        .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
+        .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
         .send_compressed(DEFAULT_GRPC_COMPRESSION)
 }

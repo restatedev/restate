@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
-
 use restate_core::network::grpc::DEFAULT_GRPC_COMPRESSION;
 
 tonic::include_proto!("restate.cluster_ctrl");
@@ -21,11 +18,11 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// Creates a new ClusterCtrlSvcClient with appropriate configuration
 #[cfg(feature = "clients")]
 pub fn new_cluster_ctrl_client(
-    channel: Channel,
-) -> cluster_ctrl_svc_client::ClusterCtrlSvcClient<Channel> {
+    channel: tonic::transport::Channel,
+) -> cluster_ctrl_svc_client::ClusterCtrlSvcClient<tonic::transport::Channel> {
     cluster_ctrl_svc_client::ClusterCtrlSvcClient::new(channel)
         // note: the order of those calls defines the priority
-        .accept_compressed(CompressionEncoding::Zstd)
-        .accept_compressed(CompressionEncoding::Gzip)
+        .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
+        .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
         .send_compressed(DEFAULT_GRPC_COMPRESSION)
 }
