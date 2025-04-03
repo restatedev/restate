@@ -638,7 +638,7 @@ impl<T: TransportConnect> Service<T> {
 
 async fn sync_cluster_controller_metadata() -> anyhow::Result<()> {
     // todo make this configurable
-    let mut interval = time::interval(Duration::from_secs(20));
+    let mut interval = time::interval(with_jitter(Duration::from_millis(1000), 0.1));
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut cancel = std::pin::pin!(cancellation_watcher());
