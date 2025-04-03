@@ -216,11 +216,26 @@ impl From<AdminOptionsShadow> for AdminOptions {
         });
 
         #[allow(deprecated)]
+        if value.query_engine.pgsql_bind_address.is_some() {
+            print_warning_deprecated_config_option("admin.query-enging.pgsql-bind-address", None);
+        }
+
+        #[allow(deprecated)]
         Self {
             bind_address: value.bind_address,
             advertised_admin_endpoint: None,
             concurrent_api_requests_limit: value.concurrent_api_requests_limit,
-            query_engine: value.query_engine,
+            query_engine: QueryEngineOptions {
+                memory_size: value.query_engine.memory_size,
+                tmp_dir: value.query_engine.tmp_dir,
+                query_parallelism: value.query_engine.query_parallelism,
+                pgsql_bind_address: Some(
+                    value
+                        .query_engine
+                        .pgsql_bind_address
+                        .unwrap_or("0.0.0.0:9071".parse().unwrap()),
+                ),
+            },
             heartbeat_interval: value.heartbeat_interval,
             log_trim_check_interval,
             log_trim_threshold: value.log_trim_threshold,

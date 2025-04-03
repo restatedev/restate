@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#[cfg(feature = "clients")]
 use restate_core::network::grpc::DEFAULT_GRPC_COMPRESSION;
 
 tonic::include_proto!("restate.cluster_ctrl");
