@@ -32,6 +32,7 @@ pub enum Logs {
     /// Get the details of a specific log
     Describe(describe_log::DescribeLogIdOpts),
     /// Dump the contents of a bifrost log
+    #[clap(hide = true)]
     Dump(dump_log::DumpLogOpts),
     /// Trim a log to a particular Log Sequence Number (LSN)
     Trim(trim_log::TrimLogOpts),
