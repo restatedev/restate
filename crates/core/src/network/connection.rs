@@ -13,7 +13,6 @@ mod throttle;
 // re-export
 pub use throttle::ConnectThrottle;
 use tracing::debug;
-use tracing::info;
 
 use std::time::Duration;
 
@@ -222,10 +221,10 @@ impl Connection {
         ConnectThrottle::note_connect_status(&destination, result.is_ok());
         match result {
             Err(ref e) => {
-                info!(%direction, "Couldn't connect to {}: {}", destination, e);
+                debug!(%direction, "Couldn't connect to {}: {}", destination, e);
             }
             Ok((_, task_id)) => {
-                info!(%direction, %task_id, "Connection established to {}", destination);
+                debug!(%direction, %task_id, "Connection established to {}", destination);
             }
         }
         result

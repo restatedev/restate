@@ -413,7 +413,7 @@ macro_rules! define_table {
         $table_name: ident (
         $(
             $(#[doc = $doc:expr])*
-            $element:ident: $ty:expr
+            $element:ident: $ty:ty
         ),+ $(,)?)
     ) => (paste::paste! {
 

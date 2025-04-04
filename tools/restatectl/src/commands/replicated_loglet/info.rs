@@ -22,7 +22,7 @@ use restate_types::PlainNodeId;
 use restate_types::logs::LogletId;
 use restate_types::logs::metadata::{LogletRef, Logs};
 use restate_types::nodes_config::{NodesConfigError, NodesConfiguration, Role};
-use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replicated_loglet::{EffectiveNodeSet, ReplicatedLogletParams};
 
 use crate::connection::ConnectionInfo;
 use crate::util::grpc_channel;
@@ -110,10 +110,13 @@ async fn get_info(connection: &ConnectionInfo, opts: &InfoOpts) -> anyhow::Resul
     c_println!();
 
     let mut loglet_infos: HashMap<PlainNodeId, _> = HashMap::default();
-    for node_id in nodeset.iter().copied() {
+    let effective_node_set = EffectiveNodeSet::new(nodeset.clone(), &nodes_config);
+
+    for node_id in effective_node_set {
         let node = nodes_config.find_node_by_id(node_id).unwrap_or_else(|_| {
             panic!("Node {node_id} doesn't seem to exist in nodes configuration");
         });
+
         if !node.has_role(Role::LogServer) {
             warn!(
                 "Node {} is not running the log-server role, will not connect to it",

@@ -168,7 +168,7 @@ pub fn restate_configuration() -> Configuration {
         .expect("building worker options should work");
 
     let metadata_server_options = MetadataServerOptionsBuilder::default()
-        .kind(MetadataServerKind::Raft(RaftOptions::default()))
+        .kind(Some(MetadataServerKind::Raft(RaftOptions::default())))
         .build()
         .expect("building metadata server options should work");
 
