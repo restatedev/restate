@@ -166,6 +166,7 @@ pub mod codes {
         INTERNAL 500 "Internal",
         ABORTED 409 "Aborted",
         GONE 410 "Gone",
+        UNSUPPORTED_MEDIA_TYPE 415 "Unsupported media type",
         JOURNAL_MISMATCH 570 "Journal mismatch",
         PROTOCOL_VIOLATION 571 "Protocol violation",
         CONFLICT 409 "Conflict",
