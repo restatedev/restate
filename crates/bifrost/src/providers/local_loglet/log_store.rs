@@ -146,6 +146,7 @@ fn db_options() -> rocksdb::Options {
     // we can use absolute consistency but on a single-node setup, we don't have a way to recover
     // from it, so it's not useful for us.
     opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::TolerateCorruptedTailRecords);
+    opts.set_wal_compression_type(DBCompressionType::Zstd);
     // most reads are sequential
     opts.set_advise_random_on_open(false);
 
