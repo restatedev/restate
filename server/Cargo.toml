@@ -71,6 +71,7 @@ toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
 regex = "1.10.4"
+rustls = { workspace = true, features = ["aws-lc-rs"] }
 ulid = { workspace = true }
 url = { version = "2.5.4", features = [] }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }

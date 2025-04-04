@@ -53,7 +53,7 @@ futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["server", "http2"] }
-hyper-rustls = { workspace = true, default-features = false, features = ["http1", "http2", "ring", "native-tokio", "tls12", "logging"]  }
+hyper-rustls = { workspace = true, default-features = false, features = ["http1", "http2", "aws-lc-rs", "native-tokio", "tls12", "logging"]  }
 hyper-util = { workspace = true, features = ["client-legacy", "http2", "server", "client", "tokio"] }
 humantime = { workspace = true }
 indicatif = "0.17.7"
@@ -63,7 +63,7 @@ jsonwebtoken = { version = "9.1.0" }
 octocrab = { version = "0.44.0", features = ["stream"] }
 open = "5.1.2"
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls", "stream", "http2"] }
-ring = { version = "0.17.8" }
+rustls = { workspace = true, features = ["aws-lc-rs"]}
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }

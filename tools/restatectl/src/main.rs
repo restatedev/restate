@@ -12,11 +12,17 @@ use std::io::Write;
 
 use cling::prelude::*;
 use crossterm::execute;
-
 use restatectl::CliApp;
+use rustls::crypto::aws_lc_rs;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ClingFinished<CliApp> {
+    // Explicitly install a crypto provider in order to avoid that using tls panics because the
+    // workspace-hack activates the aws-lc-rs as well as ring rustls feature. Activating both
+    // features will cause panics because of https://github.com/rustls/rustls/issues/1877.
+    aws_lc_rs::default_provider()
+        .install_default()
+        .expect("no other default crypto provider being installed");
     restatectl::lambda::handle_lambda_if_needed().await;
 
     let _ = ctrlc::set_handler(move || {

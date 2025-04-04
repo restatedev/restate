@@ -171,11 +171,7 @@ rand = "0.9.0"
 rayon = { version = "1.10" }
 regex = { version = "1.11" }
 regress = { version = "0.10" }
-reqwest = { version = "0.12.5", default-features = false, features = [
-    "json",
-    "rustls-tls",
-    "stream",
-] }
+reqwest = { version = "0.12.5", default-features = false, features = ["json", "rustls-tls", "stream", ] }
 rlimit = { version = "0.10.1" }
 rocksdb = { version = "0.36.0-restate.1", package = "rust-rocksdb", features = ["multi-threaded-cf", "jemalloc"], git = "https://github.com/restatedev/rust-rocksdb", rev = "135ed6b16b10ad2f9257cef1d069841860144758" }
 rstest = "0.24.0"

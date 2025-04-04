@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use codederror::CodedError;
+use rustls::crypto::aws_lc_rs;
 use tracing::error;
 use tracing::{info, trace, warn};
 
@@ -81,6 +82,14 @@ struct RestateArguments {
 const EXIT_CODE_FAILURE: i32 = 1;
 
 fn main() {
+    // We need to install a crypto provider explicitly because we depend on crates that activate the
+    // ring as well aws_lc_rs rustls features. Unfortunately, these features are not additive. See
+    // https://github.com/rustls/rustls/issues/1877. We can remove this line of code once all our
+    // dependencies activate only one of the features or once rustls allows both features to be
+    // activated.
+    aws_lc_rs::default_provider()
+        .install_default()
+        .expect("no other default crypto provider being installed");
     let cli_args = RestateArguments::parse();
 
     // We capture the absolute path of the config file on startup before we change the current

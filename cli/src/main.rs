@@ -13,9 +13,18 @@ use std::io::Write;
 
 use crossterm::execute;
 use restate_cli::CliApp;
+use rustls::crypto::aws_lc_rs;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ClingFinished<CliApp> {
+    // We need to install a crypto provider explicitly because the workspace hack activates the
+    // ring as well aws_lc_rs rustls features. Unfortunately, these features are not additive. See
+    // https://github.com/rustls/rustls/issues/1877. We can remove this line of code once all our
+    // dependencies activate only one of the features or once rustls allows both features to be
+    // activated.
+    aws_lc_rs::default_provider()
+        .install_default()
+        .expect("no other default crypto provider being installed");
     let _ = ctrlc::set_handler(move || {
         if let Some(exit) = restate_cli::EXIT_HANDLER.lock().unwrap().as_ref() {
             (exit)()

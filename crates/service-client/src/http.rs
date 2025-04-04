@@ -37,7 +37,8 @@ type ProxiedHttpConnector = ProxyConnector<HttpConnector>;
 
 static TLS_CLIENT_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
     // We need to explicitly configure the crypto provider since we activate the ring as well as
-    // aws_lc_rs rustls feature, and they are mutually exclusive wrt auto installation
+    // aws_lc_rs rustls feature, and they are mutually exclusive wrt auto installation. Moreover,
+    // we don't want that tests need to install a crypto provider when using the HttpClient
     ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
         .with_protocol_versions(rustls::DEFAULT_VERSIONS)
         .expect("default versions are supported")
