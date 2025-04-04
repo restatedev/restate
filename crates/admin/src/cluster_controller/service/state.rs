@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::ops::{Add, Deref};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures::future::OptionFuture;
 use itertools::Itertools;
@@ -62,27 +63,43 @@ where
                 .next()
         };
 
-        // A Cluster Controller is a leader if the node holds the smallest PlainNodeID
-        // If no other node was found to take leadership, we assume leadership
+        // A Cluster Controller assumes leadership if it holds the smallest node id of all healthy
+        // nodes...
         let is_leader = match maybe_leader {
             None => true,
             Some(leader) => leader == my_node_id(),
         };
 
-        match (is_leader, &self) {
-            (true, ClusterControllerState::Leader(_))
-            | (false, ClusterControllerState::Follower) => {
+        // ...provided it has a reasonably fresh view of metadata. Very stale metadata might
+        // indicate that we are isolated from the cluster majority, which would cause us to assume
+        // leadership and potentially make bad decisions in the process.
+        let fresh_metadata = Metadata::with_current(|m| m.last_update())
+            .map(|last_update| Instant::now().duration_since(last_update) < Duration::from_secs(3))
+            .unwrap_or_default();
+
+        match (is_leader, &self, fresh_metadata) {
+            (true, ClusterControllerState::Leader(_), true)
+            | (false, ClusterControllerState::Follower, _) => {
                 // nothing to do
             }
-            (true, ClusterControllerState::Follower) => {
+            (true, ClusterControllerState::Follower, true) => {
                 info!("Cluster controller switching to leader mode");
                 *self = ClusterControllerState::Leader(Leader::from_service(service)?);
             }
-            (false, ClusterControllerState::Leader(_)) => {
+            (false, ClusterControllerState::Leader(_), _) => {
                 info!(
                     "Cluster controller switching to follower mode, I think the leader is {}",
                     maybe_leader.expect("a leader must be identified"),
                 );
+                *self = ClusterControllerState::Follower;
+            }
+            (true, ClusterControllerState::Follower, false) => {
+                info!(
+                    "It looks like I might be the leader, but metadata is outdated so remaining a follower"
+                );
+            }
+            (true, ClusterControllerState::Leader(_), false) => {
+                info!("Cluster controller switching to follower mode because of outdated metadata");
                 *self = ClusterControllerState::Follower;
             }
         };
