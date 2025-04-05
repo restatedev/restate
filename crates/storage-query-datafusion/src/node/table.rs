@@ -30,7 +30,7 @@ use super::schema::NodeBuilder;
 pub fn register_self(ctx: &QueryContext, metadata: Metadata) -> datafusion::common::Result<()> {
     let nodes_table =
         GenericTableProvider::new(NodeBuilder::schema(), Arc::new(NodesScanner(metadata)));
-    ctx.register_non_partitioned_table("nodes", Arc::new(nodes_table))
+    ctx.register_table("nodes", Arc::new(nodes_table))
 }
 
 #[derive(Clone, derive_more::Debug)]

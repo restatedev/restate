@@ -32,7 +32,7 @@ pub fn register_self(ctx: &QueryContext, metadata: Metadata) -> datafusion::comm
         PartitionBuilder::schema(),
         Arc::new(PartitionScanner(metadata)),
     );
-    ctx.register_non_partitioned_table("partitions", Arc::new(partitions_table))
+    ctx.register_table("partitions", Arc::new(partitions_table))
 }
 
 #[derive(Clone, derive_more::Debug)]

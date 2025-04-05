@@ -35,7 +35,7 @@ pub fn register_self(
         NodeStateBuilder::schema(),
         Arc::new(NodesStatusScanner { watch }),
     );
-    ctx.register_non_partitioned_table("node_state", Arc::new(table))
+    ctx.register_table("node_state", Arc::new(table))
 }
 
 #[derive(Clone, derive_more::Debug)]
