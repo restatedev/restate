@@ -314,14 +314,15 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         let health_status = self.health_status.clone();
         health_status.update(AdminStatus::Ready);
 
+        let configuration = self.configuration.live_load();
         TaskCenter::spawn_child(
             TaskKind::SystemService,
             "cluster-controller-metadata-sync",
-            sync_cluster_controller_metadata(),
+            sync_cluster_controller_metadata(configuration.admin.sync_interval.into()),
         )?;
 
         tokio::select! {
@@ -635,9 +636,8 @@ impl<T: TransportConnect> Service<T> {
     }
 }
 
-async fn sync_cluster_controller_metadata() -> anyhow::Result<()> {
-    // todo make this configurable
-    let mut interval = time::interval(Duration::from_secs(10));
+async fn sync_cluster_controller_metadata(interval_secs: Duration) -> anyhow::Result<()> {
+    let mut interval = time::interval(interval_secs);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut cancel = std::pin::pin!(cancellation_watcher());
