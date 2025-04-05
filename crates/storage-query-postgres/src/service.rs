@@ -42,7 +42,8 @@ pub struct PostgresQueryService {
 impl PostgresQueryService {
     pub fn from_options(options: &QueryEngineOptions, query_context: QueryContext) -> Self {
         Self {
-            bind_address: options.pgsql_bind_address,
+            #[allow(deprecated)]
+            bind_address: options.pgsql_bind_address.expect("is set"),
             query_context,
         }
     }
