@@ -430,7 +430,7 @@ impl field::Visit for RestateErrorCodeAndDetailsWriter<'_> {
 
             let italic_bold = self.0.italic_bold();
             self.0.write_padded(&format_args!(
-                "Visit {}https://docs.restate.dev/references/errors#{value:?}{} for more info about this error.",
+                "Visit {}https://docs.restate.dev/references/errors#{value:?}{} for more info and suggestions.",
                 italic_bold.prefix(),
                 italic_bold.infix(self.0.style())
             ), FIELD_INDENT, FIELD_NEW_LINE_INDENT);

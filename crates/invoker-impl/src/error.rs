@@ -220,6 +220,9 @@ impl InvokerError {
                 }
                 err
             }
+            e @ InvokerError::BadNegotiatedServiceProtocolVersion(_) => {
+                InvocationError::new(codes::UNSUPPORTED_MEDIA_TYPE, e)
+            }
             e => InvocationError::internal(e),
         }
     }
