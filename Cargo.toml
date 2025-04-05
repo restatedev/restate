@@ -145,6 +145,7 @@ hyper-rustls = { version = "0.27.2", default-features = false, features = [
 hyper-util = { version = "0.1" }
 indexmap = "2.7"
 itertools = "0.14.0"
+jiff = "0.2.4"
 jsonschema = { version = "0.28.3", default-features = false }
 metrics = { version = "0.24" }
 metrics-exporter-prometheus = { version = "0.16", default-features = false, features = [

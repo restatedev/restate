@@ -158,7 +158,7 @@ mod mocks {
                 deployment_id: DeploymentId::default(),
                 revision: 0,
                 public: invocation_target_metadata.public,
-                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
+                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
                 workflow_completion_retention: None,
                 inactivity_timeout: None,
                 abort_timeout: None,

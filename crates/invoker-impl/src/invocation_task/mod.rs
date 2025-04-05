@@ -364,10 +364,10 @@ where
         {
             // Override the inactivity timeout and abort timeout, if available
             if let Some(inactivity_timeout) = service_metadata.inactivity_timeout {
-                self.inactivity_timeout = inactivity_timeout.into();
+                self.inactivity_timeout = inactivity_timeout;
             }
             if let Some(abort_timeout) = service_metadata.abort_timeout {
-                self.abort_timeout = abort_timeout.into();
+                self.abort_timeout = abort_timeout;
             }
         } else {
             warn!("Unexpected service not found, after resolving correctly the deployment.");
