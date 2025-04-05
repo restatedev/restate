@@ -10,6 +10,7 @@
 
 use std::any::type_name;
 use std::sync::Arc;
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use enum_map::EnumMap;
@@ -459,6 +460,12 @@ impl MetadataManager {
         {
             self.update_tasks[kind] = None;
         }
+
+        debug!("Updating metadata timestamp.");
+        self.metadata
+            .inner
+            .last_update
+            .store(Arc::new(Some(Instant::now())));
 
         // notify watches.
         self.metadata.inner.write_watches[kind]

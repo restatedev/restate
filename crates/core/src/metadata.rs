@@ -14,6 +14,7 @@ pub use manager::{MetadataManager, TargetVersion};
 pub use restate_types::net::metadata::MetadataKind;
 
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use arc_swap::{ArcSwap, AsRaw};
 use enum_map::EnumMap;
@@ -315,6 +316,10 @@ impl Metadata {
             None
         }
     }
+
+    pub fn last_update(&self) -> Option<Instant> {
+        *self.inner.last_update.load_full()
+    }
 }
 
 #[derive(Default)]
@@ -328,6 +333,7 @@ struct MetadataInner {
     // might be subject to false sharing if independent sources want to update different metadata
     // kinds concurrently.
     observed_versions: EnumMap<MetadataKind, ArcSwap<VersionInformation>>,
+    last_update: Arc<ArcSwap<Option<Instant>>>,
 }
 
 /// Can send updates to metadata manager. This should be accessible by the rpc handler layer to

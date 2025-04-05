@@ -642,7 +642,7 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn empty_leadership_changes_donot_modify_partition_table() -> googletest::Result<()> {
+    async fn empty_leadership_changes_do_not_modify_partition_table() -> googletest::Result<()> {
         let test_env = TestCoreEnv::create_with_single_node(0, 0).await;
         let metadata_store_client = test_env.metadata_store_client.clone();
         let metadata_writer = test_env.metadata_writer.clone();
