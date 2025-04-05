@@ -42,6 +42,7 @@ opentelemetry-contrib = { workspace = true, features = [ "jaeger_json_exporter",
 opentelemetry-otlp = { workspace = true, features = ["tls", "tls-roots"] }
 opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+parking_lot = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
