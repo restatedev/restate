@@ -18,10 +18,11 @@ service_per_crate = []
 options_schema = ["dep:schemars"]
 rt-tokio = ["dep:tokio"]
 prometheus = [
-  "dep:tokio",
-  "dep:metrics",
-  "dep:metrics-exporter-prometheus",
-  "dep:metrics-util",
+    "dep:tokio",
+    "dep:metrics",
+    "dep:metrics-exporter-prometheus",
+    "dep:metrics-util",
+    "tokio/tracing",
 ]
 
 [dependencies]
