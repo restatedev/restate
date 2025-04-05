@@ -18,12 +18,12 @@ use std::env;
 use std::fmt::Display;
 
 use exporter::RuntimeModifierSpanExporter;
-use opentelemetry::trace::{TraceError, TracerProvider};
+use opentelemetry::trace::TracerProvider;
 use opentelemetry::{InstrumentationScope, KeyValue, global};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
-use opentelemetry_otlp::{SpanExporter, WithExportConfig, WithTonicConfig};
+use opentelemetry_otlp::{ExporterBuildError, SpanExporter, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::BatchSpanProcessor;
+use opentelemetry_sdk::trace::{BatchSpanProcessor, SdkTracerProvider};
 use pretty::Pretty;
 use tonic::codegen::http::HeaderMap;
 use tonic::metadata::MetadataMap;
@@ -59,8 +59,8 @@ pub enum Error {
         "could not initialize tracing: you must specify at least `tracing_endpoint` or `tracing_json_path`"
     )]
     InvalidTracingConfiguration,
-    #[error("could not initialize tracing: {0}")]
-    Tracing(#[from] TraceError),
+    #[error("could not build exporter: {0}")]
+    Exporter(#[from] ExporterBuildError),
     #[error(
         "cannot parse log configuration {e} environment variable: {0}",
         e = EnvFilter::DEFAULT_ENV
@@ -70,7 +70,7 @@ pub enum Error {
 
 /// creates and register a global opentelemetry tracer provider. The global
 /// provider is exclusively used by the [`invocation_span!`] macro
-fn build_services_tracing(common_opts: &CommonOptions) -> Result<(), Error> {
+fn build_services_tracing(common_opts: &CommonOptions) -> Result<Option<SdkTracerProvider>, Error> {
     let opts = &common_opts.tracing;
 
     let endpoint = match &opts
@@ -79,27 +79,26 @@ fn build_services_tracing(common_opts: &CommonOptions) -> Result<(), Error> {
         .or(opts.tracing_endpoint.as_ref())
     {
         Some(endpoint) => *endpoint,
-        None => return Ok(()),
+        None => return Ok(None),
     };
 
-    let resource = opentelemetry_sdk::Resource::new(vec![
-        KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-            "services",
-        ),
-        KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE,
-            "Restate",
-        ),
-        KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID,
-            format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
-        ),
-        KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
-            env!("CARGO_PKG_VERSION"),
-        ),
-    ]);
+    let resource = opentelemetry_sdk::Resource::builder_empty()
+        .with_service_name("services")
+        .with_attributes(vec![
+            KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE,
+                "Restate",
+            ),
+            KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID,
+                format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
+            ),
+            KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+                env!("CARGO_PKG_VERSION"),
+            ),
+        ])
+        .build();
 
     let header_map = HeaderMap::from_iter(HashMap::from(opts.tracing_headers.clone()));
 
@@ -112,16 +111,14 @@ fn build_services_tracing(common_opts: &CommonOptions) -> Result<(), Error> {
 
     let exporter = UserServiceModifierSpanExporter::new(exporter);
 
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
         .with_resource(resource)
-        .with_span_processor(
-            BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
-        )
+        .with_span_processor(BatchSpanProcessor::builder(exporter).build())
         .build();
 
-    opentelemetry::global::set_tracer_provider(provider);
+    opentelemetry::global::set_tracer_provider(provider.clone());
 
-    Ok(())
+    Ok(Some(provider))
 }
 
 #[allow(clippy::type_complexity, dead_code)]
@@ -150,27 +147,26 @@ where
         return Ok(None);
     }
 
-    let resource = opentelemetry_sdk::Resource::new(vec![
-        KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-            format!("{}@{}", service_name, common_opts.node_name()),
-        ),
-        KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE,
-            "Restate",
-        ),
-        KeyValue::new(
-            SERVICE_INSTANCE_NAME,
-            format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
-        ),
-        KeyValue::new(
-            opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
-            env!("CARGO_PKG_VERSION"),
-        ),
-    ]);
+    let resource = opentelemetry_sdk::Resource::builder_empty()
+        .with_service_name(format!("{}@{}", service_name, common_opts.node_name()))
+        .with_attributes(vec![
+            KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE,
+                "Restate",
+            ),
+            KeyValue::new(
+                SERVICE_INSTANCE_NAME,
+                format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
+            ),
+            KeyValue::new(
+                opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+                env!("CARGO_PKG_VERSION"),
+            ),
+        ])
+        .build();
 
     let mut tracer_provider_builder =
-        opentelemetry_sdk::trace::TracerProvider::builder().with_resource(resource);
+        opentelemetry_sdk::trace::SdkTracerProvider::builder().with_resource(resource);
 
     if let Some(endpoint) = endpoint {
         let header_map =
@@ -184,9 +180,8 @@ where
             .build()?;
 
         let exporter = RuntimeModifierSpanExporter::new(exporter);
-        tracer_provider_builder = tracer_provider_builder.with_span_processor(
-            BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
-        );
+        tracer_provider_builder = tracer_provider_builder
+            .with_span_processor(BatchSpanProcessor::builder(exporter).build());
     }
 
     if let Some(path) = &common_opts.tracing.tracing_json_path {
@@ -198,9 +193,8 @@ where
         );
         let exporter = UserServiceModifierSpanExporter::new(exporter);
 
-        tracer_provider_builder = tracer_provider_builder.with_span_processor(
-            BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
-        );
+        tracer_provider_builder = tracer_provider_builder
+            .with_span_processor(BatchSpanProcessor::builder(exporter).build());
     }
 
     let provider = tracer_provider_builder.build();
@@ -257,7 +251,7 @@ pub fn init_tracing_and_logging(
     };
 
     // User-Service Tracing Layer
-    build_services_tracing(common_opts)?;
+    let tracer_provider = build_services_tracing(common_opts)?;
 
     // Runtime Distributed Tracing layer
     // **
@@ -293,14 +287,14 @@ pub fn init_tracing_and_logging(
     layers.init();
 
     Ok(TracingGuard {
-        is_dropped: false,
+        tracer_provider,
         _stdout_guard,
         _stderr_guard,
     })
 }
 
 pub struct TracingGuard {
-    is_dropped: bool,
+    tracer_provider: Option<SdkTracerProvider>,
     _stdout_guard: tracing_appender::non_blocking::WorkerGuard,
     _stderr_guard: tracing_appender::non_blocking::WorkerGuard,
 }
@@ -312,8 +306,11 @@ impl TracingGuard {
     /// using the multi thread runtime because it can block tasks that are required for the shut
     /// down to complete.
     pub fn shutdown(mut self) {
-        opentelemetry::global::shutdown_tracer_provider();
-        self.is_dropped = true;
+        if let Some(tracer_provider) = self.tracer_provider.take() {
+            if let Err(err) = tracer_provider.shutdown() {
+                warn!("Failed shutting down the tracing provider: {err}");
+            }
+        }
     }
 
     pub fn on_config_update(&self) {
@@ -335,7 +332,7 @@ impl TracingGuard {
 
 impl Drop for TracingGuard {
     fn drop(&mut self) {
-        if !self.is_dropped {
+        if let Some(tracer_provider) = self.tracer_provider.take() {
             warn!(
                 "Shutting down the tracer provider from the drop implementation. \
             This is a blocking operation and should not be executed from a Tokio thread, \
@@ -344,18 +341,22 @@ impl Drop for TracingGuard {
 
             #[cfg(feature = "rt-tokio")]
             {
-                if tokio::runtime::Handle::try_current().is_ok() {
+                let shutdown_result = if tokio::runtime::Handle::try_current().is_ok() {
                     // we are running within the Tokio runtime, try to unblock other tasks
-                    tokio::task::block_in_place(|| {
-                        opentelemetry::global::shutdown_tracer_provider()
-                    });
+                    tokio::task::block_in_place(|| tracer_provider.shutdown())
                 } else {
-                    opentelemetry::global::shutdown_tracer_provider();
+                    tracer_provider.shutdown()
+                };
+
+                if let Err(err) = shutdown_result {
+                    warn!("Failed shutting down the tracing provider: {err}");
                 }
             }
 
             #[cfg(not(feature = "rt-tokio"))]
-            opentelemetry::global::shutdown_tracer_provider();
+            if let Err(err) = tracer_provider.shutdown() {
+                warn!("Failed shutting down the tracing provider: {err}");
+            }
         }
     }
 }
