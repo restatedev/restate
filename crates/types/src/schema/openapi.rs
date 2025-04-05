@@ -524,8 +524,8 @@ fn restate_components() -> Components {
         )
         .response(SEND_RESPONSE_REF_NAME, send_response())
         .schema(
-            GENERIC_ERROR_RESPONSE_REF_NAME,
-            Schema::new(error_response_json_schema()),
+            RESTATE_ERROR_SCHEMA_REF_NAME,
+            Schema::new(restate_error_json_schema()),
         )
         .build()
 }
@@ -717,7 +717,7 @@ fn string_json_schema() -> Schema {
 const RESTATE_ERROR_SCHEMA_REF_NAME: &str = "RestateError";
 
 // Ideally we code generate this
-fn error_response_json_schema() -> Value {
+fn restate_error_json_schema() -> Value {
     json!({
         "type": "object",
         "title": "RestateError",
