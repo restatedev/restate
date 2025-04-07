@@ -16,14 +16,13 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use codederror::CodedError;
 use futures::never::Never;
-use restate_storage_query_datafusion::BuildError;
-use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
-use restate_types::replication::{NodeSet, ReplicationProperty};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, trace, warn};
 
+use restate_storage_query_datafusion::BuildError;
+use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
 use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
     ReplicatedLogletConfig, SegmentIndex,
@@ -33,6 +32,8 @@ use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
 use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replication::{NodeSet, ReplicationProperty};
+use restate_types::retries::with_jitter;
 
 use restate_bifrost::{Bifrost, SealedSegment};
 use restate_core::network::rpc_router::RpcRouter;
@@ -322,7 +323,10 @@ impl<T: TransportConnect> Service<T> {
         TaskCenter::spawn_child(
             TaskKind::SystemService,
             "cluster-controller-metadata-sync",
-            sync_cluster_controller_metadata(configuration.admin.metadata_sync_interval.into()),
+            sync_cluster_controller_metadata(with_jitter(
+                configuration.admin.metadata_sync_interval.into(),
+                0.1,
+            )),
         )?;
 
         tokio::select! {
