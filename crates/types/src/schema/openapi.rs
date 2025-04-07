@@ -688,6 +688,7 @@ fn send_response() -> Response {
 fn send_response_json_schema() -> Value {
     json!({
         "type": "object",
+        "title": "RestateSendResponse",
         "properties": {
             "invocationId": {
                 "type": "string"
@@ -775,7 +776,7 @@ fn restate_tags() -> Vec<Tag> {
             )))
             .build(),
         Tag::builder()
-            .name(ATTACH_TAG_NAME)
+            .name(GET_OUTPUT_TAG_NAME)
             .description(Some("Get invocation output".to_string()))
             .external_docs(Some(ExternalDocs::new(
                 "https://docs.restate.dev/invoke/http",
