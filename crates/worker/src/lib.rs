@@ -123,8 +123,10 @@ impl Worker {
 
         let config = updateable_config.pinned();
 
+        let schema = metadata.updateable_schema();
+
         // ingress_kafka
-        let ingress_kafka = IngressKafkaService::new(bifrost.clone());
+        let ingress_kafka = IngressKafkaService::new(bifrost.clone(), schema.clone());
         let subscription_controller_handle = SubscriptionControllerHandle::new(
             config.ingress.clone(),
             ingress_kafka.create_command_sender(),
@@ -172,7 +174,6 @@ impl Worker {
             create_remote_scanner_service(networking, router_builder),
             create_partition_locator(partition_routing, metadata.clone()),
         );
-        let schema = metadata.updateable_schema();
         let storage_query_context = QueryContext::with_user_tables(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata,

@@ -31,7 +31,9 @@ use crate::dispatcher::{DispatchKafkaEvent, KafkaIngressDispatcher, KafkaIngress
 use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 use restate_core::{TaskCenter, TaskHandle, TaskKind, task_center};
 use restate_types::invocation::{Header, SpanRelation};
+use restate_types::live::Live;
 use restate_types::message::MessageIndex;
+use restate_types::schema::Schema;
 use restate_types::schema::subscriptions::{
     EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Subscription,
 };
@@ -96,13 +98,18 @@ impl KafkaDeduplicationId {
 pub struct MessageSender {
     subscription: Subscription,
     dispatcher: KafkaIngressDispatcher,
+    schema: Live<Schema>,
 
     subscription_id: String,
     ingress_request_counter: metrics::Counter,
 }
 
 impl MessageSender {
-    pub fn new(subscription: Subscription, dispatcher: KafkaIngressDispatcher) -> Self {
+    pub fn new(
+        subscription: Subscription,
+        dispatcher: KafkaIngressDispatcher,
+        schema: Live<Schema>,
+    ) -> Self {
         Self {
             subscription_id: subscription.id().to_string(),
             ingress_request_counter: counter!(
@@ -111,6 +118,7 @@ impl MessageSender {
             ),
             subscription,
             dispatcher,
+            schema,
         }
     }
 
@@ -145,6 +153,7 @@ impl MessageSender {
             Self::generate_deduplication_id(consumer_group_id, &msg);
         let req = KafkaIngressEvent::new(
             &self.subscription,
+            self.schema.pinned(),
             key,
             payload,
             SpanRelation::Parent(ingress_span_context),
