@@ -436,7 +436,12 @@ fn infer_handler_request_body(
                 content_type,
                 schema,
             } => {
-                let schema = Schema::new(schema.clone().unwrap_or(Value::Bool(false)));
+                let mut schema = Schema::new(schema.clone().unwrap_or(Value::Bool(true)));
+                if schema.0 == Value::Bool(true) {
+                    // Even though the boolean schema true is valid Json Schema,
+                    // tools generally like more the {} schema more.
+                    schema.0 = Value::Object(Default::default());
+                }
 
                 schemas_collector.push((request_schema_name(operation_id), schema));
 
@@ -683,6 +688,7 @@ fn send_response() -> Response {
 fn send_response_json_schema() -> Value {
     json!({
         "type": "object",
+        "title": "RestateSendResponse",
         "properties": {
             "invocationId": {
                 "type": "string"
@@ -770,7 +776,7 @@ fn restate_tags() -> Vec<Tag> {
             )))
             .build(),
         Tag::builder()
-            .name(ATTACH_TAG_NAME)
+            .name(GET_OUTPUT_TAG_NAME)
             .description(Some("Get invocation output".to_string()))
             .external_docs(Some(ExternalDocs::new(
                 "https://docs.restate.dev/invoke/http",
