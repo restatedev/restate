@@ -88,7 +88,7 @@ FROM upload-$UPLOAD_DEBUGINFO AS upload
 # We do not need the Rust toolchain to run the server binary!
 FROM debian:bookworm-slim AS runtime
 # useful for health checks
-RUN apt-get update && apt-get install --no-install-recommends -y curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install --no-install-recommends -y jq curl && rm -rf /var/lib/apt/lists/*
 COPY --from=upload /restate/NOTICE /NOTICE
 COPY --from=upload /restate/LICENSE /LICENSE
 # copy OS roots
