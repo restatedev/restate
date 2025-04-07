@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use super::network::grpc_svc::new_metadata_server_network_client;
 use crate::grpc::MetadataServerSnapshot;
 use crate::grpc::handler::MetadataServerHandler;
 use crate::local::migrate_nodes_configuration;
@@ -51,6 +52,7 @@ use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{
     Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind, cancellation_watcher,
 };
+use restate_rocksdb::RocksError;
 use restate_types::config::{
     Configuration, MetadataServerKind, MetadataServerOptions, RocksDbOptions,
 };
@@ -75,8 +77,6 @@ use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{Span, debug, error, info, instrument, trace, warn};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
-
-use super::network::grpc_svc::new_metadata_server_network_client;
 
 const RAFT_INITIAL_LOG_TERM: u64 = 1;
 const RAFT_INITIAL_LOG_INDEX: u64 = 1;
@@ -261,6 +261,15 @@ impl RaftMetadataServer {
             self.provision().await?;
         } else {
             debug!("Replicated metadata store is already provisioned");
+            // For forward compatibility we try to seal a potentially migrated local metadata server
+            // db, in case it did not happen yet (Restate versions <= 1.3.0 weren't doing it).
+            if let Err(err) = Self::try_sealing_local_metadata_server().await {
+                // If we are in this branch, then we assume that users have explicitly configured
+                // the replicated metadata server. Hence, if sealing fails, it is not a catastrophe.
+                warn!(%err, "Failed sealing local metadata server. This can be problematic if you \
+                ever switch back to the local metadata server either explicitly or by rolling back \
+                to a Restate version <= 1.3.");
+            }
         }
 
         let mut provision_rx = self.provision_rx.take().expect("must be present");
@@ -416,16 +425,16 @@ impl RaftMetadataServer {
     async fn load_initial_state_from_local_metadata_server(
         &mut self,
     ) -> anyhow::Result<KvMemoryStorage> {
-        let local_metadata_server_options = MetadataServerOptions::default();
+        let mut local_storage = Self::open_local_metadata_storage().await?;
 
-        let mut local_storage = local::storage::RocksDbStorage::create(
-            &local_metadata_server_options,
-            Constant::new(RocksDbOptions::default()).boxed(),
-        )
-        .await?;
+        // if the local storage is sealed, then someone has run the if block before
+        if !local_storage.is_sealed() {
+            // Try to migrate older nodes configuration versions
+            migrate_nodes_configuration(&mut local_storage).await?;
+        }
 
-        // Try to migrate older nodes configuration versions
-        migrate_nodes_configuration(&mut local_storage).await?;
+        // make sure that no more changes can be made to the local metadata server when rolling back
+        local_storage.seal().await?;
 
         let iter = local_storage.iter();
         let mut kv_memory_storage = KvMemoryStorage::new(None);
@@ -494,6 +503,29 @@ impl RaftMetadataServer {
         txn.commit().await?;
 
         Ok(my_member_id)
+    }
+
+    async fn try_sealing_local_metadata_server() -> anyhow::Result<()> {
+        if local::storage::RocksDbStorage::data_dir_exists() {
+            let mut local_storage = Self::open_local_metadata_storage().await?;
+
+            if !local_storage.is_sealed() {
+                local_storage.seal().await?;
+            }
+            // todo close local storage RocksDb instance
+        }
+
+        Ok(())
+    }
+
+    async fn open_local_metadata_storage() -> Result<local::storage::RocksDbStorage, RocksError> {
+        let local_metadata_server_options = MetadataServerOptions::default();
+        local::storage::RocksDbStorage::create(
+            &local_metadata_server_options,
+            // todo configure minimal memory settings to avoid warnings
+            Constant::new(RocksDbOptions::default()).boxed(),
+        )
+        .await
     }
 
     fn create_storage_marker() -> StorageMarker {

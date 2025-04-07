@@ -28,6 +28,16 @@ use restate_types::{PlainNodeId, Version};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, trace};
 
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    #[error(transparent)]
+    RocksDb(#[from] RocksError),
+    #[error(
+        "local metadata server has been sealed. This indicates that it has been migrated to the replicated metadata server. Please set 'metadata-server.type = \"replicated\"' in your configuration"
+    )]
+    Sealed,
+}
+
 /// Single node metadata store which stores the key value pairs in RocksDB.
 ///
 /// In order to avoid issues arising from concurrency, we run the metadata
@@ -44,11 +54,15 @@ impl LocalMetadataServer {
         options: &MetadataServerOptions,
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
         health_status: HealthStatus<MetadataServerStatus>,
-    ) -> Result<Self, RocksError> {
+    ) -> Result<Self, BuildError> {
         health_status.update(MetadataServerStatus::StartingUp);
         let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
 
         let storage = RocksDbStorage::create(options, updateable_rocksdb_options).await?;
+
+        if storage.is_sealed() {
+            return Err(BuildError::Sealed);
+        }
 
         Ok(Self {
             storage,

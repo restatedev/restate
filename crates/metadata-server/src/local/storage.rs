@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::local::{DATA_DIR, DB_NAME, KV_PAIRS};
+use crate::local::{DATA_DIR, DB_NAME, KV_PAIRS, SEALED_KEY};
 use crate::{PreconditionViolation, RequestError};
 use bytes::BytesMut;
 use bytestring::ByteString;
@@ -33,6 +33,7 @@ pub struct RocksDbStorage {
     rocksdb: Arc<RocksDb>,
     rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     buffer: BytesMut,
+    is_sealed: bool,
 }
 
 impl RocksDbStorage {
@@ -54,15 +55,25 @@ impl RocksDbStorage {
             .build()
             .expect("valid spec");
 
-        let _db = db_manager.open_db(rocksdb_options.clone(), db_spec).await?;
-        let rocksdb = db_manager
-            .get_db(db_name)
-            .expect("metadata store db is open");
+        let rocksdb = db_manager.open_db(rocksdb_options.clone(), db_spec).await?;
+        let is_sealed = {
+            let cf_handle = rocksdb
+                .inner()
+                .as_raw_db()
+                .cf_handle(KV_PAIRS)
+                .expect("KV_PAIRS column family exists");
+            rocksdb
+                .inner()
+                .as_raw_db()
+                .get_pinned_cf(&cf_handle, SEALED_KEY)?
+                .is_some()
+        };
 
         Ok(Self {
             rocksdb,
             rocksdb_options,
             buffer: BytesMut::default(),
+            is_sealed,
         })
     }
 
@@ -138,6 +149,7 @@ impl RocksDbStorage {
         value: &VersionedValue,
         precondition: Precondition,
     ) -> Result<(), RequestError> {
+        self.fail_if_sealed()?;
         match precondition {
             Precondition::None => Ok(self.write_versioned_kv_pair(key, value).await?),
             Precondition::DoesNotExist => {
@@ -173,6 +185,15 @@ impl RocksDbStorage {
         let write_options = self.write_options();
         let cf_handle = self.kv_cf_handle();
         let mut wb = WriteBatch::default();
+
+        // safety check to respect internal/reserved keys
+        if key == SEALED_KEY {
+            return Err(RequestError::InvalidArgument(format!(
+                "Cannot store values under key {} as it is a reserved key",
+                key
+            )));
+        }
+
         wb.put_cf(&cf_handle, key, self.buffer.as_ref());
         self.rocksdb
             .write_batch(
@@ -191,6 +212,7 @@ impl RocksDbStorage {
         key: &ByteString,
         precondition: Precondition,
     ) -> Result<(), RequestError> {
+        self.fail_if_sealed()?;
         match precondition {
             Precondition::None => self.delete_kv_pair(key),
             // this condition does not really make sense for the delete operation
@@ -250,9 +272,54 @@ impl RocksDbStorage {
             .full_iterator_cf(&cf_handle, IteratorMode::Start)
             .map_ok(|(key, value)| {
                 let key = ByteString::try_from(key.as_ref()).expect("valid byte string as key");
+
+                // filter out internal keys
+                if key == SEALED_KEY {
+                    return None;
+                }
+
                 let value = RocksDbStorage::decode(value.as_ref()).expect("valid versioned value");
-                (key, value)
+                Some((key, value))
             })
+            .flatten_ok()
+    }
+
+    pub async fn seal(&mut self) -> Result<(), RequestError> {
+        if self.is_sealed {
+            return Ok(());
+        }
+
+        {
+            let write_options = self.write_options();
+            let mut wb = WriteBatch::default();
+            let cf_handle = self.kv_cf_handle();
+            wb.put_cf(&cf_handle, SEALED_KEY, chrono::Utc::now().to_rfc3339());
+            self.rocksdb
+                .write_batch(
+                    "local-metadata-seal-batch",
+                    Priority::High,
+                    IoMode::default(),
+                    write_options,
+                    wb,
+                )
+                .await
+                .map_err(|err| RequestError::Internal(err.into()))?;
+        }
+        self.is_sealed = true;
+
+        Ok(())
+    }
+
+    pub fn is_sealed(&self) -> bool {
+        self.is_sealed
+    }
+
+    fn fail_if_sealed(&self) -> Result<(), RequestError> {
+        if self.is_sealed {
+            Err(RequestError::Internal("local metadata server has been sealed. This indicates that it has been migrated to the replicated metadata server. Please set 'metadata-server.type = \"replicated\"' in your configuration".to_owned().into()))
+        } else {
+            Ok(())
+        }
     }
 }
 

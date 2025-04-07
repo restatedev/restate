@@ -24,6 +24,7 @@ assert2 = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+chrono = { workspace = true }
 derive_more = { workspace = true }
 flexbuffers = { workspace = true }
 futures = { workspace = true }

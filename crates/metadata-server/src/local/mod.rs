@@ -21,6 +21,7 @@ mod tests;
 const DATA_DIR: &str = "local-metadata-store";
 const DB_NAME: &str = "local-metadata-store";
 const KV_PAIRS: &str = "kv_pairs";
+const SEALED_KEY: &str = "##restate_internal_sealed##";
 
 /// Data directory of the local metadata server
 pub fn data_dir() -> PathBuf {
