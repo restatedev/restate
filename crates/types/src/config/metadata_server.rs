@@ -59,16 +59,17 @@ pub struct MetadataServerOptions {
     ///
     /// The type of metadata server to start when running the metadata store role.
     // defined as Option<_> for backward compatibility with version < v1.2
-    #[serde(flatten)]
+    // todo remove when removing the local metadata server
+    #[serde(rename = "type")]
     kind: Option<MetadataServerKind>,
+
+    // defined as Option<_> for backward compatibility with version < v1.2
+    #[serde(flatten)]
+    raft_options: Option<RaftOptions>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, derive_more::Display)]
-#[serde(
-    tag = "type",
-    rename_all = "kebab-case",
-    rename_all_fields = "kebab-case"
-)]
+#[serde(rename_all = "kebab-case", rename_all_fields = "kebab-case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum MetadataServerKind {
     #[default]
@@ -77,7 +78,7 @@ pub enum MetadataServerKind {
     // make the Raft based metadata server primarily known as the replicated metadata server
     #[serde(rename = "replicated")]
     #[display("replicated")]
-    Raft(RaftOptions),
+    Raft,
 }
 
 impl MetadataServerOptions {
@@ -87,6 +88,14 @@ impl MetadataServerOptions {
 
     pub fn set_kind(&mut self, kind: MetadataServerKind) {
         self.kind = Some(kind);
+    }
+
+    pub fn raft_options(&self) -> RaftOptions {
+        self.raft_options.clone().unwrap_or_default()
+    }
+
+    pub fn set_raft_options(&mut self, raft_options: RaftOptions) {
+        self.raft_options = Some(raft_options);
     }
 
     pub fn apply_common(&mut self, common: &CommonOptions) {
@@ -134,6 +143,7 @@ impl Default for MetadataServerOptions {
             rocksdb_memory_ratio: 0.01,
             rocksdb,
             kind: Some(MetadataServerKind::default()),
+            raft_options: Some(RaftOptions::default()),
         }
     }
 }

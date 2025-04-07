@@ -20,7 +20,7 @@ use restate_core::protobuf::node_ctl_svc::{
     ProvisionClusterRequest as ProtoProvisionClusterRequest, new_node_ctl_client,
 };
 use restate_metadata_server::grpc::new_metadata_server_client;
-use restate_types::config::{InvalidConfigurationError, MetadataServerKind, RaftOptions};
+use restate_types::config::{InvalidConfigurationError, MetadataServerKind};
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::replication::ReplicationProperty;
@@ -185,15 +185,12 @@ impl Node {
         base_config.common.auto_provision = false;
         base_config.common.log_disable_ansi_codes = true;
         if roles.contains(Role::MetadataServer)
-            && !matches!(
-                base_config.metadata_server.kind(),
-                MetadataServerKind::Raft(_)
-            )
+            && !matches!(base_config.metadata_server.kind(), MetadataServerKind::Raft)
         {
             info!("Setting the metadata server to replicated");
             base_config
                 .metadata_server
-                .set_kind(MetadataServerKind::Raft(RaftOptions::default()));
+                .set_kind(MetadataServerKind::Raft);
         }
 
         for node_id in 1..=size {

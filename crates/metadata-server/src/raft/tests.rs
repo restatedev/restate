@@ -44,7 +44,8 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
 
     configuration
         .metadata_server
-        .set_kind(MetadataServerKind::Raft(raft_options));
+        .set_kind(MetadataServerKind::Raft);
+    configuration.metadata_server.set_raft_options(raft_options);
     set_current_config(configuration);
 
     let uds = tempfile::tempdir()?.into_path().join("server.sock");

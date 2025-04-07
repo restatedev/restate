@@ -52,9 +52,7 @@ use restate_core::{
     Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind, cancellation_watcher,
 };
 use restate_rocksdb::RocksError;
-use restate_types::config::{
-    Configuration, MetadataServerKind, MetadataServerOptions, RaftOptions, RocksDbOptions,
-};
+use restate_types::config::{Configuration, MetadataServerOptions, RocksDbOptions};
 use restate_types::errors::{ConversionError, GenericError};
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxedLiveLoad, Constant};
@@ -640,19 +638,7 @@ impl Member {
         // todo remove additional indirection from Arc
         connection_manager.store(Some(Arc::new(new_connection_manager)));
 
-        let raft_options = match Configuration::pinned().metadata_server.kind() {
-            MetadataServerKind::Local => {
-                warn!(
-                    "The replicated metadata server was not configured. This indicates that the \
-                system switched automatically after a successful migration. Using the default \
-                options for the replicated metadata server. Please configure \
-                'metadata-server.type = \"replicated\"' explicitly to control the respective \
-                options."
-                );
-                RaftOptions::default()
-            }
-            MetadataServerKind::Raft(raft_options) => raft_options,
-        };
+        let raft_options = Configuration::pinned().metadata_server.raft_options();
 
         let mut config = Config {
             id: to_raft_id(my_member_id.node_id),
