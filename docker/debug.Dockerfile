@@ -67,6 +67,6 @@ COPY --from=builder /restate/LICENSE /LICENSE
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
 # useful for health checks
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y jq curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/restate-server"]
