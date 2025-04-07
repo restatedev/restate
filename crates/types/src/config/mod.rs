@@ -327,6 +327,12 @@ fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<
     }
 }
 
-fn print_warning_deprecated_value(option: &str, value: &str) {
-    eprintln!("Option {option} does no longer support config value {value}. Using default value");
+fn print_warning_deprecated_value_using_default(option: &str, value: &str) {
+    eprintln!(
+        "Config option '{option}' does no longer support the value '{value}'. Using the default value instead."
+    );
+}
+
+fn print_warning_deprecated_value(option: &str, value: &str, help_msg: &str) {
+    eprintln!("Value '{value}' of config option '{option}' is deprecated: {help_msg}")
 }

@@ -647,8 +647,7 @@ impl MetadataClientKind {
     rename_all = "kebab-case",
     rename_all_fields = "kebab-case"
 )]
-// TODO(azmy): Remove this Shadow struct once we no longer support
-// the `address` configuration param.
+// TODO(azmy): Remove this Shadow struct once we no longer support the `address` configuration param.
 enum MetadataClientKindShadow {
     #[serde(alias = "embedded")]
     Replicated {

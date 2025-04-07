@@ -638,7 +638,7 @@ impl Member {
         // todo remove additional indirection from Arc
         connection_manager.store(Some(Arc::new(new_connection_manager)));
 
-        let raft_options = Configuration::pinned().metadata_server.raft_options();
+        let raft_options = &Configuration::pinned().metadata_server.raft_options;
 
         let mut config = Config {
             id: to_raft_id(my_member_id.node_id),

@@ -17,7 +17,7 @@ use tracing::warn;
 
 use restate_serde_util::NonZeroByteCount;
 
-use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder, print_warning_deprecated_value};
 
 /// # Metadata store options
 #[serde_as]
@@ -27,7 +27,7 @@ use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
     feature = "schemars",
     schemars(rename = "MetadataServerOptions", default)
 )]
-#[serde(rename_all = "kebab-case", default)]
+#[serde(rename_all = "kebab-case", from = "MetadataServerOptionsShadow")]
 #[builder(default)]
 pub struct MetadataServerOptions {
     /// Limit number of in-flight requests
@@ -58,14 +58,12 @@ pub struct MetadataServerOptions {
     /// Type of metadata server to start
     ///
     /// The type of metadata server to start when running the metadata store role.
-    // defined as Option<_> for backward compatibility with version < v1.2
     // todo remove when removing the local metadata server
     #[serde(rename = "type")]
     kind: Option<MetadataServerKind>,
 
-    // defined as Option<_> for backward compatibility with version < v1.2
     #[serde(flatten)]
-    raft_options: Option<RaftOptions>,
+    pub raft_options: RaftOptions,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, derive_more::Display)]
@@ -74,6 +72,10 @@ pub struct MetadataServerOptions {
 pub enum MetadataServerKind {
     #[default]
     #[display("local")]
+    // #[deprecated(
+    //     since = "1.3.0",
+    //     note = "The local metadata server kind will be removed with version 1.4.0"
+    // )]
     Local,
     // make the Raft based metadata server primarily known as the replicated metadata server
     #[serde(rename = "replicated")]
@@ -90,12 +92,8 @@ impl MetadataServerOptions {
         self.kind = Some(kind);
     }
 
-    pub fn raft_options(&self) -> RaftOptions {
-        self.raft_options.clone().unwrap_or_default()
-    }
-
     pub fn set_raft_options(&mut self, raft_options: RaftOptions) {
-        self.raft_options = Some(raft_options);
+        self.raft_options = raft_options;
     }
 
     pub fn apply_common(&mut self, common: &CommonOptions) {
@@ -142,8 +140,8 @@ impl Default for MetadataServerOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.01,
             rocksdb,
-            kind: Some(MetadataServerKind::default()),
-            raft_options: Some(RaftOptions::default()),
+            kind: None,
+            raft_options: RaftOptions::default(),
         }
     }
 }
@@ -190,6 +188,55 @@ impl Default for RaftOptions {
             raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
             raft_tick_interval: Duration::from_millis(100).into(),
             status_update_interval: Duration::from_secs(5).into(),
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct MetadataServerOptionsShadow {
+    request_queue_length: NonZeroUsize,
+
+    #[serde_as(as = "Option<NonZeroByteCount>")]
+    rocksdb_memory_budget: Option<NonZeroUsize>,
+
+    rocksdb_memory_ratio: f32,
+
+    #[serde(flatten)]
+    rocksdb: RocksDbOptions,
+
+    // defined as Option<_> for backward compatibility with version < v1.2
+    // todo remove when removing the local metadata server
+    #[serde(rename = "type")]
+    kind: Option<MetadataServerKind>,
+
+    // defined as Option<_> for backward compatibility with version < v1.2
+    #[serde(flatten)]
+    raft_options: Option<RaftOptions>,
+}
+
+impl From<MetadataServerOptionsShadow> for MetadataServerOptions {
+    fn from(value: MetadataServerOptionsShadow) -> Self {
+        if value
+            .kind
+            .as_ref()
+            .is_some_and(|kind| *kind == MetadataServerKind::Local)
+        {
+            print_warning_deprecated_value(
+                "metadata-server.type",
+                "local",
+                "The local metadata server will be removed with 1.4.0. It's recommended to unset this option or choose 'replicated'.",
+            );
+        }
+
+        MetadataServerOptions {
+            request_queue_length: value.request_queue_length,
+            rocksdb_memory_budget: value.rocksdb_memory_budget,
+            rocksdb_memory_ratio: value.rocksdb_memory_ratio,
+            rocksdb: value.rocksdb,
+            kind: value.kind,
+            raft_options: value.raft_options.unwrap_or_default(),
         }
     }
 }

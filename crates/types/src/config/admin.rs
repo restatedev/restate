@@ -24,7 +24,8 @@ use crate::{
 };
 
 use super::{
-    QueryEngineOptions, print_warning_deprecated_config_option, print_warning_deprecated_value,
+    QueryEngineOptions, print_warning_deprecated_config_option,
+    print_warning_deprecated_value_using_default,
 };
 
 /// # Admin server options
@@ -205,7 +206,7 @@ impl From<AdminOptionsShadow> for AdminOptions {
 
             match value {
                 PartitionReplication::Everywhere => {
-                    print_warning_deprecated_value(
+                    print_warning_deprecated_value_using_default(
                         "admin.default-partition-replication",
                         "everywhere",
                     );
