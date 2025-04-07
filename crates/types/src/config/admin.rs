@@ -60,12 +60,12 @@ pub struct AdminOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub heartbeat_interval: humantime::Duration,
 
-    /// # Controller sync interval
+    /// # Controller metadata sync interval
     ///
-    /// Controls the interval at which cluster controller syncs the state of the cluster.
+    /// The interval at which the cluster controller syncs cluster metadata from the metadata service.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub sync_interval: humantime::Duration,
+    pub metadata_sync_interval: humantime::Duration,
 
     /// # Log trim check interval
     ///
@@ -180,7 +180,7 @@ impl Default for AdminOptions {
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
             heartbeat_interval: Duration::from_millis(1500).into(),
-            sync_interval: Duration::from_secs(10).into(),
+            metadata_sync_interval: Duration::from_secs(10).into(),
             // check whether we can trim logs every hour
             log_trim_check_interval: Duration::from_secs(60 * 60).into(),
             log_trim_threshold: None,
@@ -230,7 +230,7 @@ impl From<AdminOptionsShadow> for AdminOptions {
             concurrent_api_requests_limit: value.concurrent_api_requests_limit,
             query_engine: value.query_engine,
             heartbeat_interval: value.heartbeat_interval,
-            sync_interval: value.sync_interval,
+            metadata_sync_interval: value.metadata_sync_interval,
             log_trim_check_interval,
             log_trim_threshold: value.log_trim_threshold,
             log_tail_update_interval: value.log_tail_update_interval,
@@ -262,7 +262,7 @@ struct AdminOptionsShadow {
     heartbeat_interval: humantime::Duration,
 
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    sync_interval: humantime::Duration,
+    metadata_sync_interval: humantime::Duration,
 
     #[serde_as(as = "serde_with::DisplayFromStr")]
     log_trim_check_interval: humantime::Duration,

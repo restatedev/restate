@@ -322,7 +322,7 @@ impl<T: TransportConnect> Service<T> {
         TaskCenter::spawn_child(
             TaskKind::SystemService,
             "cluster-controller-metadata-sync",
-            sync_cluster_controller_metadata(configuration.admin.sync_interval.into()),
+            sync_cluster_controller_metadata(configuration.admin.metadata_sync_interval.into()),
         )?;
 
         tokio::select! {
