@@ -164,7 +164,7 @@ impl NodeSet {
 
     /// Return an iterator over all values that are in self or `other`.
     /// Values from self are produced in their original order, followed by values that are unique to other in their original order.
-    pub fn union<'a, I>(
+    pub fn union<'a>(
         &'a self,
         other: &'a NodeSet,
     ) -> impl DoubleEndedIterator<Item = PlainNodeId> + FusedIterator + Clone + 'a {
