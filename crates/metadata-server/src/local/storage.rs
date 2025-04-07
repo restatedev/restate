@@ -37,10 +37,31 @@ pub struct RocksDbStorage {
 }
 
 impl RocksDbStorage {
-    pub async fn create(
+    pub async fn open_or_create(
         options: &MetadataServerOptions,
         rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     ) -> Result<Self, RocksError> {
+        let db_manager = RocksDbManager::get();
+
+        let rocksdb = if let Some(rocksdb) = db_manager.get_db(DbName::new(DB_NAME)) {
+            rocksdb
+        } else {
+            Self::create_db(options, rocksdb_options.clone()).await?
+        };
+
+        let is_sealed = Self::read_sealed_flag(&rocksdb)?;
+        Ok(Self {
+            rocksdb,
+            rocksdb_options,
+            buffer: BytesMut::default(),
+            is_sealed,
+        })
+    }
+
+    async fn create_db(
+        options: &MetadataServerOptions,
+        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    ) -> Result<Arc<RocksDb>, RocksError> {
         let data_dir = RocksDbStorage::data_dir();
         let db_name = DbName::new(DB_NAME);
         let db_manager = RocksDbManager::get();
@@ -55,7 +76,25 @@ impl RocksDbStorage {
             .build()
             .expect("valid spec");
 
-        let rocksdb = db_manager.open_db(rocksdb_options.clone(), db_spec).await?;
+        db_manager.open_db(rocksdb_options, db_spec).await
+    }
+
+    pub async fn create(
+        options: &MetadataServerOptions,
+        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    ) -> Result<Self, RocksError> {
+        let rocksdb = Self::create_db(options, rocksdb_options.clone()).await?;
+        let is_sealed = Self::read_sealed_flag(&rocksdb)?;
+
+        Ok(Self {
+            rocksdb,
+            rocksdb_options,
+            buffer: BytesMut::default(),
+            is_sealed,
+        })
+    }
+
+    fn read_sealed_flag(rocksdb: &Arc<RocksDb>) -> Result<bool, RocksError> {
         let is_sealed = {
             let cf_handle = rocksdb
                 .inner()
@@ -68,13 +107,7 @@ impl RocksDbStorage {
                 .get_pinned_cf(&cf_handle, SEALED_KEY)?
                 .is_some()
         };
-
-        Ok(Self {
-            rocksdb,
-            rocksdb_options,
-            buffer: BytesMut::default(),
-            is_sealed,
-        })
+        Ok(is_sealed)
     }
 
     pub fn data_dir() -> PathBuf {

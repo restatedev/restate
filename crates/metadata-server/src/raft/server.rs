@@ -30,7 +30,6 @@ use crate::{
     prepare_initial_nodes_configuration,
 };
 use arc_swap::ArcSwapOption;
-use assert2::let_assert;
 use bytes::BytesMut;
 use futures::FutureExt;
 use futures::future::{FusedFuture, OptionFuture};
@@ -54,7 +53,7 @@ use restate_core::{
 };
 use restate_rocksdb::RocksError;
 use restate_types::config::{
-    Configuration, MetadataServerKind, MetadataServerOptions, RocksDbOptions,
+    Configuration, MetadataServerKind, MetadataServerOptions, RaftOptions, RocksDbOptions,
 };
 use restate_types::errors::{ConversionError, GenericError};
 use restate_types::health::HealthStatus;
@@ -519,9 +518,8 @@ impl RaftMetadataServer {
     }
 
     async fn open_local_metadata_storage() -> Result<local::storage::RocksDbStorage, RocksError> {
-        let local_metadata_server_options = MetadataServerOptions::default();
-        local::storage::RocksDbStorage::create(
-            &local_metadata_server_options,
+        local::storage::RocksDbStorage::open_or_create(
+            &MetadataServerOptions::default(),
             // todo configure minimal memory settings to avoid warnings
             Constant::new(RocksDbOptions::default()).boxed(),
         )
@@ -642,11 +640,19 @@ impl Member {
         // todo remove additional indirection from Arc
         connection_manager.store(Some(Arc::new(new_connection_manager)));
 
-        let_assert!(
-            MetadataServerKind::Raft(raft_options) =
-                &Configuration::pinned().metadata_server.kind(),
-            "Expecting that the replicated/raft metadata server has been configured"
-        );
+        let raft_options = match Configuration::pinned().metadata_server.kind() {
+            MetadataServerKind::Local => {
+                warn!(
+                    "The replicated metadata server was not configured. This indicates that the \
+                system switched automatically after a successful migration. Using the default \
+                options for the replicated metadata server. Please configure \
+                'metadata-server.type = \"replicated\"' explicitly to control the respective \
+                options."
+                );
+                RaftOptions::default()
+            }
+            MetadataServerKind::Raft(raft_options) => raft_options,
+        };
 
         let mut config = Config {
             id: to_raft_id(my_member_id.node_id),
