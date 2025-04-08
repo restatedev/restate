@@ -10,6 +10,9 @@
 
 use crate::consumer_task::KafkaDeduplicationId;
 use bytes::Bytes;
+use opentelemetry::propagation::{Extractor, TextMapPropagator};
+use opentelemetry::trace::{Span, SpanContext, TraceContextExt};
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, my_node_id};
 use restate_storage_api::deduplication_table::DedupInformation;
@@ -29,6 +32,7 @@ use restate_types::{GenerationalNodeId, live};
 use restate_wal_protocol::{
     Command, Destination, Envelope, Header, Source, append_envelope_to_bifrost,
 };
+use std::borrow::Borrow;
 use std::sync::Arc;
 use tracing::debug;
 
@@ -47,10 +51,13 @@ impl KafkaIngressEvent {
         schema: live::Pinned<Schema>,
         key: Bytes,
         payload: Bytes,
-        related_span: SpanRelation,
         deduplication_id: KafkaDeduplicationId,
         deduplication_index: MessageIndex,
         headers: Vec<restate_types::invocation::Header>,
+        consumer_group_id: &str,
+        topic: &str,
+        partition: i32,
+        offset: i64,
     ) -> Result<Self, anyhow::Error> {
         // Check if we need to proxy or not
         let proxying_partition_key = if KafkaDeduplicationId::requires_proxying(subscription) {
@@ -118,6 +125,7 @@ impl KafkaIngressEvent {
             },
         };
 
+        // For workflows, we need to set the retention here
         let invocation_retention = if invocation_target.invocation_target_ty()
             == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
         {
@@ -131,14 +139,27 @@ impl KafkaIngressEvent {
             None
         };
 
-        // Generate service invocation
+        // Time to generate invocation id
         let invocation_id = InvocationId::generate(&invocation_target, None);
+
+        // Figure out tracing span
+        let ingress_span_context = prepare_tracing_span(
+            &invocation_id,
+            &invocation_target,
+            &headers,
+            consumer_group_id,
+            topic,
+            partition as i64,
+            offset,
+        );
+
+        // Finally generate service invocation
         let mut service_invocation = ServiceInvocation::initialize(
             invocation_id,
             invocation_target,
             restate_types::invocation::Source::Subscription(subscription.id()),
         );
-        service_invocation.with_related_span(related_span);
+        service_invocation.with_related_span(SpanRelation::Parent(ingress_span_context));
         service_invocation.argument = payload;
         service_invocation.headers = headers;
         service_invocation.completion_retention_duration = invocation_retention;
@@ -233,4 +254,54 @@ fn wrap_service_invocation_in_envelope(
     };
 
     Envelope::new(header, Command::ProxyThrough(service_invocation))
+}
+pub(crate) fn prepare_tracing_span(
+    invocation_id: &InvocationId,
+    invocation_target: &InvocationTarget,
+    headers: &[restate_types::invocation::Header],
+    consumer_group_name: &str,
+    topic: &str,
+    partition: i64,
+    offset: i64,
+) -> SpanContext {
+    let tracing_context = TraceContextPropagator::new().extract(&HeaderExtractor(headers));
+    let inbound_span = tracing_context.span();
+
+    let relation = if inbound_span.span_context().is_valid() {
+        SpanRelation::Parent(inbound_span.span_context().clone())
+    } else {
+        SpanRelation::None
+    };
+
+    let span = restate_tracing_instrumentation::info_invocation_span!(
+        relation = relation,
+        prefix = "ingress_kafka",
+        id = invocation_id,
+        target = invocation_target,
+        tags = (
+            messaging.system = "kafka",
+            messaging.consumer.group.name = consumer_group_name.to_owned(),
+            messaging.operation.type = "process",
+            messaging.kafka.offset = offset,
+            messaging.source.partition.id = partition,
+            messaging.source.name = topic.to_owned()
+        )
+    );
+
+    span.span_context().clone()
+}
+
+struct HeaderExtractor<'a>(pub &'a [restate_types::invocation::Header]);
+
+impl Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(key))
+            .map(|value| value.value.borrow())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.iter().map(|h| h.name.borrow()).collect::<Vec<_>>()
+    }
 }
