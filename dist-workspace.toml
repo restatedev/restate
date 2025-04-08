@@ -7,7 +7,7 @@ members = ["cargo:."]
 cargo-dist-version = "0.28.0"
 # CI backends to support
 ci = "github"
-github-attestations = true
+github-attestations = false
 # The installers to generate for each app
 installers = ["homebrew"]
 # A GitHub repo to push Homebrew formulas to
@@ -32,8 +32,6 @@ global-artifacts-jobs = ["./notarize"]
 publish-jobs = ["./homebrew", "./docker-push-release", "./npm", "npm", "./release-notes"]
 # helm goes here because it shouldn't exist before docker-push-release happens
 post-announce-jobs = ["./helm"]
-# todo remove allow-dirty as soon as possible since it prevents updating the release.yml
-allow-dirty = ["ci"]
 
 [dist.github-custom-job-permissions.ci]
 actions = "read"
