@@ -331,7 +331,6 @@ fn try_provisioning(
     node_set_selector_hints: impl NodeSetSelectorHints,
 ) -> Option<LogletConfiguration> {
     match logs_configuration.default_provider {
-        #[cfg(any(test, feature = "local-loglet"))]
         ProviderConfiguration::Local => {
             let log_id = LogletId::new(log_id, SegmentIndex::OLDEST);
             Some(LogletConfiguration::Local(log_id.into()))
@@ -442,7 +441,6 @@ pub fn build_new_replicated_loglet_configuration(
 enum LogletConfiguration {
     #[cfg(feature = "replicated-loglet")]
     Replicated(ReplicatedLogletParams),
-    #[cfg(feature = "local-loglet")]
     Local(u64),
     #[cfg(any(test, feature = "memory-loglet"))]
     Memory(u64),
@@ -453,7 +451,6 @@ impl LogletConfiguration {
         match self {
             #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(_) => ProviderKind::Replicated,
-            #[cfg(feature = "local-loglet")]
             LogletConfiguration::Local(_) => ProviderKind::Local,
             #[cfg(any(test, feature = "memory-loglet"))]
             LogletConfiguration::Memory(_) => ProviderKind::InMemory,
@@ -470,7 +467,6 @@ impl LogletConfiguration {
         match (self, &logs_configuration.default_provider) {
             #[cfg(any(test, feature = "memory-loglet"))]
             (Self::Memory(_), ProviderConfiguration::InMemory) => false,
-            #[cfg(feature = "local-loglet")]
             (Self::Local(_), ProviderConfiguration::Local) => false,
             #[cfg(feature = "replicated-loglet")]
             (Self::Replicated(params), ProviderConfiguration::Replicated(config)) => {
@@ -566,7 +562,6 @@ impl LogletConfiguration {
                     .serialize()
                     .map_err(|err| LogsControllerError::ConfigurationToLogletParams(err.into()))?,
             ),
-            #[cfg(feature = "local-loglet")]
             LogletConfiguration::Local(id) => LogletParams::from(id.to_string()),
             #[cfg(any(test, feature = "memory-loglet"))]
             LogletConfiguration::Memory(id) => LogletParams::from(id.to_string()),
@@ -588,7 +583,6 @@ impl LogletConfiguration {
             ProviderConfiguration::InMemory => {
                 Some(LogletConfiguration::Memory(next_loglet_id.into()))
             }
-            #[cfg(feature = "local-loglet")]
             ProviderConfiguration::Local => Some(LogletConfiguration::Local(next_loglet_id.into())),
             #[cfg(feature = "replicated-loglet")]
             ProviderConfiguration::Replicated(ref config) => {
@@ -617,7 +611,6 @@ impl LogletConfiguration {
             LogletConfiguration::Replicated(configuration) => {
                 itertools::Either::Left(configuration.nodeset.iter())
             }
-            #[cfg(feature = "local-loglet")]
             LogletConfiguration::Local(_) => itertools::Either::Right(iter::empty()),
             #[cfg(any(test, feature = "memory-loglet"))]
             LogletConfiguration::Memory(_) => itertools::Either::Right(iter::empty()),
@@ -628,7 +621,6 @@ impl LogletConfiguration {
         match self {
             #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(configuration) => Some(configuration.sequencer),
-            #[cfg(feature = "local-loglet")]
             LogletConfiguration::Local(_) => None,
             #[cfg(any(test, feature = "memory-loglet"))]
             LogletConfiguration::Memory(_) => None,
@@ -641,7 +633,6 @@ impl TryFrom<&LogletConfig> for LogletConfiguration {
 
     fn try_from(value: &LogletConfig) -> Result<Self, Self::Error> {
         match value.kind {
-            #[cfg(feature = "local-loglet")]
             ProviderKind::Local => Ok(LogletConfiguration::Local(value.params.parse()?)),
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderKind::InMemory => Ok(LogletConfiguration::Memory(value.params.parse()?)),

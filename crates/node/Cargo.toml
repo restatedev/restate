@@ -10,7 +10,6 @@ publish = false
 [features]
 default = []
 memory-loglet = ["restate-bifrost/memory-loglet", "restate-admin/memory-loglet"]
-local-loglet = ["restate-bifrost/local-loglet", "restate-admin/local-loglet", "restate-types/local-loglet"]
 replicated-loglet = ["restate-bifrost/replicated-loglet", "restate-admin/replicated-loglet"]
 options_schema = [
     "dep:schemars",
@@ -22,7 +21,7 @@ options_schema = [
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-admin = { workspace = true, features = ["storage-query"]}
-restate-bifrost = { workspace = true }
+restate-bifrost = { workspace = true, features = ["local-loglet"] }
 restate-core = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-log-server = { workspace = true }

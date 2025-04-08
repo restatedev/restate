@@ -123,7 +123,6 @@ impl LookupIndex {
 pub enum ProviderConfiguration {
     #[cfg(any(test, feature = "memory-loglet"))]
     InMemory,
-    #[cfg(any(test, feature = "local-loglet"))]
     Local,
     Replicated(ReplicatedLogletConfig),
 }
@@ -142,7 +141,6 @@ impl ProviderConfiguration {
         match self {
             #[cfg(any(test, feature = "memory-loglet"))]
             Self::InMemory => ProviderKind::InMemory,
-            #[cfg(any(test, feature = "local-loglet"))]
             Self::Local => ProviderKind::Local,
             Self::Replicated(_) => ProviderKind::Replicated,
         }
@@ -166,7 +164,6 @@ impl ProviderConfiguration {
         match self {
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderConfiguration::InMemory => None,
-            #[cfg(any(test, feature = "local-loglet"))]
             ProviderConfiguration::Local => None,
             ProviderConfiguration::Replicated(config) => Some(&config.replication_property),
         }
@@ -176,7 +173,6 @@ impl ProviderConfiguration {
         match self {
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderConfiguration::InMemory => None,
-            #[cfg(any(test, feature = "local-loglet"))]
             ProviderConfiguration::Local => None,
             ProviderConfiguration::Replicated(config) => Some(config.target_nodeset_size),
         }
@@ -192,7 +188,6 @@ impl From<(ProviderKind, ReplicationProperty, NodeSetSize)> for ProviderConfigur
         ),
     ) -> Self {
         match provider_kind {
-            #[cfg(any(test, feature = "local-loglet"))]
             ProviderKind::Local => ProviderConfiguration::Local,
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderKind::InMemory => ProviderConfiguration::InMemory,
@@ -211,7 +206,6 @@ impl From<ProviderConfiguration> for crate::protobuf::cluster::BifrostProvider {
         let mut result = cluster::BifrostProvider::default();
 
         match value {
-            #[cfg(any(test, feature = "local-loglet"))]
             ProviderConfiguration::Local => result.provider = ProviderKind::Local.to_string(),
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderConfiguration::InMemory => result.provider = ProviderKind::InMemory.to_string(),
@@ -234,7 +228,6 @@ impl TryFrom<crate::protobuf::cluster::BifrostProvider> for ProviderConfiguratio
         let provider_kind: ProviderKind = value.provider.parse()?;
 
         match provider_kind {
-            #[cfg(any(test, feature = "local-loglet"))]
             ProviderKind::Local => Ok(Self::Local),
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderKind::InMemory => Ok(Self::InMemory),
@@ -540,7 +533,6 @@ impl From<&'static str> for LogletParams {
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum ProviderKind {
     /// A local rocksdb-backed loglet.
-    #[cfg(any(test, feature = "local-loglet"))]
     Local,
     /// An in-memory loglet, primarily for testing.
     #[cfg(any(test, feature = "memory-loglet"))]
@@ -555,7 +547,6 @@ impl FromStr for ProviderKind {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
-            #[cfg(any(test, feature = "local-loglet"))]
             "local" => Ok(Self::Local),
             #[cfg(any(test, feature = "memory-loglet"))]
             "in-memory" | "in_memory" | "memory" => Ok(Self::InMemory),
@@ -768,7 +759,6 @@ flexbuffers_storage_encode_decode!(Chain);
 /// It must generate params that uniquely identify the new loglet instance on every call.
 pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletParams {
     match default_provider {
-        #[cfg(any(test, feature = "local-loglet"))]
         ProviderKind::Local => {
             use rand::RngCore;
             let loglet_id = rand::rng().next_u64().to_string();

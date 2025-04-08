@@ -25,7 +25,7 @@ no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"
 restate-admin-rest-model = { workspace = true }
 restate-cli-util = { workspace = true }
 restate-serde-util = { workspace = true }
-restate-types = { workspace = true, features = ["local-loglet"] }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
