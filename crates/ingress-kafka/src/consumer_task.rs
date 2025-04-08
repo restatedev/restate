@@ -12,10 +12,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, OnceLock, Weak};
 
+use crate::dispatcher::{DispatchKafkaEvent, KafkaIngressDispatcher, KafkaIngressEvent};
+use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 use base64::Engine;
 use bytes::Bytes;
 use metrics::counter;
-use opentelemetry::trace::TraceContextExt;
 use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
 use rdkafka::consumer::{CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer};
 use rdkafka::error::KafkaError;
@@ -23,20 +24,16 @@ use rdkafka::message::BorrowedMessage;
 use rdkafka::topic_partition_list::TopicPartitionListElem;
 use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::{ClientConfig, ClientContext, Message};
-use tokio::sync::{mpsc, oneshot};
-use tracing::{Instrument, debug, info, info_span, warn};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
-
-use crate::dispatcher::{DispatchKafkaEvent, KafkaIngressDispatcher, KafkaIngressEvent};
-use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
 use restate_core::{TaskCenter, TaskHandle, TaskKind, task_center};
-use restate_types::invocation::{Header, SpanRelation};
+use restate_types::invocation::Header;
 use restate_types::live::Live;
 use restate_types::message::MessageIndex;
 use restate_types::schema::Schema;
 use restate_types::schema::subscriptions::{
     EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Subscription,
 };
+use tokio::sync::{mpsc, oneshot};
+use tracing::{Instrument, debug, info, info_span, warn};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -135,7 +132,6 @@ impl MessageSender {
             messaging.consumer.group.name = consumer_group_id
         );
         info!(parent: &ingress_span, "Processing Kafka ingress request");
-        let ingress_span_context = ingress_span.context().span().span_context().clone();
 
         let key = if let Some(k) = msg.key() {
             Bytes::copy_from_slice(k)
@@ -156,10 +152,13 @@ impl MessageSender {
             self.schema.pinned(),
             key,
             payload,
-            SpanRelation::Parent(ingress_span_context),
             deduplication_id,
             deduplication_index,
             headers,
+            consumer_group_id,
+            msg.topic(),
+            msg.partition(),
+            msg.offset(),
         )
         .map_err(|cause| Error::Event {
             topic: msg.topic().to_string(),

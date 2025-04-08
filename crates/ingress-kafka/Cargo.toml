@@ -20,6 +20,7 @@ restate-errors = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }
+restate-tracing-instrumentation = { workspace = true }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
@@ -29,6 +30,7 @@ derive_builder = { workspace = true }
 derive_more = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 parking_lot = { workspace = true }
 rdkafka = { git = "https://github.com/restatedev/rust-rdkafka", rev = "4b5946309bdb669eb0c884cd9b7ad05578a0f6c6", features = ["libz-static", "cmake-build", "ssl-vendored"] }
 schemars = { workspace = true, optional = true }
