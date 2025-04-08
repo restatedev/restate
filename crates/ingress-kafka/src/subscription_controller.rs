@@ -20,8 +20,9 @@ use restate_bifrost::Bifrost;
 use restate_core::cancellation_watcher;
 use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
-use restate_types::live::LiveLoad;
+use restate_types::live::{Live, LiveLoad};
 use restate_types::retries::RetryPolicy;
+use restate_types::schema::Schema;
 use restate_types::schema::subscriptions::{Source, Subscription};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -44,18 +45,20 @@ pub enum Error {
 // In future versions, we should either pull this out in a separate process, or generify it and move it to the worker, or an ad-hoc module
 pub struct Service {
     dispatcher: KafkaIngressDispatcher,
+    schema: Live<Schema>,
 
     commands_tx: SubscriptionCommandSender,
     commands_rx: SubscriptionCommandReceiver,
 }
 
 impl Service {
-    pub fn new(bifrost: Bifrost) -> Service {
+    pub fn new(bifrost: Bifrost, schema: Live<Schema>) -> Service {
         metric_definitions::describe_metrics();
         let (commands_tx, commands_rx) = mpsc::channel(10);
 
         Service {
             dispatcher: KafkaIngressDispatcher::new(bifrost),
+            schema,
             commands_tx,
             commands_rx,
         }
@@ -144,7 +147,7 @@ impl Service {
         let consumer_task = consumer_task::ConsumerTask::new(
             client_config,
             vec![topic.to_string()],
-            MessageSender::new(subscription, self.dispatcher.clone()),
+            MessageSender::new(subscription, self.dispatcher.clone(), self.schema.clone()),
         );
 
         task_orchestrator.start(subscription_id, consumer_task);

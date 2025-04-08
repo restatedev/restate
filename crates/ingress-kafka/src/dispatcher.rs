@@ -13,17 +13,19 @@ use bytes::Bytes;
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, my_node_id};
 use restate_storage_api::deduplication_table::DedupInformation;
-use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey, partitioner};
 use restate_types::invocation::{
-    InvocationTarget, ServiceInvocation, SpanRelation, VirtualObjectHandlerType,
-    WorkflowHandlerType,
+    InvocationTarget, InvocationTargetType, ServiceInvocation, SpanRelation,
+    VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
 use restate_types::partition_table::PartitionTableError;
+use restate_types::schema::Schema;
+use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::subscriptions::{
     EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Subscription,
 };
+use restate_types::{GenerationalNodeId, live};
 use restate_wal_protocol::{
     Command, Destination, Envelope, Header, Source, append_envelope_to_bifrost,
 };
@@ -42,6 +44,7 @@ impl KafkaIngressEvent {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         subscription: &Subscription,
+        schema: live::Pinned<Schema>,
         key: Bytes,
         payload: Bytes,
         related_span: SpanRelation,
@@ -115,6 +118,19 @@ impl KafkaIngressEvent {
             },
         };
 
+        let invocation_retention = if invocation_target.invocation_target_ty()
+            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            schema
+                .resolve_latest_invocation_target(
+                    invocation_target.service_name(),
+                    invocation_target.handler_name(),
+                )
+                .and_then(|target| target.compute_retention(false))
+        } else {
+            None
+        };
+
         // Generate service invocation
         let invocation_id = InvocationId::generate(&invocation_target, None);
         let mut service_invocation = ServiceInvocation::initialize(
@@ -125,6 +141,7 @@ impl KafkaIngressEvent {
         service_invocation.with_related_span(related_span);
         service_invocation.argument = payload;
         service_invocation.headers = headers;
+        service_invocation.completion_retention_duration = invocation_retention;
 
         Ok(KafkaIngressEvent {
             service_invocation,
