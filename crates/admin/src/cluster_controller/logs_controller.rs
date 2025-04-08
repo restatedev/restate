@@ -340,7 +340,6 @@ fn try_provisioning(
             let log_id = LogletId::new(log_id, SegmentIndex::OLDEST);
             Some(LogletConfiguration::Memory(log_id.into()))
         }
-        #[cfg(feature = "replicated-loglet")]
         ProviderConfiguration::Replicated(ref config) => build_new_replicated_loglet_configuration(
             log_id,
             config,
@@ -354,7 +353,6 @@ fn try_provisioning(
     }
 }
 
-#[cfg(feature = "replicated-loglet")]
 fn logserver_writeable_node_filter(
     observed_cluster_state: &ObservedClusterState,
 ) -> impl Fn(PlainNodeId, &NodeConfig) -> bool + '_ {
@@ -367,7 +365,6 @@ fn logserver_writeable_node_filter(
 }
 /// Build a new segment configuration for a replicated loglet based on the observed cluster state
 /// and the previous configuration.
-#[cfg(feature = "replicated-loglet")]
 pub fn build_new_replicated_loglet_configuration(
     log_id: LogId,
     replicated_loglet_config: &ReplicatedLogletConfig,
@@ -439,7 +436,6 @@ pub fn build_new_replicated_loglet_configuration(
 /// Representation of supported loglet configuration types.
 #[derive(Debug)]
 enum LogletConfiguration {
-    #[cfg(feature = "replicated-loglet")]
     Replicated(ReplicatedLogletParams),
     Local(u64),
     #[cfg(any(test, feature = "memory-loglet"))]
@@ -449,7 +445,6 @@ enum LogletConfiguration {
 impl LogletConfiguration {
     fn as_provider(&self) -> ProviderKind {
         match self {
-            #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(_) => ProviderKind::Replicated,
             LogletConfiguration::Local(_) => ProviderKind::Local,
             #[cfg(any(test, feature = "memory-loglet"))]
@@ -468,7 +463,6 @@ impl LogletConfiguration {
             #[cfg(any(test, feature = "memory-loglet"))]
             (Self::Memory(_), ProviderConfiguration::InMemory) => false,
             (Self::Local(_), ProviderConfiguration::Local) => false,
-            #[cfg(feature = "replicated-loglet")]
             (Self::Replicated(params), ProviderConfiguration::Replicated(config)) => {
                 let sequencer_change_required = !observed_cluster_state
                     .is_node_alive(params.sequencer)
@@ -556,7 +550,6 @@ impl LogletConfiguration {
 
     fn to_loglet_params(&self) -> Result<LogletParams> {
         Ok(match self {
-            #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(configuration) => LogletParams::from(
                 configuration
                     .serialize()
@@ -584,7 +577,6 @@ impl LogletConfiguration {
                 Some(LogletConfiguration::Memory(next_loglet_id.into()))
             }
             ProviderConfiguration::Local => Some(LogletConfiguration::Local(next_loglet_id.into())),
-            #[cfg(feature = "replicated-loglet")]
             ProviderConfiguration::Replicated(ref config) => {
                 let previous_params = match self {
                     Self::Replicated(previous_params) => Some(previous_params),
@@ -607,7 +599,6 @@ impl LogletConfiguration {
 
     fn node_set_iter(&self) -> impl Iterator<Item = &PlainNodeId> {
         match self {
-            #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(configuration) => {
                 itertools::Either::Left(configuration.nodeset.iter())
             }
@@ -619,7 +610,6 @@ impl LogletConfiguration {
 
     fn sequencer_node(&self) -> Option<GenerationalNodeId> {
         match self {
-            #[cfg(feature = "replicated-loglet")]
             LogletConfiguration::Replicated(configuration) => Some(configuration.sequencer),
             LogletConfiguration::Local(_) => None,
             #[cfg(any(test, feature = "memory-loglet"))]
@@ -636,7 +626,6 @@ impl TryFrom<&LogletConfig> for LogletConfiguration {
             ProviderKind::Local => Ok(LogletConfiguration::Local(value.params.parse()?)),
             #[cfg(any(test, feature = "memory-loglet"))]
             ProviderKind::InMemory => Ok(LogletConfiguration::Memory(value.params.parse()?)),
-            #[cfg(feature = "replicated-loglet")]
             ProviderKind::Replicated => {
                 ReplicatedLogletParams::deserialize_from(value.params.as_bytes())
                     .map(LogletConfiguration::Replicated)

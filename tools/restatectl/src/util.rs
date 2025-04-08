@@ -41,7 +41,6 @@ pub fn write_default_provider<W: fmt::Write>(
         ProviderConfiguration::Local => {
             write_leaf(w, depth, true, title, "local")?;
         }
-        #[cfg(feature = "replicated-loglet")]
         ProviderConfiguration::Replicated(config) => {
             write_leaf(w, depth, true, title, "replicated")?;
             let depth = depth + 1;

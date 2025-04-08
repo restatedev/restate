@@ -15,7 +15,7 @@ no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"
 [dependencies]
 mock-service-endpoint = { workspace = true }
 restate-core = { workspace = true, features = ["test-util"] }
-restate-node = { workspace = true, features = ["memory-loglet", "replicated-loglet"] }
+restate-node = { workspace = true, features = ["memory-loglet"] }
 restate-rocksdb = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio", "prometheus"] }
 restate-types = { workspace = true, features = ["clap"] }

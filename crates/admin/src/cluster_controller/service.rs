@@ -823,7 +823,6 @@ impl SealAndExtendTask {
                 ProviderKind::Local,
                 u64::from(next_loglet_id).to_string().into(),
             ),
-            #[cfg(feature = "replicated-loglet")]
             ProviderConfiguration::Replicated(config) => {
                 let loglet_params = logs_controller::build_new_replicated_loglet_configuration(
                     self.log_id,

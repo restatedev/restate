@@ -15,16 +15,13 @@ dist = true
 formula = "restatectl"
 
 [features]
-default = ["replicated-loglet", "memory-loglet", "no-trace-logging"]
-replicated-loglet = [
-    "restate-bifrost/replicated-loglet",
-]
+default = ["memory-loglet", "no-trace-logging"]
 memory-loglet = ["restate-types/memory-loglet", "restate-bifrost/memory-loglet", "restate-admin/memory-loglet"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
 [dependencies]
 restate-admin = { workspace = true, features = ["clients"] }
-restate-bifrost = { workspace = true, features = ["local-loglet"] }
+restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }
 restate-cli-util = { workspace = true }
 restate-core = { workspace = true }
 restate-log-server = { workspace = true, features = ["clients"] }

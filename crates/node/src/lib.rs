@@ -27,7 +27,6 @@ use restate_core::network::{
 use restate_core::partitions::{PartitionRoutingRefresher, spawn_partition_routing_refresher};
 use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_manager};
-#[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
 use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
@@ -35,7 +34,6 @@ use restate_metadata_server::{
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::live::Live;
-#[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
 use restate_types::metadata::Precondition;
@@ -128,7 +126,6 @@ pub struct Node {
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole>,
     ingress_role: Option<IngressRole<GrpcConnector>>,
-    #[cfg(feature = "replicated-loglet")]
     log_server: Option<LogServerService>,
     networking: Networking<GrpcConnector>,
     is_provisioned: bool,
@@ -199,7 +196,6 @@ impl Node {
         metadata_manager.register_in_message_router(&mut router_builder);
         let partition_routing_refresher = PartitionRoutingRefresher::default();
 
-        #[cfg(feature = "replicated-loglet")]
         let record_cache = RecordCache::new(
             Configuration::pinned()
                 .bifrost
@@ -209,7 +205,6 @@ impl Node {
 
         // Setup bifrost
         // replicated-loglet
-        #[cfg(feature = "replicated-loglet")]
         let replicated_loglet_factory = restate_bifrost::providers::replicated_loglet::Factory::new(
             metadata_store_client.clone(),
             networking.clone(),
@@ -221,18 +216,13 @@ impl Node {
 
         let bifrost_svc = bifrost_svc.enable_local_loglet(&updateable_config);
 
-        #[cfg(feature = "replicated-loglet")]
         let bifrost_svc = bifrost_svc.with_factory(replicated_loglet_factory);
 
         #[cfg(feature = "memory-loglet")]
         let bifrost_svc = bifrost_svc.enable_in_memory_loglet();
 
-        #[cfg(not(feature = "replicated-loglet"))]
-        warn_if_log_store_left_artifacts(&config);
-
         let bifrost = bifrost_svc.handle();
 
-        #[cfg(feature = "replicated-loglet")]
         let log_server = if config.has_role(Role::LogServer) {
             Some(
                 LogServerService::create(
@@ -350,7 +340,6 @@ impl Node {
             admin_role,
             ingress_role,
             worker_role,
-            #[cfg(feature = "replicated-loglet")]
             log_server,
             server_builder,
             networking,
@@ -494,7 +483,6 @@ impl Node {
         // Need to run start in new tc scope to have access to metadata()
         self.bifrost.start().await?;
 
-        #[cfg(feature = "replicated-loglet")]
         if let Some(log_server) = self.log_server {
             log_server.start(metadata_writer).await?;
         }
@@ -747,15 +735,3 @@ async fn write_initial_logs_dont_fail_if_it_exists(
 
 #[derive(Debug)]
 struct AlreadyInitialized;
-
-#[cfg(not(feature = "replicated-loglet"))]
-fn warn_if_log_store_left_artifacts(config: &Configuration) {
-    if config.log_server.data_dir().exists() {
-        tracing::warn!(
-            "Log server data directory '{}' exists, \
-            but log-server is not implemented in this version of restate-server. \
-            This may indicate that the log-server role was previously enabled and the data directory was not cleaned up. If this was created by v1.1.1 of restate-server, please remove this directory to avoid potential future conflicts.",
-            config.log_server.data_dir().display()
-        );
-    }
-}

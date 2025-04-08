@@ -10,7 +10,6 @@
 
 mod common;
 
-#[cfg(feature = "replicated-loglet")]
 mod tests {
     use std::{
         collections::BTreeSet,

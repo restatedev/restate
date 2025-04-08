@@ -8,11 +8,10 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["replicated-loglet", "serve-web-ui"]
+default = ["serve-web-ui"]
 clients = []
 options_schema = ["restate-service-client/options_schema"]
 memory-loglet = ["restate-bifrost/memory-loglet"]
-replicated-loglet = ["restate-bifrost/replicated-loglet"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
 storage-query = []
 metadata-api = []
@@ -21,7 +20,7 @@ metadata-api = []
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-admin-rest-model = { workspace = true, features = ["schema"] }
-restate-bifrost = { workspace = true, features = ["local-loglet"] }
+restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }
 restate-core = { workspace = true, features = ["options_schema"] }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
