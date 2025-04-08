@@ -1,31 +1,33 @@
 [![Documentation](https://img.shields.io/badge/doc-reference-blue)](https://docs.restate.dev)
 [![Examples](https://img.shields.io/badge/view-examples-blue)](https://github.com/restatedev/examples)
 [![Discord](https://img.shields.io/discord/1128210118216007792?logo=discord)](https://discord.gg/skW3AZ6uGd)
-[![Twitter](https://img.shields.io/twitter/follow/restatedev.svg?style=social&label=Follow)](https://twitter.com/intent/follow?screen_name=restatedev)
+[![Slack](https://img.shields.io/badge/Slack-4A154B?logo=slack&logoColor=fff)](https://join.slack.com/t/restatecommunity/shared_invite/zt-2v9gl005c-WBpr167o5XJZI1l7HWKImA)
+[![Twitter](https://img.shields.io/twitter/follow/restatedev.svg?style=social&label=Follow)](https://x.com/intent/follow?screen_name=restatedev)
 
 # Restate - Building resilient applications made easy!
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://restate.dev/poster_intro_dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://restate.dev/poster_intro_2.svg">
-    <img alt="Restate overview" src="https://restate.dev/poster_intro_2.svg" width="500">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/restatedev/img/refs/heads/main/restate-overview-light.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/restatedev/img/refs/heads/main/restate-overview-dark.png">
+    <img alt="Restate overview" src="https://raw.githubusercontent.com/restatedev/img/refs/heads/main/restate-overview-dark.png" width="650">
   </picture>
 </p>
 
-Easily build workflows, event-driven applications, and distributed services in a fault-tolerant manner with durable async/await.
+[Restate](https://restate.dev) is the simplest way to build resilient applications.
 
-[Restate](https://restate.dev) is great at building:
+Restate provides a distributed durable version of your everyday building blocks, letting you build a wide range of use cases:
 
-* [Lambda Workflows as Code](https://restate.dev/blog/we-replaced-400-lines-of-stepfunctions-asl-with-40-lines-of-typescript-by-making-lambdas-suspendable/)
-* [Transactional RPC Handlers](https://github.com/restatedev/examples/tree/main/end-to-end-applications/typescript/food-ordering)
-* [Event Processing with Kafka](https://restate.dev/blog/restate--kafka-event-driven-apps-where-event-driven-is-an-implementation-detail/)
-* [Much more](https://github.com/restatedev/examples)
+* [Workflows-as-Code](https://docs.restate.dev/use-cases/workflows)
+* [Microservice orchestration](https://docs.restate.dev/use-cases/microservice-orchestration)
+* [Event Processing](https://docs.restate.dev/use-cases/event-processing)
+* [Async Tasks](https://docs.restate.dev/use-cases/async-tasks)
+* [Agents, Stateful Actors, state machines, and much more](https://github.com/restatedev/examples)
 
 ## Get started with Restate
 
-1. 🏎 [Check out our quickstart](https://docs.restate.dev/get_started/quickstart) to get up and running with Restate in 2 minutes!
-1. 💡 [The tour of Restate](https://docs.restate.dev/get_started/tour) walks you through all features of Restate.
+1. 🏎 [Follow the Quickstart](https://docs.restate.dev/get_started/quickstart) to get Restate up and running within 2 minutes!
+1. 💡 [The Tour of Restate](https://docs.restate.dev/get_started/tour) walks you through the most important features of Restate.
 
 ## SDKs
 
@@ -41,6 +43,8 @@ Restate supports the following SDKs:
 
 We offer pre-built binaries of the CLI and the server for MacOS and Linux.
 
+Have a look at the [Quickstart](https://docs.restate.dev/get_started/quickstart) or [installation instructions in the docs](https://docs.restate.dev/develop/local_dev). 
+
 ### Install the server
 
 Install via Homebrew:
@@ -55,7 +59,8 @@ npx @restatedev/restate-server
 
 Run via docker:
 ```bash
-docker run --rm -it --network=host docker.restate.dev/restatedev/restate:latest
+docker run --rm -p 8080:8080 -p 9070:9070 -p 9071:9071 \
+    --add-host=host.docker.internal:host-gateway docker.restate.dev/restatedev/restate:latest
 ```
 
 ### Install the CLI
@@ -79,8 +84,8 @@ You can also download the binaries from the [release page](https://github.com/re
 
 ## Community
 
-* 🤗️ [Join our online community](https://discord.gg/skW3AZ6uGd) for help, sharing feedback and talking to the community.
-* 📖 [Check out our documentation](https://docs.restate.dev) to get quickly started!
+* 🤗️ Join our online community on [Discord](https://discord.gg/skW3AZ6uGd) or [Slack](https://join.slack.com/t/restatecommunity/shared_invite/zt-2v9gl005c-WBpr167o5XJZI1l7HWKImA) for help, sharing feedback and talking to the community.
+* 📖 [Check out our documentation](https://docs.restate.dev) to get started quickly!
 * 📣 [Follow us on Twitter](https://twitter.com/restatedev) for staying up to date.
 * 🙋 [Create a GitHub issue](https://github.com/restatedev/restate/issues) for requesting a new feature or reporting a problem.
 * 🏠 [Visit our GitHub org](https://github.com/restatedev) for exploring other repositories.
@@ -89,13 +94,12 @@ You can also download the binaries from the [release page](https://github.com/re
 
 The basic primitives Restate offers to simplify application development are the following:
 
-* **Reliable Execution**: user code will always run to completion. Intermediate failures result in re-tries that use the durable execution mechanism to recover partial progress and not duplicate already executed steps.
-* **Suspending User Code**: long-running user code suspends when awaiting on a promise and resume when that promise is resolved.
-* **Reliable Communication**: user code communicates with exactly-once semantics. Restate reliably delivers messages and anchors both sender and receiver in the durable execution to ensure no losses or duplicates can happen.
-* **Durable Timers**: user code can sleep (and suspend) or schedule calls for later.
-* **Isolation**: user code can be keyed, which makes Restate scheduled them to obey single-writer-per-key semantics.
-* **Consistent State**: keyed user code can attach key/value state, which is eagerly pushed into handlers during invocation, and written back upon completion. This is particularly efficient for FaaS deployments (stateful serverless, yay!).
-* **Observability & Introspection**: Restate automatically generates Open Telemetry traces for the interactions between handlers and gives you a SQL shell to query the distributed state of the application.
+* **Reliable Execution**: Restate guarantees code runs to completion. Failures result in retries that use the [Durable Execution mechanism](https://docs.restate.dev/concepts/durable_execution) to recover partial progress and prevent re-executing completed steps.
+* **Reliable Communication**: Services communicate with exactly-once semantics: whether it's [request-response, one-way messages, or scheduled tasks](https://docs.restate.dev/concepts/invocations). Restate reliably delivers messages and uses Durable Execution to ensure no losses or duplicates can happen.
+* **Durable Promises and Timers**: Register Promises/Futures and timers in Restate to make them resilient to failures (e.g. sleep, webhooks, timers). Restate can recover them across failures, processes, and time.
+* **Consistent State**: Implement [stateful entities](https://docs.restate.dev/concepts/services) with isolated K/V state per entity. Restate persists the K/V state updates together with the execution progress to ensure consistent state. Restate attaches the K/V state to the request on invocation, and writes it back upon completion. This is particularly efficient for FaaS deployments (stateful serverless, yay!).
+* **Suspending User Code**: long-running code suspends when awaiting on a Promise/Future and resumes when that promise is resolved. This is particularly useful in combination with serverless deployments.
+* **Observability & Introspection**: Restate includes a UI and CLI to inspect the [state of your application](https://docs.restate.dev/operate/introspection) across services and invocations. Restate automatically generates Open Telemetry traces for the interactions between handlers.
 
 ## Contributing
 
@@ -113,7 +117,7 @@ You can safely upgrade from a Restate `x.y` to `x.(y+1)` release without perform
 
 For SDK compatibility, refer to the supported version matrix in the respective READMEs:
 
-* [Restate Java SDK](https://github.com/restatedev/sdk-java#versions)
+* [Restate Java/Kotlin SDK](https://github.com/restatedev/sdk-java#versions)
 * [Restate TypeScript SDK](https://github.com/restatedev/sdk-typescript#versions)
 * [Restate Go SDK](https://github.com/restatedev/sdk-go#versions)
 * [Restate Python SDK](https://github.com/restatedev/sdk-python#versions)
