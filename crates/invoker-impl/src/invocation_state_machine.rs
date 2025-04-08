@@ -537,6 +537,7 @@ mod tests {
     async fn journal_tracker_correctly_tracks_commands() {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_service(),
+            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 
@@ -565,6 +566,7 @@ mod tests {
     async fn journal_tracker_correctly_tracks_notification_proposals() {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_service(),
+            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 

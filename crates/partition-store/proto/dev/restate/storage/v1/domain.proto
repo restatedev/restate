@@ -166,9 +166,9 @@ message InvocationStatusV2 {
   optional string deployment_id = 15;
   optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
   bool hotfix_apply_cancellation_after_deployment_is_pinned = 25;
-  uint32 current_invocation_epoch = 26;
+  uint32 current_invocation_epoch = 27;
   // Used to reconstruct the completion_range_epoch_map
-  repeated TrimPoint trim_points = 27;
+  repeated TrimPoint trim_points = 28;
 
   // Suspended
   repeated uint32 waiting_for_completions = 17;
@@ -183,7 +183,7 @@ message InvocationStatusV2 {
 message InvocationV2Lite {
   InvocationStatusV2.Status status = 1;
   InvocationTarget invocation_target = 2;
-  uint32 current_invocation_epoch = 26;
+  uint32 current_invocation_epoch = 27;
 }
 
 // TODO remove this after 1.1

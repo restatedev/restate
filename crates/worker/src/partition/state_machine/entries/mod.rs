@@ -403,7 +403,9 @@ mod tests {
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
     use restate_types::identifiers::{InvocationId, ServiceId};
-    use restate_types::invocation::{Header, InvocationResponse, InvocationTarget, ResponseResult};
+    use restate_types::invocation::{
+        Header, InvocationResponse, InvocationTarget, JournalCompletionTarget, ResponseResult,
+    };
     use restate_types::journal_v2::{CallCommand, CallRequest};
     use restate_wal_protocol::Command;
 
@@ -449,8 +451,11 @@ mod tests {
 
         let _ = test_env
             .apply(Command::InvocationResponse(InvocationResponse {
-                id: invocation_id,
-                entry_index: result_completion_id,
+                target: JournalCompletionTarget {
+                    caller_id: invocation_id,
+                    caller_completion_id: result_completion_id,
+                    caller_invocation_epoch: 0,
+                },
                 result: ResponseResult::Success(success_result.clone()),
             }))
             .await;

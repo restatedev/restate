@@ -1207,7 +1207,7 @@ where
         mut ism: InvocationStateMachine,
     ) {
         if invocation_epoch != ism.invocation_epoch {
-            counter!(INVOKER_INVOCATION_TASK,
+            counter!(INVOKER_INVOCATION_TASKS,
                 "status" => TASK_OP_FAILED,
             )
             .increment(1);
