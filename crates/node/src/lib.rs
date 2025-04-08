@@ -219,7 +219,6 @@ impl Node {
 
         let bifrost_svc = BifrostService::new(metadata_manager.writer());
 
-        #[cfg(feature = "local-loglet")]
         let bifrost_svc = bifrost_svc.enable_local_loglet(&updateable_config);
 
         #[cfg(feature = "replicated-loglet")]
