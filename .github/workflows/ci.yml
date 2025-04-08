@@ -169,6 +169,46 @@ jobs:
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
 
+  e2e:
+    name: Run E2E tests
+    runs-on: warp-ubuntu-latest-x64-4x
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    needs: docker
+    steps:
+      - name: Set up Docker containerd snapshotter
+        uses: crazy-max/ghaction-setup-docker@v3
+        with:
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      ### Download the Restate container image, if needed
+      - name: Download restate snapshot from in-progress workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: restate.tar
+      - name: Install restate snapshot
+        run: |
+          output=$(docker load --input restate.tar | head -n 1)
+          docker tag "${output#*: }" "localhost/restatedev/restate-commit-download:latest"
+          docker image ls -a
+
+      ### Run e2e tests
+      - name: Run E2E tests
+        uses: restatedev/e2e@main
+        with:
+          testArtifactOutput: e2e-test-report
+          restateContainerImage: localhost/restatedev/restate-commit-download:latest
+
   restate-ui:
     name: Validate Restate UI artifact
     runs-on: warp-ubuntu-latest-arm64-2x
