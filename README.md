@@ -10,7 +10,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/restatedev/img/refs/heads/main/restate-overview-light.png">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/restatedev/img/refs/heads/main/restate-overview-dark.png">
-    <img alt="Restate overview" src="https://raw.githubusercontent.com/restatedev/img/refs/heads/main/restate-overview-dark.png" width="500">
+    <img alt="Restate overview" src="https://raw.githubusercontent.com/restatedev/img/refs/heads/main/restate-overview-dark.png" width="650">
   </picture>
 </p>
 
@@ -26,7 +26,7 @@ Restate provides a distributed durable version of your everyday building blocks,
 
 ## Get started with Restate
 
-1. 🚀 [Follow the Quickstart](https://docs.restate.dev/get_started/quickstart) to get Restate up and running within 2 minutes!
+1. 🏎 [Follow the Quickstart](https://docs.restate.dev/get_started/quickstart) to get Restate up and running within 2 minutes!
 1. 💡 [The Tour of Restate](https://docs.restate.dev/get_started/tour) walks you through the most important features of Restate.
 
 ## SDKs
