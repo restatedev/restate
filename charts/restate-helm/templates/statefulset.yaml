@@ -28,22 +28,9 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- if or (.Values.storage.ensureVolumePermissions) .Values.extraInitContainers }}
-      initContainers:
-      {{- if .Values.storage.ensureVolumePermissions }}
-        - name: init-chmod-data
-          image: "alpine:latest"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/chown", "-R", "1000:3000", "/restate-data"]
-          volumeMounts:
-            - name: storage
-              mountPath: /restate-data
-          securityContext:
-            runAsUser: 0
-      {{- end }}
       {{- if .Values.extraInitContainers }}
+      initContainers:
       {{ toYaml .Values.extraInitContainers | nindent 8 }}
-      {{- end }}
       {{- end }}
       containers:
         - name: {{ include "restate.fullname" . }}

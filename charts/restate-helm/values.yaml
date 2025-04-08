@@ -48,8 +48,6 @@ resources:
     memory: 1Gi
 
 storage:
-  # If true an alpine init container is used to set the permissions on the volume
-  ensureVolumePermissions: false
   # If provided the volume will be mounted with the specified claim
   existingClaim: ""
   size: 64Gi
