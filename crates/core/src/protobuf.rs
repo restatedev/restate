@@ -13,6 +13,24 @@ use tonic::{Code, Status};
 use crate::metadata_store::{ReadError, WriteError};
 use restate_types::errors::SimpleStatus;
 
+pub mod cluster_ctrl_svc {
+    tonic::include_proto!("restate.cluster_ctrl");
+
+    pub const FILE_DESCRIPTOR_SET: &[u8] =
+        tonic::include_file_descriptor_set!("cluster_ctrl_svc_descriptor");
+
+    /// Creates a new ClusterCtrlSvcClient with appropriate configuration
+    pub fn new_cluster_ctrl_client(
+        channel: tonic::transport::Channel,
+    ) -> cluster_ctrl_svc_client::ClusterCtrlSvcClient<tonic::transport::Channel> {
+        cluster_ctrl_svc_client::ClusterCtrlSvcClient::new(channel)
+            // note: the order of those calls defines the priority
+            .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
+            .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+            .send_compressed(crate::network::grpc::DEFAULT_GRPC_COMPRESSION)
+    }
+}
+
 pub mod node_ctl_svc {
     use tonic::codec::CompressionEncoding;
     use tonic::transport::Channel;

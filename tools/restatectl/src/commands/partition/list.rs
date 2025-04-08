@@ -14,13 +14,13 @@ use std::collections::{BTreeMap, HashMap};
 use cling::prelude::*;
 use itertools::Itertools;
 
-use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, ListLogsRequest, new_cluster_ctrl_client,
-};
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::Tense;
 use restate_cli_util::ui::console::StyledTable;
+use restate_core::protobuf::cluster_ctrl_svc::{
+    ClusterStateRequest, ListLogsRequest, new_cluster_ctrl_client,
+};
 use restate_types::logs::metadata::{Chain, Logs};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::Role;

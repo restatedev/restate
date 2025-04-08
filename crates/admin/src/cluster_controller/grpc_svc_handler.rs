@@ -19,6 +19,15 @@ use tracing::info;
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BiforstError};
+use restate_core::protobuf::cluster_ctrl_svc::{
+    ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
+    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
+    FindTailResponse, GetClusterConfigurationRequest, GetClusterConfigurationResponse,
+    ListLogsRequest, ListLogsResponse, QueryRequest, QueryResponse, SealAndExtendChainRequest,
+    SealAndExtendChainResponse, SealedSegment, SetClusterConfigurationRequest,
+    SetClusterConfigurationResponse, TailState, TrimLogRequest,
+    cluster_ctrl_svc_server::{ClusterCtrlSvc, ClusterCtrlSvcServer},
+};
 use restate_core::{Metadata, MetadataWriter};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::identifiers::PartitionId;
@@ -31,21 +40,9 @@ use restate_types::protobuf::cluster::ClusterConfiguration;
 use restate_types::storage::{StorageCodec, StorageEncode};
 use restate_types::{PlainNodeId, Version, Versioned};
 
-use crate::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
-use crate::cluster_controller::protobuf::{
-    ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
-    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
-    FindTailResponse, ListLogsRequest, ListLogsResponse, SealAndExtendChainRequest,
-    SealAndExtendChainResponse, SealedSegment, TailState, TrimLogRequest,
-};
 use crate::query_utils::WriteRecordBatchStream;
 
 use super::ClusterControllerHandle;
-use super::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
-use super::protobuf::{
-    GetClusterConfigurationRequest, GetClusterConfigurationResponse, QueryRequest, QueryResponse,
-    SetClusterConfigurationRequest, SetClusterConfigurationResponse,
-};
 use super::service::ChainExtension;
 
 pub(crate) struct ClusterCtrlSvcHandler {

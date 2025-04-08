@@ -20,7 +20,9 @@ memory-loglet = ["restate-types/memory-loglet", "restate-bifrost/memory-loglet",
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
 [dependencies]
-restate-admin = { workspace = true, features = ["clients"] }
+# admin isn't needed, but without it, workspace builds fail because the memory-loglet feature is not enabled, and unification
+# brings in admin for other binaries which need it
+restate-admin = { workspace = true }
 restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }
 restate-cli-util = { workspace = true }
 restate-core = { workspace = true }

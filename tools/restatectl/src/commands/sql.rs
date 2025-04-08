@@ -24,9 +24,6 @@ use arrow::{
 use arrow_ipc::reader::StreamDecoder;
 use cling::prelude::*;
 use futures::{Stream, StreamExt, ready};
-use restate_admin::cluster_controller::protobuf::{
-    QueryRequest, QueryResponse, new_cluster_ctrl_client,
-};
 use restate_cli_util::{
     _comfy_table::{Cell, Table},
     c_eprintln, c_println,
@@ -34,6 +31,9 @@ use restate_cli_util::{
         console::{Styled, StyledTable},
         stylesheet::Style,
     },
+};
+use restate_core::protobuf::cluster_ctrl_svc::{
+    QueryRequest, QueryResponse, new_cluster_ctrl_client,
 };
 use tonic::{Status, Streaming};
 

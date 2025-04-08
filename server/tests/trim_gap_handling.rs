@@ -23,11 +23,11 @@ use tonic::transport::Channel;
 use tracing::info;
 use url::Url;
 
-use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, CreatePartitionSnapshotRequest, new_cluster_ctrl_client,
-};
 use restate_core::network::net_util::create_tonic_channel;
+use restate_core::protobuf::cluster_ctrl_svc::{
+    ClusterStateRequest, CreatePartitionSnapshotRequest,
+    cluster_ctrl_svc_client::ClusterCtrlSvcClient, new_cluster_ctrl_client,
+};
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},

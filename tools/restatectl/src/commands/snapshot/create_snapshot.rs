@@ -11,11 +11,11 @@
 use cling::prelude::*;
 use tracing::error;
 
-use restate_admin::cluster_controller::protobuf::{
-    CreatePartitionSnapshotRequest, new_cluster_ctrl_client,
-};
 use restate_cli_util::c_println;
-use restate_core::protobuf::node_ctl_svc::{GetMetadataRequest, new_node_ctl_client};
+use restate_core::protobuf::{
+    cluster_ctrl_svc::{CreatePartitionSnapshotRequest, new_cluster_ctrl_client},
+    node_ctl_svc::{GetMetadataRequest, new_node_ctl_client},
+};
 use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
 use restate_types::partition_table::PartitionTable;
