@@ -29,6 +29,12 @@ https://github.com/issues?q=is%3Aopen+org%3Arestatedev+label%3Arelease-blocker
 
 Confirm if any SDK releases are needed to keep up with the runtime and/or service protocol releases.
 
+Check that the e2e tests are passing:
+
+* [Jepsen tests](https://github.com/restatedev/jepsen/actions)
+* [E2e verification runner](https://github.com/restatedev/e2e-verification-runner/actions)
+* [E2e tests](https://github.com/restatedev/e2e/actions/workflows/ci.yml)
+
 ## Releasing the Restate runtime
 
 1. Make sure that the version field in the [Cargo.toml](/Cargo.toml) and [Chart.yaml](/charts/restate-helm/Chart.yaml) is set to the new release version `X.Y.Z`.
