@@ -13,17 +13,14 @@
 
 set -e
 
-COMMITTED_UI_VERSION=$(ls ./crates/web-ui/assets/*.zip | grep -o 'v[0-9]*\.[0-9]*\.[0-9]*')
-COMMITTED_SHA256_CHECKSUM=$(shasum -a 256 ./crates/web-ui/assets/ui-$COMMITTED_UI_VERSION.zip | awk '{print $1}')
-echo "Committed artifact for $COMMITTED_UI_VERSION has SHA256 checksum of $COMMITTED_SHA256_CHECKSUM"
+COMMITTED_CRATE_VERSION=$(cargo metadata --format-version=1 | jq -r '.packages[] | select(.name == "restate-web-ui") | .version')
+COMMITTED_CRATE_SHA256_CHECKSUM=$(curl -sSL https://raw.githubusercontent.com/restatedev/restate-web-ui-crate/refs/heads/main/assets/ui-v$COMMITTED_CRATE_VERSION.zip | shasum -a 256 | awk '{print $1}')
+echo "Committed artifact for $COMMITTED_CRATE_VERSION has SHA256 checksum of $COMMITTED_CRATE_SHA256_CHECKSUM"
 
-curl -O -L -s https://github.com/restatedev/restate-web-ui/releases/download/$COMMITTED_UI_VERSION/ui-$COMMITTED_UI_VERSION.zip
-PUBLISHED_SHA256_CHECKSUM=$(shasum -a 256 ui-$COMMITTED_UI_VERSION.zip | awk '{print $1}')
-echo "Published artifact for $COMMITTED_UI_VERSION has SHA256 checksum of $PUBLISHED_SHA256_CHECKSUM"
+PUBLISHED_SHA256_CHECKSUM=$(curl -sSL https://github.com/restatedev/restate-web-ui/releases/download/v$COMMITTED_CRATE_VERSION/ui-v$COMMITTED_CRATE_VERSION.zip | shasum -a 256 | awk '{print $1}')
+echo "Published artifact for $COMMITTED_CRATE_VERSION has SHA256 checksum of $PUBLISHED_SHA256_CHECKSUM"
 
-rm ui-$COMMITTED_UI_VERSION.zip
-
-if [ "$COMMITTED_SHA256_CHECKSUM" != "$PUBLISHED_SHA256_CHECKSUM" ]; then
+if [ "$COMMITTED_CRATE_SHA256_CHECKSUM" != "$PUBLISHED_SHA256_CHECKSUM" ]; then
     echo "❌ The committed artifact cannot be verified."
     exit 1
 else

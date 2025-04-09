@@ -75,7 +75,6 @@ restate-types = { path = "crates/types" }
 restate-utoipa = { path = "crates/utoipa" }
 restate-wal-protocol = { path = "crates/wal-protocol" }
 restate-worker = { path = "crates/worker" }
-restate-web-ui = { path = "crates/web-ui" }
 
 # External crates
 ahash = "0.8.5"

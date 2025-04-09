@@ -17,6 +17,7 @@ replicated-loglet = ["restate-bifrost/replicated-loglet"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
 storage-query = []
 metadata-api = []
+restate-web-ui = ["dep:restate-web-ui"]
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
@@ -33,7 +34,7 @@ restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-utoipa = { workspace = true }
 restate-wal-protocol = { workspace = true }
-restate-web-ui = { workspace = true, optional = true }
+restate-web-ui = { git = "https://github.com/restatedev/restate-web-ui-crate", rev = "23e100fafff917a47262df64c5db4cf6a3b28457", optional = true, version = "0.0.60" }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
