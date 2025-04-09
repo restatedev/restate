@@ -28,6 +28,10 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.extraInitContainers }}
+      initContainers:
+        {{ toYaml .Values.extraInitContainers | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ include "restate.fullname" . }}
           image: {{ .Values.image.repository }}:{{ include "restate.tag" . }}
@@ -48,6 +52,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: "metadata.name"
+            {{- if .Values.identityPrivateKey.enabled }}
+            - name: RESTATE_REQUEST_IDENTITY_PRIVATE_KEY_PEM_FILE
+              value: /opt/private.pem
+            {{- end }}
             - name: RESTATE_LOG_FILTER
               value: {{ .Values.logging.env_filter }}
             - name: RESTATE_ADVERTISED_ADDRESS
@@ -68,14 +76,31 @@ spec:
               name: storage
             - mountPath: /tmp
               name: tmp
+        {{- if .Values.identityPrivateKey.enabled }}
+            - name: identity
+              mountPath: /opt/private.pem
+              subPath: {{ .Values.identityPrivateKey.keyName }}
+        {{- end }}
       volumes:
         - name: tmp
-          emptyDir: { }
+          emptyDir: {}
+        {{- if .Values.storage.existingClaim }}
+        - name: storage
+          persistentVolumeClaim:
+            claimName: {{ .Values.storage.existingClaim }}
+        {{- end }}
+        {{- if .Values.identityPrivateKey.enabled }}
+        - name: identity
+          secret:
+            secretName: {{ .Values.identityPrivateKey.secretName }}
+            defaultMode: 420
+        {{- end }}
   # It's important to start multiple pods at the same time in case multiple pods died. Otherwise, we risk
   # unavailability of an already configured metadata cluster
   podManagementPolicy: Parallel
   updateStrategy:
     type: RollingUpdate
+  {{- if not .Values.storage.existingClaim }}
   volumeClaimTemplates:
     - metadata:
         name: storage
@@ -90,3 +115,4 @@ spec:
         resources:
           requests:
             storage: {{ .Values.storage.size | quote }}
+  {{- end }}

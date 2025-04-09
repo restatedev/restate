@@ -48,12 +48,21 @@ resources:
     memory: 1Gi
 
 storage:
+  # If provided the volume will be mounted with the specified claim
+  existingClaim: ""
   size: 64Gi
   # -- Storage class to be used.
   # If defined, storageClassName: <storageClass>.
-  # If set to "-", storageClassName: "", which disables dynamic provisioning.
   # If empty or set to null, no storageClassName spec is set, choosing the default provisioner.
+  # If set to "-", storageClassName: "", which disables dynamic provisioning.
   storageClassName: null
+
+extraInitContainers: []
+
+identityPrivateKey:
+  enabled: false
+  secretName: ""
+  keyName: private.pem
 
 serviceMonitor:
   enabled: false
