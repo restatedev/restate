@@ -209,16 +209,6 @@ jobs:
           testArtifactOutput: e2e-test-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
 
-  restate-ui:
-    name: Validate Restate UI artifact
-    runs-on: warp-ubuntu-latest-arm64-2x
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - name: Verify the committed UI artifact matches the published one in restate-web-ui
-        run: ./tools/scripts/verify-ui-artifact
-
   jepsen:
     if: github.event.repository.fork == false && github.event.pull_request.head.repo.full_name == 'restatedev/restate' && github.ref == 'refs/heads/main'
     runs-on: warp-ubuntu-latest-arm64-4x
