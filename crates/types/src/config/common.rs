@@ -55,7 +55,7 @@ pub struct CommonOptions {
     ///
     /// Unique name for this node in the cluster. The node must not change unless
     /// it's started with empty local store. It defaults to the node's hostname.
-    node_name: Option<String>,
+    pub(super) node_name: Option<String>,
 
     /// # Node Location
     ///
@@ -110,7 +110,7 @@ pub struct CommonOptions {
     /// The working directory which this Restate node should use for relative paths. The default is
     /// `restate-data` under the current working directory.
     #[builder(setter(strip_option))]
-    base_dir: Option<PathBuf>,
+    pub(super) base_dir: Option<PathBuf>,
 
     pub metadata_client: MetadataClientOptions,
 
