@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
+
+use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 
 use restate_types::schema::service::ServiceMetadata;
 
@@ -35,7 +36,7 @@ pub struct ModifyServiceRequest {
     ///
     /// Modify the retention of idempotent requests for this service.
     ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format or the ISO8601.
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
     #[serde(
         default,
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
@@ -47,7 +48,7 @@ pub struct ModifyServiceRequest {
     ///
     /// Modify the retention of the workflow completion. This can be modified only for workflow services!
     ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format or the ISO8601.
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
     #[serde(
         default,
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
@@ -64,7 +65,7 @@ pub struct ModifyServiceRequest {
     /// The 'abort timeout' is used to abort the invocation, in case it doesn't react to
     /// the request to suspend.
     ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format or the ISO8601.
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
     ///
     /// This overrides the default inactivity timeout set in invoker options.
     #[serde(
@@ -84,7 +85,7 @@ pub struct ModifyServiceRequest {
     /// This timer potentially **interrupts** user code. If the user code needs longer to
     /// gracefully terminate, then this value needs to be set accordingly.
     ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format or the ISO8601.
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
     ///
     /// This overrides the default abort timeout set in invoker options.
     #[serde(
