@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 pub mod deduplication_table;
+pub mod flush_controller;
 pub mod fsm_table;
 pub mod idempotency_table;
 pub mod inbox_table;

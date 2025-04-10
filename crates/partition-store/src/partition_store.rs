@@ -229,19 +229,32 @@ impl Clone for PartitionStore {
     }
 }
 
-pub(crate) fn cf_options(
-    memory_budget: usize,
-) -> impl Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync + 'static {
+// Previously, this used to take the following parameters which are now ignored:
+// - overall_memtables_budget: usize,
+// - partition_memtable_budget: usize,
+pub(crate) fn cf_options() -> impl Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync + 'static
+{
+    // Since writes to the partition store tend to be highly temporal, we try to delay flushing as
+    // much as we can to increase the chances to observe a deletion.
+
+    // TODO(pavel): config option? if dynamic, we'd have to also update it at runtime if partition
+    // config changes
+    //
+    // TODO(pavel): how do we allow this to be fixed and large enough, without blowing past the
+    // memory budget on startup? RocksDB appears to pre-allocate 20% of this on startup? If that's
+    // the case, we might need to scale it down to match overall memory budget
+    let write_buffer_size = 64 << 20;
+
     move |mut cf_options| {
-        set_memory_related_opts(&mut cf_options, memory_budget);
-        // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
-        // in the C API nor the rust binding. That's okay and we can change it later.
+        set_memory_related_opts(&mut cf_options, write_buffer_size);
+
+        // We would love to use CappedPrefixExtractor, but it's not exposed in the C API nor the
+        // Rust bindings.
         cf_options.set_prefix_extractor(SliceTransform::create_fixed_prefix(DB_PREFIX_LENGTH));
+
         cf_options.set_memtable_prefix_bloom_ratio(0.2);
         cf_options.set_memtable_whole_key_filtering(true);
-        // Most of the changes are highly temporal, we try to delay flushing
-        // As much as we can to increase the chances to observe a deletion.
-        //
+
         cf_options.set_num_levels(7);
         cf_options.set_compression_per_level(&[
             DBCompressionType::Zstd,
@@ -257,21 +270,33 @@ pub(crate) fn cf_options(
     }
 }
 
-fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
-    // We set the budget to allow 1 mutable + 3 immutable.
-    opts.set_write_buffer_size(memtables_budget / 4);
+fn set_memory_related_opts(
+    opts: &mut rocksdb::Options,
+    write_buffer_size: usize,
+) {
+    // WriteBufferManager can observe an overall DB-wide memtables limit across all column families.
+    // However, we use the Flush Controller to respect the overall partition store memtables budget
+    // instead, and set this to zero to avoid WBM interfering with our flushes.
+    opts.set_db_write_buffer_size(0);
 
-    // merge 2 memtables when flushing to L0
-    opts.set_min_write_buffer_number_to_merge(2);
-    opts.set_max_write_buffer_number(4);
-    // start flushing L0->L1 as soon as possible. each file on level0 is
-    // (memtable_memory_budget / 2). This will flush level 0 when it's bigger than
-    // memtable_memory_budget.
+    opts.set_write_buffer_size(write_buffer_size);
+
+    // opts.set_arena_block_size(1 << 20);
+    // opts.set_memtable_prefix_bloom_ratio(0.1);
+
+    // Keep just one immutable buffer while we flush to L0
+    opts.set_min_write_buffer_number_to_merge(1); // don't wait to merge 2+ memtables to L0?
+    opts.set_max_write_buffer_number(2);
+
+    // Start flushing L0->L1 as soon as possible. Each file in L0 should be
+    // ~target_memtable_flush_size so this will compact L0 when it's ~2x that.
     opts.set_level_zero_file_num_compaction_trigger(2);
+
     // doesn't really matter much, but we don't want to create too many files
-    opts.set_target_file_size_base(memtables_budget as u64 / 8);
+    opts.set_target_file_size_base(write_buffer_size as u64);
+
     // make Level1 size equal to Level0 size, so that L0->L1 compactions are fast
-    opts.set_max_bytes_for_level_base(memtables_budget as u64);
+    opts.set_max_bytes_for_level_base(2 * write_buffer_size as u64);
 }
 
 impl PartitionStore {
@@ -495,6 +520,15 @@ impl PartitionStore {
             min_applied_lsn: applied_lsn,
             key_range: self.key_range.clone(),
         })
+    }
+
+    pub(crate) fn get_memtables_size(&self) -> u64 {
+        self.rocksdb
+            .inner()
+            // .get_property_int_cf(&self.data_cf_name, "rocksdb.cur-size-active-mem-table") //approximate size of active memtable
+            .get_property_int_cf(&self.data_cf_name, "rocksdb.size-all-mem-tables") // size of active, unflushed immutable, and pinned immutable memtables
+            .unwrap_or_default()
+            .unwrap_or_default()
     }
 }
 

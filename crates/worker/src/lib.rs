@@ -21,6 +21,9 @@ mod subscription_integration;
 
 use codederror::CodedError;
 use restate_core::TaskCenter;
+use restate_partition_store::flush_controller::MemtableFlushController;
+use tokio::sync::watch;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use restate_bifrost::Bifrost;
@@ -104,6 +107,7 @@ pub struct Worker {
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
     partition_processor_manager: PartitionProcessorManager,
+    memtable_flush_controller: MemtableFlushController,
 }
 
 impl Worker {
@@ -142,6 +146,14 @@ impl Worker {
         )
         .await?;
 
+        let (persisted_lsns_tx, persisted_lsns_rx) = watch::channel(BTreeMap::default());
+
+        let memtable_flush_controller = MemtableFlushController::create(
+            partition_store_manager.clone(),
+            updateable_config.clone().map(|c| &c.worker.storage),
+            persisted_lsns_tx,
+        );
+
         let snapshots_options = &config.worker.snapshots;
         if snapshots_options.snapshot_interval_num_records.is_some()
             && snapshots_options.destination.is_none()
@@ -165,6 +177,7 @@ impl Worker {
             )
             .await
             .map_err(BuildError::SnapshotRepository)?,
+            persisted_lsns_rx,
         );
 
         // handle RPCs
@@ -203,6 +216,7 @@ impl Worker {
             ingress_kafka,
             subscription_controller_handle,
             partition_processor_manager,
+            memtable_flush_controller,
         })
     }
 
@@ -245,6 +259,12 @@ impl Worker {
             TaskKind::PartitionProcessorManager,
             "partition-processor-manager",
             self.partition_processor_manager.run(),
+        )?;
+
+        TaskCenter::spawn_child(
+            TaskKind::PartitionProcessorManager,
+            "memtable-flush-controller",
+            self.memtable_flush_controller.run(),
         )?;
 
         Ok(())

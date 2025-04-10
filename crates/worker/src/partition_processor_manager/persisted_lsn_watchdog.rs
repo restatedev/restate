@@ -30,6 +30,7 @@ use restate_types::logs::{Lsn, SequenceNumber};
 /// An alternative approach could be to register an event listener on flush events and using
 /// table properties to retrieve the flushed log lsn. However, this requires that we update our
 /// RocksDB binding to expose event listeners and table properties :-(
+#[allow(unused)]
 pub struct PersistedLogLsnWatchdog {
     configuration: Box<dyn LiveLoad<StorageOptions> + Send + Sync + 'static>,
     partition_store_manager: PartitionStoreManager,
@@ -39,6 +40,7 @@ pub struct PersistedLogLsnWatchdog {
     persist_lsn_threshold: Lsn,
 }
 
+#[allow(unused)]
 impl PersistedLogLsnWatchdog {
     pub fn new(
         mut configuration: impl LiveLoad<StorageOptions> + Send + Sync + 'static,

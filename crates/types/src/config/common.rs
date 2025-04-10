@@ -221,20 +221,19 @@ pub struct CommonOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_low_priority_bg_threads: Option<NonZeroUsize>,
 
-    /// # Total memory limit for rocksdb caches and memtables.
+    /// # Total memory limit for Rocksdb caches and memtables.
     ///
     /// This includes memory for uncompressed block cache and all memtables by all open databases.
-    /// The memory size used for rocksdb caches.
+    /// The proportion of this memory used for memtables is determined by
+    /// `rocksdb-total-memtables-ratio`.
     #[serde_as(as = "NonZeroByteCount")]
     #[cfg_attr(feature = "schemars", schemars(with = "NonZeroByteCount"))]
     pub rocksdb_total_memory_size: NonZeroUsize,
 
-    /// # Rocksdb total memtable size ratio
+    /// # Rocksdb total memtables size ratio
     ///
-    /// The memory size used across all memtables (ratio between 0 to 1.0). This
-    /// limits how much memory memtables can eat up from the value in rocksdb-total-memory-limit.
-    /// When set to 0, memtables can take all available memory up to the value specified
-    /// in rocksdb-total-memory-limit. This value will be sanitized to 1.0 if outside the valid bounds.
+    /// The ratio of rocksdb total memory size to use for memtables, as a value between 0 and 1.0.
+    /// This value will be sanitized to `[0..=1.0]` if outside the valid bounds. Default is `0.5`.
     rocksdb_total_memtables_ratio: f32,
 
     /// # Rocksdb Background Threads
@@ -251,10 +250,8 @@ pub struct CommonOptions {
 
     /// # Rocksdb stall detection threshold
     ///
-    /// This defines the duration afterwhich a write is to be considered in "stall" state. For
-    /// every write that meets this threshold, the system will increment the
-    /// `restate.rocksdb_stall_flare` gauge, if the write is unstalled, the guage will be updated
-    /// accordingly.
+    /// Duration after which a pending write is to be considered "stalled". The number of
+    /// outstanding requests exceeding this is exposed via the `restate.rocksdb_stall_flare` gauge.
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub rocksdb_write_stall_threshold: humantime::Duration,
@@ -354,14 +351,15 @@ impl CommonOptions {
         self.base_dir.as_ref()
     }
 
+    /// Total memtables size = total rocksdb memory * memtables ratio
     pub fn rocksdb_actual_total_memtables_size(&self) -> usize {
         let sanitized = self.rocksdb_total_memtables_ratio.clamp(0.0, 1.0) as f64;
         let total_mem = self.rocksdb_total_memory_size.get() as f64;
         (total_mem * sanitized) as usize
     }
 
+    /// Total memtables size less 5% safety margin
     pub fn rocksdb_safe_total_memtables_size(&self) -> usize {
-        // %5 safety margin
         (self.rocksdb_actual_total_memtables_size() as f64 * 0.95).floor() as usize
     }
 

@@ -53,18 +53,21 @@ struct PartitionLookup {
 impl PartitionStoreManager {
     pub async fn create(
         mut storage_opts: impl LiveLoad<StorageOptions> + Send + 'static,
-        updateable_opts: BoxedLiveLoad<RocksDbOptions>,
+        updatable_opts: BoxedLiveLoad<RocksDbOptions>,
         initial_partition_set: &[(PartitionId, RangeInclusive<PartitionKey>)],
     ) -> Result<Self, RocksError> {
         let options = storage_opts.live_load();
 
-        let per_partition_memory_budget = options.rocksdb_memory_budget()
-            / options.num_partitions_to_share_memory_budget() as usize;
+        // let overall_memtables_budget = options.rocksdb_memory_budget();
+
+        // Flush Controller respects the overall budget with no need to set per-partition budgets
+        // let per_partition_memtable_budget =
+        //     overall_memtables_budget / options.num_partitions_to_share_memory_budget() as usize;
 
         let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), options.data_dir(), db_options())
             .add_cf_pattern(
                 CfPrefixPattern::new(PARTITION_CF_PREFIX),
-                cf_options(per_partition_memory_budget),
+                cf_options(), // Flush Controller will take care of adhering to memory budgets
             )
             .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
             // This is added as an experiment. We might make this configurable to let users decide
@@ -74,7 +77,7 @@ impl PartitionStoreManager {
             .expect("valid spec");
 
         let manager = RocksDbManager::get();
-        let rocksdb = manager.open_db(updateable_opts, db_spec).await?;
+        let rocksdb = manager.open_db(updatable_opts, db_spec).await?;
 
         Ok(Self {
             rocksdb,

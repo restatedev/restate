@@ -238,21 +238,22 @@ pub struct StorageOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     num_partitions_to_share_memory_budget: Option<NonZeroU16>,
 
-    /// The memory budget for rocksdb memtables in bytes
+    /// # The memory budget for rocksdb memtables
     ///
-    /// The total is divided evenly across partitions. The divisor is defined in
-    /// `num-partitions-to-share-memory-budget`. If this value is set, it overrides the ratio
-    /// defined in `rocksdb-memory-ratio`.
+    /// The total is divided among the partitions running on this node. If this value is set, it
+    /// overrides the ratio defined in `rocksdb-memory-ratio`.
+    ///
+    /// Default: `rocksdb-total-memory-size` * `worker.rocksdb-memory-ratio`
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "Option<NonZeroByteCount>")]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
     rocksdb_memory_budget: Option<NonZeroUsize>,
 
-    /// The memory budget for rocksdb memtables as ratio
+    /// # Fraction of total rocksdb memory to allocate to the partition store
     ///
     /// This defines the total memory for rocksdb as a ratio of all memory available to memtables
     /// (See `rocksdb-total-memtables-ratio` in common). The budget is then divided evenly across
-    /// partitions. The divisor is defined in `num-partitions-to-share-memory-budget`
+    /// partitions.
     rocksdb_memory_ratio: f32,
 
     /// # Persist lsn interval
@@ -286,7 +287,7 @@ impl StorageOptions {
                     //  been started.
                     // In the absence of a configured number of default partitions, we default to
                     // its default value of 24 partitions. This is not great :-(
-                    .unwrap_or(NonZeroU16::new(24).expect("to be non zero")),
+                    .unwrap_or(NonZeroU16::new(24).expect("to be non-zero")),
             )
         }
 
@@ -305,24 +306,26 @@ impl StorageOptions {
         }
     }
 
-    pub fn rocksdb_memory_budget(&self) -> usize {
-        self.rocksdb_memory_budget
+    pub fn rocksdb_memtables_budget(&self) -> usize {
+        (self
+            .rocksdb_memory_budget
             .unwrap_or_else(|| {
                 warn!("PartitionStore rocksdb_memory_budget is not set, defaulting to 1MB");
                 // 1MB minimum
                 NonZeroUsize::new(1024 * 1024).unwrap()
             })
-            .get()
+            .get() as f64
+            * self.rocksdb_memory_ratio as f64) as usize
     }
 
-    pub fn num_partitions_to_share_memory_budget(&self) -> u16 {
-        self.num_partitions_to_share_memory_budget
-            .unwrap_or_else(|| {
-                warn!("num-partitions-to-share-memory-budget is not set, defaulting to 10");
-                NonZeroU16::new(10).unwrap()
-            })
-            .get()
-    }
+    // pub fn num_partitions_to_share_memory_budget(&self) -> u16 {
+    //     self.num_partitions_to_share_memory_budget
+    //         .unwrap_or_else(|| {
+    //             warn!("num-partitions-to-share-memory-budget is not set, defaulting to 10");
+    //             NonZeroU16::new(10).unwrap()
+    //         })
+    //         .get()
+    // }
 
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("db")

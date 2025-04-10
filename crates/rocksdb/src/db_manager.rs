@@ -73,19 +73,20 @@ impl RocksDbManager {
         }
         metric_definitions::describe_metrics();
         let opts = base_opts.live_load();
+
         let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_size.get());
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
             opts.rocksdb_actual_total_memtables_size(),
             opts.rocksdb_enable_stall_on_memory_limit,
             cache.clone(),
         );
-        // There is no atomic u128 (and it's a ridiculous amount of time anyway), we trim the value
-        // to usize and hope for the best.
+
         let stall_detection_millis = AtomicUsize::new(
             usize::try_from(opts.rocksdb_write_stall_threshold.as_millis())
-                .expect("threshold fits usize"),
+                .expect("threshold millis fits usize"),
         );
-        // Setup the shared rocksdb environment
+
+        // Set up the shared RocksDB environment
         let mut env = rocksdb::Env::new().expect("rocksdb env is created");
         env.set_low_priority_background_threads(opts.rocksdb_bg_threads().get() as i32);
         env.set_high_priority_background_threads(opts.rocksdb_high_priority_bg_threads.get() as i32);
@@ -555,14 +556,10 @@ impl DbWatchdog {
 
         // update memtable total memory
         if new_common_opts.rocksdb_actual_total_memtables_size()
-            != self
-                .current_common_opts
-                .rocksdb_actual_total_memtables_size()
+            != self.current_common_opts.rocksdb_actual_total_memtables_size()
         {
             warn!(
-                old = self
-                    .current_common_opts
-                    .rocksdb_actual_total_memtables_size(),
+                old = self.current_common_opts.rocksdb_actual_total_memtables_size(),
                 new = new_common_opts.rocksdb_actual_total_memtables_size(),
                 "[config update] Setting rocksdb total memtables size limit to {}",
                 ByteCount::from(new_common_opts.rocksdb_actual_total_memtables_size())

@@ -80,7 +80,6 @@ use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_LAST_APPLIED_LS
 use crate::partition::ProcessorError;
 use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
 use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
-use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
@@ -100,7 +99,7 @@ pub struct PartitionProcessorManager {
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
-    persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
+    persisted_lsns_rx: watch::Receiver<BTreeMap<PartitionId, Lsn>>,
     target_tail_lsns: HashMap<PartitionId, Lsn>,
     archived_lsns: HashMap<PartitionId, Lsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
@@ -185,6 +184,7 @@ impl PartitionProcessorManager {
         router_builder: &mut MessageRouterBuilder,
         bifrost: Bifrost,
         snapshot_repository: Option<SnapshotRepository>,
+        persisted_lsns_rx: watch::Receiver<BTreeMap<PartitionId, Lsn>>,
     ) -> Self {
         let incoming_update_processors = router_builder.subscribe_to_stream(2);
         let incoming_partition_processor_rpc = router_builder.subscribe_to_stream(128);
@@ -202,7 +202,7 @@ impl PartitionProcessorManager {
             bifrost,
             rx,
             tx,
-            persisted_lsns_rx: None,
+            persisted_lsns_rx,
             archived_lsns: HashMap::default(),
             target_tail_lsns: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
@@ -231,17 +231,15 @@ impl PartitionProcessorManager {
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
 
-        let (persisted_lsns_tx, persisted_lsns_rx) = watch::channel(BTreeMap::default());
-        self.persisted_lsns_rx = Some(persisted_lsns_rx);
+        // let watchdog = PersistedLogLsnWatchdog::new(
+        //     self.updateable_config
+        //         .clone()
+        //         .map(|config| &config.worker.storage),
+        //     self.partition_store_manager.clone(),
+        //     persisted_lsns_tx,
+        // );
+        // TaskCenter::spawn_child(TaskKind::Watchdog, "persisted-lsn-watchdog", watchdog.run())?;
 
-        let watchdog = PersistedLogLsnWatchdog::new(
-            self.updateable_config
-                .clone()
-                .map(|config| &config.worker.storage),
-            self.partition_store_manager.clone(),
-            persisted_lsns_tx,
-        );
-        TaskCenter::spawn_child(TaskKind::Watchdog, "persisted-lsn-watchdog", watchdog.run())?;
         let metadata = Metadata::current();
 
         let mut logs_version_watcher = metadata.watch(MetadataKind::Logs);
@@ -635,7 +633,7 @@ impl PartitionProcessorManager {
     }
 
     fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
-        let persisted_lsns = self.persisted_lsns_rx.as_ref().map(|w| w.borrow());
+        let persisted_lsns = self.persisted_lsns_rx.borrow();
 
         // For all running partitions, collect state, enrich it, and send it back.
         self.processor_states
@@ -683,10 +681,7 @@ impl PartitionProcessorManager {
 
                 // it is a bit unfortunate that we share PartitionProcessorStatus between the
                 // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
-                status.last_persisted_log_lsn = persisted_lsns
-                    .as_ref()
-                    .and_then(|lsns| lsns.get(partition_id).cloned());
-
+                status.last_persisted_log_lsn = persisted_lsns.get(partition_id).cloned();
                 status.last_archived_log_lsn = self.archived_lsns.get(partition_id).cloned();
 
                 let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
@@ -1234,8 +1229,10 @@ mod tests {
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
     };
     use restate_types::{GenerationalNodeId, Version};
+    use std::collections::BTreeMap;
     use std::time::Duration;
     use test_log::test;
+    use tokio::sync::watch;
 
     /// This test ensures that the lifecycle of partition processors is properly managed by the
     /// [`PartitionProcessorManager`]. See https://github.com/restatedev/restate/issues/2258 for
@@ -1280,6 +1277,7 @@ mod tests {
             &mut env_builder.router_builder,
             bifrost,
             None,
+            watch::channel(BTreeMap::default()).1,
         );
 
         let env = env_builder.build().await;
