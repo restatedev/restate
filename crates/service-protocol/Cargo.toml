@@ -12,21 +12,21 @@ default = []
 codec = ["dep:restate-types", "dep:paste"]
 discovery = ["dep:serde", "dep:serde_json", "dep:bytestring", "dep:regress", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:http", "dep:http-body-util", "dep:restate-service-client", "dep:restate-types", "dep:tokio"]
 message = ["dep:restate-types", "dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:size", "dep:tracing"]
-test-util = []
+test-util = ["restate-types/test-util"]
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-base64-util = { workspace = true, optional = true }
 restate-errors = { workspace = true, optional = true }
-restate-service-client =  { workspace = true, optional = true }
+restate-service-client = { workspace = true, optional = true }
 restate-types = { workspace = true, optional = true }
 
 bytes = { workspace = true }
 bytestring = { workspace = true, optional = true }
 bytes-utils = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
-http = { workspace = true, optional = true}
+http = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
 itertools = { workspace = true }
 paste = { workspace = true, optional = true }
