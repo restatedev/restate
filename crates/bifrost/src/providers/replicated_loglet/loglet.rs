@@ -471,7 +471,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{Configuration, set_current_config};
     use restate_types::health::HealthStatus;
-    use restate_types::live::Live;
+    use restate_types::live::{Live, LiveLoadExt};
     use restate_types::logs::{Keys, LogletId};
     use restate_types::replication::{NodeSet, ReplicationProperty};
     use restate_types::{GenerationalNodeId, PlainNodeId};

@@ -110,7 +110,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
             records,
             permit: Some(permit),
             commit_resolver: Some(commit_resolver),
-            configuration: Configuration::updateable(),
+            configuration: Configuration::live(),
             graylist: NodeSet::default(),
         }
     }

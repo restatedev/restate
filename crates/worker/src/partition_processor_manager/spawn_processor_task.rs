@@ -26,6 +26,7 @@ use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::config::{Configuration, WorkerOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
+use restate_types::live::LiveLoadExt;
 use restate_types::logs::Lsn;
 use restate_types::schema::Schema;
 

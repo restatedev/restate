@@ -32,7 +32,7 @@ use restate_bifrost::loglet::OperationError;
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::config::LogServerOptions;
-use restate_types::live::BoxedLiveLoad;
+use restate_types::live::{BoxLiveLoad, LiveLoad};
 use restate_types::logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber};
 
 use super::keys::{DataRecordKey, KeyPrefixKind, MetadataKey};
@@ -71,7 +71,7 @@ pub(crate) struct LogStoreWriter {
     rocksdb: Arc<RocksDb>,
     batch_acks_buf: Vec<Ack>,
     buffer: BytesMut,
-    updateable_options: BoxedLiveLoad<LogServerOptions>,
+    updateable_options: BoxLiveLoad<LogServerOptions>,
     record_cache: RecordCache,
     health_status: HealthStatus<LogServerStatus>,
 }
@@ -79,7 +79,7 @@ pub(crate) struct LogStoreWriter {
 impl LogStoreWriter {
     pub(crate) fn new(
         rocksdb: Arc<RocksDb>,
-        updateable_options: BoxedLiveLoad<LogServerOptions>,
+        updateable_options: BoxLiveLoad<LogServerOptions>,
         record_cache: RecordCache,
         health_status: HealthStatus<LogServerStatus>,
     ) -> Self {
