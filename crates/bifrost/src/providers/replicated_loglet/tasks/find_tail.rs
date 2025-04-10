@@ -321,7 +321,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                                     };
                                 }
                                 RepairTailResult::DigestFailed
-                                | RepairTailResult::ReplicationFailed { .. } => {
+                                | RepairTailResult::ReplicationFailed => {
                                     // retry the whole find-tail procedure.
                                     info!(
                                         "Tail repair failed. Restarting FindTail task for loglet_id={}",

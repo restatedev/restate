@@ -163,11 +163,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
 {
     pub fn is_completed(&self) -> Option<bool> {
         match self {
-            EntryHeader::Input { .. } => None,
-            EntryHeader::Output { .. } => None,
+            EntryHeader::Input => None,
+            EntryHeader::Output => None,
             EntryHeader::GetState { is_completed, .. } => Some(*is_completed),
-            EntryHeader::SetState { .. } => None,
-            EntryHeader::ClearState { .. } => None,
+            EntryHeader::SetState => None,
+            EntryHeader::ClearState => None,
             EntryHeader::ClearAllState => None,
             EntryHeader::GetStateKeys { is_completed, .. } => Some(*is_completed),
             EntryHeader::Sleep { is_completed, .. } => Some(*is_completed),
@@ -175,7 +175,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::OneWayCall { .. } => None,
             EntryHeader::Awakeable { is_completed, .. } => Some(*is_completed),
             EntryHeader::CompleteAwakeable { .. } => None,
-            EntryHeader::Run { .. } => None,
+            EntryHeader::Run => None,
             EntryHeader::Custom { .. } => None,
             EntryHeader::GetPromise { is_completed } => Some(*is_completed),
             EntryHeader::PeekPromise { is_completed } => Some(*is_completed),
@@ -189,11 +189,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
 
     pub fn mark_completed(&mut self) {
         match self {
-            EntryHeader::Input { .. } => {}
-            EntryHeader::Output { .. } => {}
+            EntryHeader::Input => {}
+            EntryHeader::Output => {}
             EntryHeader::GetState { is_completed, .. } => *is_completed = true,
-            EntryHeader::SetState { .. } => {}
-            EntryHeader::ClearState { .. } => {}
+            EntryHeader::SetState => {}
+            EntryHeader::ClearState => {}
             EntryHeader::GetStateKeys { is_completed, .. } => *is_completed = true,
             EntryHeader::ClearAllState => {}
             EntryHeader::Sleep { is_completed, .. } => *is_completed = true,
@@ -201,7 +201,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::OneWayCall { .. } => {}
             EntryHeader::Awakeable { is_completed, .. } => *is_completed = true,
             EntryHeader::CompleteAwakeable { .. } => {}
-            EntryHeader::Run { .. } => {}
+            EntryHeader::Run => {}
             EntryHeader::Custom { .. } => {}
             EntryHeader::GetPromise { is_completed } => *is_completed = true,
             EntryHeader::PeekPromise { is_completed } => *is_completed = true,
@@ -215,11 +215,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
 
     pub fn as_entry_type(&self) -> EntryType {
         match self {
-            EntryHeader::Input { .. } => EntryType::Input,
-            EntryHeader::Output { .. } => EntryType::Output,
+            EntryHeader::Input => EntryType::Input,
+            EntryHeader::Output => EntryType::Output,
             EntryHeader::GetState { .. } => EntryType::GetState,
-            EntryHeader::SetState { .. } => EntryType::SetState,
-            EntryHeader::ClearState { .. } => EntryType::ClearState,
+            EntryHeader::SetState => EntryType::SetState,
+            EntryHeader::ClearState => EntryType::ClearState,
             EntryHeader::GetStateKeys { .. } => EntryType::GetStateKeys,
             EntryHeader::ClearAllState => EntryType::ClearAllState,
             EntryHeader::Sleep { .. } => EntryType::Sleep,
@@ -227,7 +227,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::OneWayCall { .. } => EntryType::OneWayCall,
             EntryHeader::Awakeable { .. } => EntryType::Awakeable,
             EntryHeader::CompleteAwakeable { .. } => EntryType::CompleteAwakeable,
-            EntryHeader::Run { .. } => EntryType::Run,
+            EntryHeader::Run => EntryType::Run,
             EntryHeader::Custom { .. } => EntryType::Custom,
             EntryHeader::GetPromise { .. } => EntryType::GetPromise,
             EntryHeader::PeekPromise { .. } => EntryType::PeekPromise,
@@ -241,11 +241,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
 
     pub fn erase_enrichment(self) -> PlainEntryHeader {
         match self {
-            EntryHeader::Input {} => EntryHeader::Input {},
-            EntryHeader::Output {} => EntryHeader::Output {},
+            EntryHeader::Input => EntryHeader::Input {},
+            EntryHeader::Output => EntryHeader::Output {},
             EntryHeader::GetState { is_completed } => EntryHeader::GetState { is_completed },
-            EntryHeader::SetState {} => EntryHeader::SetState {},
-            EntryHeader::ClearState {} => EntryHeader::ClearState {},
+            EntryHeader::SetState => EntryHeader::SetState {},
+            EntryHeader::ClearState => EntryHeader::ClearState {},
             EntryHeader::GetStateKeys { is_completed } => {
                 EntryHeader::GetStateKeys { is_completed }
             }
@@ -262,7 +262,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::CompleteAwakeable { .. } => EntryHeader::CompleteAwakeable {
                 enrichment_result: (),
             },
-            EntryHeader::Run { .. } => EntryHeader::Run {},
+            EntryHeader::Run => EntryHeader::Run {},
             EntryHeader::Custom { code } => EntryHeader::Custom { code },
             EntryHeader::GetPromise { is_completed } => EntryHeader::GetPromise { is_completed },
             EntryHeader::PeekPromise { is_completed } => EntryHeader::PeekPromise { is_completed },

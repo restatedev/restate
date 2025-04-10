@@ -47,12 +47,9 @@ impl TaskId {
 ///
 /// Properties can be assigned to task kinds:
 ///   * `OnCancel` - What to do when the task is cancelled:
-///     - `ignore                 - Ignores the tokio task. The task will be dropped on tokio
-///                                 runtime drop.
+///     - `ignore                 - Ignores the tokio task. The task will be dropped on tokio runtime drop.
 ///     - `abort`                 - Aborts the tokio task
-///     - `wait`  (default)       - Wait for graceful shutdown. The task must respond
-///                                  to cancellation_watcher() or check periodically for
-///                                  is_cancellation_requested()
+///     - `wait`  (default)       - Wait for graceful shutdown. The task must respond to cancellation_watcher() or check periodically for is_cancellation_requested()
 ///
 ///   * `OnError`  - What to do if the task returned Err(_)
 ///     - `log`                   - Log an error

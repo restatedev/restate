@@ -164,7 +164,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
         }
         if *offset == known_global_tail.latest_offset() {
             // divider to indicate that everything after global tail
-            records_table.add_row(std::iter::repeat("────").take(nodeset.len() + 2));
+            records_table.add_row(std::iter::repeat_n("────", nodeset.len() + 2));
         }
         let mut status_row = Vec::with_capacity(nodeset.len() + 2);
         status_row.push(Cell::new(offset.to_string()));
@@ -192,7 +192,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
     }
     // empty separator
     records_table.add_row(vec![""]);
-    records_table.add_row(std::iter::repeat("═════════").take(nodeset.len() + 1));
+    records_table.add_row(std::iter::repeat_n("═════════", nodeset.len() + 1));
     // append the node-level info at the end
     {
         let mut row = Vec::with_capacity(nodeset.len() + 2);

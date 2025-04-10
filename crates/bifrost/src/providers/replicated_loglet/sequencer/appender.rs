@@ -228,7 +228,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     commit_resolver.sealed();
                 }
             }
-            State::Backoff | State::Wave { .. } => {
+            State::Backoff | State::Wave => {
                 unreachable!()
             }
         }

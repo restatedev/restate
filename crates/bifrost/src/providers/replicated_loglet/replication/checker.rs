@@ -59,7 +59,7 @@ impl FMajorityResult {
     pub fn passed(&self) -> bool {
         matches!(
             self,
-            FMajorityResult::Success { .. } | FMajorityResult::SuccessWithRisk
+            FMajorityResult::Success | FMajorityResult::SuccessWithRisk
         )
     }
 
@@ -85,20 +85,15 @@ impl FMajorityResult {
 ///
 /// The utility provides two methods:
 /// - `check_write_quorum()`: Can be used to check if the subset of nodes that are tagged with an attribute
-///                          matching a predicate may form a legal write quorum.
-///                          Note that this function doesn't care whether those tagged nodes are
-///                          writeable or not.
-///                          It's your responsibility to mark the correct nodes if you want to take
-///                          StorageState into account.
+///   matching a predicate may form a legal write quorum. Note that this function doesn't care whether
+///   those tagged nodes are writeable or not. It's your responsibility to mark the correct nodes if
+///   you want to take StorageState into account.
 ///
-/// - `check_fmajority()`: Used to check if enough nodes have certain values for the
-///                        attribute so that that set of nodes is an f-majority for at
-///                        least one of the scope for which there is a replication
-///                        requirement.
-///                        An example usage of this method is during loglet seal which
-///                        each node gets tagged with "SEALED" if that node has been sealed.
-///                        The seal operation is able to know if it can consider the seal
-///                        to be completed or not.
+/// - `check_fmajority()`: Used to check if enough nodes have certain values for the attribute so
+///   that that set of nodes is an f-majority for at least one of the scope for which there is a
+///   replication requirement. An example usage of this method is during loglet seal which each node
+///   gets tagged with "SEALED" if that node has been sealed.The seal operation is able to know if
+///   it can consider the seal to be completed or not.
 ///
 /// Note that at the moment this doesn't track changes that happen to the storage-states after instantiation.
 /// For a fresh view, rebuild this with a new nodes configuration. This might change in the future

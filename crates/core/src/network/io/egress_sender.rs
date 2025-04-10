@@ -73,10 +73,7 @@ impl EgressSender {
     }
 
     pub fn try_reserve_owned(self) -> Option<mpsc::OwnedPermit<EgressMessage>> {
-        match self.inner.try_reserve_owned() {
-            Ok(permit) => Some(permit),
-            Err(_) => None,
-        }
+        self.inner.try_reserve_owned().ok()
     }
 
     /// Starts a drain of this stream. Enqueued messages will be sent before

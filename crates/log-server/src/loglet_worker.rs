@@ -605,6 +605,7 @@ impl<S: LogStore> LogletWorker<S> {
 
         *sealing_in_progress = true;
 
+        #[allow(clippy::manual_ok_err)]
         match self.log_store.enqueue_seal(body).await {
             Ok(store_token) => Some(store_token),
             Err(_) => {

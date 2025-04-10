@@ -240,7 +240,7 @@ pub async fn create_metadata_server_and_client(
                 Err(err) => Err(err)?,
             }
         }
-        MetadataServerKind::Raft { .. } => {
+        MetadataServerKind::Raft => {
             create_raft_metadata_server_and_client(
                 health_status,
                 server_builder,
