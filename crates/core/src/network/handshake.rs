@@ -14,6 +14,7 @@ use futures::Stream;
 use tokio_stream::StreamExt;
 
 use restate_types::net::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
+use tracing::debug;
 
 use super::HandshakeError;
 use super::protobuf::network::{Header, Hello, Message, Welcome, message};
@@ -57,8 +58,17 @@ where
 }
 
 pub fn negotiate_protocol_version(hello: &Hello) -> Result<ProtocolVersion, HandshakeError> {
-    let selected_proto_version =
-        std::cmp::min(CURRENT_PROTOCOL_VERSION, hello.max_protocol_version());
+    debug!(
+        "Negotiating peer protocol version: [{}:{}]",
+        hello.min_protocol_version, hello.max_protocol_version
+    );
+
+    let selected_proto_version_number =
+        std::cmp::min(CURRENT_PROTOCOL_VERSION as i32, hello.max_protocol_version);
+
+    let selected_proto_version = ProtocolVersion::try_from(selected_proto_version_number)
+        .map_err(|_| HandshakeError::UnsupportedVersion(selected_proto_version_number))?;
+
     if !selected_proto_version.is_supported() {
         // We cannot support peer's protocol version
         return Err(HandshakeError::UnsupportedVersion(
@@ -69,8 +79,8 @@ pub fn negotiate_protocol_version(hello: &Hello) -> Result<ProtocolVersion, Hand
     // Invariant safety net.
     // protocol version must be a value between the min/max version supported by the client.
     // The server has minimum and maximum as well.
-    if selected_proto_version < hello.min_protocol_version()
-        || selected_proto_version > hello.max_protocol_version()
+    if selected_proto_version_number < hello.min_protocol_version
+        || selected_proto_version_number > hello.max_protocol_version
     {
         // The client cannot support our protocol version
         return Err(HandshakeError::UnsupportedVersion(

@@ -13,7 +13,7 @@ use std::time::Duration;
 use tonic::Code;
 
 use restate_types::NodeId;
-use restate_types::net::MIN_SUPPORTED_PROTOCOL_VERSION;
+use restate_types::net::{CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION};
 use restate_types::nodes_config::NodesConfigError;
 
 use crate::ShutdownError;
@@ -125,8 +125,9 @@ pub enum HandshakeError {
     #[error("peer dropped connection during handshake")]
     PeerDropped,
     #[error(
-        "peer has unsupported protocol version {0}, minimum supported is '{p}'",
-        p = MIN_SUPPORTED_PROTOCOL_VERSION as i32
+        "peer has unsupported protocol version {0}, supported versions are '[{min}:{max}]'",
+        min = MIN_SUPPORTED_PROTOCOL_VERSION as i32,
+        max = CURRENT_PROTOCOL_VERSION as i32
     )]
     UnsupportedVersion(i32),
 }
