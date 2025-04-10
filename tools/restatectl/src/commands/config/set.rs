@@ -11,13 +11,12 @@
 use anyhow::Context;
 use clap::Parser;
 use cling::{Collect, Run};
-use restate_admin::cluster_controller::protobuf::GetClusterConfigurationRequest;
-use restate_admin::cluster_controller::protobuf::{
-    SetClusterConfigurationRequest, new_cluster_ctrl_client,
-};
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_println, c_warn};
+use restate_core::protobuf::cluster_ctrl_svc::{
+    GetClusterConfigurationRequest, SetClusterConfigurationRequest, new_cluster_ctrl_client,
+};
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::nodes_config::Role;
 use restate_types::replication::ReplicationProperty;

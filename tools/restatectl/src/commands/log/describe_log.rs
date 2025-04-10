@@ -13,10 +13,10 @@ use cling::prelude::*;
 use itertools::Itertools;
 use log::render_loglet_params;
 
-use restate_admin::cluster_controller::protobuf::{DescribeLogRequest, new_cluster_ctrl_client};
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_core::protobuf::cluster_ctrl_svc::{DescribeLogRequest, new_cluster_ctrl_client};
 use restate_types::Versioned;
 use restate_types::logs::LogId;
 use restate_types::logs::metadata::{Logs, ProviderKind, Segment, SegmentIndex};

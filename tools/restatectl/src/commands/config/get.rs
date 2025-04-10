@@ -10,9 +10,10 @@
 
 use clap::Parser;
 use cling::{Collect, Run};
-use restate_admin::cluster_controller::protobuf::new_cluster_ctrl_client;
+use restate_core::protobuf::cluster_ctrl_svc::{
+    GetClusterConfigurationRequest, new_cluster_ctrl_client,
+};
 
-use restate_admin::cluster_controller::protobuf::GetClusterConfigurationRequest;
 use restate_cli_util::c_println;
 use restate_types::nodes_config::Role;
 

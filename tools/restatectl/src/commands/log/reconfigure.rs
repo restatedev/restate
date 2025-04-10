@@ -14,10 +14,10 @@ use anyhow::{Context, bail};
 use cling::prelude::*;
 use tracing::error;
 
-use restate_admin::cluster_controller::protobuf::{
+use restate_cli_util::{c_eprintln, c_println};
+use restate_core::protobuf::cluster_ctrl_svc::{
     ChainExtension, SealAndExtendChainRequest, new_cluster_ctrl_client,
 };
-use restate_cli_util::{c_eprintln, c_println};
 use restate_types::logs::LogId;
 use restate_types::logs::metadata::{Logs, ProviderKind, Segment};
 use restate_types::nodes_config::Role;

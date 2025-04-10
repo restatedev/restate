@@ -12,12 +12,12 @@ use std::time::Duration;
 
 use cling::prelude::*;
 
-use restate_admin::cluster_controller::protobuf::{
-    FindTailRequest, TailState, new_cluster_ctrl_client,
-};
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_core::protobuf::cluster_ctrl_svc::{
+    FindTailRequest, TailState, new_cluster_ctrl_client,
+};
 use restate_types::nodes_config::Role;
 use tonic::IntoRequest;
 

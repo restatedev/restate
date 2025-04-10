@@ -129,7 +129,7 @@ where
                 .into_server(),
                 WaitForReady::new(health_status.clone(), AdminStatus::Ready),
             ),
-            crate::cluster_controller::protobuf::FILE_DESCRIPTOR_SET,
+            restate_core::protobuf::cluster_ctrl_svc::FILE_DESCRIPTOR_SET,
         );
 
         Ok(Service {
