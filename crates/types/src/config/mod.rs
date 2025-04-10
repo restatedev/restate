@@ -45,6 +45,7 @@ pub use query_engine::*;
 pub use rocksdb::*;
 pub use worker::*;
 
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
@@ -259,11 +260,40 @@ impl Configuration {
             return Err(InvalidConfigurationError::ForceNodeIdZero);
         }
 
+        if self.common.node_name.is_none() {
+            // If the node name is not set, we will fallback to use hostname as the node name.
+            // So to avoid changing hostname to make data loss, we must validate the directory's entry.
+            let dirs = read_subdirs(&self.common.base_dir());
+            match dirs.len().cmp(&1) {
+                std::cmp::Ordering::Less => {
+                    // If it's an empty directory, it's safe to use default behavior.
+                }
+                std::cmp::Ordering::Equal => {
+                    // If there is only one directory, it must be the node name.
+                    // And if it's not equal to hostname, return an error.
+                    if self.common.node_name() != dirs[0].to_string_lossy() {
+                        return Err(InvalidConfigurationError::RequiredNodeName(format!(
+                            "The working directory '{}' contains data from node '{}' but the default node name is '{}'. This would ignore the existing data. To avoid accidental misconfigurations, you have to explicitly specify the node name to tell Restate to resume from the existing data or to start a fresh node.",
+                            self.common.base_dir().to_string_lossy(),
+                            dirs[0].to_string_lossy(),
+                            self.common.node_name()
+                        )));
+                    }
+                }
+                std::cmp::Ordering::Greater => {
+                    return Err(InvalidConfigurationError::RequiredNodeName(format!(
+                        "The working directory '{}' contains data from multiple nodes. Please specify the node name to not accidentally start with the wrong data.",
+                        self.common.base_dir().to_string_lossy()
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 }
 
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum InvalidConfigurationError {
     #[error(
         "force-node-id can not be 0 since it is a reserved value. Please choose a non-zero value or unset this option. Existing clusters will be auto-migrated"
@@ -271,6 +301,8 @@ pub enum InvalidConfigurationError {
     ForceNodeIdZero,
     #[error("could not derive bind address: {0}")]
     DeriveBindAddress(String),
+    #[error("node-name is required: {0}")]
+    RequiredNodeName(String),
 }
 
 /// Used to deserialize the [`Configuration`] in backwards compatible way which allows to specify
@@ -335,4 +367,107 @@ fn print_warning_deprecated_value_using_default(option: &str, value: &str) {
 
 fn print_warning_deprecated_value(option: &str, value: &str, help_msg: &str) {
     eprintln!("Value '{value}' of config option '{option}' is deprecated: {help_msg}")
+}
+
+/// read_subdirs reads the given directory and returns a vector of subdirectories.
+/// If the directory does not exist, it returns an empty vector.
+fn read_subdirs(dir: &PathBuf) -> Vec<PathBuf> {
+    if !dir.exists() {
+        return vec![];
+    }
+
+    let paths = fs::read_dir(dir).unwrap();
+    let dirs: Vec<PathBuf> = paths
+        .filter(|path| path.as_ref().unwrap().path().is_dir())
+        .map(|path| path.as_ref().unwrap().file_name().into())
+        .collect();
+
+    dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_subdirs_did_not_exist() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir_path = temp_dir.path().to_path_buf();
+        assert!(fs::remove_dir(temp_dir).is_ok());
+        assert!(read_subdirs(&temp_dir_path).is_empty());
+    }
+
+    #[test]
+    fn test_read_subdirs_empty() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir_path = temp_dir.path().to_path_buf();
+        assert!(read_subdirs(&temp_dir_path).is_empty());
+    }
+
+    #[test]
+    fn test_read_subdirs_with_subdirs_and_files() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir_path = temp_dir.path().to_path_buf();
+
+        fs::create_dir(temp_dir.path().join("dir1")).unwrap();
+        fs::create_dir(temp_dir.path().join("dir2")).unwrap();
+        fs::File::create_new(temp_dir.path().join("file1")).unwrap();
+
+        let mut sub_dirs = read_subdirs(&temp_dir_path);
+        sub_dirs.sort();
+
+        let expect_sub_dirs = [
+            std::path::Path::new("dir1").to_path_buf(),
+            std::path::Path::new("dir2").to_path_buf(),
+        ];
+        assert_eq!(sub_dirs, expect_sub_dirs);
+    }
+
+    #[test]
+    fn test_configuration_validate_empty_base_dir() {
+        let mut config = Configuration::default();
+        assert!(config.validate().is_ok());
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir_path = temp_dir.path().to_path_buf();
+        config.common.base_dir = Some(temp_dir_path);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_configuration_validate_base_dir_one_subdir() {
+        let mut config = Configuration::default();
+        assert!(config.validate().is_ok());
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir_path = temp_dir.path().to_path_buf();
+        config.common.base_dir = Some(temp_dir_path);
+
+        fs::create_dir(temp_dir.path().join("dir1")).unwrap();
+        let valid_result = config.validate();
+        assert!(valid_result.is_err());
+        match valid_result.unwrap_err() {
+            InvalidConfigurationError::RequiredNodeName(_) => {}
+            _ => panic!("Shoule be RequiredNodeName error"),
+        }
+    }
+
+    #[test]
+    fn test_configuration_validate_base_dir_multi_subdir() {
+        let mut config = Configuration::default();
+        assert!(config.validate().is_ok());
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir_path = temp_dir.path().to_path_buf();
+        config.common.base_dir = Some(temp_dir_path);
+
+        fs::create_dir(temp_dir.path().join("dir1")).unwrap();
+        fs::create_dir(temp_dir.path().join("dir2")).unwrap();
+        let valid_result = config.validate();
+        assert!(valid_result.is_err());
+        match valid_result.unwrap_err() {
+            InvalidConfigurationError::RequiredNodeName(_) => {}
+            _ => panic!("Shoule be RequiredNodeName error"),
+        }
+    }
 }
