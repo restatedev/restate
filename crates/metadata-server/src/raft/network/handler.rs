@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::raft::network::connection_manager::ConnectionError;
-use crate::raft::network::grpc_svc::JoinClusterRequest;
 use crate::raft::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
+use crate::raft::network::grpc_svc::{JoinClusterRequest, JoinClusterResponse};
 use crate::raft::network::{ConnectionManager, NetworkMessage, PEER_METADATA_KEY, grpc_svc};
 use crate::{JoinClusterError, JoinClusterHandle, MemberId};
 use arc_swap::ArcSwapOption;
@@ -92,17 +92,19 @@ where
     async fn join_cluster(
         &self,
         request: Request<JoinClusterRequest>,
-    ) -> Result<Response<()>, Status> {
+    ) -> Result<Response<JoinClusterResponse>, Status> {
         if let Some(join_handle) = self.join_cluster_handle.as_ref() {
             let request = request.into_inner();
-            join_handle
+            let nodes_config_version = join_handle
                 .join_cluster(MemberId::new(
                     PlainNodeId::from(request.node_id),
                     request.created_at_millis,
                 ))
                 .await?;
 
-            Ok(Response::new(()))
+            Ok(Response::new(JoinClusterResponse {
+                nodes_config_version: Some(nodes_config_version.into()),
+            }))
         } else {
             Err(Status::unimplemented(
                 "The metadata store does not support joining of other nodes",
@@ -138,9 +140,9 @@ impl From<JoinClusterError> for Status {
             JoinClusterError::Internal(_) | JoinClusterError::ProposalDropped => {
                 Status::internal(err.to_string())
             }
-            JoinClusterError::UnknownNode(_)
-            | JoinClusterError::InvalidRole(_)
-            | JoinClusterError::Standby(_) => Status::invalid_argument(err.to_string()),
+            JoinClusterError::UnknownNode(_) | JoinClusterError::InvalidRole(_) => {
+                Status::invalid_argument(err.to_string())
+            }
         }
     }
 }
