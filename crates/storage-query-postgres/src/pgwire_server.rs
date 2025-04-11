@@ -34,6 +34,7 @@ use pgwire::messages::PgWireBackendMessage;
 use pgwire::messages::response::NoticeResponse;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tracing::warn;
 
 use pgwire::api::auth::noop::NoopStartupHandler;
 use pgwire::api::copy::NoopCopyHandler;
@@ -152,6 +153,8 @@ pub fn spawn_connection(
     incoming_socket: TcpStream,
     addr: SocketAddr,
 ) {
+    warn!("New connection from {addr} to Postgres query server, this is deprecated");
+
     // fails only if we are shutting down
     let _ = TaskCenter::spawn_child(
         TaskKind::SocketHandler,
