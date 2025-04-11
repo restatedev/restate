@@ -105,13 +105,13 @@ async fn provision_cluster(
         let default_provider = ProviderConfiguration::try_from(default_provider.clone())?;
 
         match default_provider {
-            ProviderConfiguration::InMemory | ProviderConfiguration::Local => {
+            ProviderConfiguration::Replicated(_) => {
+                // nothing to do
+            }
+            _ => {
                 c_warn!(
                     "You are about to provision a cluster with a Bifrost provider that only supports a single node cluster."
                 );
-            }
-            ProviderConfiguration::Replicated(_) => {
-                // nothing to do
             }
         }
     }
