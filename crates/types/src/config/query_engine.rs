@@ -39,12 +39,13 @@ pub struct QueryEngineOptions {
     /// # Default query parallelism
     ///
     /// The number of parallel partitions to use for a query execution
-    query_parallelism: Option<NonZeroUsize>,
+    pub query_parallelism: Option<NonZeroUsize>,
 
     /// # Pgsql Bind address
     ///
     /// The address to bind for the psql service.
-    pub pgsql_bind_address: SocketAddr,
+    #[deprecated(since = "1.3.0", note = "Pgsql query engine be removed with 1.4.0")]
+    pub pgsql_bind_address: Option<SocketAddr>,
 }
 
 impl QueryEngineOptions {
@@ -54,11 +55,12 @@ impl QueryEngineOptions {
 }
 impl Default for QueryEngineOptions {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             memory_size: NonZeroUsize::new(4 * 1024 * 1024 * 1024).unwrap(), // 4GiB
             tmp_dir: None,
             query_parallelism: None,
-            pgsql_bind_address: "0.0.0.0:9071".parse().unwrap(),
+            pgsql_bind_address: None,
         }
     }
 }
