@@ -100,9 +100,9 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
 
         // if the default provider kind is local or in-memory than it is not safe to disable the
         // given node because it is included in the implicit node set
-        if matches!(
+        if !matches!(
             self.logs.configuration().default_provider.kind(),
-            ProviderKind::Local | ProviderKind::InMemory
+            ProviderKind::Replicated
         ) {
             return Err(DisableNodeError::DefaultLogletProvider(
                 self.logs.configuration().default_provider.kind(),
@@ -113,15 +113,6 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
         for (log_id, chain) in self.logs.iter() {
             for segment in chain.iter() {
                 match segment.config.kind {
-                    // we assume that the given node runs the local and memory loglet and, therefore,
-                    // cannot be disabled
-                    ProviderKind::Local | ProviderKind::InMemory => {
-                        return Err(DisableNodeError::LocalLoglet {
-                            provider_kind: segment.config.kind,
-                            loglet_id: LogletId::new(*log_id, segment.index()),
-                            node_id,
-                        });
-                    }
                     ProviderKind::Replicated => {
                         if self
                             .logs
@@ -136,6 +127,15 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
                                 segment.index(),
                             )));
                         }
+                    }
+                    // we assume that the given node runs the local and memory loglet and, therefore,
+                    // cannot be disabled
+                    _ => {
+                        return Err(DisableNodeError::LocalLoglet {
+                            provider_kind: segment.config.kind,
+                            loglet_id: LogletId::new(*log_id, segment.index()),
+                            node_id,
+                        });
                     }
                 }
             }
