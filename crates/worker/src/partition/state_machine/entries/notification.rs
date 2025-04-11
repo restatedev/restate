@@ -54,9 +54,13 @@ where
                 .apply(ctx)
                 .await?;
             }
-        } else if let InvocationStatus::Invoked(_) = self.invocation_status {
+        } else if let InvocationStatus::Invoked(im) = self.invocation_status {
             // Just forward the notification if we're invoked
-            ctx.forward_notification(self.invocation_id, self.entry.clone());
+            ctx.forward_notification(
+                self.invocation_id,
+                im.current_invocation_epoch,
+                self.entry.clone(),
+            );
         }
 
         // In all the other cases, just move on.

@@ -21,6 +21,7 @@ use tokio::task::AbortHandle;
 #[derive(Debug)]
 pub(super) struct InvocationStateMachine {
     pub(super) invocation_target: InvocationTarget,
+    pub(super) invocation_epoch: InvocationEpoch,
     invocation_state: InvocationState,
     retry_iter: retries::RetryIter<'static>,
     /// This retry count is passed in the StartMessage.
@@ -159,10 +160,12 @@ impl fmt::Debug for InvocationState {
 impl InvocationStateMachine {
     pub(super) fn create(
         invocation_target: InvocationTarget,
+        invocation_epoch: InvocationEpoch,
         retry_policy: RetryPolicy,
     ) -> InvocationStateMachine {
         Self {
             invocation_target,
+            invocation_epoch,
             invocation_state: InvocationState::New,
             retry_iter: retry_policy.into_iter(),
             start_message_retry_count_since_last_stored_command: 0,
@@ -417,6 +420,7 @@ mod tests {
     fn handle_error_when_waiting_for_retry() {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_virtual_object(),
+            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 
@@ -442,6 +446,7 @@ mod tests {
     async fn handle_error_counts_attempts_on_same_entry() {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_virtual_object(),
+            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 
@@ -501,6 +506,7 @@ mod tests {
     async fn handle_requires_ack() {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_virtual_object(),
+            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 
@@ -531,6 +537,7 @@ mod tests {
     async fn journal_tracker_correctly_tracks_commands() {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_service(),
+            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 
@@ -559,6 +566,7 @@ mod tests {
     async fn journal_tracker_correctly_tracks_notification_proposals() {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_service(),
+            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 

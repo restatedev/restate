@@ -31,7 +31,9 @@ pub mod test_util {
     use restate_types::identifiers::{
         EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
-    use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
+    use restate_types::invocation::{
+        InvocationEpoch, InvocationTarget, ServiceInvocationSpanContext,
+    };
     use restate_types::journal::Completion;
     use restate_types::journal_v2::raw::RawNotification;
     use restate_types::time::MillisSinceEpoch;
@@ -94,6 +96,7 @@ pub mod test_util {
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
+            _invocation_epoch: InvocationEpoch,
             _invocation_target: InvocationTarget,
             _journal: InvokeInputJournal,
         ) -> Result<(), NotRunningError> {
@@ -113,6 +116,7 @@ pub mod test_util {
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
+            _invocation_epoch: InvocationEpoch,
             _notification: RawNotification,
         ) -> Result<(), NotRunningError> {
             Ok(())
@@ -122,6 +126,7 @@ pub mod test_util {
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
+            _invocation_epoch: InvocationEpoch,
             _entry_index: EntryIndex,
         ) -> Result<(), NotRunningError> {
             Ok(())
@@ -138,6 +143,7 @@ pub mod test_util {
             &mut self,
             _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
+            _invocation_epoch: InvocationEpoch,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }
