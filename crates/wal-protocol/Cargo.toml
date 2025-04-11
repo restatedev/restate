@@ -10,7 +10,6 @@ publish = false
 [features]
 default = ["serde"]
 serde = ["dep:serde", "enum-map/serde", "bytestring/serde", "restate-invoker-api/serde"]
-options_schema = ["dep:schemars"]
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
@@ -29,7 +28,7 @@ codederror = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
-flexbuffers = {  workspace = true }
+flexbuffers = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true }
