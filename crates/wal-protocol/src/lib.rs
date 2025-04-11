@@ -46,18 +46,21 @@ impl Envelope {
         Self { header, command }
     }
 
+    #[cfg(feature = "serde")]
     pub fn to_bytes(&self) -> Result<Bytes, StorageEncodeError> {
         let mut buf = BytesMut::default();
         StorageCodec::encode(self, &mut buf)?;
         Ok(buf.freeze())
     }
 
+    #[cfg(feature = "serde")]
     pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, StorageDecodeError> {
         let mut bytes = bytes.as_ref();
         StorageCodec::decode::<Self, _>(&mut bytes)
     }
 }
 
+#[cfg(feature = "serde")]
 flexbuffers_storage_encode_decode!(Envelope);
 
 /// Header is set on every message
@@ -225,6 +228,7 @@ impl MatchKeyQuery for Envelope {
     }
 }
 
+#[cfg(feature = "serde")]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("partition not found: {0}")]
@@ -246,6 +250,7 @@ pub enum Error {
 /// todo: This method should be removed in favor of using Appender/BackgroundAppender API in
 /// Bifrost. Additionally, the check for partition_table is probably unnecessary in the vast
 /// majority of call-sites.
+#[cfg(feature = "serde")]
 pub async fn append_envelope_to_bifrost(
     bifrost: &Bifrost,
     envelope: Arc<Envelope>,
