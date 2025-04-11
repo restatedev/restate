@@ -85,7 +85,7 @@ pub enum Source {
         /// deprecated(v1.1): use generational_node_id instead.
         node_id: PlainNodeId,
         /// From v1.1 this is always set, but maintained to support rollback to v1.0.
-        #[serde(default)]
+        #[cfg_attr(feature = "serde", serde(default))]
         generational_node_id: Option<GenerationalNodeId>,
     },
     /// Message is sent from an ingress node
