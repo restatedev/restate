@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use tracing::warn;
 
 use restate_core::TaskCenterBuilder;
+use restate_core::TaskCenterFutureExt;
 use restate_types::config::Configuration;
 use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::Pinned;
@@ -58,7 +59,7 @@ where
         .expect("task_center builds")
         .into_handle();
 
-    let result = task_center.run_sync(|| fn_body(config)).await;
+    let result = fn_body(config).in_tc(&task_center).await;
 
     task_center.shutdown_node("finished", 0).await;
     result
