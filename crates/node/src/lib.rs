@@ -265,26 +265,7 @@ impl Node {
             None
         };
 
-        if !config
-            .ingress
-            .experimental_feature_enable_separate_ingress_role
-            && config.has_role(Role::HttpIngress)
-        {
-            return Err(BuildError::InvalidConfiguration(anyhow::anyhow!(
-                "The http-ingress role is used but experimental-feature-enable-separate-ingress-role is not set."
-            )));
-        }
-
-        let ingress_role = if config
-            .ingress
-            .experimental_feature_enable_separate_ingress_role
-            && config.has_role(Role::HttpIngress)
-            // todo remove once the safe fallback version supports the HttpIngress role
-            || !config
-            .ingress
-            .experimental_feature_enable_separate_ingress_role
-            && config.has_role(Role::Worker)
-        {
+        let ingress_role = if config.has_role(Role::HttpIngress) {
             Some(IngressRole::create(
                 updateable_config
                     .clone()
