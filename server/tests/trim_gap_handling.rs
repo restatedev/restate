@@ -62,7 +62,9 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let nodes = Node::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::MetadataServer | Role::Admin | Role::Worker | Role::LogServer),
+        enum_set!(
+            Role::MetadataServer | Role::Admin | Role::Worker | Role::LogServer | Role::HttpIngress
+        ),
         1,
         false,
     );
@@ -177,7 +179,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         "node-2",
         no_snapshot_repository_config,
         BinarySource::CargoTest,
-        enum_set!(Role::Worker),
+        enum_set!(Role::Worker | Role::HttpIngress),
     );
     *worker_2.metadata_store_client_mut() = MetadataClientKind::Replicated {
         addresses: vec![cluster.nodes[0].node_address().clone()],
@@ -201,7 +203,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         "node-2",
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::Worker),
+        enum_set!(Role::Worker | Role::HttpIngress),
     );
     *worker_2.metadata_store_client_mut() = MetadataClientKind::Replicated {
         addresses: vec![cluster.nodes[0].node_address().clone()],
