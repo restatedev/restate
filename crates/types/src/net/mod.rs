@@ -30,6 +30,7 @@ pub use crate::protobuf::common::ProtocolVersion;
 pub use crate::protobuf::common::TargetName;
 
 pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
+// Todo(azmy): Fully switch to V2 after implementation is complete.
 pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
 
 #[derive(

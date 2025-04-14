@@ -16,6 +16,7 @@ use bytes::Bytes;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::errors::ConversionError;
 use crate::protobuf::common::ProtocolVersion;
 use crate::protobuf::common::TargetName;
 
@@ -122,6 +123,27 @@ where
     }
 }
 
+pub trait V2Convertible: Sized {
+    type Target: prost::Message;
+
+    fn into_v2(self) -> Self::Target;
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError>;
+}
+
+impl<T> V2Convertible for T
+where
+    T: prost::Message,
+{
+    type Target = T;
+    fn into_v2(self) -> Self::Target {
+        self
+    }
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target)
+    }
+}
+
 /// Utility method to raw-encode a [`Serialize`] type as flexbuffers using serde without adding
 /// version tag. This must be decoded with `decode_from_untagged_flexbuffers`. This is used as the default
 /// encoding for network messages since networking has its own protocol versioning.
@@ -130,6 +152,7 @@ pub fn encode_default<T: Serialize>(value: T, protocol_version: ProtocolVersion)
         ProtocolVersion::V1 => {
             flexbuffers::to_vec(value).expect("network message serde can't fail")
         }
+        ProtocolVersion::V2 => unimplemented!("V2 is under development"),
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
         }
@@ -145,6 +168,7 @@ pub fn decode_default<T: DeserializeOwned>(
     match protocol_version {
         ProtocolVersion::V1 => flexbuffers::from_slice(buf.chunk())
             .context("failed decoding V1 (flexbuffers) network message"),
+        ProtocolVersion::V2 => unimplemented!("V2 is under development"),
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
         }
