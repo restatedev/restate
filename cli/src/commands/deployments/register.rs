@@ -246,7 +246,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         if !discover_opts.force {
             c_error!(
                 "A deployment already exists that uses this endpoint (ID: {}). Use --force to overwrite it.",
-                existing_deployment.id,
+                existing_deployment.id(),
             );
             return Ok(());
         } else {
@@ -259,7 +259,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 \n\nThis is a DANGEROUS operation! \n
                 In production, we recommend creating a new deployment with a unique endpoint while \
                 keeping the old one active until the old deployment is drained.",
-                existing_deployment.id
+                existing_deployment.id()
             );
             c_eprintln!();
         }
@@ -384,10 +384,11 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     }
 
     // The following services will be removed/forgotten:
-    if let Some(existing_endpoint) = existing_deployment {
+    if let Some(existing_deployment) = existing_deployment {
+        let (_, _, services) = existing_deployment.into_parts();
+
         // The following services will be removed/forgotten:
-        let services_removed = existing_endpoint
-            .services
+        let services_removed = services
             .iter()
             .filter(|service| !discovered_service_names.contains(&service.name))
             .collect::<Vec<_>>();
@@ -464,9 +465,9 @@ async fn resolve_deployment(
         .await
         .ok()
         .map(|endpoint| {
-            let service_endpoint = endpoint.deployment;
-            cache.insert(deployment_id.to_string(), service_endpoint.clone());
-            Some(service_endpoint)
+            let (_, deployment, _) = endpoint.into_parts();
+            cache.insert(deployment_id.to_string(), deployment.clone());
+            Some(deployment)
         })?;
     progress.finish_and_clear();
 

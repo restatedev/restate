@@ -165,11 +165,7 @@ pub async fn get_deployment<V>(
     Ok(
         restate_admin_rest_model::converters::convert_detailed_deployment_response(
             version,
-            DetailedDeploymentResponse {
-                id: deployment.id,
-                deployment: deployment.metadata.into(),
-                services,
-            },
+            DetailedDeploymentResponse::new(deployment.id, deployment.metadata.into(), services),
         )
         .into(),
     )
@@ -189,13 +185,15 @@ pub async fn list_deployments<V>(
         .schema_registry
         .list_deployments()
         .into_iter()
-        .map(|(deployment, services)| DeploymentResponse {
-            id: deployment.id,
-            deployment: deployment.metadata.into(),
-            services: services
-                .into_iter()
-                .map(|(name, revision)| ServiceNameRevPair { name, revision })
-                .collect(),
+        .map(|(deployment, services)| {
+            DeploymentResponse::new(
+                deployment.id,
+                deployment.metadata.into(),
+                services
+                    .into_iter()
+                    .map(|(name, revision)| ServiceNameRevPair { name, revision })
+                    .collect(),
+            )
         })
         .collect();
 
@@ -351,11 +349,7 @@ pub async fn update_deployment<V>(
     Ok(Json(
         restate_admin_rest_model::converters::convert_detailed_deployment_response(
             version,
-            DetailedDeploymentResponse {
-                id: deployment.id,
-                deployment: deployment.metadata.into(),
-                services,
-            },
+            DetailedDeploymentResponse::new(deployment.id, deployment.metadata.into(), services),
         ),
     ))
 }

@@ -63,12 +63,13 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .into_body()
         .await?;
 
+    let (deployment_id, deployment, services) = deployment.into_parts();
+
     let sql_client = crate::clients::DataFusionHttpClient::from(client);
-    let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
+    let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment_id).await?;
     let total_active_inv = active_inv.iter().map(|x| x.inv_count).sum();
 
-    let service_rev_pairs: Vec<_> = deployment
-        .services
+    let service_rev_pairs: Vec<_> = services
         .iter()
         .map(|s| ServiceNameRevPair {
             name: s.name.clone(),
@@ -77,16 +78,16 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .collect();
 
     let status = calculate_deployment_status(
-        &deployment.id,
+        &deployment_id,
         &service_rev_pairs,
         total_active_inv,
         &latest_services,
     );
 
     let mut table = Table::new_styled();
-    table.add_kv_row("ID:", deployment.id);
+    table.add_kv_row("ID:", deployment_id);
 
-    add_deployment_to_kv_table(&deployment.deployment, &mut table);
+    add_deployment_to_kv_table(&deployment, &mut table);
     table.add_kv_row("Status:", render_deployment_status(status));
     table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
 
@@ -97,7 +98,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     c_println!();
 
     c_title!("🤖", "Services");
-    for service in deployment.services {
+    for service in services {
         let Some(latest_service) = latest_services.get(&service.name) else {
             // if we can't find this service in the latest set of services, something is off. A
             // deployment cannot remove services defined by other deployment, so we should warn that

@@ -195,6 +195,13 @@ impl From<DeploymentMetadata> for Deployment {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RegisterDeploymentRequest {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            title = "RegisterHttpDeploymentRequest",
+            description = "Register HTTP deployment request"
+        )
+    )]
     Http {
         /// # Uri
         ///
@@ -237,6 +244,13 @@ pub enum RegisterDeploymentRequest {
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            title = "RegisterLambdaDeploymentRequest",
+            description = "Register Lambda deployment request"
+        )
+    )]
     Lambda {
         /// # ARN
         ///
@@ -274,7 +288,7 @@ pub enum RegisterDeploymentRequest {
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServiceNameRevPair {
     pub name: String,
     pub revision: ServiceRevision,
@@ -294,31 +308,399 @@ pub struct ListDeploymentsResponse {
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeploymentResponse {
-    pub id: DeploymentId,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DeploymentResponse {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            title = "HttpDeploymentResponse",
+            description = "Deployment response for HTTP deployments"
+        )
+    )]
+    Http {
+        /// # Deployment ID
+        id: DeploymentId,
 
-    #[serde(flatten)]
-    pub deployment: Deployment,
+        /// # Deployment URI
+        ///
+        /// URI used to invoke this service deployment.
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        uri: Uri,
 
-    /// # Services
-    ///
-    /// List of services exposed by this deployment.
-    pub services: Vec<ServiceNameRevPair>,
+        /// # Protocol Type
+        ///
+        /// Protocol type used to invoke this service deployment.
+        protocol_type: ProtocolType,
+
+        /// # HTTP Version
+        ///
+        /// HTTP Version used to invoke this service deployment.
+        #[serde(with = "http_serde::version")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        http_version: Version,
+
+        /// # Additional headers
+        ///
+        /// Additional headers used to invoke this service deployment.
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        #[serde(default)]
+        additional_headers: SerdeableHeaderHashMap,
+
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        created_at: humantime::Timestamp,
+
+        min_protocol_version: i32,
+        max_protocol_version: i32,
+
+        /// # Services
+        ///
+        /// List of services exposed by this deployment.
+        services: Vec<ServiceNameRevPair>,
+    },
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            title = "LambdaDeploymentResponse",
+            description = "Deployment response for Lambda deployments"
+        )
+    )]
+    Lambda {
+        /// # Deployment ID
+        id: DeploymentId,
+
+        /// # Lambda ARN
+        ///
+        /// Lambda ARN used to invoke this service deployment.
+        arn: LambdaARN,
+
+        /// # Assume role ARN
+        ///
+        /// Assume role ARN used to invoke this deployment. Check https://docs.restate.dev/category/aws-lambda for more details.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        assume_role_arn: Option<String>,
+
+        /// # Additional headers
+        ///
+        /// Additional headers used to invoke this service deployment.
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        #[serde(default)]
+        additional_headers: SerdeableHeaderHashMap,
+
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        created_at: humantime::Timestamp,
+
+        min_protocol_version: i32,
+        max_protocol_version: i32,
+
+        /// # Services
+        ///
+        /// List of services exposed by this deployment.
+        services: Vec<ServiceNameRevPair>,
+    },
+}
+
+impl DeploymentResponse {
+    pub fn new(
+        id: DeploymentId,
+        deployment: Deployment,
+        services: Vec<ServiceNameRevPair>,
+    ) -> Self {
+        match deployment {
+            Deployment::Http {
+                uri,
+                protocol_type,
+                http_version,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            } => Self::Http {
+                id,
+                uri,
+                protocol_type,
+                http_version,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+                services,
+            },
+            Deployment::Lambda {
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            } => Self::Lambda {
+                id,
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+                services,
+            },
+        }
+    }
+
+    pub fn id(&self) -> DeploymentId {
+        match self {
+            Self::Http { id, .. } => *id,
+            Self::Lambda { id, .. } => *id,
+        }
+    }
+
+    pub fn into_parts(self) -> (DeploymentId, Deployment, Vec<ServiceNameRevPair>) {
+        match self {
+            Self::Http {
+                id,
+                uri,
+                protocol_type,
+                http_version,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+                services,
+            } => (
+                id,
+                Deployment::Http {
+                    uri,
+                    protocol_type,
+                    http_version,
+                    additional_headers,
+                    created_at,
+                    min_protocol_version,
+                    max_protocol_version,
+                },
+                services,
+            ),
+            Self::Lambda {
+                id,
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+                services,
+            } => (
+                id,
+                Deployment::Lambda {
+                    arn,
+                    assume_role_arn,
+                    additional_headers,
+                    created_at,
+                    min_protocol_version,
+                    max_protocol_version,
+                },
+                services,
+            ),
+        }
+    }
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DetailedDeploymentResponse {
-    pub id: DeploymentId,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DetailedDeploymentResponse {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            title = "HttpDetailedDeploymentResponse",
+            description = "Detailed deployment response for HTTP deployments"
+        )
+    )]
+    Http {
+        /// # Deployment ID
+        id: DeploymentId,
 
-    #[serde(flatten)]
-    pub deployment: Deployment,
+        /// # Deployment URI
+        ///
+        /// URI used to invoke this service deployment.
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        uri: Uri,
 
-    /// # Services
-    ///
-    /// List of services exposed by this deployment.
-    pub services: Vec<ServiceMetadata>,
+        /// # Protocol Type
+        ///
+        /// Protocol type used to invoke this service deployment.
+        protocol_type: ProtocolType,
+
+        /// # HTTP Version
+        ///
+        /// HTTP Version used to invoke this service deployment.
+        #[serde(with = "http_serde::version")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        http_version: Version,
+
+        /// # Additional headers
+        ///
+        /// Additional headers used to invoke this service deployment.
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        #[serde(default)]
+        additional_headers: SerdeableHeaderHashMap,
+
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        created_at: humantime::Timestamp,
+
+        min_protocol_version: i32,
+        max_protocol_version: i32,
+
+        /// # Services
+        ///
+        /// List of services exposed by this deployment.
+        services: Vec<ServiceMetadata>,
+    },
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            title = "LambdaDetailedDeploymentResponse",
+            description = "Detailed deployment response for Lambda deployments"
+        )
+    )]
+    Lambda {
+        /// # Deployment ID
+        id: DeploymentId,
+
+        /// # Lambda ARN
+        ///
+        /// Lambda ARN used to invoke this service deployment.
+        arn: LambdaARN,
+
+        /// # Assume role ARN
+        ///
+        /// Assume role ARN used to invoke this deployment. Check https://docs.restate.dev/category/aws-lambda for more details.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        assume_role_arn: Option<String>,
+
+        /// # Additional headers
+        ///
+        /// Additional headers used to invoke this service deployment.
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        #[serde(default)]
+        additional_headers: SerdeableHeaderHashMap,
+
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        created_at: humantime::Timestamp,
+
+        min_protocol_version: i32,
+        max_protocol_version: i32,
+
+        /// # Services
+        ///
+        /// List of services exposed by this deployment.
+        services: Vec<ServiceMetadata>,
+    },
+}
+
+impl DetailedDeploymentResponse {
+    pub fn new(id: DeploymentId, deployment: Deployment, services: Vec<ServiceMetadata>) -> Self {
+        match deployment {
+            Deployment::Http {
+                uri,
+                protocol_type,
+                http_version,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            } => Self::Http {
+                id,
+                uri,
+                protocol_type,
+                http_version,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+                services,
+            },
+            Deployment::Lambda {
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            } => Self::Lambda {
+                id,
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+                services,
+            },
+        }
+    }
+
+    pub fn id(&self) -> DeploymentId {
+        match self {
+            Self::Http { id, .. } => *id,
+            Self::Lambda { id, .. } => *id,
+        }
+    }
+
+    pub fn into_parts(self) -> (DeploymentId, Deployment, Vec<ServiceMetadata>) {
+        match self {
+            Self::Http {
+                id,
+                uri,
+                protocol_type,
+                http_version,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+                services,
+            } => (
+                id,
+                Deployment::Http {
+                    uri,
+                    protocol_type,
+                    http_version,
+                    additional_headers,
+                    created_at,
+                    min_protocol_version,
+                    max_protocol_version,
+                },
+                services,
+            ),
+            Self::Lambda {
+                id,
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+                services,
+            } => (
+                id,
+                Deployment::Lambda {
+                    arn,
+                    assume_role_arn,
+                    additional_headers,
+                    created_at,
+                    min_protocol_version,
+                    max_protocol_version,
+                },
+                services,
+            ),
+        }
+    }
 }
 
 // RegisterDeploymentRequest except without `force`

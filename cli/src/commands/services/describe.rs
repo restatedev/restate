@@ -57,7 +57,8 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .await?
         .into_body()
         .await?;
-    add_deployment_to_kv_table(&deployment.deployment, &mut table);
+    let (_, deployment, _) = deployment.into_parts();
+    add_deployment_to_kv_table(&deployment, &mut table);
 
     c_title!("📜", "Service Information");
     c_println!("{}", table);
@@ -87,9 +88,10 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .deployments
         .into_iter()
         .filter_map(|e| {
+            let (other_deployment_id, other_deployment, other_deployment_services) = e.into_parts();
+
             // endpoints that serve the same service.
-            let service_match: Vec<_> = e
-                .services
+            let service_match: Vec<_> = other_deployment_services
                 .iter()
                 .filter(|s| s.name == service_name && s.revision != latest_rev)
                 .collect();
@@ -100,13 +102,17 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
                 progress.finish_and_clear();
                 panic!(
                     "Deployment {} is hosting multiple revisions of the same service {}!",
-                    e.id, service_name
+                    other_deployment_id, service_name
                 );
             }
 
-            service_match
-                .first()
-                .map(|service_match| (e.id, e.deployment, service_match.revision))
+            service_match.first().map(|service_match| {
+                (
+                    other_deployment_id,
+                    other_deployment,
+                    service_match.revision,
+                )
+            })
         })
         .collect();
 
