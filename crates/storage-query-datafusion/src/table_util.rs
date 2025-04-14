@@ -53,7 +53,7 @@ pub(crate) fn make_ordering(columns: Vec<Arc<dyn PhysicalExpr>>) -> LexOrdering 
 }
 
 #[inline]
-pub(crate) fn format_using<'a>(output: &'a mut String, what: &impl std::fmt::Display) -> &'a str {
+pub fn format_using<'a>(output: &'a mut String, what: &impl std::fmt::Display) -> &'a str {
     output.clear();
     if let Err(e) = write!(output, "{what}") {
         error!(error = %e, "Cannot format the string")
@@ -61,7 +61,7 @@ pub(crate) fn format_using<'a>(output: &'a mut String, what: &impl std::fmt::Dis
     output
 }
 
-pub(crate) trait Builder {
+pub trait Builder {
     fn new(projected_schema: SchemaRef) -> Self;
 
     fn full(&self) -> bool;
