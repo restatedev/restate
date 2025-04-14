@@ -1,0 +1,67 @@
+// Copyright (c) 2024 - 2025 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+syntax = "proto3";
+
+import "restate/common.proto";
+import "restate/net/log_server.proto";
+
+package restate.net.replicated_loglet;
+
+message CommonRequestHeader {
+  uint32 log_id = 1;
+  uint32 segment_index = 2;
+  uint64 loglet_id = 4;
+}
+
+message SequencerStatus {
+  enum Status {
+    Status_UNKNOWN = 0;
+    Ok = 1;
+    Sealed = 2;
+    Gone = 3;
+    LogletIdMismatch = 4;
+    UnknownLogId = 5;
+    UnknownSegmentIndex = 6;
+    NotSequencer = 7;
+    Shutdown = 8;
+    Error = 9;
+  }
+
+  Status status = 1;
+  // both message and retryable are only
+  // valid in case of Status::Error
+  optional string message = 2;
+  optional bool retryable = 3;
+}
+
+message CommonResponseHeader {
+  SequencerStatus status = 1;
+  optional uint32 known_global_tail = 2;
+  optional bool sealed = 3;
+}
+
+message Append {
+  CommonRequestHeader header = 1;
+  repeated restate.net.log_server.Record payloads = 2;
+}
+
+message Appended {
+  CommonResponseHeader header = 1;
+  // INVALID if Status indicates that the append failed
+  uint32 last_offset = 2;
+}
+
+message GetSequencerState {
+  CommonRequestHeader header = 1;
+  bool force_seal_check = 2;
+}
+
+message SequenceState { CommonResponseHeader header = 1; }

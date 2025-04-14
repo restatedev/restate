@@ -235,4 +235,11 @@ pub mod net {
             }
         }
     }
+
+    pub mod replicated_loglet {
+        include!(concat!(
+            env!("OUT_DIR"),
+            "/restate.net.replicated_loglet.rs"
+        ));
+    }
 }
