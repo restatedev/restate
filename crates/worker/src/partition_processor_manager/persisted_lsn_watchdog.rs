@@ -162,7 +162,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
     use restate_storage_api::fsm_table::FsmTable;
-    use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
+    use restate_types::config::{CommonOptions, StorageOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::Constant;
     use restate_types::logs::{Lsn, SequenceNumber};
@@ -177,14 +177,13 @@ mod tests {
     async fn persisted_log_lsn_watchdog_detects_applied_lsns() -> anyhow::Result<()> {
         let _node_env = TestCoreEnv::create_with_single_node(1, 1).await;
         let storage_options = StorageOptions::default();
-        let rocksdb_options = RocksDbOptions::default();
 
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
         let all_partition_keys = RangeInclusive::new(0, PartitionKey::MAX);
         let partition_store_manager = PartitionStoreManager::create(
             Constant::new(storage_options.clone()).boxed(),
-            Constant::new(rocksdb_options.clone()).boxed(),
+            Constant::new(storage_options.rocksdb.clone()).boxed(),
             &[(PartitionId::MIN, all_partition_keys.clone())],
         )
         .await?;
@@ -194,7 +193,7 @@ mod tests {
                 PartitionId::MIN,
                 all_partition_keys,
                 OpenMode::CreateIfMissing,
-                &rocksdb_options,
+                &storage_options.rocksdb,
             )
             .await
             .expect("partition store present");
