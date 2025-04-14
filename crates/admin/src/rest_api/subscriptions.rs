@@ -28,6 +28,9 @@ use restate_types::identifiers::SubscriptionId;
     description = "Create subscription.",
     operation_id = "create_subscription",
     tags = "subscription",
+    external_docs(
+        url = "https://docs.restate.dev/operate/invocation#managing-kafka-subscriptions"
+    ),
     responses(
         ignore_return_type = true,
         response(

@@ -32,6 +32,7 @@ use serde::Deserialize;
     description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
     operation_id = "create_deployment",
     tags = "deployment",
+    external_docs(url = "https://docs.restate.dev/operate/registration"),
     responses(
         ignore_return_type = true,
         response(
@@ -265,6 +266,7 @@ pub async fn delete_deployment<V>(
     description = "Update deployment. Invokes the endpoint and replaces the existing deployment metadata with the discovered information. This is a dangerous operation that should be used only when there are failing invocations on the deployment that cannot be resolved any other way. Sense checks are applied to test that the new deployment is sufficiently similar to the old one.",
     operation_id = "update_deployment",
     tags = "deployment",
+    external_docs(url = "https://docs.restate.dev/operate/versioning"),
     parameters(path(
         name = "deployment",
         description = "Deployment identifier",
