@@ -22,6 +22,7 @@ mod version;
 
 use axum_integration::put;
 use okapi_operation::axum_integration::{delete, get, patch, post};
+use okapi_operation::okapi::openapi3::{ExternalDocs, Tag};
 use okapi_operation::*;
 use restate_types::identifiers::PartitionKey;
 use restate_types::schema::subscriptions::SubscriptionValidator;
@@ -33,8 +34,7 @@ pub fn create_router<V>(state: AdminServiceState<V>) -> axum::Router<()>
 where
     V: SubscriptionValidator + Send + Sync + Clone + 'static,
 {
-    // Setup the router
-    axum_integration::Router::new()
+    let mut router = axum_integration::Router::new()
         .route(
             "/deployments",
             get(openapi_handler!(deployments::list_deployments)),
@@ -105,7 +105,66 @@ where
         .route(
             "/cluster-health",
             get(openapi_handler!(cluster_health::cluster_health)),
-        )
+        );
+
+    // Add some additional OpenAPI metadata
+    router.openapi_builder_template_mut()
+        .description("This API exposes the admin operations of a Restate cluster, such as registering new service deployments, interacting with running invocations, register Kafka subscriptions, retrieve service metadata. For an overview, check out the [Operate documentation](https://docs.restate.dev/operate/). If you're looking for how to call your services, check out the [Ingress HTTP API](https://docs.restate.dev/invoke/http) instead.")
+        .external_docs(ExternalDocs {
+            url: "https://docs.restate.dev/operate/".to_string(),
+            ..Default::default()
+        })
+        .tag(Tag {
+            name: "deployment".to_string(),
+            description: Some("Service Deployment management".to_string()),
+            ..Default::default()
+        })
+        .tag(Tag {
+            name: "invocation".to_string(),
+            description: Some("Invocation management".to_string()),
+            external_docs: Some(ExternalDocs {
+                url: "https://docs.restate.dev/operate/invocation".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .tag(Tag {
+            name: "subscription".to_string(),
+            description: Some("Subscription management".to_string()),
+            external_docs: Some(ExternalDocs {
+                url: "https://docs.restate.dev/operate/invocation#managing-kafka-subscriptions".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .tag(Tag {
+            name: "service".to_string(),
+            description: Some("Service management".to_string()),
+            ..Default::default()
+        })
+        .tag(Tag {
+            name: "service_handler".to_string(),
+            description: Some("Service handlers metadata".to_string()),
+            ..Default::default()
+        })
+        .tag(Tag {
+            name: "cluster_health".to_string(),
+            description: Some("Cluster health".to_string()),
+            ..Default::default()
+        })
+        .tag(Tag {
+            name: "health".to_string(),
+            description: Some("Admin API health".to_string()),
+            ..Default::default()
+        })
+        .tag(Tag {
+            name: "version".to_string(),
+            description: Some("API Version".to_string()),
+            ..Default::default()
+        });
+
+    // Finish router
+    router
         .finish_openapi("/openapi", "Admin API", env!("CARGO_PKG_VERSION"))
         .expect("Error when building the OpenAPI specification")
         .with_state(state)
