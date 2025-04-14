@@ -15,14 +15,14 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use enumset::EnumSet;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_with::{DeserializeAs, serde_as};
 
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 
 use super::{
-    AwsOptions, HttpOptions, InvalidConfigurationError, ObjectStoreOptions, PerfStatsLevel,
-    RocksDbOptions, print_warning_deprecated_config_option,
+    AwsOptions, Configuration, HttpOptions, InvalidConfigurationError, ObjectStoreOptions,
+    PerfStatsLevel, RocksDbOptions, StructWithDefaults, print_warning_deprecated_config_option,
 };
 use crate::PlainNodeId;
 use crate::locality::NodeLocation;
@@ -514,7 +514,7 @@ pub enum LogFormat {
 
 /// # Metadata client options
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "schemars",
@@ -576,7 +576,7 @@ impl Default for MetadataClientOptions {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_more::Display)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_more::Display, PartialEq)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
@@ -854,6 +854,7 @@ pub struct CommonOptionsShadow {
 
     metadata_client: MetadataClientOptions,
     // todo drop in version 1.3
+    #[serde_as(as = "Option<MetadataClientOptionsWithConfigurationDefaults>")]
     metadata_store_client: Option<MetadataClientOptions>,
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     // todo drop in version 1.3
@@ -986,10 +987,26 @@ impl From<CommonOptionsShadow> for CommonOptions {
     }
 }
 
+/// Deserializer for [`MetadataClientOptions`] that uses the [`Configuration`] defaults.
+struct MetadataClientOptionsWithConfigurationDefaults;
+
+impl<'de> DeserializeAs<'de, MetadataClientOptions>
+    for MetadataClientOptionsWithConfigurationDefaults
+{
+    fn deserialize_as<D>(deserializer: D) -> Result<MetadataClientOptions, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let struct_with_defaults =
+            StructWithDefaults::new(Configuration::default().common.metadata_client);
+        deserializer.deserialize_map(struct_with_defaults)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::CommonOptions;
-    use crate::config::MetadataClientKind;
+    use crate::config::{MetadataClientKind, MetadataClientOptions};
     use crate::config_loader::ConfigLoaderBuilder;
     use crate::net::AdvertisedAddress;
     use crate::nodes_config::Role;
@@ -1078,13 +1095,16 @@ mod tests {
             .build()?;
         let configuration = config_loader.load_once()?;
 
-        assert_that!(
-            configuration.common.metadata_client.kind,
-            pat!(MetadataClientKind::Replicated {
-                addresses: elements_are![eq(AdvertisedAddress::Http(Uri::from_static(
-                    "http://127.0.0.1:15123/"
-                )))]
-            })
+        assert_eq!(
+            configuration.common.metadata_client,
+            MetadataClientOptions {
+                kind: MetadataClientKind::Replicated {
+                    addresses: vec![AdvertisedAddress::Http(Uri::from_static(
+                        "http://127.0.0.1:15123/"
+                    ))]
+                },
+                ..MetadataClientOptions::default()
+            }
         );
 
         let config_path_addresses = temp_dir.path().join("config2.toml");

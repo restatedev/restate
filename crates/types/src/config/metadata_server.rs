@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_with::{DeserializeAs, serde_as};
 use std::num::NonZeroUsize;
 use std::time::Duration;
-
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use tracing::warn;
 
 use restate_serde_util::NonZeroByteCount;
 
-use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder, print_warning_deprecated_value};
+use super::{
+    CommonOptions, Configuration, RocksDbOptions, RocksDbOptionsBuilder, StructWithDefaults,
+    print_warning_deprecated_value,
+};
 
 /// # Metadata store options
 #[serde_as]
@@ -126,12 +128,17 @@ impl MetadataServerOptions {
     pub fn request_queue_length(&self) -> usize {
         self.request_queue_length.get()
     }
+
+    fn rocksdb_defaults() -> RocksDbOptionsBuilder {
+        let mut builder = RocksDbOptionsBuilder::default();
+        builder.rocksdb_disable_wal(Some(false));
+        builder
+    }
 }
 
 impl Default for MetadataServerOptions {
     fn default() -> Self {
-        let rocksdb = RocksDbOptionsBuilder::default()
-            .rocksdb_disable_wal(Some(false))
+        let rocksdb = Self::rocksdb_defaults()
             .build()
             .expect("valid RocksDbOptions");
         Self {
@@ -238,5 +245,119 @@ impl From<MetadataServerOptionsShadow> for MetadataServerOptions {
             kind: value.kind,
             raft_options: value.raft_options.unwrap_or_default(),
         }
+    }
+}
+
+/// Deserializer for [`MetadataServerOptions`] that uses the [`Configuration`] defaults.
+pub struct MetadataServerOptionsWithConfigurationDefaults;
+
+impl<'de> DeserializeAs<'de, MetadataServerOptions>
+    for MetadataServerOptionsWithConfigurationDefaults
+{
+    fn deserialize_as<D>(deserializer: D) -> Result<MetadataServerOptions, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let struct_with_defaults =
+            StructWithDefaults::new(Configuration::default().metadata_server);
+        deserializer.deserialize_map(struct_with_defaults)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{Configuration, MetadataServerKind, MetadataServerOptions};
+    use crate::config_loader::ConfigLoaderBuilder;
+    use std::fs;
+    use std::num::NonZeroUsize;
+
+    #[test]
+    fn metadata_server_backwards_compatibility() -> googletest::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let config_path_address = temp_dir.path().join("config1.toml");
+        let config_file_address = r#"
+        [metadata-store]
+        type = "local"
+        "#;
+
+        fs::write(config_path_address.clone(), config_file_address)?;
+
+        let config_loader = ConfigLoaderBuilder::default()
+            .path(Some(config_path_address))
+            .disable_apply_cascading_values(true)
+            .build()?;
+        let configuration = config_loader.load_once()?;
+
+        assert_eq!(
+            configuration.metadata_server,
+            MetadataServerOptions {
+                kind: Some(MetadataServerKind::Local),
+                ..Configuration::default().metadata_server
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_server_precedence() -> googletest::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let config_path_address = temp_dir.path().join("config1.toml");
+        let config_file_address = r#"
+        [metadata-server]
+        request-queue-length = 1337
+
+        [metadata-store]
+        type = "local"
+        "#;
+
+        fs::write(config_path_address.clone(), config_file_address)?;
+
+        let config_loader = ConfigLoaderBuilder::default()
+            .path(Some(config_path_address))
+            .disable_apply_cascading_values(true)
+            .build()?;
+        let configuration = config_loader.load_once()?;
+
+        assert_eq!(
+            configuration.metadata_server,
+            MetadataServerOptions {
+                request_queue_length: NonZeroUsize::new(1337).unwrap(),
+                ..Configuration::default().metadata_server
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_store_sub_field_does_not_clear_defaults() -> googletest::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let config_path_address = temp_dir.path().join("config1.toml");
+        let config_file_address = r#"
+        [metadata-store]
+        rocksdb-disable-direct-io-for-reads = false
+        "#;
+
+        fs::write(config_path_address.clone(), config_file_address)?;
+
+        let config_loader = ConfigLoaderBuilder::default()
+            .path(Some(config_path_address))
+            .disable_apply_cascading_values(true)
+            .build()?;
+        let configuration = config_loader.load_once()?;
+        let mut rocksdb_defaults = MetadataServerOptions::rocksdb_defaults();
+        rocksdb_defaults.rocksdb_disable_direct_io_for_reads(Some(false));
+        let rocksdb = rocksdb_defaults.build().expect("should build");
+
+        assert_eq!(
+            configuration.metadata_server,
+            MetadataServerOptions {
+                rocksdb,
+                ..Configuration::default().metadata_server
+            }
+        );
+
+        Ok(())
     }
 }

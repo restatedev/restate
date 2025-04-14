@@ -54,7 +54,7 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",

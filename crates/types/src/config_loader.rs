@@ -41,6 +41,8 @@ pub struct ConfigLoader {
     #[builder(setter(strip_option))]
     cli_override: Option<crate::config::CommonOptionCliOverride>,
     disable_watch: bool,
+    #[cfg(test)]
+    disable_apply_cascading_values: bool,
 }
 
 impl ConfigLoader {
@@ -70,6 +72,14 @@ impl ConfigLoader {
         config.admin.set_derived_values();
         config.ingress.set_derived_values();
 
+        #[cfg(test)]
+        let config = if !self.disable_apply_cascading_values {
+            config.apply_cascading_values()
+        } else {
+            config
+        };
+
+        #[cfg(not(test))]
         let config = config.apply_cascading_values();
 
         config.validate()?;
