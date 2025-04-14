@@ -44,7 +44,11 @@ pub struct QueryEngineOptions {
     /// # Pgsql Bind address
     ///
     /// The address to bind for the psql service.
-    pub pgsql_bind_address: SocketAddr,
+    #[deprecated(
+        since = "1.4.0",
+        note = "Pgsql query engine be disable with 1.4.0, and removed with 1.5.0"
+    )]
+    pub pgsql_bind_address: Option<SocketAddr>,
 }
 
 impl QueryEngineOptions {
@@ -52,13 +56,15 @@ impl QueryEngineOptions {
         self.query_parallelism.map(Into::into)
     }
 }
+
 impl Default for QueryEngineOptions {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             memory_size: NonZeroUsize::new(4 * 1024 * 1024 * 1024).unwrap(), // 4GiB
             tmp_dir: None,
             query_parallelism: None,
-            pgsql_bind_address: "0.0.0.0:9071".parse().unwrap(),
+            pgsql_bind_address: None,
         }
     }
 }
