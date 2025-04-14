@@ -226,4 +226,8 @@ pub mod net {
             }
         }
     }
+
+    pub mod metadata {
+        include!(concat!(env!("OUT_DIR"), "/restate.net.metadata.rs"));
+    }
 }

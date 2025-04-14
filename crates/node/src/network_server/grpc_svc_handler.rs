@@ -145,7 +145,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let kind = request
             .kind()
             .try_into()
-            .map_err(|err: anyhow::Error| Status::invalid_argument(err.to_string()))?;
+            .map_err(|err: ConversionError| Status::invalid_argument(err.to_string()))?;
         if request.sync {
             metadata
                 .sync(kind, TargetVersion::Latest)
