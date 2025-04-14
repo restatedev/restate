@@ -8,8 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use figment::Figment;
+use figment::providers::Serialized;
+use serde::de::{Error, MapAccess, Visitor};
+use std::fmt::Formatter;
+use std::marker::PhantomData;
 use std::sync::LazyLock;
-
 use tokio::sync::watch;
 
 pub(crate) static CONFIG_UPDATE: LazyLock<watch::Sender<()>> =
@@ -39,4 +43,44 @@ pub(crate) fn notify_config_update() {
     CONFIG_UPDATE.send_modify(|v| {
         *v = ();
     });
+}
+
+/// Deserialize a struct from a map of key-value pairs and default values.
+pub(crate) struct StructWithDefaults<T> {
+    defaults: Figment,
+    phantom_data: PhantomData<T>,
+}
+
+impl<T> StructWithDefaults<T> {
+    pub fn new<I: serde::Serialize>(defaults: I) -> Self {
+        Self {
+            defaults: Figment::from(Serialized::defaults(defaults)),
+            phantom_data: PhantomData,
+        }
+    }
+}
+
+impl<'de, T> Visitor<'de> for StructWithDefaults<T>
+where
+    T: serde::Deserialize<'de>,
+{
+    type Value = T;
+
+    fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+        write!(
+            formatter,
+            "expecting a map of key-value pairs that make up the fields of the struct to deserialize"
+        )
+    }
+
+    fn visit_map<A>(mut self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        while let Some((key, value)) = map.next_entry::<String, figment::value::Value>()? {
+            self.defaults = self.defaults.merge(Serialized::default(&key, value));
+        }
+
+        self.defaults.extract::<T>().map_err(Error::custom)
+    }
 }

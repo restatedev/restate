@@ -274,6 +274,7 @@ pub enum InvalidConfigurationError {
 /// Used to deserialize the [`Configuration`] in backwards compatible way which allows to specify
 /// a `metadata_store` field instead of `metadata_server`. Can be removed once we drop support for
 /// `metadata_store`.
+#[serde_as]
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ConfigurationShadow {
@@ -285,6 +286,8 @@ pub struct ConfigurationShadow {
     bifrost: BifrostOptions,
     metadata_server: MetadataServerOptions,
     // previous name of metadata server options; kept for backwards compatibility
+    // todo remove with 1.4.0
+    #[serde_as(as = "Option<metadata_server::MetadataServerOptionsWithConfigurationDefaults>")]
     metadata_store: Option<MetadataServerOptions>,
     networking: NetworkingOptions,
     log_server: LogServerOptions,
