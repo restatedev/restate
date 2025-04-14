@@ -242,4 +242,8 @@ pub mod net {
             "/restate.net.replicated_loglet.rs"
         ));
     }
+
+    pub mod query_scanner {
+        include!(concat!(env!("OUT_DIR"), "/restate.net.query_scanner.rs"));
+    }
 }

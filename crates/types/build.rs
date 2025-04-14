@@ -123,6 +123,7 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
                 "./protobuf/restate/net/metadata.proto",
                 "./protobuf/restate/net/cluster.proto",
                 "./protobuf/restate/net/replicated_loglet.proto",
+                "./protobuf/restate/net/query_scanner.proto",
             ],
             &["protobuf"],
         )?;

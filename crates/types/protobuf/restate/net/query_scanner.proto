@@ -1,0 +1,56 @@
+// Copyright (c) 2024 - 2025 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+syntax = "proto3";
+
+import "restate/common.proto";
+
+package restate.net.query_scanner;
+
+message RemoteQueryScannerOpen {
+  uint32 partition_id = 1;
+  uint64 start_key = 2;
+  uint64 end_key = 3;
+  string table = 4;
+  bytes projection_schema = 5;
+}
+
+message ScannerId {
+  restate.common.GenerationalNodeId node_id = 1;
+  uint64 scanner_id = 2;
+}
+
+message RemoteQueryScannerOpened {
+  // if scanner_id is None, it maps to "Failure"
+  ScannerId scanner_id = 1;
+}
+
+message RemoteQueryScannerNext { ScannerId scanner_id = 1; }
+
+message RemoteQueryScannerNextResult {
+  enum Status {
+    Status_UNKNOWN = 0;
+    NextBatch = 1;
+    Failure = 2;
+    NoMoreRecords = 3;
+    NoSuchScanner = 4;
+  }
+
+  ScannerId scanner_id = 1;
+  Status status = 2;
+  // only set if status == NextBatch
+  optional bytes record_batch = 3;
+  // only set if status == Failure
+  optional string message = 4;
+}
+
+message RemoteQueryScannerClose { ScannerId scanner_id = 1; }
+
+message RemoteQueryScannerClosed { ScannerId scanner_id = 1; }

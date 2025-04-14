@@ -108,6 +108,14 @@ impl From<PartitionId> for u32 {
     }
 }
 
+impl TryFrom<u32> for PartitionId {
+    type Error = <u16 as TryFrom<u32>>::Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(Self(u16::try_from(value)?))
+    }
+}
+
 impl PartitionId {
     /// It's your responsibility to ensure the value is within the valid range.
     pub const fn new_unchecked(v: u16) -> Self {
