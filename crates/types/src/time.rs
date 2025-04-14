@@ -187,6 +187,20 @@ impl From<prost_types::Timestamp> for NanosSinceEpoch {
     }
 }
 
+impl From<NanosSinceEpoch> for SystemTime {
+    fn from(value: NanosSinceEpoch) -> Self {
+        SystemTime::UNIX_EPOCH.add(Duration::from_nanos(value.as_u64()))
+    }
+}
+
+impl From<NanosSinceEpoch> for prost_types::Timestamp {
+    fn from(value: NanosSinceEpoch) -> Self {
+        // safest approach is to convert into SystemTime first, then calculate distance to
+        // UNIX_EPOCH
+        Self::from(std::time::SystemTime::from(value))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,7 +9,7 @@
 
 syntax = "proto3";
 
-import "restate/log_server_common.proto";
+import "restate/net/log_server.proto";
 
 package restate.log_server;
 
@@ -26,15 +26,8 @@ message GetDigestRequest {
   uint32 to_offset = 3;
 }
 
-message GetDigestResponse {
-  restate.log_server_common.Digest digest = 1;
-}
+message GetDigestResponse { restate.net.log_server.Digest digest = 1; }
 
-message GetLogletInfoRequest {
-  uint64 loglet_id = 1;
+message GetLogletInfoRequest { uint64 loglet_id = 1; }
 
-}
-
-message GetLogletInfoResponse {
- restate.log_server_common.LogletInfo info = 1;
-}
+message GetLogletInfoResponse { restate.net.log_server.LogletInfo info = 1; }

@@ -13,6 +13,8 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 
+use crate::errors::ConversionError;
+use crate::protobuf::net::log_server as proto;
 use crate::storage::{
     EncodedPolyBytes, PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode,
 };
@@ -26,6 +28,55 @@ pub struct Record {
     #[serde(with = "serde_with::As::<EncodedPolyBytes>")]
     body: PolyBytes,
     keys: Keys,
+}
+
+impl From<Record> for proto::Record {
+    fn from(value: Record) -> Self {
+        let mut buffer = bytes::BytesMut::new();
+        value.body.encode(&mut buffer).expect("record body encodes");
+        let (key_1, key_2, key_is_range) = match value.keys {
+            Keys::None => (None, None, false),
+            Keys::Single(key_1) => (Some(key_1), None, false),
+            Keys::Pair(key_1, key_2) => (Some(key_1), Some(key_2), false),
+            Keys::RangeInclusive(range) => (Some(*range.start()), Some(*range.end()), true),
+        };
+
+        Self {
+            body: buffer.into(),
+            created_at: Some(value.created_at.into()),
+            key_1,
+            key_2,
+            key_is_range,
+        }
+    }
+}
+
+impl TryFrom<proto::Record> for Record {
+    type Error = ConversionError;
+
+    fn try_from(value: proto::Record) -> Result<Self, Self::Error> {
+        let proto::Record {
+            created_at,
+            body,
+            key_1,
+            key_2,
+            key_is_range,
+        } = value;
+
+        Ok(Record {
+            created_at: created_at
+                .ok_or_else(|| ConversionError::missing_field("created_at"))?
+                .into(),
+            body: PolyBytes::Bytes(body),
+            keys: match (key_1, key_2, key_is_range) {
+                (None, None, false) => Keys::None,
+                (Some(single), None, false) => Keys::Single(single),
+                (Some(left), Some(right), false) => Keys::Pair(left, right),
+                (Some(left), Some(right), true) => Keys::RangeInclusive(left..=right),
+                _ => return Err(ConversionError::InvalidData("keys")),
+            },
+        })
+    }
 }
 
 impl Record {

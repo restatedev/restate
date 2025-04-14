@@ -23,8 +23,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .extern_path(".restate.common", "::restate_types::protobuf::common")
         .extern_path(".restate.cluster", "::restate_types::protobuf::cluster")
         .extern_path(
-            ".restate.log_server_common",
-            "::restate_types::protobuf::log_server_common",
+            ".restate.net.log_server",
+            "::restate_types::protobuf::net::log_server",
         )
         .compile_protos(
             &["./protobuf/log_server_svc.proto"],

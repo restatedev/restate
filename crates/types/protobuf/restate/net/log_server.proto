@@ -1,0 +1,200 @@
+// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+syntax = "proto3";
+
+import "restate/common.proto";
+import "google/protobuf/timestamp.proto";
+
+package restate.net.log_server;
+
+// ** Log Server Types
+
+enum Status {
+  Status_UNKNOWN = 0;
+  // Operation was successful
+  OK = 1;
+  // The node's storage system is disabled and cannot accept operations at the
+  // moment.
+  DISABLED = 2;
+  // If the operation expired or not completed due to load shedding. The
+  // operation can be retried by the client. It's guaranteed that this store has
+  // not been persisted by the node.
+  DROPPED = 3;
+  // Operation rejected on a sealed loglet
+  SEALED = 4;
+  // Loglet is being sealed and operation cannot be accepted
+  SEALING = 5;
+  // Operation has been rejected. Operation requires that the sender is the
+  // authoritative sequencer.
+  SEQUENCER_MISMATCH = 6;
+  // This indicates that the operation cannot be accepted due to the offset
+  // being out of bounds. For instance, if a store is sent to a log-server that
+  // with a lagging local commit offset.
+  OUT_OF_BOUNDS = 7;
+  // The record is malformed, this could be because it has too many records or
+  // any other reason that leads the server to reject processing it.
+  MALFORMED = 8;
+}
+
+message ResponseHeader {
+  Status status = 1;
+  uint32 local_tail = 2;
+  uint32 known_global_tail = 3;
+  bool sealed = 4;
+}
+
+message RequestHeader {
+  uint64 loglet_id = 1;
+  uint32 known_global_tail = 2;
+}
+
+message Record {
+  google.protobuf.Timestamp created_at = 1;
+  bytes body = 2;
+  // this maps as follows:
+  // No keys are set -> Keys::None
+  // only key_1 is set -> Keys::Single(key_1)
+  // key_1 and key_2 are set -> Keys::Pair(key_1, key_2)
+  // key_is_range is set -> Keys::RangeInclusive(key_1, key_2)
+  //
+  // Any other combination is invalid (say key_2 is set but not key_1)
+  optional uint64 key_1 = 3;
+  optional uint64 key_2 = 4;
+  bool key_is_range = 5;
+}
+
+message Store {
+  RequestHeader header = 1;
+  google.protobuf.Timestamp timeout_at = 2;
+  uint32 flags = 3;
+  uint32 first_offset = 4;
+  restate.common.GenerationalNodeId sequencer = 5;
+  uint32 known_archived = 6;
+  repeated Record payloads = 7;
+}
+
+message Stored { ResponseHeader header = 1; }
+
+message Release { RequestHeader header = 1; }
+
+message Released { ResponseHeader header = 1; }
+
+message Seal {
+  RequestHeader header = 1;
+  restate.common.GenerationalNodeId sequencer = 2;
+}
+
+message Sealed { ResponseHeader header = 1; }
+
+message GetLogletInfo { RequestHeader header = 1; }
+
+message LogletInfo {
+  ResponseHeader header = 1;
+  uint32 trim_point = 2;
+}
+
+message Gap { uint32 to = 1; }
+
+message MaybeRecord {
+  enum GapKind {
+    UNKNOWN = 0;
+    TrimGap = 1;
+    ArchivalGap = 2;
+    FilteredGap = 3;
+  }
+
+  oneof payload {
+    Record data = 1;
+    Gap gap = 2;
+  }
+  // if record is a gap, this
+  // selects the gap kind.
+  GapKind gap_kind = 3;
+}
+
+message KeyFilter {
+  // if none of the keys is set maps to KeyFilter::Any
+  // if only include key is set maps to KeyFilter::Include
+  // if both include and within are set maps to
+  // KeyFilter::Within(include..=within)
+  optional uint64 include = 1;
+  optional uint64 within = 2;
+}
+
+message GetRecords {
+  RequestHeader header = 1;
+  optional uint64 total_limit_in_bytes = 2;
+  KeyFilter filter = 3;
+  uint32 from_offset = 4;
+  uint32 to_offset = 5;
+}
+
+message MaybeRecordWithOffset {
+  uint32 offset = 1;
+  MaybeRecord record = 2;
+}
+
+message Records {
+  ResponseHeader header = 1;
+  uint32 next_offset = 2;
+  repeated MaybeRecordWithOffset records = 3;
+}
+
+message Trim {
+  RequestHeader header = 1;
+  uint32 trim_point = 2;
+}
+
+message Trimmed { ResponseHeader header = 1; }
+
+message TailUpdateQuery {
+  enum TailQueryKind {
+    UNKNOWN = 0;
+    LocalTail = 1;
+    GlobalTail = 2;
+    LocalOrGlobal = 3;
+  }
+
+  uint32 offset = 1;
+  TailQueryKind query_kind = 2;
+}
+
+message WaitForTail {
+  RequestHeader header = 1;
+  TailUpdateQuery query = 2;
+}
+
+// response for WaitForTail
+message TailUpdated { ResponseHeader header = 1; }
+
+message GetDigest {
+  RequestHeader header = 1;
+  uint32 from_offset = 2;
+  uint32 to_offset = 3;
+}
+
+message DigestEntry {
+  uint32 from_offset = 1;
+  uint32 to_offset = 2;
+  RecordStatus status = 3;
+}
+
+enum RecordStatus {
+  RecordStatus_UNKNOWN = 0;
+  TRIMMED = 1;
+  ARCHIVED = 2;
+  EXISTS = 3;
+}
+
+message Digest {
+  ResponseHeader header = 1;
+  repeated DigestEntry entries = 2;
+}

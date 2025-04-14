@@ -146,17 +146,6 @@ pub mod cluster {
     }
 }
 
-pub mod log_server_common {
-
-    include!(concat!(env!("OUT_DIR"), "/restate.log_server_common.rs"));
-
-    impl std::fmt::Display for RecordStatus {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            std::fmt::Display::fmt(&crate::net::log_server::RecordStatus::from(*self as i32), f)
-        }
-    }
-}
-
 pub mod metadata {
     use crate::errors::ConversionError;
 
@@ -222,6 +211,18 @@ pub mod metadata {
                             .into(),
                     ))
                 }
+            }
+        }
+    }
+}
+
+pub mod net {
+    pub mod log_server {
+        include!(concat!(env!("OUT_DIR"), "/restate.net.log_server.rs"));
+
+        impl std::fmt::Display for RecordStatus {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(&crate::net::log_server::RecordStatus::from(*self as i32), f)
             }
         }
     }

@@ -13,7 +13,9 @@ use std::ops::{Add, RangeInclusive};
 use bytes::{Buf, BufMut, BytesMut};
 use serde::{Deserialize, Serialize};
 
+use crate::errors::ConversionError;
 use crate::identifiers::PartitionId;
+use crate::protobuf::net::log_server as proto;
 use crate::storage::StorageEncode;
 
 pub mod builder;
@@ -223,6 +225,32 @@ pub enum KeyFilter {
     // Match records that have _any_ keys falling within this inclusive range,
     // in addition to records with no keys.
     Within(std::ops::RangeInclusive<u64>),
+}
+
+impl From<KeyFilter> for proto::KeyFilter {
+    fn from(value: KeyFilter) -> Self {
+        let (include, within) = match value {
+            KeyFilter::Any => (None, None),
+            KeyFilter::Include(include) => (Some(include), None),
+            KeyFilter::Within(range) => (Some(*range.start()), Some(*range.end())),
+        };
+
+        Self { include, within }
+    }
+}
+
+impl TryFrom<proto::KeyFilter> for KeyFilter {
+    type Error = ConversionError;
+    fn try_from(value: proto::KeyFilter) -> Result<Self, Self::Error> {
+        let result = match (value.include, value.within) {
+            (None, None) => Self::Any,
+            (Some(include), None) => Self::Include(include),
+            (Some(include), Some(within)) => Self::Within(include..=within),
+            _ => return Err(ConversionError::invalid_data("key_filter")),
+        };
+
+        Ok(result)
+    }
 }
 
 impl From<u64> for KeyFilter {

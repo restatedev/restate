@@ -15,10 +15,12 @@ use bitflags::bitflags;
 use prost_dto::{FromProst, IntoProst};
 use serde::{Deserialize, Serialize};
 
-use super::codec::{WireDecode, WireEncode};
+use super::codec::{V2Convertible, WireDecode, WireEncode};
 use super::{RpcRequest, TargetName};
 use crate::GenerationalNodeId;
+use crate::errors::ConversionError;
 use crate::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
+use crate::protobuf::net::log_server as proto;
 use crate::time::MillisSinceEpoch;
 
 pub trait LogServerRequest: RpcRequest + WireEncode + Sync + Send + 'static {
@@ -70,7 +72,7 @@ macro_rules! define_logserver_rpc {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, IntoProst, FromProst)]
-#[prost(target = "crate::protobuf::log_server_common::Status")]
+#[prost(target = crate::protobuf::net::log_server::Status)]
 #[repr(u8)]
 pub enum Status {
     /// Operation was successful
@@ -163,7 +165,8 @@ define_logserver_rpc! {
     @response_target = TargetName::LogServerDigest,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target = crate::protobuf::net::log_server::RequestHeader)]
 pub struct LogServerRequestHeader {
     pub loglet_id: LogletId,
     /// If the sender has now knowledge of this value, it can safely be set to
@@ -181,7 +184,7 @@ impl LogServerRequestHeader {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
-#[prost(target = "crate::protobuf::log_server_common::ResponseHeader")]
+#[prost(target = crate::protobuf::net::log_server::ResponseHeader)]
 pub struct LogServerResponseHeader {
     /// The position after the last locally committed record on this node
     pub local_tail: LogletOffset,
@@ -214,7 +217,7 @@ impl LogServerResponseHeader {
 }
 
 // ** STORE
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::From, derive_more::Into)]
 pub struct StoreFlags(u32);
 bitflags! {
     impl StoreFlags: u32 {
@@ -241,6 +244,78 @@ pub struct Store {
     pub payloads: Arc<[Record]>,
 }
 
+impl From<Store> for proto::Store {
+    fn from(value: Store) -> Self {
+        let Store {
+            header,
+            timeout_at,
+            flags,
+            first_offset,
+            sequencer,
+            known_archived,
+            payloads,
+        } = value;
+
+        Self {
+            header: Some(header.into()),
+            timeout_at: timeout_at.map(Into::into),
+            first_offset: first_offset.into(),
+            known_archived: known_archived.into(),
+            flags: flags.0,
+            sequencer: Some(sequencer.into()),
+            payloads: payloads.iter().cloned().map(Into::into).collect(),
+        }
+    }
+}
+
+impl TryFrom<proto::Store> for Store {
+    type Error = ConversionError;
+
+    fn try_from(value: proto::Store) -> Result<Self, Self::Error> {
+        let proto::Store {
+            header,
+            timeout_at,
+            flags,
+            first_offset,
+            sequencer,
+            known_archived,
+            payloads,
+        } = value;
+
+        Ok(Self {
+            header: header
+                .ok_or_else(|| ConversionError::missing_field("header"))?
+                .into(),
+            timeout_at: timeout_at.map(Into::into),
+            flags: StoreFlags::from(flags),
+            first_offset: LogletOffset::from(first_offset),
+            sequencer: sequencer
+                .ok_or_else(|| ConversionError::missing_field("sequencer"))?
+                .into(),
+            known_archived: LogletOffset::from(known_archived),
+            payloads: {
+                let mut vec = Vec::with_capacity(payloads.len());
+                for record in payloads {
+                    vec.push(Record::try_from(record)?);
+                }
+                Arc::from(vec)
+            },
+        })
+    }
+}
+
+impl V2Convertible for Store {
+    type Target = proto::Store;
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        target.try_into()
+    }
+}
+
 impl Store {
     /// The message's timeout has passed, we should discard if possible.
     pub fn expired(&self) -> bool {
@@ -263,9 +338,23 @@ impl Store {
 }
 
 /// Response to a `Store` request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target = crate::protobuf::net::log_server::Stored)]
 pub struct Stored {
+    #[prost(required)]
     pub header: LogServerResponseHeader,
+}
+
+impl V2Convertible for Stored {
+    type Target = proto::Stored;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
 }
 
 impl Deref for Stored {
@@ -302,14 +391,40 @@ impl Stored {
 }
 
 // ** RELEASE
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::log_server::Release)]
 pub struct Release {
+    #[prost(required)]
     pub header: LogServerRequestHeader,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl V2Convertible for Release {
+    type Target = proto::Release;
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::log_server::Released)]
 pub struct Released {
+    #[prost(required)]
     pub header: LogServerResponseHeader,
+}
+
+impl V2Convertible for Released {
+    type Target = proto::Released;
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
 }
 
 impl Released {
@@ -333,17 +448,44 @@ impl Released {
 
 // ** SEAL
 /// Seals the loglet so no further stores can be accepted
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::log_server::Seal)]
 pub struct Seal {
+    #[prost(required)]
     pub header: LogServerRequestHeader,
     /// This is the sequencer identifier for this log. This should be set even for repair store messages.
+    #[prost(required)]
     pub sequencer: GenerationalNodeId,
 }
 
+impl V2Convertible for Seal {
+    type Target = proto::Seal;
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
+}
+
 /// Response to a `Seal` request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::log_server::Sealed)]
 pub struct Sealed {
+    #[prost(required)]
     pub header: LogServerResponseHeader,
+}
+
+impl V2Convertible for Sealed {
+    type Target = proto::Sealed;
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
 }
 
 impl Deref for Sealed {
@@ -380,17 +522,43 @@ impl Sealed {
 }
 
 // ** GET_LOGLET_INFO
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::log_server::GetLogletInfo)]
 pub struct GetLogletInfo {
+    #[prost(required)]
     pub header: LogServerRequestHeader,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProst)]
-#[prost(target = "crate::protobuf::log_server_common::LogletInfo")]
+impl V2Convertible for GetLogletInfo {
+    type Target = proto::GetLogletInfo;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target = crate::protobuf::net::log_server::LogletInfo)]
 pub struct LogletInfo {
     #[prost(required)]
     pub header: LogServerResponseHeader,
     pub trim_point: LogletOffset,
+}
+
+impl V2Convertible for LogletInfo {
+    type Target = crate::protobuf::net::log_server::LogletInfo;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
 }
 
 impl Deref for LogletInfo {
@@ -432,7 +600,8 @@ impl LogletInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::log_server::Gap)]
 pub struct Gap {
     /// to is inclusive
     pub to: LogletOffset,
@@ -447,6 +616,54 @@ pub enum MaybeRecord {
     Data(Record),
 }
 
+impl From<MaybeRecord> for proto::MaybeRecord {
+    fn from(value: MaybeRecord) -> Self {
+        use proto::{maybe_record::GapKind, maybe_record::Payload};
+        match value {
+            MaybeRecord::ArchivalGap(gap) => Self {
+                payload: Payload::Gap(gap.into()).into(),
+                gap_kind: GapKind::ArchivalGap.into(),
+            },
+            MaybeRecord::FilteredGap(gap) => Self {
+                payload: Payload::Gap(gap.into()).into(),
+                gap_kind: GapKind::FilteredGap.into(),
+            },
+            MaybeRecord::TrimGap(gap) => Self {
+                payload: Payload::Gap(gap.into()).into(),
+                gap_kind: GapKind::TrimGap.into(),
+            },
+            MaybeRecord::Data(record) => Self {
+                payload: Payload::Data(record.into()).into(),
+                gap_kind: GapKind::Unknown.into(),
+            },
+        }
+    }
+}
+
+impl TryFrom<proto::MaybeRecord> for MaybeRecord {
+    type Error = ConversionError;
+    fn try_from(value: proto::MaybeRecord) -> Result<Self, Self::Error> {
+        use proto::maybe_record::{GapKind, Payload};
+        let gap_kind = value.gap_kind();
+        let result = match value
+            .payload
+            .ok_or_else(|| ConversionError::missing_field("payload"))?
+        {
+            Payload::Data(record) => Self::Data(record.try_into()?),
+            Payload::Gap(gap) => {
+                let gap = Gap { to: gap.to.into() };
+                match gap_kind {
+                    GapKind::Unknown => return Err(ConversionError::InvalidData("gap_kind")),
+                    GapKind::ArchivalGap => Self::ArchivalGap(gap),
+                    GapKind::FilteredGap => Self::FilteredGap(gap),
+                    GapKind::TrimGap => Self::TrimGap(gap),
+                }
+            }
+        };
+
+        Ok(result)
+    }
+}
 // ** GET_RECORDS
 
 /// Returns a batch that includes **all** records that the node has between
@@ -480,6 +697,62 @@ pub struct GetRecords {
     pub to_offset: LogletOffset,
 }
 
+impl From<GetRecords> for proto::GetRecords {
+    fn from(value: GetRecords) -> Self {
+        let GetRecords {
+            header,
+            total_limit_in_bytes,
+            filter,
+            from_offset,
+            to_offset,
+        } = value;
+
+        Self {
+            header: Some(header.into()),
+            total_limit_in_bytes: total_limit_in_bytes.map(|v| v as u64),
+            filter: Some(filter.into()),
+            from_offset: from_offset.into(),
+            to_offset: to_offset.into(),
+        }
+    }
+}
+
+impl TryFrom<proto::GetRecords> for GetRecords {
+    type Error = ConversionError;
+    fn try_from(value: proto::GetRecords) -> Result<Self, Self::Error> {
+        let proto::GetRecords {
+            header,
+            total_limit_in_bytes,
+            filter,
+            from_offset,
+            to_offset,
+        } = value;
+
+        Ok(Self {
+            header: header
+                .ok_or_else(|| ConversionError::missing_field("header"))?
+                .into(),
+            total_limit_in_bytes: total_limit_in_bytes.map(|v| v as usize),
+            filter: filter
+                .ok_or_else(|| ConversionError::missing_field("filter"))?
+                .try_into()?,
+            from_offset: from_offset.into(),
+            to_offset: to_offset.into(),
+        })
+    }
+}
+
+impl V2Convertible for GetRecords {
+    type Target = proto::GetRecords;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        target.try_into()
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Records {
     pub header: LogServerResponseHeader,
@@ -492,6 +765,62 @@ pub struct Records {
     pub next_offset: LogletOffset,
     /// Sorted by offset
     pub records: Vec<(LogletOffset, MaybeRecord)>,
+}
+
+impl From<Records> for proto::Records {
+    fn from(value: Records) -> Self {
+        let Records {
+            header,
+            next_offset,
+            records,
+        } = value;
+
+        Self {
+            header: Some(header.into()),
+            next_offset: next_offset.into(),
+            records: {
+                let mut results = Vec::with_capacity(records.len());
+                for (offset, maybe_record) in records {
+                    results.push(proto::MaybeRecordWithOffset {
+                        offset: offset.into(),
+                        record: Some(maybe_record.into()),
+                    });
+                }
+                results
+            },
+        }
+    }
+}
+
+impl TryFrom<proto::Records> for Records {
+    type Error = ConversionError;
+    fn try_from(value: proto::Records) -> Result<Self, Self::Error> {
+        let proto::Records {
+            header,
+            next_offset,
+            records,
+        } = value;
+
+        Ok(Self {
+            header: header
+                .ok_or_else(|| ConversionError::missing_field("header"))?
+                .into(),
+            next_offset: next_offset.into(),
+            records: {
+                let mut results = Vec::with_capacity(records.len());
+                for maybe_record in records {
+                    results.push((
+                        maybe_record.offset.into(),
+                        maybe_record
+                            .record
+                            .ok_or_else(|| ConversionError::missing_field("record"))?
+                            .try_into()?,
+                    ));
+                }
+                results
+            },
+        })
+    }
 }
 
 impl Deref for Records {
@@ -535,18 +864,58 @@ impl Records {
     }
 }
 
+impl V2Convertible for Records {
+    type Target = proto::Records;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        target.try_into()
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
+}
+
 // ** TRIM
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::log_server::Trim)]
 pub struct Trim {
+    #[prost(required)]
     pub header: LogServerRequestHeader,
     /// The trim_point is inclusive (will be trimmed)
     pub trim_point: LogletOffset,
 }
 
+impl V2Convertible for Trim {
+    type Target = proto::Trim;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
+}
+
 /// Response to a `Trim` request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::log_server::Trimmed)]
 pub struct Trimmed {
+    #[prost(required)]
     pub header: LogServerResponseHeader,
+}
+
+impl V2Convertible for Trimmed {
+    type Target = proto::Trimmed;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
 }
 
 impl Deref for Trimmed {
@@ -595,20 +964,102 @@ pub enum TailUpdateQuery {
     LocalOrGlobal(LogletOffset),
 }
 
+impl From<TailUpdateQuery> for proto::TailUpdateQuery {
+    fn from(value: TailUpdateQuery) -> Self {
+        use proto::tail_update_query::TailQueryKind;
+
+        match value {
+            TailUpdateQuery::LocalTail(offset) => Self {
+                offset: offset.into(),
+                query_kind: TailQueryKind::LocalTail.into(),
+            },
+            TailUpdateQuery::GlobalTail(offset) => Self {
+                offset: offset.into(),
+                query_kind: TailQueryKind::GlobalTail.into(),
+            },
+            TailUpdateQuery::LocalOrGlobal(offset) => Self {
+                offset: offset.into(),
+                query_kind: TailQueryKind::LocalOrGlobal.into(),
+            },
+        }
+    }
+}
+
+impl TryFrom<proto::TailUpdateQuery> for TailUpdateQuery {
+    type Error = ConversionError;
+    fn try_from(value: proto::TailUpdateQuery) -> Result<Self, Self::Error> {
+        use proto::tail_update_query::TailQueryKind;
+
+        let result = match value.query_kind() {
+            TailQueryKind::LocalTail => Self::LocalTail(value.offset.into()),
+            TailQueryKind::GlobalTail => Self::GlobalTail(value.offset.into()),
+            TailQueryKind::LocalOrGlobal => Self::LocalOrGlobal(value.offset.into()),
+            _ => return Err(ConversionError::invalid_data("query_kind")),
+        };
+
+        Ok(result)
+    }
+}
+
 /// Subscribes to a notification that will be sent when the log-server reaches a minimum local-tail
 /// or global-tail value OR if the node is sealed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst)]
+#[prost(target=crate::protobuf::net::log_server::WaitForTail)]
 pub struct WaitForTail {
+    #[prost(required)]
     pub header: LogServerRequestHeader,
     /// If the caller is not interested in observing a specific tail value (i.e. only interested in
     /// the seal signal), this should be set to `TailUpdateQuery::GlobalTail(LogletOffset::MAX)`.
+    #[prost(required)]
     pub query: TailUpdateQuery,
 }
 
+impl TryFrom<proto::WaitForTail> for WaitForTail {
+    type Error = ConversionError;
+
+    fn try_from(value: proto::WaitForTail) -> Result<Self, Self::Error> {
+        let proto::WaitForTail { header, query } = value;
+        Ok(Self {
+            header: header
+                .ok_or_else(|| ConversionError::missing_field("header"))?
+                .into(),
+            query: query
+                .ok_or_else(|| ConversionError::missing_field("query"))?
+                .try_into()?,
+        })
+    }
+}
+
+impl V2Convertible for WaitForTail {
+    type Target = proto::WaitForTail;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        target.try_into()
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
+}
+
 /// Response to a `WaitForTail` request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::log_server::TailUpdated)]
 pub struct TailUpdated {
+    #[prost(required)]
     pub header: LogServerResponseHeader,
+}
+
+impl V2Convertible for TailUpdated {
+    type Target = proto::TailUpdated;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
 }
 
 impl Deref for TailUpdated {
@@ -647,18 +1098,32 @@ impl TailUpdated {
 // ** GET_DIGEST
 
 /// Request a digest of the loglet between two offsets from this node
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::log_server::GetDigest)]
 pub struct GetDigest {
+    #[prost(required)]
     pub header: LogServerRequestHeader,
     // inclusive
     pub from_offset: LogletOffset,
     pub to_offset: LogletOffset,
 }
 
+impl V2Convertible for GetDigest {
+    type Target = proto::GetDigest;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
+}
+
 #[derive(
     Debug, Clone, PartialEq, Eq, derive_more::Display, Serialize, Deserialize, IntoProst, FromProst,
 )]
-#[prost(target = "crate::protobuf::log_server_common::DigestEntry")]
+#[prost(target = crate::protobuf::net::log_server::DigestEntry)]
 #[display("[{from_offset}..{to_offset}] -> {status} ({})",  self.len())]
 pub struct DigestEntry {
     // inclusive
@@ -671,7 +1136,7 @@ pub struct DigestEntry {
     Debug, Clone, Eq, PartialEq, derive_more::Display, Serialize, Deserialize, IntoProst, FromProst,
 )]
 #[repr(u8)]
-#[prost(target = "crate::protobuf::log_server_common::RecordStatus")]
+#[prost(target = crate::protobuf::net::log_server::RecordStatus)]
 pub enum RecordStatus {
     #[display("T")]
     Trimmed,
@@ -698,7 +1163,7 @@ impl DigestEntry {
 
 /// Response to a `GetDigest` request
 #[derive(Debug, Clone, Serialize, Deserialize, IntoProst, FromProst)]
-#[prost(target = "crate::protobuf::log_server_common::Digest")]
+#[prost(target = crate::protobuf::net::log_server::Digest)]
 pub struct Digest {
     #[prost(required)]
     pub header: LogServerResponseHeader,
@@ -711,6 +1176,18 @@ pub struct Digest {
     //
     // entries's contents must be ignored if `status` != `Status::Ok`.
     pub entries: Vec<DigestEntry>,
+}
+
+impl V2Convertible for Digest {
+    type Target = crate::protobuf::net::log_server::Digest;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
 }
 
 impl Digest {
