@@ -29,7 +29,7 @@ use restate_core::protobuf::cluster_ctrl_svc::{
     cluster_ctrl_svc_server::{ClusterCtrlSvc, ClusterCtrlSvcServer},
 };
 use restate_core::{Metadata, MetadataWriter};
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_datafusion::context::QueryContext;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
