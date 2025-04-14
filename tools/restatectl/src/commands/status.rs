@@ -26,8 +26,8 @@ use restate_metadata_server::grpc::new_metadata_server_client;
 use restate_types::health::MetadataServerStatus;
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
-use restate_types::protobuf::cluster::node_state::State;
-use restate_types::protobuf::cluster::{AliveNode, RunMode};
+use restate_types::protobuf::net::cluster::node_state::State;
+use restate_types::protobuf::net::cluster::{AliveNode, RunMode};
 use restate_types::{GenerationalNodeId, NodeId};
 
 use crate::commands::log::list_logs::{ListLogsOpts, list_logs};

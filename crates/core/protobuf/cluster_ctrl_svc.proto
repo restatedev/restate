@@ -11,6 +11,7 @@ syntax = "proto3";
 
 import "restate/common.proto";
 import "restate/cluster.proto";
+import "restate/net/cluster.proto";
 import "google/protobuf/empty.proto";
 
 package restate.cluster_ctrl;
@@ -53,7 +54,9 @@ message GetClusterConfigurationResponse {
 
 message ClusterStateRequest {}
 
-message ClusterStateResponse { restate.cluster.ClusterState cluster_state = 1; }
+message ClusterStateResponse {
+  restate.net.cluster.ClusterState cluster_state = 1;
+}
 
 message ListLogsRequest {}
 

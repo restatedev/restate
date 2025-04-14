@@ -17,68 +17,6 @@ import "google/protobuf/timestamp.proto";
 
 package restate.cluster;
 
-message ClusterState {
-  google.protobuf.Duration last_refreshed = 1;
-  restate.common.Version nodes_config_version = 2;
-  restate.common.Version partition_table_version = 3;
-  map<uint32, NodeState> nodes = 4;
-  restate.common.Version logs_metadata_version = 5;
-}
-
-message NodeState {
-  oneof state {
-    AliveNode alive = 1;
-    DeadNode dead = 2;
-    SuspectNode suspect = 3;
-  }
-}
-
-message SuspectNode {
-  restate.common.NodeId generational_node_id = 1;
-  google.protobuf.Timestamp last_attempt = 2;
-}
-
-message AliveNode {
-  restate.common.GenerationalNodeId generational_node_id = 1;
-  google.protobuf.Timestamp last_heartbeat_at = 2;
-  // partition id is u16 but protobuf doesn't support u16. This must be a value
-  // that's safe to convert to u16
-  map<uint32, PartitionProcessorStatus> partitions = 3;
-  // uptime of node since the daemon started in seconds
-  uint64 uptime_s = 4;
-}
-
-message DeadNode { google.protobuf.Timestamp last_seen_alive = 1; }
-
-enum RunMode {
-  RunMode_UNKNOWN = 0;
-  LEADER = 1;
-  FOLLOWER = 2;
-}
-
-enum ReplayStatus {
-  ReplayStatus_UNKNOWN = 0;
-  STARTING = 1;
-  ACTIVE = 2;
-  CATCHING_UP = 3;
-}
-
-message PartitionProcessorStatus {
-  google.protobuf.Timestamp updated_at = 1;
-  RunMode planned_mode = 2;
-  RunMode effective_mode = 3;
-  optional restate.common.LeaderEpoch last_observed_leader_epoch = 4;
-  optional restate.common.NodeId last_observed_leader_node = 5;
-  optional restate.common.Lsn last_applied_log_lsn = 6;
-  optional google.protobuf.Timestamp last_record_applied_at = 7;
-  uint64 num_skipped_records = 8;
-  ReplayStatus replay_status = 9;
-  optional restate.common.Lsn last_persisted_log_lsn = 10;
-  optional restate.common.Lsn last_archived_log_lsn = 12;
-  // Set if replay_status is CATCHING_UP
-  optional restate.common.Lsn target_tail_lsn = 11;
-}
-
 message ReplicationProperty { string replication_property = 1; }
 
 message BifrostProvider {

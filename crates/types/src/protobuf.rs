@@ -87,17 +87,6 @@ pub mod cluster {
 
     include!(concat!(env!("OUT_DIR"), "/restate.cluster.rs"));
 
-    impl std::fmt::Display for RunMode {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            let o = match self {
-                RunMode::Unknown => "UNKNOWN",
-                RunMode::Leader => "Leader",
-                RunMode::Follower => "Follower",
-            };
-            write!(f, "{o}")
-        }
-    }
-
     impl From<crate::replication::ReplicationProperty> for ReplicationProperty {
         fn from(value: crate::replication::ReplicationProperty) -> Self {
             ReplicationProperty {
@@ -229,5 +218,21 @@ pub mod net {
 
     pub mod metadata {
         include!(concat!(env!("OUT_DIR"), "/restate.net.metadata.rs"));
+    }
+
+    pub mod cluster {
+
+        include!(concat!(env!("OUT_DIR"), "/restate.net.cluster.rs"));
+
+        impl std::fmt::Display for RunMode {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let o = match self {
+                    RunMode::Unknown => "UNKNOWN",
+                    RunMode::Leader => "Leader",
+                    RunMode::Follower => "Follower",
+                };
+                write!(f, "{o}")
+            }
+        }
     }
 }

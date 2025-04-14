@@ -24,7 +24,7 @@ use restate_core::protobuf::cluster_ctrl_svc::{
 use restate_types::logs::metadata::{Chain, Logs};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::Role;
-use restate_types::protobuf::cluster::{
+use restate_types::protobuf::net::cluster::{
     DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode, SuspectNode, node_state,
 };
 use restate_types::storage::StorageCodec;
@@ -169,11 +169,7 @@ pub async fn list_partitions(
             let pp_sees_itself_as_leader = processor
                 .status
                 .last_observed_leader_node
-                .map(|n| {
-                    n.generation.is_some_and(|g| {
-                        PlainNodeId::from(n.id).with_generation(g) == processor.host_node
-                    })
-                })
+                .map(|id| GenerationalNodeId::from(id) == processor.host_node)
                 .unwrap_or_default();
 
             let maybe_sequencer = if pp_sees_itself_as_leader {

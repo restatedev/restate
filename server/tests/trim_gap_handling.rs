@@ -35,8 +35,8 @@ use restate_local_cluster_runner::{
 use restate_types::config::{LogFormat, MetadataClientKind, NetworkingOptions};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
-use restate_types::protobuf::cluster::RunMode;
-use restate_types::protobuf::cluster::node_state::State;
+use restate_types::protobuf::net::cluster::RunMode;
+use restate_types::protobuf::net::cluster::node_state::State;
 use restate_types::retries::RetryPolicy;
 use restate_types::{config::Configuration, nodes_config::Role};
 

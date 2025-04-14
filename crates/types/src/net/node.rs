@@ -10,10 +10,14 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
+use prost_dto::{FromProst, IntoProst};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use super::TargetName;
+use super::codec::V2Convertible;
+use crate::errors::ConversionError;
+use crate::protobuf::net::cluster as proto;
 use crate::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
 
 super::define_rpc! {
@@ -23,8 +27,21 @@ super::define_rpc! {
     @response_target=TargetName::NodeGetNodeStateResponse,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, IntoProst, FromProst)]
+#[prost(target=crate::protobuf::net::cluster::GetNodeState)]
 pub struct GetNodeState {}
+
+impl V2Convertible for GetNodeState {
+    type Target = proto::GetNodeState;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        Ok(target.into())
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
+}
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,4 +55,69 @@ pub struct NodeStateResponse {
     // ensuring that older nodes can still interact with newer nodes that recognize this attribute.
     #[serde(default)]
     pub uptime: Duration,
+}
+
+impl From<NodeStateResponse> for proto::NodeStateResponse {
+    fn from(value: NodeStateResponse) -> Self {
+        let NodeStateResponse {
+            partition_processor_state,
+            uptime,
+        } = value;
+
+        Self {
+            uptime: Some(uptime.try_into().expect("valid duration")),
+            partition_processor_state: partition_processor_state
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<proto::NodeStateResponse> for NodeStateResponse {
+    type Error = ConversionError;
+
+    fn try_from(value: proto::NodeStateResponse) -> Result<Self, Self::Error> {
+        let proto::NodeStateResponse {
+            partition_processor_state,
+            uptime,
+        } = value;
+
+        Ok(Self {
+            uptime: uptime
+                .ok_or_else(|| ConversionError::missing_field("uptime"))?
+                .try_into()
+                .map_err(|_| ConversionError::invalid_data("uptime"))?,
+            partition_processor_state: if partition_processor_state.is_empty() {
+                None
+            } else {
+                Some({
+                    let mut map = BTreeMap::default();
+                    for (id, v) in partition_processor_state {
+                        map.insert(
+                            PartitionId::from(
+                                u16::try_from(id)
+                                    .map_err(|_| ConversionError::invalid_data("partition_id"))?,
+                            ),
+                            v.into(),
+                        );
+                    }
+                    map
+                })
+            },
+        })
+    }
+}
+
+impl V2Convertible for NodeStateResponse {
+    type Target = proto::NodeStateResponse;
+
+    fn from_v2(target: Self::Target) -> Result<Self, ConversionError> {
+        target.try_into()
+    }
+
+    fn into_v2(self) -> Self::Target {
+        self.into()
+    }
 }

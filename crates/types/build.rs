@@ -108,8 +108,8 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
         .enum_attribute("WorkerStatus", "#[derive(::serde::Serialize)]")
         .enum_attribute("MetadataServerStatus", "#[derive(::serde::Serialize)]")
         .btree_map([
-            ".restate.cluster.ClusterState",
-            ".restate.cluster.AliveNode",
+            ".restate.net.cluster.ClusterState",
+            ".restate.net.cluster.AliveNode",
         ])
         .file_descriptor_set_path(out_dir.join("common_descriptor.bin"))
         // allow older protobuf compiler to be used
@@ -121,6 +121,7 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
                 "./protobuf/restate/cluster.proto",
                 "./protobuf/restate/net/log_server.proto",
                 "./protobuf/restate/net/metadata.proto",
+                "./protobuf/restate/net/cluster.proto",
             ],
             &["protobuf"],
         )?;
