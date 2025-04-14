@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -92,6 +93,23 @@ impl fmt::Display for Language {
     }
 }
 
+impl Language {
+    fn reorder_examples(&mut self) {
+        // Sorts by putting examples starting with Hello World at the beginning, and preserves the order of the other examples
+        self.examples.sort_by(|a, b| {
+            match (
+                a.display_name.starts_with("Hello World"),
+                b.display_name.starts_with("Hello World"),
+            ) {
+                (true, true) => a.display_name.cmp(&b.display_name),
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                (false, false) => Ordering::Equal,
+            }
+        })
+    }
+}
+
 struct Example {
     display_name: String,
     asset: Asset,
@@ -142,6 +160,10 @@ fn parse_available_examples(assets: Vec<Asset>) -> Vec<Language> {
                 display_name: example_display_name,
                 asset,
             });
+    }
+
+    for language in languages_map.values_mut() {
+        language.reorder_examples();
     }
 
     languages_map.into_values().collect()
