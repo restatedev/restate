@@ -108,6 +108,12 @@ pub struct UnboundedEgressSender {
     inner: mpsc::UnboundedSender<EgressMessage>,
 }
 
+impl PartialEq for UnboundedEgressSender {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.same_channel(&other.inner)
+    }
+}
+
 impl UnboundedEgressSender {
     pub fn new(unbounded: mpsc::UnboundedSender<EgressMessage>) -> Self {
         Self { inner: unbounded }

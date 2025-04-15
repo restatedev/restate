@@ -9,13 +9,18 @@
 // by the Apache License, Version 2.0.
 
 mod manager;
+mod metadata_client_wrapper;
+mod update_task;
 
+use ahash::HashMap;
 pub use manager::{MetadataManager, TargetVersion};
 pub use restate_types::net::metadata::MetadataKind;
+use tokio::time::Instant;
 
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
-use arc_swap::{ArcSwap, AsRaw};
+use arc_swap::ArcSwap;
 use enum_map::EnumMap;
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::instrument;
@@ -26,17 +31,18 @@ use restate_types::net::metadata::MetadataContainer;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
-use restate_types::{GenerationalNodeId, Version, Versioned};
+use restate_types::{GenerationalNodeId, PlainNodeId, Version, Versioned};
 
-use crate::metadata::manager::Command;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
-use crate::network::UnboundedConnectionRef;
+use crate::network::{PeerAddress, UnboundedConnectionRef};
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
+
+use self::metadata_client_wrapper::MetadataClientWrapper;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
     #[error("failed syncing with metadata store: {0}")]
-    MetadataStore(#[from] ReadError),
+    MetadataStore(#[from] Arc<ReadError>),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }
@@ -215,7 +221,7 @@ impl Metadata {
         metadata_kind: MetadataKind,
         min_version: Version,
     ) -> Result<Version, ShutdownError> {
-        let mut recv = self.inner.write_watches[metadata_kind].receive.clone();
+        let mut recv = self.inner.write_watches[metadata_kind].sender.subscribe();
         // If we are already at the metadata version, avoid tokio's yielding to
         // improve tail latencies when this is used in latency-sensitive operations.
         let v = tokio::task::unconstrained(recv.wait_for(|v| *v >= min_version))
@@ -225,31 +231,12 @@ impl Metadata {
     }
 
     /// Watch for version updates of this metadata kind.
-    pub fn watch(&self, metadata_kind: MetadataKind) -> watch::Receiver<Version> {
-        self.inner.write_watches[metadata_kind].receive.clone()
-    }
-
-    /// Syncs the given metadata_kind from the underlying metadata store if the current version is
-    /// lower than target version.
     ///
-    /// Note: If the target version does not exist, then a lower version will be available after
-    /// this call completes.
-    pub async fn sync(
-        &self,
-        metadata_kind: MetadataKind,
-        target_version: TargetVersion,
-    ) -> Result<(), SyncError> {
-        let (result_tx, result_rx) = oneshot::channel();
-        self.sender
-            .send(Command::SyncMetadata(
-                metadata_kind,
-                target_version,
-                Some(result_tx),
-            ))
-            .map_err(|_| ShutdownError)?;
-        result_rx.await.map_err(|_| ShutdownError)??;
-
-        Ok(())
+    /// The returned receiver is primed to notify you with the current value as well.
+    pub fn watch(&self, metadata_kind: MetadataKind) -> watch::Receiver<Version> {
+        let mut recv = self.inner.write_watches[metadata_kind].sender.subscribe();
+        recv.mark_changed();
+        recv
     }
 
     /// Notifies the metadata manager about a newly observed metadata version for the given kind.
@@ -259,61 +246,9 @@ impl Metadata {
         metadata_kind: MetadataKind,
         version: Version,
         remote_peer: Option<UnboundedConnectionRef>,
-        urgency: Urgency,
     ) {
-        // check whether the version is newer than what we know
-        if version > self.version(metadata_kind) {
-            match urgency {
-                Urgency::High => {
-                    // send should only fail in case of shut down
-                    let _ = self.sender.send(Command::SyncMetadata(
-                        metadata_kind,
-                        TargetVersion::Version(version),
-                        None,
-                    ));
-                }
-                Urgency::Normal => {
-                    let mut guard = self.inner.observed_versions[metadata_kind].load();
-
-                    // check whether it is even newer than the latest observed version
-                    if version > guard.version {
-                        // Create the arc outside of loop to avoid reallocations in case of contention;
-                        // maybe this is guarding too much against the contended case.
-                        let new_version_information =
-                            Arc::new(VersionInformation::new(version, remote_peer));
-
-                        // maybe a simple Arc<Mutex<VersionInformation>> works better? Needs a benchmark.
-                        loop {
-                            let cas_guard = self.inner.observed_versions[metadata_kind]
-                                .compare_and_swap(&guard, Arc::clone(&new_version_information));
-
-                            if std::ptr::eq(cas_guard.as_raw(), guard.as_raw()) {
-                                break;
-                            }
-
-                            guard = cas_guard;
-
-                            // stop trying to update the observed value if a newer one was reported before
-                            if guard.version >= version {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Returns the [`VersionInformation`] for the metadata kind if a newer version than the local
-    /// version has been observed.
-    fn observed_version(&self, metadata_kind: MetadataKind) -> Option<VersionInformation> {
-        let guard = self.inner.observed_versions[metadata_kind].load();
-
-        if guard.version > self.version(metadata_kind) {
-            Some((**guard).clone())
-        } else {
-            None
-        }
+        self.inner
+            .notify_observed_version(metadata_kind, version, remote_peer);
     }
 }
 
@@ -325,9 +260,65 @@ struct MetadataInner {
     logs: Arc<ArcSwap<Logs>>,
     schema: Arc<ArcSwap<Schema>>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
-    // might be subject to false sharing if independent sources want to update different metadata
-    // kinds concurrently.
-    observed_versions: EnumMap<MetadataKind, ArcSwap<VersionInformation>>,
+    observed_versions: EnumMap<MetadataKind, watch::Sender<VersionInformation>>,
+}
+
+impl MetadataInner {
+    fn version(&self, metadata_kind: MetadataKind) -> Version {
+        match metadata_kind {
+            MetadataKind::NodesConfiguration => self.nodes_config.load().version(),
+            MetadataKind::Schema => self.schema.load().version(),
+            MetadataKind::PartitionTable => self.partition_table.load().version(),
+            MetadataKind::Logs => self.logs.load().version(),
+        }
+    }
+    /// Notifies the metadata manager about a newly observed metadata version for the given kind.
+    /// If the metadata can be retrieved from a node, then a connection to this node can be included.
+    fn notify_observed_version(
+        &self,
+        metadata_kind: MetadataKind,
+        version: Version,
+        remote_peer: Option<UnboundedConnectionRef>,
+    ) {
+        // fast path to avoid watch's internal locking if we are already at
+        // this version.
+        if self.version(metadata_kind) >= version {
+            return;
+        }
+
+        self.observed_versions[metadata_kind].send_if_modified(|info| {
+            match version.cmp(&info.version) {
+                std::cmp::Ordering::Greater => {
+                    // new version
+                    info.version = version;
+                    info.peers.clear();
+                    info.first_observed_at = Instant::now();
+                    if let Some(peer) = remote_peer {
+                        // only use known peers as potential source for metadata updates
+                        if let PeerAddress::ServerNode(node_id) = peer.peer() {
+                            info.peers.insert(node_id.id(), peer);
+                        }
+                    }
+                    true
+                }
+                std::cmp::Ordering::Equal => {
+                    // same version
+                    if let Some(peer) = remote_peer {
+                        // only use known peers as potential source for metadata updates
+                        if let PeerAddress::ServerNode(node_id) = peer.peer() {
+                            info.peers.insert(node_id.id(), peer);
+                        }
+                    }
+                    // silent modification
+                    false
+                }
+                std::cmp::Ordering::Less => {
+                    // old version, ignore it.
+                    false
+                }
+            }
+        });
+    }
 }
 
 /// Can send updates to metadata manager. This should be accessible by the rpc handler layer to
@@ -356,31 +347,43 @@ impl MetadataWriter {
         }
     }
 
-    pub fn metadata_store_client(&self) -> &MetadataStoreClient {
+    /// The raw metadata client
+    ///
+    /// This should be used to access to non-global metadata. For global metadata
+    /// mutations, use `global_metadata()` instead.
+    pub fn raw_metadata_store_client(&self) -> &MetadataStoreClient {
         &self.metadata_store_client
     }
 
-    // Returns when the nodes configuration update is performed.
-    pub async fn update(&self, value: impl Into<MetadataContainer>) -> Result<(), ShutdownError> {
+    /// Mutations of global metadata
+    pub fn global_metadata(&self) -> MetadataClientWrapper<'_> {
+        MetadataClientWrapper::new(self)
+    }
+
+    /// Pushes a new value of global metadata to metadata manager
+    ///
+    /// Note that this **does not** push the value to the metadata store, this assumes
+    /// that the value has already been committed to metadata store.
+    ///
+    /// Returns when the metadata update is performed.
+    pub async fn update(
+        &self,
+        value: impl Into<MetadataContainer>,
+    ) -> Result<Version, ShutdownError> {
         let (callback, recv) = oneshot::channel();
-        let o = self.sender.send(manager::Command::UpdateMetadata(
+        let _ = self.sender.send(manager::Command::UpdateMetadata(
             value.into(),
             Some(callback),
         ));
-        if o.is_ok() {
-            let _ = recv.await;
-            Ok(())
-        } else {
-            Err(ShutdownError)
-        }
+        recv.await.map_err(|_| ShutdownError)
     }
 
-    /// Should be called once on node startup. Updates are ignored after the initial value is set.
+    /// Should be called once on node startup. Panics if node id value is already set.
     pub fn set_my_node_id(&self, id: GenerationalNodeId) {
         self.inner.my_node_id.set(id).expect("My node is not set");
     }
 
-    // Fire and forget update
+    /// Like `update()` but in a fire and forget fashion
     pub fn submit(&self, value: impl Into<MetadataContainer>) {
         // Ignore the error, task-center takes care of safely shutting down the
         // system if metadata manager failed
@@ -392,15 +395,12 @@ impl MetadataWriter {
 
 struct VersionWatch {
     sender: watch::Sender<Version>,
-    receive: watch::Receiver<Version>,
 }
 
 impl Default for VersionWatch {
     fn default() -> Self {
-        let (send, receive) = watch::channel(Version::INVALID);
         Self {
-            sender: send,
-            receive,
+            sender: watch::Sender::new(Version::INVALID),
         }
     }
 }
@@ -416,32 +416,23 @@ pub fn spawn_metadata_manager(metadata_manager: MetadataManager) -> Result<TaskI
 #[derive(Debug, Clone)]
 struct VersionInformation {
     version: Version,
-    peer_connection: Option<UnboundedConnectionRef>,
+    peers: HashMap<PlainNodeId, UnboundedConnectionRef>,
+    first_observed_at: Instant,
+}
+
+impl VersionInformation {
+    /// Time since the version was first observed.
+    pub fn elapsed(&self) -> Duration {
+        self.first_observed_at.elapsed()
+    }
 }
 
 impl Default for VersionInformation {
     fn default() -> Self {
         Self {
             version: Version::INVALID,
-            peer_connection: None,
+            peers: HashMap::default(),
+            first_observed_at: Instant::now(),
         }
     }
-}
-
-impl VersionInformation {
-    fn new(version: Version, peer_connection: Option<UnboundedConnectionRef>) -> Self {
-        Self {
-            version,
-            peer_connection,
-        }
-    }
-}
-
-/// Defines how urgent it is to react to observed metadata versions.
-#[derive(Debug)]
-pub enum Urgency {
-    /// Immediately sync data from the metadata store
-    High,
-    /// Try to fetch metadata from a remote node if available on the next update interval
-    Normal,
 }
