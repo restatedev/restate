@@ -17,18 +17,14 @@ use rand::seq::IteratorRandom;
 use tracing::{Level, debug, enabled, info, instrument, trace, warn};
 
 use restate_core::metadata_store::{ReadError, ReadWriteError, WriteError};
-use restate_core::network::{NetworkSender, Networking, Outgoing, TransportConnect};
-use restate_core::{
-    Metadata, MetadataKind, MetadataWriter, ShutdownError, SyncError, TargetVersion, TaskCenter,
-    TaskHandle, TaskKind, cancellation_watcher,
-};
+use restate_core::network::{Networking, Outgoing, TransportConnect};
+use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::identifiers::PartitionId;
 use restate_types::locality::LocationScope;
 use restate_types::logs::LogId;
 use restate_types::metadata::Precondition;
-use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
@@ -80,7 +76,6 @@ impl<T: PartitionProcessorPlacementHints> PartitionProcessorPlacementHints for &
 pub struct Scheduler<T> {
     metadata_writer: MetadataWriter,
     networking: Networking<T>,
-    inflight_sync_task: Option<TaskHandle<()>>,
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -92,7 +87,6 @@ impl<T: TransportConnect> Scheduler<T> {
         Self {
             metadata_writer,
             networking,
-            inflight_sync_task: None,
         }
     }
 
@@ -187,40 +181,24 @@ impl<T: TransportConnect> Scheduler<T> {
         previous_version: Version,
         partition_table: PartitionTable,
     ) -> Result<(), Error> {
+        let new_version = partition_table.version();
         match self
             .metadata_writer
-            .metadata_store_client()
+            .global_metadata()
             .put(
-                PARTITION_TABLE_KEY.clone(),
-                &partition_table,
+                partition_table.into(),
                 Precondition::MatchesVersion(previous_version),
             )
             .log_slow_after(
                 Duration::from_secs(1),
                 Level::DEBUG,
-                format!(
-                    "Updating partition table to version {}",
-                    partition_table.version()
-                ),
+                format!("Updating partition table to version {new_version}"),
             )
             .with_overdue(Duration::from_secs(3), tracing::Level::INFO)
             .await
         {
             Ok(_) => {
-                debug!(
-                    "Partition table {} has been written to metadata store",
-                    partition_table.version()
-                );
-                let new_version = partition_table.version();
-                self.metadata_writer
-                    .update(Arc::new(partition_table))
-                    .log_slow_after(
-                        Duration::from_millis(100),
-                        Level::DEBUG,
-                        format!("Updating partition table in metadata manager to {new_version}."),
-                    )
-                    .with_overdue(Duration::from_secs(2), tracing::Level::INFO)
-                    .await?;
+                debug!("Partition table {new_version} has been written to metadata store",);
             }
             Err(WriteError::FailedPrecondition(err)) => {
                 info!(
@@ -232,44 +210,10 @@ impl<T: TransportConnect> Scheduler<T> {
                 // There is no need to wait for the partition table to synchronize.
                 // The update_partition_placement will get called again anyway once
                 // the partition table is updated.
-                // Pick previous_version.next(), because we know that previous_version no longer
-                // matches.
-                self.sync_partition_table(previous_version.next())?;
             }
             Err(err) => return Err(err.into()),
         }
 
-        Ok(())
-    }
-
-    /// Synchronize partition table asynchronously
-    fn sync_partition_table(&mut self, next_version: Version) -> Result<(), Error> {
-        if self
-            .inflight_sync_task
-            .as_ref()
-            .is_some_and(|t| !t.is_finished())
-        {
-            return Ok(());
-        }
-
-        let task = TaskCenter::spawn_unmanaged(
-            TaskKind::Disposable,
-            "scheduler-sync-partition-table",
-            async move {
-                let cancelled = cancellation_watcher();
-                let metadata = Metadata::current();
-                tokio::select! {
-                    result = metadata.sync(MetadataKind::PartitionTable, TargetVersion::Version(next_version)) => {
-                        if let Err(err) = result {
-                            debug!("Failed to sync partition table metadata: {err}");
-                        }
-                    }
-                    _ = cancelled => {}
-                };
-            },
-        )?;
-
-        self.inflight_sync_task = Some(task);
         Ok(())
     }
 
@@ -459,10 +403,20 @@ impl<T: TransportConnect> Scheduler<T> {
                     "send-control-processors-to-node",
                     {
                         let networking = self.networking.clone();
+                        // doesn't retry, we don't want to keep bombarding a node that's
+                        // potentially dead.
                         async move {
-                            networking
-                                .send(Outgoing::new(node_id, control_processors))
-                                .await?;
+                            let Ok(connection) = networking.node_connection(node_id).await else {
+                                // ignore connection errors, no need to mark the task as failed
+                                // as it pollutes the log.
+                                return Ok(());
+                            };
+
+                            let Some(permit) = connection.reserve().await else {
+                                // ditto
+                                return Ok(());
+                            };
+                            permit.send(Outgoing::new(node_id, control_processors));
                             Ok(())
                         }
                     },
@@ -590,7 +544,6 @@ mod tests {
     use futures::StreamExt;
     use googletest::assert_that;
     use googletest::matcher::{Matcher, MatcherResult};
-    use http::Uri;
     use itertools::Itertools;
     use rand::Rng;
     use rand::prelude::ThreadRng;
@@ -704,7 +657,11 @@ mod tests {
                 format!("{node_id}"),
                 *node_id,
                 NodeLocation::default(),
-                AdvertisedAddress::Http(Uri::default()),
+                AdvertisedAddress::Http(
+                    format!("http://localhost-{}:5122", node_id.id())
+                        .parse()
+                        .unwrap(),
+                ),
                 Role::Worker.into(),
                 LogServerConfig::default(),
                 MetadataServerConfig::default(),

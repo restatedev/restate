@@ -11,11 +11,14 @@
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 
 use serde_with::serde_as;
 
 use crate::identifiers::{PartitionId, PartitionKey};
 use crate::logs::LogId;
+use crate::metadata::GlobalMetadata;
+use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::replication::{NodeSet, ReplicationProperty};
 use crate::{PlainNodeId, Version, Versioned, flexbuffers_storage_encode_decode};
 
@@ -93,6 +96,16 @@ impl Default for PartitionTable {
             partition_key_index: BTreeMap::default(),
             replication: PartitionReplication::Limit(ReplicationProperty::new_unchecked(1)),
         }
+    }
+}
+
+impl GlobalMetadata for PartitionTable {
+    const KEY: &'static str = "partition_table";
+
+    const KIND: MetadataKind = MetadataKind::PartitionTable;
+
+    fn into_container(self: Arc<Self>) -> MetadataContainer {
+        MetadataContainer::PartitionTable(self)
     }
 }
 
