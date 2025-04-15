@@ -145,7 +145,7 @@ impl<V> SchemaRegistry<V> {
             let mut new_deployment_id = None;
             let schema_information = self
                 .metadata_writer
-                .metadata_store_client()
+                .raw_metadata_store_client()
                 .read_modify_write(
                     SCHEMA_INFORMATION_KEY.clone(),
                     |schema_information: Option<Schema>| {
@@ -225,7 +225,7 @@ impl<V> SchemaRegistry<V> {
         } else {
             let schema_information = self
                 .metadata_writer
-                .metadata_store_client()
+                .raw_metadata_store_client()
                 .read_modify_write(
                     SCHEMA_INFORMATION_KEY.clone(),
                     |schema_information: Option<Schema>| {
@@ -260,7 +260,7 @@ impl<V> SchemaRegistry<V> {
     ) -> Result<(), SchemaRegistryError> {
         let schema_registry = self
             .metadata_writer
-            .metadata_store_client()
+            .raw_metadata_store_client()
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
                 |schema_registry: Option<Schema>| {
@@ -292,7 +292,7 @@ impl<V> SchemaRegistry<V> {
     ) -> Result<ServiceMetadata, SchemaRegistryError> {
         let schema_information = self
             .metadata_writer
-            .metadata_store_client()
+            .raw_metadata_store_client()
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
                 |schema_information: Option<Schema>| {
@@ -331,7 +331,7 @@ impl<V> SchemaRegistry<V> {
     ) -> Result<(), SchemaRegistryError> {
         let schema_information = self
             .metadata_writer
-            .metadata_store_client()
+            .raw_metadata_store_client()
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
                 |schema_information: Option<Schema>| {
@@ -429,7 +429,7 @@ where
 
         let schema_information = self
             .metadata_writer
-            .metadata_store_client()
+            .raw_metadata_store_client()
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
                 |schema_information: Option<Schema>| {

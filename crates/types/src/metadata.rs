@@ -8,9 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 
-use crate::{Version, flexbuffers_storage_encode_decode};
+use crate::net::metadata::{MetadataContainer, MetadataKind};
+use crate::storage::{StorageDecode, StorageEncode};
+use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
+
+/// A trait all metadata types managed by metadata manager.
+pub trait GlobalMetadata: Versioned + StorageEncode + StorageDecode {
+    /// The key for this metadata type in metadata store
+    const KEY: &'static str;
+    /// Returns the kind of metadata.
+    const KIND: MetadataKind;
+
+    /// Wrap into MetadataContainer
+    fn into_container(self: Arc<Self>) -> MetadataContainer;
+}
 
 #[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VersionedValue {

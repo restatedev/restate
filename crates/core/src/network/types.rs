@@ -32,6 +32,16 @@ pub enum PeerAddress {
     Anonymous,
 }
 
+impl PartialEq for PeerAddress {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::ServerNode(l0), Self::ServerNode(r0)) => l0 == r0,
+            // anonymous peers are not comparable (partial equivalence)
+            _ => false,
+        }
+    }
+}
+
 #[derive(Hash, Eq, PartialEq, Clone, Debug, derive_more::Display)]
 pub enum Destination {
     Address(AdvertisedAddress),
