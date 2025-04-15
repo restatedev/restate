@@ -81,7 +81,7 @@ impl ClusterCtrlSvcHandler {
 
     async fn get_logs(&self) -> Result<Logs, Status> {
         self.metadata_writer
-            .metadata_store_client()
+            .raw_metadata_store_client()
             .get::<Logs>(BIFROST_CONFIG_KEY.clone())
             .await
             .map_err(|error| Status::unknown(format!("Failed to get log metadata: {error:?}")))?
@@ -136,7 +136,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         let (trim_point, nodes_config) = tokio::join!(
             self.bifrost.get_trim_point(log_id),
             self.metadata_writer
-                .metadata_store_client()
+                .raw_metadata_store_client()
                 .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone()),
         );
 

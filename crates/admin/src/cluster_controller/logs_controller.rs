@@ -24,9 +24,7 @@ use tracing::{Instrument, Level, debug, enabled, error, info, trace_span};
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_core::metadata_store::WriteError;
-use restate_core::{
-    Metadata, MetadataKind, MetadataWriter, ShutdownError, TargetVersion, TaskCenterFutureExt,
-};
+use restate_core::{Metadata, MetadataKind, MetadataWriter, ShutdownError, TaskCenterFutureExt};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -1193,7 +1191,7 @@ impl LogsController {
                     tokio::time::sleep(delay).await;
                 }
 
-                if let Err(err) = metadata_writer.metadata_store_client()
+                if let Err(err) = metadata_writer.raw_metadata_store_client()
                     .put(
                         BIFROST_CONFIG_KEY.clone(),
                         logs.deref(),
@@ -1205,7 +1203,10 @@ impl LogsController {
                         WriteError::FailedPrecondition(err) => {
                             info!(%err, "Detected a concurrent modification to the log chain");
                             // Perhaps we already have a newer version, if not, fetch latest.
-                            let _ = Metadata::current().sync(MetadataKind::Logs, TargetVersion::Version(previous_version.next())).await;
+                            let metadata = Metadata::current();
+                            metadata.notify_observed_version(MetadataKind::Logs, previous_version.next(), None);
+                            let _ = metadata.wait_for_version(MetadataKind::Logs, previous_version.next())
+                                .await;
                             Event::NewLogs
                         }
                         err => {

@@ -9,10 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use crate::cluster_marker::mark_cluster_as_provisioned;
+use futures::future::join;
 use restate_core::metadata_store::{MetadataStoreClient, ReadWriteError};
-use restate_core::{
-    Metadata, MetadataWriter, ShutdownError, SyncError, TargetVersion, cancellation_token,
-};
+use restate_core::{Metadata, MetadataWriter, ShutdownError, cancellation_token};
+use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::PlainNodeId;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::MaybeRetryableError;
@@ -51,19 +51,13 @@ enum JoinError {
 }
 
 pub struct NodeInit<'a> {
-    metadata_store_client: &'a MetadataStoreClient,
     metadata_writer: &'a MetadataWriter,
     is_provisioned: bool,
 }
 
 impl<'a> NodeInit<'a> {
-    pub fn new(
-        metadata_store_client: &'a MetadataStoreClient,
-        metadata_writer: &'a MetadataWriter,
-        is_provisioned: bool,
-    ) -> Self {
+    pub fn new(metadata_writer: &'a MetadataWriter, is_provisioned: bool) -> Self {
         Self {
-            metadata_store_client,
             metadata_writer,
             is_provisioned,
         }
@@ -73,7 +67,7 @@ impl<'a> NodeInit<'a> {
         let config = Configuration::pinned().into_arc();
 
         let join_cluster = Self::join_cluster(
-            self.metadata_store_client,
+            self.metadata_writer.raw_metadata_store_client(),
             &config.common,
             self.is_provisioned,
         );
@@ -93,59 +87,56 @@ impl<'a> NodeInit<'a> {
         // Find my node in nodes configuration.
         let my_node_config = nodes_configuration
             .find_node_by_name(config.common.node_name())
-            .expect("node config should have been upserted");
+            .expect("node config should have been upserted")
+            .clone();
 
-        let my_node_id = my_node_config.current_generation;
+        let nodes_config_version = self
+            .metadata_writer
+            .update(Arc::new(nodes_configuration))
+            .await?;
+
+        // My Node ID is set
+        self.metadata_writer
+            .set_my_node_id(my_node_config.current_generation);
+        restate_tracing_instrumentation::set_global_node_id(my_node_config.current_generation);
+
+        let initial_fetch_dur = Duration::from_secs(3);
+        let metadata = Metadata::current();
+        let (logs_version, partition_table_version) = match join(
+            metadata.wait_for_version(MetadataKind::Logs, restate_types::Version::MIN),
+            metadata.wait_for_version(MetadataKind::PartitionTable, restate_types::Version::MIN),
+        )
+        .log_slow_after(
+            initial_fetch_dur,
+            tracing::Level::INFO,
+            "Initial fetch of global metadata",
+        )
+        .with_overdue(initial_fetch_dur * 2, tracing::Level::WARN)
+        .await
+        {
+            (Ok(logs_version), Ok(partition_table_version)) => {
+                (logs_version, partition_table_version)
+            }
+            _ => {
+                anyhow::bail!(
+                    "Failed to fetch the latest metadata when initializing the node, maybe server is shutting down"
+                );
+            }
+        };
 
         info!(
             roles = %my_node_config.roles,
             address = %my_node_config.address,
             location = %my_node_config.location,
-            "My Node ID is {}", my_node_config.current_generation
+            %nodes_config_version,
+            %partition_table_version,
+            %logs_version,
+            "My Node ID is {}", my_node_config.current_generation,
         );
-
-        self.metadata_writer
-            .update(Arc::new(nodes_configuration))
-            .await?;
-
-        // My Node ID is set
-        self.metadata_writer.set_my_node_id(my_node_id);
-        restate_tracing_instrumentation::set_global_node_id(my_node_id);
-
-        self.sync_metadata().await;
 
         trace!("Node initialization complete");
 
         Ok(())
-    }
-
-    async fn sync_metadata(&self) {
-        // fetch the latest metadata
-        let metadata = Metadata::current();
-
-        let config = Configuration::pinned();
-
-        let retry_policy = config.common.network_error_retry_policy.clone();
-
-        if let Err(err) = retry_policy
-            .retry_if(
-                || async {
-                    metadata
-                        .sync(MetadataKind::Schema, TargetVersion::Latest)
-                        .await?;
-                    metadata
-                        .sync(MetadataKind::PartitionTable, TargetVersion::Latest)
-                        .await
-                },
-                |err| match err {
-                    SyncError::MetadataStore(err) => err.retryable(),
-                    SyncError::Shutdown(_) => false,
-                },
-            )
-            .await
-        {
-            warn!("Failed to fetch the latest metadata when initializing the node: {err}");
-        }
     }
 
     async fn join_cluster(
@@ -388,10 +379,9 @@ mod tests {
             .set_nodes_config(nodes_configuration);
         let node_env = builder.build().await;
 
-        let metadata_store_client = node_env.metadata_store_client.clone();
         let metadata_writer = node_env.metadata_writer.clone();
 
-        let init = NodeInit::new(&metadata_store_client, &metadata_writer, true);
+        let init = NodeInit::new(&metadata_writer, true);
         let result = init.init().await;
 
         assert_that!(
@@ -418,10 +408,9 @@ mod tests {
             .set_nodes_config(nodes_configuration);
         let node_env = builder.build().await;
 
-        let metadata_store_client = node_env.metadata_store_client.clone();
         let metadata_writer = node_env.metadata_writer.clone();
 
-        let init = NodeInit::new(&metadata_store_client, &metadata_writer, true);
+        let init = NodeInit::new(&metadata_writer, true);
         let result = init.init().await;
 
         assert_that!(

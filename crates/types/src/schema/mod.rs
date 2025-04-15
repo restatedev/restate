@@ -15,6 +15,7 @@ pub mod service;
 pub mod subscriptions;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_with::serde_as;
 
@@ -25,6 +26,9 @@ use self::subscriptions::Subscription;
 use crate::Version;
 use crate::Versioned;
 use crate::identifiers::{DeploymentId, SubscriptionId};
+use crate::metadata::GlobalMetadata;
+use crate::net::metadata::MetadataContainer;
+use crate::net::metadata::MetadataKind;
 
 /// The schema information
 #[serde_as]
@@ -48,6 +52,16 @@ impl Default for Schema {
             deployments: HashMap::default(),
             subscriptions: HashMap::default(),
         }
+    }
+}
+
+impl GlobalMetadata for Schema {
+    const KEY: &'static str = "schema_registry";
+
+    const KIND: MetadataKind = MetadataKind::Schema;
+
+    fn into_container(self: Arc<Self>) -> MetadataContainer {
+        MetadataContainer::Schema(self)
     }
 }
 
