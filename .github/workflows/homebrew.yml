@@ -16,7 +16,7 @@ env:
 
 jobs:
   publish-homebrew-formula:
-    runs-on: ubuntu-20.04 # linuxbrew doesn't seem to be working on warpbuild
+    runs-on: ubuntu-24.04 # linuxbrew doesn't seem to be working on warpbuild
     env:
       GITHUB_USER: "Restate bot"
       GITHUB_EMAIL: "code+bot@restate.dev"
