@@ -13,10 +13,11 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use enum_map::EnumMap;
+use restate_types::logs::metadata::Logs;
 use tokio::time::Instant;
 use tracing::{info, instrument, warn};
 
-use restate_core::{Metadata, MetadataKind, MetadataWriter, TargetVersion};
+use restate_core::{Metadata, MetadataWriter};
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
@@ -539,6 +540,18 @@ impl BifrostInner {
         self.get_loglet(log_id, tail_segment).await
     }
 
+    pub async fn writeable_loglet_from_metadata(
+        &self,
+        log_metadata: &Logs,
+        log_id: LogId,
+    ) -> Result<LogletWrapper> {
+        let tail_segment = log_metadata
+            .chain(&log_id)
+            .ok_or(Error::UnknownLogId(log_id))?
+            .tail();
+        self.get_loglet(log_id, tail_segment).await
+    }
+
     pub async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<MaybeLoglet> {
         let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
         let maybe_segment = log_metadata
@@ -616,7 +629,6 @@ mod tests {
     use restate_types::logs::SequenceNumber;
     use restate_types::logs::metadata::{SegmentIndex, new_single_node_loglet_params};
     use restate_types::metadata::Precondition;
-    use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
     use restate_types::partition_table::PartitionTable;
     use restate_types::{Version, Versioned};
 
@@ -810,7 +822,7 @@ mod tests {
             ))
             .build()
             .await;
-        let bifrost = Bifrost::init_in_memory(node_env.metadata_writer).await;
+        let bifrost = Bifrost::init_in_memory(node_env.metadata_writer.clone()).await;
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
         // Lsns [1..5]
@@ -872,18 +884,14 @@ mod tests {
         let new_version = new_metadata.version();
         assert_eq!(new_version, old_version.next());
         node_env
-            .metadata_store_client
+            .metadata_writer
+            .global_metadata()
             .put(
-                BIFROST_CONFIG_KEY.clone(),
-                &new_metadata,
+                new_metadata.into(),
                 Precondition::MatchesVersion(old_version),
             )
             .await?;
 
-        // make sure we have updated metadata.
-        metadata
-            .sync(MetadataKind::Logs, TargetVersion::Latest)
-            .await?;
         assert_eq!(new_version, metadata.logs_version());
 
         {

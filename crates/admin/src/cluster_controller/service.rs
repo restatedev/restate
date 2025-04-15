@@ -16,14 +16,13 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use codederror::CodedError;
 use futures::never::Never;
-use restate_storage_query_datafusion::BuildError;
-use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
-use restate_types::replication::{NodeSet, ReplicationProperty};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, trace, warn};
 
+use restate_storage_query_datafusion::BuildError;
+use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
 use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
     ReplicatedLogletConfig, SegmentIndex,
@@ -33,6 +32,7 @@ use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
 use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replication::{NodeSet, ReplicationProperty};
 
 use restate_bifrost::{Bifrost, SealedSegment};
 use restate_core::network::rpc_router::RpcRouter;
@@ -41,8 +41,8 @@ use restate_core::network::{
     MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking, TransportConnect,
 };
 use restate_core::{
-    Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter, TaskKind,
-    cancellation_watcher, metadata_store::ReadModifyWriteError,
+    Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind, cancellation_watcher,
+    metadata_store::ReadModifyWriteError,
 };
 use restate_types::cluster::cluster_state::ClusterState;
 use restate_types::config::{AdminOptions, Configuration};
@@ -50,7 +50,6 @@ use restate_types::health::HealthStatus;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Live;
 use restate_types::logs::{LogId, LogletId, Lsn};
-use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::{GenerationalNodeId, NodeId, Version};
@@ -318,12 +317,6 @@ impl<T: TransportConnect> Service<T> {
         let health_status = self.health_status.clone();
         health_status.update(AdminStatus::Ready);
 
-        TaskCenter::spawn_child(
-            TaskKind::SystemService,
-            "cluster-controller-metadata-sync",
-            sync_cluster_controller_metadata(),
-        )?;
-
         tokio::select! {
             biased;
             _ = cancellation_watcher() => {
@@ -462,7 +455,7 @@ impl<T: TransportConnect> Service<T> {
     ) -> anyhow::Result<()> {
         let logs = self
             .metadata_writer
-            .metadata_store_client()
+            .raw_metadata_store_client()
             .read_modify_write(BIFROST_CONFIG_KEY.clone(), |current: Option<Logs>| {
                 let logs = current.expect("logs should be initialized by BifrostService");
 
@@ -504,7 +497,7 @@ impl<T: TransportConnect> Service<T> {
 
         let partition_table = self
             .metadata_writer
-            .metadata_store_client()
+            .raw_metadata_store_client()
             .read_modify_write(
                 PARTITION_TABLE_KEY.clone(),
                 |current: Option<PartitionTable>| {
@@ -633,36 +626,6 @@ impl<T: TransportConnect> Service<T> {
             } => self.seal_and_extend_chain(log_id, min_version, extension, response_tx),
         }
     }
-}
-
-async fn sync_cluster_controller_metadata() -> anyhow::Result<()> {
-    // todo make this configurable
-    let mut interval = time::interval(Duration::from_secs(10));
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-    let mut cancel = std::pin::pin!(cancellation_watcher());
-    let metadata = Metadata::current();
-
-    loop {
-        tokio::select! {
-            _ = &mut cancel => {
-                break;
-            },
-            _ = interval.tick() => {
-                tokio::select! {
-                    _ = &mut cancel => {
-                        break;
-                    },
-                    _ = futures::future::join3(
-                        metadata.sync(MetadataKind::NodesConfiguration, TargetVersion::Latest),
-                        metadata.sync(MetadataKind::PartitionTable, TargetVersion::Latest),
-                        metadata.sync(MetadataKind::Logs, TargetVersion::Latest)) => {}
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
 
 #[derive(thiserror::Error, Debug)]

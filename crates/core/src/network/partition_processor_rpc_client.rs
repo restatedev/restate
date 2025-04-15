@@ -383,7 +383,6 @@ where
                 %request_id,
                 "Received Partition Processor error indicating possible stale route"
             );
-            self.partition_routing.request_refresh();
         }
 
         Ok(rpc_result?)

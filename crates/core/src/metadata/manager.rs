@@ -8,50 +8,32 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::any::type_name;
+use std::panic;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
-use enum_map::EnumMap;
-use strum::IntoEnumIterator;
+use restate_types::partition_table::PartitionTable;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, trace, warn};
 
-use restate_types::config::Configuration;
 use restate_types::logs::metadata::Logs;
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
-};
-use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, MetadataUpdate};
+use restate_types::net::metadata::{MetadataMessage, MetadataUpdate};
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
 use restate_types::{Version, Versioned};
 
+use super::MetadataBuilder;
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
-use super::{MetadataBuilder, VersionInformation};
-use crate::TaskCenter;
-use crate::TaskKind;
 use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
-use crate::metadata_store::{MetadataStoreClient, ReadError};
+use crate::metadata::update_task::GlobalMetadataUpdateTask;
+use crate::metadata_store::MetadataStoreClient;
 use crate::network::Incoming;
 use crate::network::Reciprocal;
-use crate::network::UnboundedConnectionRef;
-use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError};
+use crate::network::{MessageHandler, MessageRouterBuilder};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
-
-#[derive(Debug, thiserror::Error)]
-enum UpdateError {
-    #[error("failed reading metadata from the metadata store: {0}")]
-    MetadataStore(#[from] ReadError),
-    #[error(transparent)]
-    Network(#[from] NetworkError),
-}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, derive_more::Display)]
 pub enum TargetVersion {
@@ -75,12 +57,7 @@ impl From<Option<Version>> for TargetVersion {
 }
 
 pub(super) enum Command {
-    UpdateMetadata(MetadataContainer, Option<oneshot::Sender<()>>),
-    SyncMetadata(
-        MetadataKind,
-        TargetVersion,
-        Option<oneshot::Sender<Result<(), ReadError>>>,
-    ),
+    UpdateMetadata(MetadataContainer, Option<oneshot::Sender<Version>>),
 }
 
 /// A handler for processing network messages targeting metadata manager
@@ -163,11 +140,7 @@ impl MetadataMessageHandler {
             container: MetadataContainer::from(metadata),
         }));
 
-        let _ =
-            TaskCenter::spawn_child(TaskKind::Disposable, "send-metadata-to-peer", async move {
-                outgoing.send().await?;
-                Ok(())
-            });
+        let _ = tokio::spawn(outgoing.send());
     }
 }
 
@@ -194,7 +167,7 @@ impl MessageHandler for MetadataMessageHandler {
                 }
             }
             MetadataMessage::GetMetadataRequest(request) => {
-                trace!(
+                debug!(
                     kind  = %request.metadata_kind,
                     requested_min_version = ?request.min_version,
                     peer = %reciprocal.peer(),
@@ -206,8 +179,15 @@ impl MessageHandler for MetadataMessageHandler {
     }
 }
 
-/// Handle to access locally cached metadata, request metadata updates, and more.
-/// What is metadata manager?
+/// A set of senders for global metadata update tasks
+struct Updaters {
+    nodes_config: mpsc::UnboundedSender<super::update_task::Command<NodesConfiguration>>,
+    logs: mpsc::UnboundedSender<super::update_task::Command<Logs>>,
+    partition_table: mpsc::UnboundedSender<super::update_task::Command<PartitionTable>>,
+    schema: mpsc::UnboundedSender<super::update_task::Command<Schema>>,
+}
+
+/// Handle to access global metadata
 ///
 /// MetadataManager is a long-running task that monitors shared metadata needed by
 /// services running on this node. It acts as the authority for updating the cached
@@ -221,7 +201,7 @@ impl MessageHandler for MetadataMessageHandler {
 ///   requests from components
 ///
 /// Metadata to be managed by MetadataManager:
-/// - Bifrost's log metadata
+/// - Bifrost's log metadata (aka log chain)
 /// - Schema metadata
 /// - NodesConfiguration
 /// - Partition table
@@ -229,7 +209,6 @@ pub struct MetadataManager {
     metadata: Metadata,
     inbound: CommandReceiver,
     metadata_store_client: MetadataStoreClient,
-    update_tasks: EnumMap<MetadataKind, Option<UpdateTask>>,
 }
 
 impl MetadataManager {
@@ -241,7 +220,6 @@ impl MetadataManager {
             metadata: metadata_builder.metadata,
             inbound: metadata_builder.receiver,
             metadata_store_client,
-            update_tasks: EnumMap::default(),
         }
     }
 
@@ -268,13 +246,58 @@ impl MetadataManager {
     pub async fn run(mut self) -> anyhow::Result<()> {
         debug!("Metadata manager started");
 
-        let update_interval = Configuration::pinned()
-            .common
-            .metadata_update_interval
-            .into();
-        let mut update_interval = tokio::time::interval(update_interval);
-        update_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut cancel = std::pin::pin!(cancellation_watcher());
+
+        // Global metadata updater tasks
+        let (nodes_config, nodes_config_task) = GlobalMetadataUpdateTask::start(
+            self.metadata_store_client.clone(),
+            self.metadata.inner.nodes_config.clone(),
+            self.metadata.inner.write_watches[MetadataKind::NodesConfiguration]
+                .sender
+                .clone(),
+            &self.metadata.inner.observed_versions[MetadataKind::NodesConfiguration],
+        )?;
+
+        let (logs, logs_task) = GlobalMetadataUpdateTask::start(
+            self.metadata_store_client.clone(),
+            self.metadata.inner.logs.clone(),
+            self.metadata.inner.write_watches[MetadataKind::Logs]
+                .sender
+                .clone(),
+            &self.metadata.inner.observed_versions[MetadataKind::Logs],
+        )?;
+
+        let (partition_table, partition_table_task) = GlobalMetadataUpdateTask::start(
+            self.metadata_store_client.clone(),
+            self.metadata.inner.partition_table.clone(),
+            self.metadata.inner.write_watches[MetadataKind::PartitionTable]
+                .sender
+                .clone(),
+            &self.metadata.inner.observed_versions[MetadataKind::PartitionTable],
+        )?;
+
+        let (schema, schema_task) = GlobalMetadataUpdateTask::start(
+            self.metadata_store_client.clone(),
+            self.metadata.inner.schema.clone(),
+            self.metadata.inner.write_watches[MetadataKind::Schema]
+                .sender
+                .clone(),
+            &self.metadata.inner.observed_versions[MetadataKind::Schema],
+        )?;
+
+        let updater_tasks = vec![
+            nodes_config_task,
+            logs_task,
+            partition_table_task,
+            schema_task,
+        ];
+
+        let updaters = Updaters {
+            nodes_config,
+            logs,
+            partition_table,
+            schema,
+        };
 
         loop {
             tokio::select! {
@@ -284,286 +307,52 @@ impl MetadataManager {
                     break;
                 }
                 Some(cmd) = self.inbound.recv() => {
-                    self.handle_command(cmd).await;
-                }
-                _ = update_interval.tick() => {
-                    if let Err(err) = self.check_for_observed_updates().await {
-                        warn!("Failed checking for metadata updates: {err}");
-                    }
+                    self.handle_command(cmd, &updaters);
                 }
             }
+        }
+
+        for task in updater_tasks {
+            task.cancel();
         }
         Ok(())
     }
 
-    async fn handle_command(&mut self, cmd: Command) {
+    fn handle_command(&mut self, cmd: Command, updaters: &Updaters) {
         match cmd {
-            Command::UpdateMetadata(value, callback) => self.update_metadata(value, callback),
-            Command::SyncMetadata(kind, target_version, callback) => {
-                let result = self.sync_metadata(kind, target_version).await;
-                if let Some(callback) = callback {
-                    if callback.send(result).is_err() {
-                        trace!(
-                            "Couldn't send sync metadata reply back. System is probably shutting down."
-                        );
-                    }
-                }
+            Command::UpdateMetadata(value, callback) => {
+                self.update_metadata(value, updaters, callback)
             }
         }
     }
 
-    fn update_metadata(&mut self, value: MetadataContainer, callback: Option<oneshot::Sender<()>>) {
-        match value {
-            MetadataContainer::NodesConfiguration(config) => {
-                self.update_nodes_configuration(config);
-            }
-            MetadataContainer::PartitionTable(partition_table) => {
-                self.update_partition_table(partition_table);
-            }
-            MetadataContainer::Logs(logs) => {
-                self.update_logs(logs);
-            }
-            MetadataContainer::Schema(schemas) => {
-                self.update_schema(schemas);
-            }
-        }
-
-        if let Some(callback) = callback {
-            let _ = callback.send(());
-        }
-    }
-
-    async fn sync_metadata(
+    fn update_metadata(
         &mut self,
-        metadata_kind: MetadataKind,
-        target_version: TargetVersion,
-    ) -> Result<(), ReadError> {
-        if self.has_target_version(metadata_kind, target_version) {
-            return Ok(());
-        }
-
-        trace!(%metadata_kind, %target_version, "Sync metadata");
-
-        match metadata_kind {
-            MetadataKind::NodesConfiguration => {
-                if let Some(nodes_config) = self
-                    .metadata_store_client
-                    .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
-                    .await?
-                {
-                    self.update_nodes_configuration(Arc::new(nodes_config));
-                }
+        value: MetadataContainer,
+        updaters: &Updaters,
+        callback: Option<oneshot::Sender<Version>>,
+    ) {
+        match value {
+            MetadataContainer::NodesConfiguration(value) => {
+                let _ = updaters
+                    .nodes_config
+                    .send(super::update_task::Command::Update { value, callback });
             }
-            MetadataKind::PartitionTable => {
-                if let Some(partition_table) = self
-                    .metadata_store_client
-                    .get::<PartitionTable>(PARTITION_TABLE_KEY.clone())
-                    .await?
-                {
-                    self.update_partition_table(Arc::new(partition_table));
-                }
+            MetadataContainer::PartitionTable(value) => {
+                let _ = updaters
+                    .partition_table
+                    .send(super::update_task::Command::Update { value, callback });
             }
-            MetadataKind::Logs => {
-                if let Some(logs) = self
-                    .metadata_store_client
-                    .get::<Logs>(BIFROST_CONFIG_KEY.clone())
-                    .await?
-                {
-                    self.update_logs(Arc::new(logs));
-                }
+            MetadataContainer::Logs(value) => {
+                let _ = updaters
+                    .logs
+                    .send(super::update_task::Command::Update { value, callback });
             }
-            MetadataKind::Schema => {
-                if let Some(schema) = self
-                    .metadata_store_client
-                    .get::<Schema>(SCHEMA_INFORMATION_KEY.clone())
-                    .await?
-                {
-                    self.update_schema(Arc::new(schema))
-                }
+            MetadataContainer::Schema(value) => {
+                let _ = updaters
+                    .schema
+                    .send(super::update_task::Command::Update { value, callback });
             }
-        }
-
-        Ok(())
-    }
-
-    fn has_target_version(
-        &self,
-        metadata_kind: MetadataKind,
-        target_version: TargetVersion,
-    ) -> bool {
-        match target_version {
-            TargetVersion::Latest => false,
-            TargetVersion::Version(target_version) => {
-                let version = match metadata_kind {
-                    MetadataKind::NodesConfiguration => self.metadata.nodes_config_version(),
-                    MetadataKind::Schema => self.metadata.schema_version(),
-                    MetadataKind::PartitionTable => self.metadata.partition_table_version(),
-                    MetadataKind::Logs => self.metadata.logs_version(),
-                };
-
-                version >= target_version
-            }
-        }
-    }
-
-    fn update_nodes_configuration(&mut self, config: Arc<NodesConfiguration>) {
-        let maybe_new_version = Self::update_internal(&self.metadata.inner.nodes_config, config);
-
-        self.update_task_and_notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
-    }
-
-    fn update_partition_table(&mut self, partition_table: Arc<PartitionTable>) {
-        let maybe_new_version =
-            Self::update_internal(&self.metadata.inner.partition_table, partition_table);
-
-        self.update_task_and_notify_watches(maybe_new_version, MetadataKind::PartitionTable);
-    }
-
-    fn update_logs(&mut self, logs: Arc<Logs>) {
-        let maybe_new_version = Self::update_internal(&self.metadata.inner.logs, logs);
-
-        self.update_task_and_notify_watches(maybe_new_version, MetadataKind::Logs);
-    }
-
-    fn update_schema(&mut self, schema: Arc<Schema>) {
-        let maybe_new_version = Self::update_internal(&self.metadata.inner.schema, schema);
-
-        self.update_task_and_notify_watches(maybe_new_version, MetadataKind::Schema);
-    }
-
-    fn update_internal<M: Versioned>(container: &ArcSwap<M>, new_value: Arc<M>) -> Version {
-        let current_value = container.load();
-        let mut maybe_new_version = new_value.version();
-
-        if new_value.version() > current_value.version() {
-            trace!(
-                "Updating {} from {} to {}",
-                type_name::<M>(),
-                current_value.version(),
-                new_value.version(),
-            );
-            container.store(new_value);
-        } else {
-            /* Do nothing, current is already newer */
-            maybe_new_version = current_value.version();
-        }
-
-        maybe_new_version
-    }
-
-    fn update_task_and_notify_watches(&mut self, maybe_new_version: Version, kind: MetadataKind) {
-        // update tasks if they are no longer needed
-        if self.update_tasks[kind]
-            .as_ref()
-            .is_some_and(|task| maybe_new_version >= task.version)
-        {
-            self.update_tasks[kind] = None;
-        }
-
-        // notify watches.
-        self.metadata.inner.write_watches[kind]
-            .sender
-            .send_if_modified(|v| {
-                if maybe_new_version > *v {
-                    *v = maybe_new_version;
-                    true
-                } else {
-                    false
-                }
-            });
-    }
-
-    async fn check_for_observed_updates(&mut self) -> Result<(), UpdateError> {
-        for kind in MetadataKind::iter() {
-            if let Some(version_information) = self.metadata.observed_version(kind) {
-                if version_information.version
-                    > self.update_tasks[kind]
-                        .as_ref()
-                        .map(|task| task.version)
-                        .unwrap_or(Version::INVALID)
-                {
-                    self.update_tasks[kind] = Some(UpdateTask::from(version_information));
-                }
-            }
-        }
-
-        for metadata_kind in MetadataKind::iter() {
-            let mut update_task = self.update_tasks[metadata_kind].take();
-
-            if let Some(mut task) = update_task {
-                match task.state {
-                    UpdateTaskState::FromPeer(connection) => {
-                        trace!(
-                            "Attempting to get '{}' metadata from {:?}",
-                            metadata_kind,
-                            connection.peer()
-                        );
-                        // Best-effort send. We'll sync from metadata store if we couldn't send or
-                        // if we have not heard a response before the next tick.
-                        let _ = connection.encode_and_send(MetadataMessage::GetMetadataRequest(
-                            GetMetadataRequest {
-                                metadata_kind,
-                                min_version: Some(task.version),
-                            },
-                        ));
-
-                        task.state = UpdateTaskState::Sync;
-                        update_task = Some(task);
-                    }
-                    UpdateTaskState::Sync => {
-                        trace!(
-                            "Attempting to update '{}' metadata from metadata store",
-                            metadata_kind,
-                        );
-                        // todo: configuration
-                        if tokio::time::timeout(
-                            std::time::Duration::from_secs(2),
-                            self.sync_metadata(metadata_kind, TargetVersion::Version(task.version)),
-                        )
-                        .await
-                        .is_ok_and(|s| s.is_ok())
-                        {
-                            // syncing will give us >= task.version so let's stop here
-                            update_task = None;
-                        } else {
-                            debug!(
-                                "Could not update '{}' metadata from metadata store. Will retry later",
-                                metadata_kind,
-                            );
-                            update_task = Some(task);
-                        }
-                    }
-                }
-
-                self.update_tasks[metadata_kind] = update_task;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-enum UpdateTaskState {
-    FromPeer(UnboundedConnectionRef),
-    Sync,
-}
-
-struct UpdateTask {
-    version: Version,
-    state: UpdateTaskState,
-}
-
-impl UpdateTask {
-    fn from(version_information: VersionInformation) -> Self {
-        let state = if let Some(connection) = version_information.peer_connection {
-            UpdateTaskState::FromPeer(connection)
-        } else {
-            UpdateTaskState::Sync
-        };
-
-        Self {
-            version: version_information.version,
-            state,
         }
     }
 }
@@ -583,8 +372,8 @@ mod tests {
     use restate_types::nodes_config::{LogServerConfig, MetadataServerConfig, NodeConfig, Role};
     use restate_types::{GenerationalNodeId, Version};
 
-    use crate::TaskCenterBuilder;
     use crate::metadata::spawn_metadata_manager;
+    use crate::{TaskCenter, TaskCenterBuilder};
 
     #[test]
     fn test_nodes_config_updates() -> Result<()> {

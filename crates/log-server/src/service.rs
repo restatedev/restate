@@ -242,7 +242,7 @@ impl LogServerService {
         let mut first_attempt = true;
 
         let nodes_config = match retry_on_retryable_error(retry_policy, || {
-            metadata_writer.metadata_store_client().read_modify_write(
+            metadata_writer.raw_metadata_store_client().read_modify_write(
                 NODES_CONFIG_KEY.clone(),
                 move |nodes_config: Option<NodesConfiguration>| {
                     let mut nodes_config =

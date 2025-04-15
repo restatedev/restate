@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures::StreamExt;
 use tracing::{instrument, trace};
@@ -18,9 +17,7 @@ use restate_core::network::{
     Incoming, MessageRouterBuilder, MessageStream, PeerMetadataVersion, Reciprocal,
     TransportConnect,
 };
-use restate_core::{
-    Metadata, MetadataKind, SyncError, TargetVersion, TaskCenter, TaskKind, cancellation_watcher,
-};
+use restate_core::{Metadata, MetadataKind, TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::config::ReplicatedLogletOptions;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::logs::{LogletOffset, SequenceNumber};
@@ -277,38 +274,16 @@ impl RequestPump {
             }
 
             if request_logs_version > current_logs_version {
+                tracing::trace!(%current_logs_version, target_version=%request_logs_version, "We don't have the required logs metadata version, waiting");
                 match metadata
-                    .sync(
-                        MetadataKind::Logs,
-                        TargetVersion::Version(request_logs_version),
-                    )
+                    .wait_for_version(MetadataKind::Logs, request_logs_version)
                     .await
                 {
-                    Ok(_) => {}
-                    Err(SyncError::Shutdown(_)) => return Err(SequencerStatus::Shutdown),
-                    Err(SyncError::MetadataStore(err)) => {
-                        tracing::trace!(error=%err, target_version=%request_logs_version, "Failed to sync metadata");
-                        //todo(azmy): make timeout configurable
-                        let result = tokio::time::timeout(
-                            Duration::from_secs(2),
-                            metadata.wait_for_version(MetadataKind::Logs, request_logs_version),
-                        )
-                        .await;
-
-                        match result {
-                            Err(_elapsed) => {
-                                tracing::trace!(
-                                    "Timeout waiting on logs metadata version update to '{}'",
-                                    request_logs_version
-                                );
-                            }
-                            Ok(Err(_shutdown)) => return Err(SequencerStatus::Shutdown),
-                            Ok(_) => {}
-                        }
+                    Err(_) => return Err(SequencerStatus::Shutdown),
+                    Ok(version) => {
+                        current_logs_version = version;
                     }
                 }
-
-                current_logs_version = metadata.logs_version();
             } else {
                 return Err(SequencerStatus::UnknownLogId);
             }
