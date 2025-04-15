@@ -102,7 +102,16 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
         // given node because it is included in the implicit node set
         if matches!(
             self.logs.configuration().default_provider.kind(),
-            ProviderKind::Local | ProviderKind::InMemory
+            ProviderKind::Local
+        ) {
+            return Err(DisableNodeError::DefaultLogletProvider(
+                self.logs.configuration().default_provider.kind(),
+            ));
+        }
+        #[cfg(feature = "memory-loglet")]
+        if matches!(
+            self.logs.configuration().default_provider.kind(),
+            ProviderKind::InMemory
         ) {
             return Err(DisableNodeError::DefaultLogletProvider(
                 self.logs.configuration().default_provider.kind(),
@@ -115,7 +124,15 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
                 match segment.config.kind {
                     // we assume that the given node runs the local and memory loglet and, therefore,
                     // cannot be disabled
-                    ProviderKind::Local | ProviderKind::InMemory => {
+                    #[cfg(feature = "memory-loglet")]
+                    ProviderKind::InMemory => {
+                        return Err(DisableNodeError::LocalLoglet {
+                            provider_kind: segment.config.kind,
+                            loglet_id: LogletId::new(*log_id, segment.index()),
+                            node_id,
+                        });
+                    }
+                    ProviderKind::Local => {
                         return Err(DisableNodeError::LocalLoglet {
                             provider_kind: segment.config.kind,
                             loglet_id: LogletId::new(*log_id, segment.index()),
