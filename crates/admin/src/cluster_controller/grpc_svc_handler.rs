@@ -31,9 +31,9 @@ use restate_core::protobuf::cluster_ctrl_svc::{
 use restate_core::{Metadata, MetadataWriter};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::identifiers::PartitionId;
-use restate_types::logs::metadata::{Logs, SegmentIndex};
+use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY};
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::partition_processor_manager::Snapshot;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::cluster::ClusterConfiguration;
@@ -78,15 +78,6 @@ impl ClusterCtrlSvcHandler {
             .send_compressed(CompressionEncoding::Zstd)
             .send_compressed(CompressionEncoding::Gzip)
     }
-
-    async fn get_logs(&self) -> Result<Logs, Status> {
-        self.metadata_writer
-            .raw_metadata_store_client()
-            .get::<Logs>(BIFROST_CONFIG_KEY.clone())
-            .await
-            .map_err(|error| Status::unknown(format!("Failed to get log metadata: {error:?}")))?
-            .ok_or(Status::not_found("Missing log metadata"))
-    }
 }
 
 #[async_trait]
@@ -112,7 +103,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         _request: Request<ListLogsRequest>,
     ) -> Result<Response<ListLogsResponse>, Status> {
         Ok(Response::new(ListLogsResponse {
-            logs: serialize_value(self.get_logs().await?),
+            logs: serialize_value(&*Metadata::with_current(|m| m.logs_ref())),
         }))
     }
 
@@ -123,7 +114,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         let request = request.into_inner();
 
         let log_id = LogId::new(request.log_id);
-        let logs = self.get_logs().await?;
+        let logs = Metadata::with_current(|m| m.logs_snapshot());
 
         let chain = logs
             .chain(&log_id)
@@ -154,11 +145,11 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         Ok(Response::new(DescribeLogResponse {
             log_id: log_id.into(),
             logs_version: logs.version().into(),
-            chain: serialize_value(chain),
+            chain: serialize_value(&chain),
             tail_state: 0, // TailState_UNKNOWN
             tail_offset: Lsn::INVALID.as_u64(),
             trim_point: trim_point.as_u64(),
-            nodes_configuration: serialize_value(nodes_config),
+            nodes_configuration: serialize_value(&nodes_config),
         }))
     }
 
@@ -405,9 +396,9 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
     }
 }
 
-fn serialize_value<T: StorageEncode>(value: T) -> Bytes {
+fn serialize_value<T: StorageEncode>(value: &T) -> Bytes {
     let mut buf = BytesMut::new();
-    StorageCodec::encode(&value, &mut buf).expect("We can always serialize");
+    StorageCodec::encode(value, &mut buf).expect("We can always serialize");
     buf.freeze()
 }
 
