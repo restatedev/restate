@@ -55,21 +55,19 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         .await?
         .into_body()
         .await?;
-
-    let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
+    let (deployment_id, deployment, deployment_services) = deployment.into_parts();
+    let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment_id).await?;
 
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     // To know the latest version of every service.
-    let services = client.get_services().await?.into_body().await?.services;
-    for service in services {
+    for service in client.get_services().await?.into_body().await?.services {
         latest_services.insert(service.name.clone(), service);
     }
 
     // sum inv_count in active_inv
     let total_active_inv = active_inv.iter().fold(0, |acc, x| acc + x.inv_count);
 
-    let service_rev_pairs: Vec<_> = deployment
-        .services
+    let service_rev_pairs: Vec<_> = deployment_services
         .iter()
         .map(|s| ServiceNameRevPair {
             name: s.name.clone(),
@@ -78,21 +76,21 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         .collect();
 
     let status = calculate_deployment_status(
-        &deployment.id,
+        &deployment_id,
         &service_rev_pairs,
         total_active_inv,
         &latest_services,
     );
 
     let mut table = Table::new_styled();
-    table.add_kv_row("ID:", deployment.id);
+    table.add_kv_row("ID:", deployment_id);
 
-    add_deployment_to_kv_table(&deployment.deployment, &mut table);
+    add_deployment_to_kv_table(&deployment, &mut table);
     table.add_kv_row("Status:", render_deployment_status(status));
     table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
     c_println!("{}", table);
     c_println!("{}", Styled(Style::Info, "Services:"));
-    for service in deployment.services {
+    for service in deployment_services {
         let Some(latest_service) = latest_services.get(&service.name) else {
             // if we can't find this service in the latest set of service, something is off. A
             // deployment cannot remove services defined by other deployment, so we should warn that

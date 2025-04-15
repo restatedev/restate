@@ -75,7 +75,11 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
 
     set_opts.log_provider.inspect(|provider| {
         match provider {
-            ProviderKind::InMemory | ProviderKind::Local => {
+            #[cfg(feature = "memory-loglet")]
+            ProviderKind::InMemory => {
+                c_warn!("You are about to reconfigure your cluster with a Bifrost provider that only supports a single node cluster.");
+            }
+            ProviderKind::Local => {
                 c_warn!("You are about to reconfigure your cluster with a Bifrost provider that only supports a single node cluster.");
             }
             ProviderKind::Replicated => {

@@ -170,7 +170,7 @@ impl RocksDbOptions {
     }
 
     pub fn rocksdb_disable_wal(&self) -> bool {
-        self.rocksdb_disable_wal.unwrap_or(true)
+        self.rocksdb_disable_wal.unwrap_or(false)
     }
 
     pub fn rocksdb_disable_direct_io_for_reads(&self) -> bool {

@@ -14,7 +14,7 @@ use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 
-use restate_admin_rest_model::deployments::{Deployment, DeploymentResponse, ServiceNameRevPair};
+use restate_admin_rest_model::deployments::{Deployment, ServiceNameRevPair};
 use restate_cli_util::c_error;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
@@ -86,45 +86,44 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     }
     table.set_styled_header(header);
 
-    let mut enriched_deployments: Vec<(DeploymentResponse, DeploymentStatus, i64)> =
-        Vec::with_capacity(deployments.len());
+    let mut enriched_deployments: Vec<(
+        DeploymentId,
+        Deployment,
+        Vec<ServiceNameRevPair>,
+        DeploymentStatus,
+        i64,
+    )> = Vec::with_capacity(deployments.len());
 
     for deployment in deployments {
+        let (deployment_id, deployment, services) = deployment.into_parts();
+
         // calculate status and counters.
-        let active_inv = count_deployment_active_inv(&sql_client, &deployment.id).await?;
-        let status = calculate_deployment_status(
-            &deployment.id,
-            &deployment.services,
-            active_inv,
-            &latest_services,
-        );
-        enriched_deployments.push((deployment, status, active_inv));
+        let active_inv = count_deployment_active_inv(&sql_client, &deployment_id).await?;
+        let status =
+            calculate_deployment_status(&deployment_id, &services, active_inv, &latest_services);
+        enriched_deployments.push((deployment_id, deployment, services, status, active_inv));
     }
     // Sort by active, draining, then drained.
-    enriched_deployments.sort_unstable_by_key(|(_, status, _)| match status {
+    enriched_deployments.sort_unstable_by_key(|(_, _, _, status, _)| match status {
         DeploymentStatus::Active => 0,
         DeploymentStatus::Draining => 1,
         DeploymentStatus::Drained => 2,
     });
 
-    for (deployment, status, active_inv) in enriched_deployments {
+    for (deployment_id, deployment, services, status, active_inv) in enriched_deployments {
         let mut row = vec![
-            Cell::new(render_deployment_url(&deployment.deployment)),
-            Cell::new(render_deployment_type(&deployment.deployment)),
+            Cell::new(render_deployment_url(&deployment)),
+            Cell::new(render_deployment_type(&deployment)),
             render_deployment_status(status),
             render_active_invocations(active_inv),
-            Cell::new(deployment.id),
-            Cell::new(match &deployment.deployment {
+            Cell::new(deployment_id),
+            Cell::new(match &deployment {
                 Deployment::Http { created_at, .. } => created_at,
                 Deployment::Lambda { created_at, .. } => created_at,
             }),
         ];
         if list_opts.extra {
-            row.push(render_services(
-                &deployment.id,
-                &deployment.services,
-                &latest_services,
-            ));
+            row.push(render_services(&deployment_id, &services, &latest_services));
         }
 
         table.add_row(row);

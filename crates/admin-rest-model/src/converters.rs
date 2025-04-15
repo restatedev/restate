@@ -10,9 +10,9 @@
 
 use restate_types::schema::service::{HandlerMetadata, HandlerMetadataType, ServiceMetadata};
 
+use crate::deployments::DetailedDeploymentResponse;
 use crate::{
-    deployments::{DetailedDeploymentResponse, RegisterDeploymentResponse},
-    services::ListServicesResponse,
+    deployments::RegisterDeploymentResponse, services::ListServicesResponse,
     version::AdminApiVersion,
 };
 
@@ -50,16 +50,29 @@ pub fn convert_detailed_deployment_response(
 }
 
 fn convert_detailed_deployment_response_v1(
-    resp: DetailedDeploymentResponse,
+    mut res: DetailedDeploymentResponse,
 ) -> DetailedDeploymentResponse {
-    DetailedDeploymentResponse {
-        services: resp
-            .services
-            .into_iter()
-            .map(convert_service_metadata_v1)
-            .collect(),
-        ..resp
+    match res {
+        DetailedDeploymentResponse::Http {
+            ref mut services, ..
+        } => {
+            *services = services
+                .clone()
+                .into_iter()
+                .map(convert_service_metadata_v1)
+                .collect();
+        }
+        DetailedDeploymentResponse::Lambda {
+            ref mut services, ..
+        } => {
+            *services = services
+                .clone()
+                .into_iter()
+                .map(convert_service_metadata_v1)
+                .collect();
+        }
     }
+    res
 }
 
 pub fn convert_list_services_response(

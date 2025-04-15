@@ -63,7 +63,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
 
     // Caching endpoints
     for deployment in deployments.deployments {
-        deployment_cache.insert(deployment.id, deployment);
+        deployment_cache.insert(deployment.id(), deployment);
     }
 
     let mut table = Table::new_styled();
@@ -94,16 +94,18 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
             .get(&svc.deployment_id)
             .with_context(|| format!("Deployment {} was not found!", svc.deployment_id))?;
 
+        let (deployment_id, deployment, _) = deployment.clone().into_parts();
+
         let mut row = vec![
             public.to_string(),
             svc.name,
             svc.revision.to_string(),
             flavor.to_string(),
-            render_deployment_type(&deployment.deployment),
-            deployment.id.to_string(),
+            render_deployment_type(&deployment),
+            deployment_id.to_string(),
         ];
         if list_opts.extra {
-            row.push(render_deployment_url(&deployment.deployment));
+            row.push(render_deployment_url(&deployment));
             row.push(render_methods(svc.handlers));
         }
 

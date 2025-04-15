@@ -65,9 +65,11 @@ pub fn db_options(_options: &MetadataServerOptions) -> rocksdb::Options {
     // until shutdown, full of data cf bytes that have already been flushed, wasting disk space.
     opts.set_atomic_flush(true);
 
-    // Make sure that we don't accept any potentially lost writes since it might cause us to make
-    // contradicting promises to our metadata server peers.
-    opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::AbsoluteConsistency);
+    // We cannot prevent that tail writes don't fully complete in the presence of hard crashes.
+    // That's why we tolerate corrupted tail records knowing that we haven't acted on them yet. The
+    // downside is that this is only a heuristic and cannot distinguish between a corrupted tail and
+    // an incomplete write (see https://github.com/facebook/rocksdb/wiki/WAL-Recovery-Modes#ktoleratecorruptedtailrecords).
+    opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::TolerateCorruptedTailRecords);
 
     opts.set_wal_compression_type(DBCompressionType::Zstd);
     // most reads are sequential
