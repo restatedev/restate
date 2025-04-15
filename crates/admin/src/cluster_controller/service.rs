@@ -16,14 +16,13 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use codederror::CodedError;
 use futures::never::Never;
-use restate_storage_query_datafusion::BuildError;
-use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
-use restate_types::replication::{NodeSet, ReplicationProperty};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, trace, warn};
 
+use restate_storage_query_datafusion::BuildError;
+use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
 use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
     ReplicatedLogletConfig, SegmentIndex,
@@ -33,6 +32,8 @@ use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
 use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replication::{NodeSet, ReplicationProperty};
+use restate_types::retries::with_jitter;
 
 use restate_bifrost::{Bifrost, SealedSegment};
 use restate_core::network::rpc_router::RpcRouter;
@@ -314,14 +315,18 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         let health_status = self.health_status.clone();
         health_status.update(AdminStatus::Ready);
 
+        let configuration = self.configuration.live_load();
         TaskCenter::spawn_child(
             TaskKind::SystemService,
             "cluster-controller-metadata-sync",
-            sync_cluster_controller_metadata(),
+            sync_cluster_controller_metadata(with_jitter(
+                configuration.admin.metadata_sync_interval.into(),
+                0.1,
+            )),
         )?;
 
         tokio::select! {
@@ -635,9 +640,8 @@ impl<T: TransportConnect> Service<T> {
     }
 }
 
-async fn sync_cluster_controller_metadata() -> anyhow::Result<()> {
-    // todo make this configurable
-    let mut interval = time::interval(Duration::from_secs(10));
+async fn sync_cluster_controller_metadata(interval_secs: Duration) -> anyhow::Result<()> {
+    let mut interval = time::interval(interval_secs);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut cancel = std::pin::pin!(cancellation_watcher());
