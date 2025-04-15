@@ -247,7 +247,7 @@ impl RaftMetadataServer {
             if let Some(nodes_configuration) = self.storage.get_nodes_configuration()? {
                 metadata_writer
                     .update(Arc::new(nodes_configuration))
-                    .await?
+                    .await?;
             }
         }
 
@@ -724,7 +724,6 @@ impl Member {
 
         let mut nodes_config_watch =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
-        nodes_config_watch.mark_changed();
 
         loop {
             tokio::select! {
@@ -1524,7 +1523,6 @@ impl Standby {
 
         let mut nodes_config_watcher =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
-        nodes_config_watcher.mark_changed();
         let my_node_name = Configuration::pinned().common.node_name().to_owned();
         let mut my_member_id = None;
 

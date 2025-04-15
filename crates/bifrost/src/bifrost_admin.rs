@@ -219,7 +219,7 @@ impl<'a> BifrostAdmin<'a> {
         let logs = retry_on_retryable_error(retry_policy, || {
             self.inner
                 .metadata_writer
-                .metadata_store_client()
+                .raw_metadata_store_client()
                 .read_modify_write(BIFROST_CONFIG_KEY.clone(), |logs: Option<Logs>| {
                     let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
 
@@ -264,7 +264,7 @@ impl<'a> BifrostAdmin<'a> {
         let logs = retry_on_retryable_error(retry_policy, || {
             self.inner
                 .metadata_writer
-                .metadata_store_client()
+                .raw_metadata_store_client()
                 .read_modify_write::<_, _, Error>(
                     BIFROST_CONFIG_KEY.clone(),
                     |logs: Option<Logs>| {
@@ -298,7 +298,7 @@ impl<'a> BifrostAdmin<'a> {
         let logs = retry_on_retryable_error(retry_policy, || {
             self.inner
                 .metadata_writer
-                .metadata_store_client()
+                .raw_metadata_store_client()
                 .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
                     debug!("Attempting to initialize logs metadata in metadata store");
                     Logs::from_configuration(&Configuration::pinned())

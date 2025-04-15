@@ -435,7 +435,6 @@ impl Node {
         tokio::time::timeout(
             initialization_timeout,
             NodeInit::new(
-                &self.metadata_store_client,
                 &metadata_writer,
                 self.is_provisioned,
             )
@@ -487,10 +486,6 @@ impl Node {
             log_server.start(metadata_writer).await?;
         }
 
-        if let Some(admin_role) = self.admin_role {
-            TaskCenter::spawn(TaskKind::SystemBoot, "admin-init", admin_role.start())?;
-        }
-
         if let Some(worker_role) = self.worker_role {
             TaskCenter::spawn(TaskKind::SystemBoot, "worker-init", worker_role.start())?;
         }
@@ -500,6 +495,10 @@ impl Node {
         }
 
         self.base_role.start()?;
+
+        if let Some(admin_role) = self.admin_role {
+            TaskCenter::spawn(TaskKind::SystemBoot, "admin-init", admin_role.start())?;
+        }
 
         let my_roles = my_node_config.roles;
         // Report that the node is running when all roles are ready
