@@ -14,7 +14,6 @@ options_schema = [
   "restate-ingress-http/options_schema",
   "restate-ingress-kafka/options_schema",
   "restate-invoker-impl/options_schema",
-  "restate-partition-store/options_schema",
   "restate-storage-query-datafusion/options_schema",
   "restate-storage-query-postgres/options_schema",
   "restate-timer/options_schema",

@@ -7287,7 +7287,6 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "rust-rocksdb",
- "schemars",
  "serde",
  "serde_json",
  "serde_with",
