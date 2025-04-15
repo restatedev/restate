@@ -460,7 +460,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
 mod tests {
     use super::*;
 
-    use std::num::{NonZeroU8, NonZeroUsize};
+    use std::num::{NonZeroU8, NonZeroU16};
 
     use googletest::prelude::*;
     use test_log::test;
@@ -681,7 +681,7 @@ mod tests {
         let mut config = Configuration::default();
         // disable read-ahead to avoid reading records from log-servers before the trim taking
         // place.
-        config.bifrost.replicated_loglet.readahead_records = NonZeroUsize::new(1).unwrap();
+        config.bifrost.replicated_loglet.readahead_records = NonZeroU16::new(1).unwrap();
         config.bifrost.replicated_loglet.readahead_trigger_ratio = 1.0;
         let record_cache = RecordCache::new(0);
         run_in_test_env(config, params, record_cache, |env| {
