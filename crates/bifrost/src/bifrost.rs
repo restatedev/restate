@@ -504,14 +504,6 @@ impl BifrostInner {
         }
     }
 
-    /// Immediately fetch new metadata from metadata store.
-    pub async fn sync_metadata(&self) -> Result<()> {
-        Metadata::current()
-            .sync(MetadataKind::Logs, TargetVersion::Latest)
-            .await?;
-        Ok(())
-    }
-
     // --- Helper functions --- //
     /// Get the provider for a given kind. A provider must be enabled and BifrostService **must**
     /// be started before calling this.
