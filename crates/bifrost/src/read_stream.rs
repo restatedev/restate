@@ -445,7 +445,7 @@ mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
-    use restate_core::{MetadataKind, TargetVersion, TaskCenter, TaskKind, TestCoreEnvBuilder};
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
     use restate_types::Versioned;
     use restate_types::config::{CommonOptions, Configuration};
@@ -453,7 +453,6 @@ mod tests {
     use restate_types::logs::metadata::{ProviderKind, new_single_node_loglet_params};
     use restate_types::logs::{KeyFilter, SequenceNumber};
     use restate_types::metadata::Precondition;
-    use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
     use crate::loglet::FindTailOptions;
     use crate::{BifrostService, ErrorRecoveryStrategy};
@@ -751,17 +750,12 @@ mod tests {
         let new_version = new_metadata.version();
         assert_eq!(new_version, old_version.next());
         node_env
-            .metadata_store_client
+            .metadata_writer
+            .global_metadata()
             .put(
-                BIFROST_CONFIG_KEY.clone(),
-                &new_metadata,
+                new_metadata.into(),
                 Precondition::MatchesVersion(old_version),
             )
-            .await?;
-
-        // make sure we have updated metadata.
-        metadata
-            .sync(MetadataKind::Logs, TargetVersion::Latest)
             .await?;
 
         // append 5 more records into the new loglet.
@@ -932,7 +926,7 @@ mod tests {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
         // enable both in-memory and local loglet types
-        let svc = BifrostService::new(node_env.metadata_writer)
+        let svc = BifrostService::new(node_env.metadata_writer.clone())
             .enable_local_loglet(&config)
             .enable_in_memory_loglet();
         let bifrost = svc.handle();
@@ -955,17 +949,12 @@ mod tests {
         let new_version = new_metadata.version();
         assert_eq!(new_version, old_version.next());
         node_env
-            .metadata_store_client
+            .metadata_writer
+            .global_metadata()
             .put(
-                BIFROST_CONFIG_KEY.clone(),
-                &new_metadata,
+                new_metadata.into(),
                 Precondition::MatchesVersion(old_version),
             )
-            .await?;
-
-        // make sure we have updated metadata.
-        metadata
-            .sync(MetadataKind::Logs, TargetVersion::Latest)
             .await?;
 
         let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;

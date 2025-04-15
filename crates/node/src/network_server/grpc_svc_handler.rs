@@ -32,7 +32,7 @@ use restate_core::protobuf::node_ctl_svc::{
     ClusterHealthResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest, GetMetadataResponse,
     IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse,
 };
-use restate_core::{Metadata, MetadataKind, TargetVersion};
+use restate_core::{Metadata, MetadataKind};
 use restate_metadata_server::WriteError;
 use restate_types::Version;
 use restate_types::config::Configuration;
@@ -146,12 +146,6 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             .kind()
             .try_into()
             .map_err(|err: anyhow::Error| Status::invalid_argument(err.to_string()))?;
-        if request.sync {
-            metadata
-                .sync(kind, TargetVersion::Latest)
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?;
-        }
         let mut encoded = BytesMut::new();
         match kind {
             MetadataKind::NodesConfiguration => {
