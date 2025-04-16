@@ -26,10 +26,22 @@ use super::{Connection, ConnectionClosed, NetworkSendError};
 static NEXT_MSG_ID: AtomicU64 = const { AtomicU64::new(1) };
 
 /// Address of a peer in the network. It can be a specific node or an anonymous peer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Eq, derive_more::IsVariant, derive_more::Display)]
 pub enum PeerAddress {
-    ServerNode(NodeId),
+    #[display("{_0}")]
+    ServerNode(GenerationalNodeId),
+    #[display("Anonymous")]
     Anonymous,
+}
+
+impl PartialEq for PeerAddress {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::ServerNode(l0), Self::ServerNode(r0)) => l0 == r0,
+            // anonymous peers are not comparable (partial equivalence)
+            _ => false,
+        }
+    }
 }
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug, derive_more::Display)]
