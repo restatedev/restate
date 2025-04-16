@@ -23,7 +23,6 @@ use tracing::subscriber::NoSubscriber;
 use restate_core::{Metadata, MetadataWriter};
 use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
-use restate_types::metadata_store::keys::SCHEMA_INFORMATION_KEY;
 use restate_types::schema::Schema;
 use restate_types::schema::deployment::{
     DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver,
@@ -145,31 +144,27 @@ impl<V> SchemaRegistry<V> {
             let mut new_deployment_id = None;
             let schema_information = self
                 .metadata_writer
-                .raw_metadata_store_client()
-                .read_modify_write(
-                    SCHEMA_INFORMATION_KEY.clone(),
-                    |schema_information: Option<Schema>| {
-                        let mut updater =
-                            SchemaUpdater::new(schema_information.unwrap_or_default());
+                .global_metadata()
+                .read_modify_write(|schema_information: Option<Arc<Schema>>| {
+                    let mut updater = SchemaUpdater::new(
+                        schema_information
+                            .map(|s| s.as_ref().clone())
+                            .unwrap_or_default(),
+                    );
 
-                        new_deployment_id = Some(updater.add_deployment(
-                            deployment_metadata.clone(),
-                            discovered_metadata.services.clone(),
-                            force.force_enabled(),
-                        )?);
-                        Ok(updater.into_inner())
-                    },
-                )
+                    new_deployment_id = Some(updater.add_deployment(
+                        deployment_metadata.clone(),
+                        discovered_metadata.services.clone(),
+                        force.force_enabled(),
+                    )?);
+                    Ok(updater.into_inner())
+                })
                 .await?;
 
             let new_deployment_id = new_deployment_id.expect("deployment was just added");
             let (_, services) = schema_information
                 .get_deployment_and_services(&new_deployment_id)
                 .expect("deployment was just added");
-
-            self.metadata_writer
-                .update(Arc::new(schema_information))
-                .await?;
 
             (new_deployment_id, services)
         };
@@ -225,30 +220,26 @@ impl<V> SchemaRegistry<V> {
         } else {
             let schema_information = self
                 .metadata_writer
-                .raw_metadata_store_client()
-                .read_modify_write(
-                    SCHEMA_INFORMATION_KEY.clone(),
-                    |schema_information: Option<Schema>| {
-                        let mut updater =
-                            SchemaUpdater::new(schema_information.unwrap_or_default());
+                .global_metadata()
+                .read_modify_write(|schema_information: Option<Arc<Schema>>| {
+                    let mut updater = SchemaUpdater::new(
+                        schema_information
+                            .map(|s| s.as_ref().clone())
+                            .unwrap_or_default(),
+                    );
 
-                        updater.update_deployment(
-                            deployment_id,
-                            deployment_metadata.clone(),
-                            discovered_metadata.services.clone(),
-                        )?;
-                        Ok(updater.into_inner())
-                    },
-                )
+                    updater.update_deployment(
+                        deployment_id,
+                        deployment_metadata.clone(),
+                        discovered_metadata.services.clone(),
+                    )?;
+                    Ok(updater.into_inner())
+                })
                 .await?;
 
             let (deployment, services) = schema_information
                 .get_deployment_and_services(&deployment_id)
                 .expect("deployment was just updated");
-
-            self.metadata_writer
-                .update(Arc::new(schema_information))
-                .await?;
 
             Ok((deployment, services))
         }
@@ -258,28 +249,23 @@ impl<V> SchemaRegistry<V> {
         &self,
         deployment_id: DeploymentId,
     ) -> Result<(), SchemaRegistryError> {
-        let schema_registry = self
-            .metadata_writer
-            .raw_metadata_store_client()
-            .read_modify_write(
-                SCHEMA_INFORMATION_KEY.clone(),
-                |schema_registry: Option<Schema>| {
-                    let schema_information: Schema = schema_registry.unwrap_or_default();
-
-                    if schema_information.get_deployment(&deployment_id).is_some() {
-                        let mut updater = SchemaUpdater::new(schema_information);
-                        updater.remove_deployment(deployment_id);
-                        Ok(updater.into_inner())
-                    } else {
-                        Err(SchemaError::NotFound(format!(
-                            "deployment with id '{deployment_id}'"
-                        )))
-                    }
-                },
-            )
-            .await?;
         self.metadata_writer
-            .update(Arc::new(schema_registry))
+            .global_metadata()
+            .read_modify_write(|schema_registry: Option<Arc<Schema>>| {
+                let schema_information: Schema = schema_registry
+                    .map(|s| s.as_ref().clone())
+                    .unwrap_or_default();
+
+                if schema_information.get_deployment(&deployment_id).is_some() {
+                    let mut updater = SchemaUpdater::new(schema_information);
+                    updater.remove_deployment(deployment_id);
+                    Ok(updater.into_inner())
+                } else {
+                    Err(SchemaError::NotFound(format!(
+                        "deployment with id '{deployment_id}'"
+                    )))
+                }
+            })
             .await?;
 
         Ok(())
@@ -292,35 +278,30 @@ impl<V> SchemaRegistry<V> {
     ) -> Result<ServiceMetadata, SchemaRegistryError> {
         let schema_information = self
             .metadata_writer
-            .raw_metadata_store_client()
-            .read_modify_write(
-                SCHEMA_INFORMATION_KEY.clone(),
-                |schema_information: Option<Schema>| {
-                    let schema_information = schema_information.unwrap_or_default();
+            .global_metadata()
+            .read_modify_write(|schema_information: Option<Arc<Schema>>| {
+                let schema_information = schema_information
+                    .map(|s| s.as_ref().clone())
+                    .unwrap_or_default();
 
-                    if schema_information
-                        .resolve_latest_service(&service_name)
-                        .is_some()
-                    {
-                        let mut updater = SchemaUpdater::new(schema_information);
-                        updater.modify_service(service_name.clone(), changes.clone())?;
-                        Ok(updater.into_inner())
-                    } else {
-                        Err(SchemaError::NotFound(format!(
-                            "service with name '{service_name}'"
-                        )))
-                    }
-                },
-            )
+                if schema_information
+                    .resolve_latest_service(&service_name)
+                    .is_some()
+                {
+                    let mut updater = SchemaUpdater::new(schema_information);
+                    updater.modify_service(service_name.clone(), changes.clone())?;
+                    Ok(updater.into_inner())
+                } else {
+                    Err(SchemaError::NotFound(format!(
+                        "service with name '{service_name}'"
+                    )))
+                }
+            })
             .await?;
 
         let response = schema_information
             .resolve_latest_service(&service_name)
             .expect("service was just modified");
-
-        self.metadata_writer
-            .update(Arc::new(schema_information))
-            .await?;
 
         Ok(response)
     }
@@ -329,32 +310,26 @@ impl<V> SchemaRegistry<V> {
         &self,
         subscription_id: SubscriptionId,
     ) -> Result<(), SchemaRegistryError> {
-        let schema_information = self
-            .metadata_writer
-            .raw_metadata_store_client()
-            .read_modify_write(
-                SCHEMA_INFORMATION_KEY.clone(),
-                |schema_information: Option<Schema>| {
-                    let schema_information = schema_information.unwrap_or_default();
-
-                    if schema_information
-                        .get_subscription(subscription_id)
-                        .is_some()
-                    {
-                        let mut updater = SchemaUpdater::new(schema_information);
-                        updater.remove_subscription(subscription_id);
-                        Ok(updater.into_inner())
-                    } else {
-                        Err(SchemaError::NotFound(format!(
-                            "subscription with id '{subscription_id}'"
-                        )))
-                    }
-                },
-            )
-            .await?;
-
         self.metadata_writer
-            .update(Arc::new(schema_information))
+            .global_metadata()
+            .read_modify_write(|schema_information: Option<Arc<Schema>>| {
+                let schema_information = schema_information
+                    .map(|s| s.as_ref().clone())
+                    .unwrap_or_default();
+
+                if schema_information
+                    .get_subscription(subscription_id)
+                    .is_some()
+                {
+                    let mut updater = SchemaUpdater::new(schema_information);
+                    updater.remove_subscription(subscription_id);
+                    Ok(updater.into_inner())
+                } else {
+                    Err(SchemaError::NotFound(format!(
+                        "subscription with id '{subscription_id}'"
+                    )))
+                }
+            })
             .await?;
 
         Ok(())
@@ -429,30 +404,28 @@ where
 
         let schema_information = self
             .metadata_writer
-            .raw_metadata_store_client()
-            .read_modify_write(
-                SCHEMA_INFORMATION_KEY.clone(),
-                |schema_information: Option<Schema>| {
-                    let mut updater = SchemaUpdater::new(schema_information.unwrap_or_default());
-                    subscription_id = Some(updater.add_subscription(
-                        None,
-                        source.clone(),
-                        sink.clone(),
-                        options.clone(),
-                        &self.subscription_validator,
-                    )?);
+            .global_metadata()
+            .read_modify_write(|schema_information: Option<Arc<Schema>>| {
+                let mut updater = SchemaUpdater::new(
+                    schema_information
+                        .map(|s| s.as_ref().clone())
+                        .unwrap_or_default(),
+                );
+                subscription_id = Some(updater.add_subscription(
+                    None,
+                    source.clone(),
+                    sink.clone(),
+                    options.clone(),
+                    &self.subscription_validator,
+                )?);
 
-                    Ok::<_, SchemaError>(updater.into_inner())
-                },
-            )
+                Ok::<_, SchemaError>(updater.into_inner())
+            })
             .await?;
 
         let subscription = schema_information
             .get_subscription(subscription_id.expect("subscription was just added"))
             .expect("subscription was just added");
-        self.metadata_writer
-            .update(Arc::new(schema_information))
-            .await?;
 
         Ok(subscription)
     }
