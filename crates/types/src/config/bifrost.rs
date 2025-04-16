@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -270,7 +270,7 @@ pub struct ReplicatedLogletOptions {
     /// The number of records bifrost will attempt to prefetch from replicated loglet's log-servers
     /// for every loglet reader (e.g. partition processor). Note that this mainly impacts readers
     /// that are not co-located with the loglet sequencer (i.e. partition processor followers).
-    pub readahead_records: NonZeroUsize,
+    pub readahead_records: NonZeroU16,
 
     /// Trigger to prefetch more records
     ///
@@ -349,7 +349,7 @@ impl Default for ReplicatedLogletOptions {
                 Some(3),
                 Some(Duration::from_millis(2000)),
             ),
-            readahead_records: NonZeroUsize::new(100).unwrap(),
+            readahead_records: NonZeroU16::new(100).unwrap(),
             readahead_trigger_ratio: 0.5,
             default_nodeset_size: NodeSetSize::default(),
             default_log_replication: None,
@@ -375,7 +375,7 @@ pub struct ReplicatedLogletOptionsShadow {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     log_server_rpc_timeout: humantime::Duration,
     log_server_retry_policy: RetryPolicy,
-    readahead_records: NonZeroUsize,
+    readahead_records: NonZeroU16,
     readahead_trigger_ratio: f32,
     #[serde_as(as = "Option<crate::replication::ReplicationPropertyFromTo>")]
     default_log_replication: Option<ReplicationProperty>,
