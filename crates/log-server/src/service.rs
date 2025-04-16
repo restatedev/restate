@@ -239,45 +239,47 @@ impl LogServerService {
         let mut first_attempt = true;
 
         let nodes_config = match retry_on_retryable_error(retry_policy, || {
-            metadata_writer.metadata_store_client().read_modify_write(
-                NODES_CONFIG_KEY.clone(),
-                move |nodes_config: Option<NodesConfiguration>| {
-                    let mut nodes_config =
-                        nodes_config.ok_or(StorageStateUpdateError::MissingNodesConfiguration)?;
-                    // If this fails, it means that a newer node has started somewhere else, and we
-                    // should not attempt to update the storage-state. Instead, we fail.
-                    let mut node = nodes_config
-                        // note that we find by the generational node id.
-                        .find_node_by_id(my_node_id)
-                        .map_err(|_| StorageStateUpdateError::NewerGenerationDetected)?
-                        .clone();
+            metadata_writer
+                .raw_metadata_store_client()
+                .read_modify_write(
+                    NODES_CONFIG_KEY.clone(),
+                    move |nodes_config: Option<NodesConfiguration>| {
+                        let mut nodes_config = nodes_config
+                            .ok_or(StorageStateUpdateError::MissingNodesConfiguration)?;
+                        // If this fails, it means that a newer node has started somewhere else, and we
+                        // should not attempt to update the storage-state. Instead, we fail.
+                        let mut node = nodes_config
+                            // note that we find by the generational node id.
+                            .find_node_by_id(my_node_id)
+                            .map_err(|_| StorageStateUpdateError::NewerGenerationDetected)?
+                            .clone();
 
-                    if node.log_server_config.storage_state != expected_state {
-                        return if first_attempt {
-                            // Something might have caused this state to change. This should not happen,
-                            // bail!
-                            Err(StorageStateUpdateError::NotInExpectedState(
-                                node.log_server_config.storage_state,
-                            ))
-                        } else {
-                            // If we end up here, then we must have changed the StorageState in a previous attempt.
-                            // It cannot happen that there is a newer generation of me that changed the StorageState,
-                            // because then I would have failed before when retrieving my NodeConfig with my generational
-                            // node id.
-                            Err(StorageStateUpdateError::PreviousAttemptSucceeded(
-                                nodes_config,
-                            ))
-                        };
-                    }
+                        if node.log_server_config.storage_state != expected_state {
+                            return if first_attempt {
+                                // Something might have caused this state to change. This should not happen,
+                                // bail!
+                                Err(StorageStateUpdateError::NotInExpectedState(
+                                    node.log_server_config.storage_state,
+                                ))
+                            } else {
+                                // If we end up here, then we must have changed the StorageState in a previous attempt.
+                                // It cannot happen that there is a newer generation of me that changed the StorageState,
+                                // because then I would have failed before when retrieving my NodeConfig with my generational
+                                // node id.
+                                Err(StorageStateUpdateError::PreviousAttemptSucceeded(
+                                    nodes_config,
+                                ))
+                            };
+                        }
 
-                    node.log_server_config.storage_state = target_state;
+                        node.log_server_config.storage_state = target_state;
 
-                    first_attempt = false;
-                    nodes_config.upsert_node(node);
-                    nodes_config.increment_version();
-                    Ok(nodes_config)
-                },
-            )
+                        first_attempt = false;
+                        nodes_config.upsert_node(node);
+                        nodes_config.increment_version();
+                        Ok(nodes_config)
+                    },
+                )
         })
         .await
         .map_err(|e| e.map(|err| err.transpose()))
