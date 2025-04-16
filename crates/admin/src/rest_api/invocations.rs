@@ -18,7 +18,7 @@ use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest};
-use restate_wal_protocol::{Command, Envelope, append_envelope_to_bifrost};
+use restate_wal_protocol::{Command, Envelope};
 use serde::Deserialize;
 use tracing::warn;
 
@@ -94,7 +94,7 @@ pub async fn delete_invocation<V>(
 
     let partition_key = invocation_id.partition_key();
 
-    let result = append_envelope_to_bifrost(
+    let result = restate_bifrost::append_to_bifrost(
         &state.bifrost,
         Arc::new(Envelope::new(create_envelope_header(partition_key), cmd)),
     )
