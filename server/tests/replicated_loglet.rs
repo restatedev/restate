@@ -13,7 +13,7 @@ mod common;
 mod tests {
     use std::{
         collections::BTreeSet,
-        num::{NonZeroU8, NonZeroUsize},
+        num::{NonZeroU8, NonZeroU16},
         sync::Arc,
         time::Duration,
     };
@@ -152,7 +152,7 @@ mod tests {
         let mut config = Configuration::default();
         // disable read-ahead to avoid reading records from log-servers before the trim taking
         // place.
-        config.bifrost.replicated_loglet.readahead_records = NonZeroUsize::new(1).unwrap();
+        config.bifrost.replicated_loglet.readahead_records = NonZeroU16::new(1).unwrap();
         config.bifrost.replicated_loglet.readahead_trigger_ratio = 1.0;
         config.bifrost.record_cache_memory_size = 0_u64.into();
         run_in_test_env(
