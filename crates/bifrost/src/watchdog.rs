@@ -195,7 +195,7 @@ async fn trim_chain_if_needed(
 ) -> Result<(), ReadWriteError> {
     let new_logs = bifrost
         .metadata_writer
-        .metadata_store_client()
+        .raw_metadata_store_client()
         .read_modify_write(BIFROST_CONFIG_KEY.clone(), |current: Option<Logs>| {
             let logs = current.expect("logs should be initialized by BifrostService");
             let mut logs_builder = logs.into_builder();
