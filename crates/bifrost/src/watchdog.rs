@@ -59,20 +59,6 @@ impl Watchdog {
 
     fn handle_command(&mut self, cmd: WatchdogCommand) {
         match cmd {
-            WatchdogCommand::ScheduleMetadataSync => {
-                let bifrost = self.inner.clone();
-                let _ = TaskCenter::spawn(
-                    TaskKind::MetadataBackgroundSync,
-                    "bifrost-metadata-sync",
-                    async move {
-                        bifrost
-                            .sync_metadata()
-                            .await
-                            .context("Bifrost background metadata sync")
-                    },
-                );
-            }
-
             WatchdogCommand::WatchProvider(provider) => {
                 self.live_providers.push(provider.clone());
                 let _ = TaskCenter::spawn(
@@ -242,10 +228,6 @@ async fn trim_chain_if_needed(
 }
 
 pub enum WatchdogCommand {
-    /// Request to sync metadata if the client believes that it's outdated.
-    /// i.e. attempting to write to a sealed segment.
-    #[allow(dead_code)]
-    ScheduleMetadataSync,
     WatchProvider(Arc<dyn LogletProvider>),
     LogTrimmed {
         log_id: LogId,
