@@ -21,39 +21,37 @@ use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, trace, warn};
 
-use restate_storage_query_datafusion::BuildError;
-use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
-use restate_types::logs::metadata::{
-    LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
-    ReplicatedLogletConfig, SegmentIndex,
-};
-use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
-use restate_types::partition_table::{
-    self, PartitionReplication, PartitionTable, PartitionTableBuilder,
-};
-use restate_types::replicated_loglet::ReplicatedLogletParams;
-use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::retries::with_jitter;
-
 use restate_bifrost::{Bifrost, SealedSegment};
+use restate_core::cancellation_token;
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
     MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking, TransportConnect,
 };
 use restate_core::{
-    Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter, TaskKind,
-    cancellation_watcher, metadata_store::ReadModifyWriteError,
+    Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind,
+    metadata_store::ReadModifyWriteError,
 };
+use restate_storage_query_datafusion::BuildError;
+use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
 use restate_types::cluster::cluster_state::ClusterState;
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Live;
+use restate_types::logs::metadata::{
+    LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
+    ReplicatedLogletConfig, SegmentIndex,
+};
 use restate_types::logs::{LogId, LogletId, Lsn};
-use restate_types::net::metadata::MetadataKind;
+use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
+use restate_types::partition_table::{
+    self, PartitionReplication, PartitionTable, PartitionTableBuilder,
+};
 use restate_types::protobuf::common::AdminStatus;
+use restate_types::replicated_loglet::ReplicatedLogletParams;
+use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{GenerationalNodeId, NodeId, Version};
 
 use self::state::ClusterControllerState;
@@ -315,30 +313,16 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    pub async fn run(self) -> anyhow::Result<()> {
         let health_status = self.health_status.clone();
         health_status.update(AdminStatus::Ready);
 
-        let configuration = self.configuration.live_load();
-        TaskCenter::spawn_child(
-            TaskKind::SystemService,
-            "cluster-controller-metadata-sync",
-            sync_cluster_controller_metadata(with_jitter(
-                configuration.admin.metadata_sync_interval.into(),
-                0.1,
-            )),
-        )?;
+        let _ = cancellation_token()
+            .run_until_cancelled(self.run_inner())
+            .await;
 
-        tokio::select! {
-            biased;
-            _ = cancellation_watcher() => {
-                health_status.update(AdminStatus::Unknown);
-                Ok(())
-            }
-            _ = self.run_inner() => {
-                unreachable!("Cluster controller service has terminated unexpectedly.");
-            }
-        }
+        health_status.update(AdminStatus::Unknown);
+        Ok(())
     }
 
     async fn run_inner(mut self) -> Never {
@@ -467,7 +451,7 @@ impl<T: TransportConnect> Service<T> {
     ) -> anyhow::Result<()> {
         let logs = self
             .metadata_writer
-            .metadata_store_client()
+            .raw_metadata_store_client()
             .read_modify_write(BIFROST_CONFIG_KEY.clone(), |current: Option<Logs>| {
                 let logs = current.expect("logs should be initialized by BifrostService");
 
@@ -509,7 +493,7 @@ impl<T: TransportConnect> Service<T> {
 
         let partition_table = self
             .metadata_writer
-            .metadata_store_client()
+            .raw_metadata_store_client()
             .read_modify_write(
                 PARTITION_TABLE_KEY.clone(),
                 |current: Option<PartitionTable>| {
@@ -638,35 +622,6 @@ impl<T: TransportConnect> Service<T> {
             } => self.seal_and_extend_chain(log_id, min_version, extension, response_tx),
         }
     }
-}
-
-async fn sync_cluster_controller_metadata(interval_secs: Duration) -> anyhow::Result<()> {
-    let mut interval = time::interval(interval_secs);
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-    let mut cancel = std::pin::pin!(cancellation_watcher());
-    let metadata = Metadata::current();
-
-    loop {
-        tokio::select! {
-            _ = &mut cancel => {
-                break;
-            },
-            _ = interval.tick() => {
-                tokio::select! {
-                    _ = &mut cancel => {
-                        break;
-                    },
-                    _ = futures::future::join3(
-                        metadata.sync(MetadataKind::NodesConfiguration, TargetVersion::Latest),
-                        metadata.sync(MetadataKind::PartitionTable, TargetVersion::Latest),
-                        metadata.sync(MetadataKind::Logs, TargetVersion::Latest)) => {}
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
 
 #[derive(thiserror::Error, Debug)]

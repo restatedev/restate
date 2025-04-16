@@ -8,39 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::pin::pin;
 use std::sync::Arc;
 
+use ahash::{HashMap, HashMapExt};
 use arc_swap::ArcSwap;
-use restate_types::live::Pinned;
+
+use restate_types::NodeId;
+use restate_types::identifiers::PartitionId;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::partition_table::PartitionTable;
-use tokio::sync::mpsc;
-use tracing::{debug, trace};
+use tracing::debug;
 
-use restate_types::identifiers::PartitionId;
-use restate_types::{NodeId, Version};
-
-use crate::{
-    Metadata, ShutdownError, TargetVersion, TaskCenter, TaskHandle, TaskId, TaskKind,
-    cancellation_watcher,
-};
-
-pub type CommandSender = mpsc::Sender<Command>;
-pub type CommandReceiver = mpsc::Receiver<Command>;
-
-pub enum Command {
-    /// Request an on-demand refresh of routing information from the authoritative source.
-    SyncRoutingInformation,
-}
+use crate::{Metadata, ShutdownError, TaskCenter, TaskId, TaskKind, cancellation_watcher};
 
 /// Discover cluster nodes for a given partition. Compared to the partition table, this view is more
 /// dynamic as it changes based on cluster nodes' operational status. Can be cheaply cloned.
 #[derive(Clone)]
 pub struct PartitionRouting {
-    sender: CommandSender,
     /// A mapping of partition IDs to node IDs that are believed to be authoritative for that serving requests.
     partition_to_node_mappings: Arc<ArcSwap<PartitionToNodesRoutingTable>>,
 }
@@ -52,43 +38,13 @@ impl PartitionRouting {
     /// retrying the request, or returning an error upstream when information is not available.
     ///
     /// A `None` response indicates that either we have no knowledge about this partition, or that
-    /// the routing table has not yet been refreshed for the cluster. The latter condition should be
-    /// brief and only on startup, so we can generally treat lack of response as a negative answer.
-    /// An automatic refresh is scheduled any time a `None` response is returned.
+    /// the routing table has not yet been refreshed for the cluster.
     pub fn get_node_by_partition(&self, partition_id: PartitionId) -> Option<NodeId> {
-        let mappings = self.partition_to_node_mappings.load();
-
-        // This check should ideally be strengthened to make sure we're using reasonably fresh lookup data
-        if mappings.version < Version::MIN {
-            debug!("Partition routing information not available - requesting refresh");
-            self.request_refresh();
-            return None;
-        }
-
-        let maybe_node = mappings.inner.get(&partition_id).cloned();
-        if maybe_node.is_none() {
-            debug!(
-                ?partition_id,
-                "No known node for partition - requesting refresh"
-            );
-            self.request_refresh();
-        }
-        maybe_node
-    }
-
-    /// Provide a hint that the partition-to-nodes view may be outdated. This is useful when a
-    /// caller discovers via some other mechanism that routing information may be invalid - for
-    /// example, when a request to a node previously returned by
-    /// [`PartitionRouting::get_node_by_partition`] indicates that it is no longer serving that
-    /// partition.
-    ///
-    /// This call returns immediately, while the refresh itself is performed asynchronously on a
-    /// best-effort basis. Multiple calls will not result in multiple refresh attempts. You only
-    /// need to call this method if you get a node id, and later discover it's incorrect; a `None`
-    /// response to a lookup triggers a refresh automatically.
-    pub fn request_refresh(&self) {
-        // if the channel already contains an unconsumed message, it doesn't matter that we can't send another
-        let _ = self.sender.try_send(Command::SyncRoutingInformation).ok();
+        self.partition_to_node_mappings
+            .load()
+            .inner
+            .get(&partition_id)
+            .cloned()
     }
 }
 
@@ -102,10 +58,23 @@ impl Debug for PartitionRouting {
 
 #[derive(Debug)]
 struct PartitionToNodesRoutingTable {
-    version: Version,
     /// A mapping of partition IDs to node IDs that are believed to be authoritative for that
     /// serving requests for that partition.
     inner: HashMap<PartitionId, NodeId>,
+}
+impl PartitionToNodesRoutingTable {
+    fn new(partition_table: &PartitionTable) -> Self {
+        let mut inner = HashMap::<PartitionId, NodeId>::with_capacity(
+            partition_table.num_partitions() as usize,
+        );
+        for (partition_id, partition) in partition_table.partitions() {
+            if let Some(leader) = partition.placement.leader() {
+                inner.insert(*partition_id, leader.into());
+            }
+        }
+
+        Self { inner }
+    }
 }
 
 /// Task to refresh the routing information, periodically or on-demand. A single
@@ -116,9 +85,6 @@ struct PartitionToNodesRoutingTable {
 // and in particular, the cluster scheduling plan. This will change in the future so avoid leaking
 // implementation details or assumptions about the source of truth.
 pub struct PartitionRoutingRefresher {
-    sender: CommandSender,
-    receiver: CommandReceiver,
-    inflight_refresh_task: Option<TaskHandle<()>>,
     inner: Arc<ArcSwap<PartitionToNodesRoutingTable>>,
 }
 
@@ -130,13 +96,8 @@ impl Default for PartitionRoutingRefresher {
 
 impl PartitionRoutingRefresher {
     fn new() -> Self {
-        let (sender, receiver) = mpsc::channel(1);
         Self {
-            receiver,
-            sender,
-            inflight_refresh_task: None,
             inner: Arc::new(ArcSwap::new(Arc::new(PartitionToNodesRoutingTable {
-                version: Version::INVALID,
                 inner: HashMap::default(),
             }))),
         }
@@ -145,68 +106,35 @@ impl PartitionRoutingRefresher {
     /// Get a handle to the partition-to-node routing table.
     pub fn partition_routing(&self) -> PartitionRouting {
         PartitionRouting {
-            sender: self.sender.clone(),
             partition_to_node_mappings: self.inner.clone(),
         }
     }
 
-    async fn run(mut self) -> anyhow::Result<()> {
+    async fn run(self) -> anyhow::Result<()> {
         debug!("Routing information refresher started");
 
         let mut cancel = pin!(cancellation_watcher());
-        let mut partition_table_watch =
-            Metadata::with_current(|m| m.watch(MetadataKind::PartitionTable));
-
+        let (mut partition_table_watch, mut live_partition_table) =
+            Metadata::with_current(|metadata| {
+                (
+                    metadata.watch(MetadataKind::PartitionTable),
+                    metadata.updateable_partition_table(),
+                )
+            });
         loop {
             tokio::select! {
                 _ = &mut cancel => {
-                    debug!("Routing information refresher stopped");
-                    if let Some(task) = self.inflight_refresh_task.take() {
-                        task.abort();
-                    }
                     break;
                 }
-                Some(cmd) = self.receiver.recv() => {
-                    match cmd {
-                        Command::SyncRoutingInformation => {
-                            self.spawn_sync_routing_information_task();
-                        }
-                    }
-                }
                 _ = partition_table_watch.changed() => {
-                    let partition_table = Metadata::with_current(|m| m.partition_table_ref());
+                    let partition_table = live_partition_table.live_load();
                     debug!("Refreshing routing information based on partition table {}...", partition_table.version());
-                    let routing = PartitionToNodesRoutingTable::from(partition_table);
+                    let routing = PartitionToNodesRoutingTable::new(partition_table);
                     self.inner.store(Arc::new(routing));
                 }
             }
         }
         Ok(())
-    }
-
-    fn spawn_sync_routing_information_task(&mut self) {
-        if self
-            .inflight_refresh_task
-            .as_ref()
-            .is_none_or(|t| t.is_finished())
-        {
-            let task = TaskCenter::spawn_unmanaged(
-                TaskKind::Disposable,
-                "refresh-routing-information",
-                async {
-                    if let Err(err) = Metadata::current()
-                        .sync(MetadataKind::PartitionTable, TargetVersion::Latest)
-                        .await
-                    {
-                        debug!("Failed to sync routing information: {err}");
-                    }
-                },
-            );
-
-            self.inflight_refresh_task = task.ok();
-        } else {
-            trace!("Skipping refresh as a refresh task is already in progress");
-        }
     }
 }
 
@@ -220,50 +148,27 @@ pub fn spawn_partition_routing_refresher(
     )
 }
 
-impl From<Pinned<PartitionTable>> for PartitionToNodesRoutingTable {
-    fn from(value: Pinned<PartitionTable>) -> Self {
-        let mut inner = HashMap::<PartitionId, NodeId>::default();
-        for (partition_id, partition) in value.partitions() {
-            if let Some(leader) = partition.placement.leader() {
-                inner.insert(*partition_id, leader.into());
-            }
-        }
-
-        Self {
-            version: value.version(),
-            inner,
-        }
-    }
-}
-
 #[cfg(any(test, feature = "test-util"))]
 pub mod mocks {
     use std::collections::HashMap;
     use std::sync::Arc;
 
     use arc_swap::ArcSwap;
-    use tokio::sync::mpsc;
 
     use crate::partitions::PartitionRouting;
     use restate_types::identifiers::PartitionId;
-    use restate_types::{GenerationalNodeId, NodeId, Version};
+    use restate_types::{GenerationalNodeId, NodeId};
 
     pub fn fixed_single_node(
         node_id: GenerationalNodeId,
         partition_id: PartitionId,
     ) -> PartitionRouting {
-        let (sender, _) = mpsc::channel(1);
-
         let mut mappings = HashMap::default();
         mappings.insert(partition_id, NodeId::Generational(node_id));
 
         PartitionRouting {
-            sender,
             partition_to_node_mappings: Arc::new(ArcSwap::new(Arc::new(
-                super::PartitionToNodesRoutingTable {
-                    version: Version::MIN,
-                    inner: mappings,
-                },
+                super::PartitionToNodesRoutingTable { inner: mappings },
             ))),
         }
     }

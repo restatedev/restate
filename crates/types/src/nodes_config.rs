@@ -9,12 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use std::num::NonZero;
+use std::sync::Arc;
 
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
 
 use crate::locality::NodeLocation;
+use crate::metadata::GlobalMetadata;
 use crate::net::AdvertisedAddress;
+use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::{GenerationalNodeId, NodeId, PlainNodeId, flexbuffers_storage_encode_decode};
 use crate::{Version, Versioned};
 use ahash::HashMap;
@@ -79,6 +82,16 @@ impl Default for NodesConfiguration {
             nodes: Default::default(),
             name_lookup: Default::default(),
         }
+    }
+}
+
+impl GlobalMetadata for NodesConfiguration {
+    const KEY: &'static str = "nodes_config";
+
+    const KIND: MetadataKind = MetadataKind::NodesConfiguration;
+
+    fn into_container(self: Arc<Self>) -> MetadataContainer {
+        MetadataContainer::NodesConfiguration(self)
     }
 }
 
