@@ -212,39 +212,31 @@ impl<'a> BifrostAdmin<'a> {
         params: LogletParams,
     ) -> Result<()> {
         self.inner.fail_if_shutting_down()?;
-        let retry_policy = Configuration::pinned()
-            .common
-            .network_error_retry_policy
-            .clone();
-        let logs = retry_on_retryable_error(retry_policy, || {
-            self.inner
-                .metadata_writer
-                .raw_metadata_store_client()
-                .read_modify_write(BIFROST_CONFIG_KEY.clone(), |logs: Option<Logs>| {
-                    let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
+        self.inner
+            .metadata_writer
+            .global_metadata()
+            .read_modify_write(|logs: Option<Arc<Logs>>| {
+                let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
 
-                    let mut builder = logs.into_builder();
-                    let mut chain_builder =
-                        builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
+                let mut builder = logs.as_ref().clone().into_builder();
+                let mut chain_builder = builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
 
-                    if chain_builder.tail().index() != last_segment_index {
-                        // tail is not what we expected.
-                        return Err(Error::from(AdminError::SegmentMismatch {
-                            expected: last_segment_index,
-                            found: chain_builder.tail().index(),
-                        }));
-                    }
+                if chain_builder.tail().index() != last_segment_index {
+                    // tail is not what we expected.
+                    return Err(Error::from(AdminError::SegmentMismatch {
+                        expected: last_segment_index,
+                        found: chain_builder.tail().index(),
+                    }));
+                }
 
-                    let _ = chain_builder
-                        .append_segment(base_lsn, provider, params.clone())
-                        .map_err(AdminError::from)?;
-                    Ok(builder.build())
-                })
-        })
-        .await
-        .map_err(|e| e.into_inner().transpose())?;
+                let _ = chain_builder
+                    .append_segment(base_lsn, provider, params.clone())
+                    .map_err(AdminError::from)?;
+                Ok(builder.build())
+            })
+            .await
+            .map_err(|e| e.transpose())?;
 
-        self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
     }
 
@@ -257,33 +249,23 @@ impl<'a> BifrostAdmin<'a> {
         params: LogletParams,
     ) -> Result<()> {
         self.inner.fail_if_shutting_down()?;
-        let retry_policy = Configuration::pinned()
-            .common
-            .network_error_retry_policy
-            .clone();
-        let logs = retry_on_retryable_error(retry_policy, || {
-            self.inner
-                .metadata_writer
-                .raw_metadata_store_client()
-                .read_modify_write::<_, _, Error>(
-                    BIFROST_CONFIG_KEY.clone(),
-                    |logs: Option<Logs>| {
-                        // We assume that we'll always see a value set in metadata for BIFROST_CONFIG_KEY,
-                        // provisioning the empty logs metadata is not our responsibility.
-                        let logs = logs.ok_or(Error::LogsMetadataNotProvisioned)?;
+        self.inner
+            .metadata_writer
+            .global_metadata()
+            .read_modify_write::<_, _, Error>(|logs: Option<Arc<Logs>>| {
+                // We assume that we'll always see a value set in metadata for BIFROST_CONFIG_KEY,
+                // provisioning the empty logs metadata is not our responsibility.
+                let logs = logs.ok_or(Error::LogsMetadataNotProvisioned)?;
 
-                        let mut builder = logs.into_builder();
-                        builder
-                            .add_log(log_id, Chain::new(provider, params.clone()))
-                            .map_err(AdminError::from)?;
-                        Ok(builder.build())
-                    },
-                )
-        })
-        .await
-        .map_err(|e| e.into_inner().transpose())?;
+                let mut builder = logs.as_ref().clone().into_builder();
+                builder
+                    .add_log(log_id, Chain::new(provider, params.clone()))
+                    .map_err(AdminError::from)?;
+                Ok(builder.build())
+            })
+            .await
+            .map_err(|e| e.transpose())?;
 
-        self.inner.metadata_writer.update(Arc::new(logs)).await?;
         Ok(())
     }
 
