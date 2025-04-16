@@ -8,11 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
-use bytes::{Bytes, BytesMut};
-use restate_bifrost::{Bifrost, ErrorRecoveryStrategy};
-use restate_core::{Metadata, ShutdownError};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
@@ -21,14 +16,12 @@ use restate_types::invocation::{
 };
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::{PlainNodeId, Version, flexbuffers_storage_encode_decode, logs};
+use restate_types::{PlainNodeId, Version, logs};
 
 use crate::control::AnnounceLeader;
 use crate::timer::TimerKeyValue;
 use restate_types::GenerationalNodeId;
-use restate_types::logs::{HasRecordKeys, Keys, LogId, Lsn, MatchKeyQuery};
-use restate_types::partition_table::{FindPartition, PartitionTableError};
-use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
+use restate_types::logs::{HasRecordKeys, Keys, MatchKeyQuery};
 
 pub mod control;
 pub mod timer;
@@ -45,20 +38,26 @@ impl Envelope {
     pub fn new(header: Header, command: Command) -> Self {
         Self { header, command }
     }
+}
 
-    pub fn to_bytes(&self) -> Result<Bytes, StorageEncodeError> {
-        let mut buf = BytesMut::default();
-        StorageCodec::encode(self, &mut buf)?;
+#[cfg(feature = "serde")]
+impl Envelope {
+    pub fn to_bytes(&self) -> Result<bytes::Bytes, restate_types::storage::StorageEncodeError> {
+        let mut buf = bytes::BytesMut::default();
+        restate_types::storage::StorageCodec::encode(self, &mut buf)?;
         Ok(buf.freeze())
     }
 
-    pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, StorageDecodeError> {
+    pub fn from_bytes(
+        bytes: impl AsRef<[u8]>,
+    ) -> Result<Self, restate_types::storage::StorageDecodeError> {
         let mut bytes = bytes.as_ref();
-        StorageCodec::decode::<Self, _>(&mut bytes)
+        restate_types::storage::StorageCodec::decode::<Self, _>(&mut bytes)
     }
 }
 
-flexbuffers_storage_encode_decode!(Envelope);
+#[cfg(feature = "serde")]
+restate_types::flexbuffers_storage_encode_decode!(Envelope);
 
 /// Header is set on every message
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,47 +222,4 @@ impl MatchKeyQuery for Envelope {
     fn matches_key_query(&self, query: &logs::KeyFilter) -> bool {
         self.record_keys().matches_key_query(query)
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("partition not found: {0}")]
-    PartitionNotFound(#[from] PartitionTableError),
-    #[error("failed encoding envelope: {0}")]
-    Encode(#[from] StorageEncodeError),
-    #[error("failed writing to bifrost: {0}")]
-    Bifrost(#[from] restate_bifrost::Error),
-    #[error(transparent)]
-    Shutdown(#[from] ShutdownError),
-}
-
-/// Appends the given envelope to the provided Bifrost instance. The log instance is chosen
-/// based on the envelopes partition key.
-///
-/// Important: This method must only be called in the context of a [`TaskCenter`] task because
-/// it needs access to [`metadata()`].
-///
-/// todo: This method should be removed in favor of using Appender/BackgroundAppender API in
-/// Bifrost. Additionally, the check for partition_table is probably unnecessary in the vast
-/// majority of call-sites.
-pub async fn append_envelope_to_bifrost(
-    bifrost: &Bifrost,
-    envelope: Arc<Envelope>,
-) -> Result<(LogId, Lsn), Error> {
-    let partition_id = {
-        // make sure we drop pinned partition table before awaiting
-        let partition_table = Metadata::current()
-            .wait_for_partition_table(Version::MIN)
-            .await?;
-        partition_table.find_partition_id(envelope.partition_key())?
-    };
-
-    let log_id = LogId::from(*partition_id);
-    // todo: Pass the envelope as `Arc` to `append_envelope_to_bifrost` instead. Possibly use
-    // triomphe's UniqueArc for a mutable Arc during construction.
-    let lsn = bifrost
-        .append(log_id, ErrorRecoveryStrategy::default(), envelope)
-        .await?;
-
-    Ok((log_id, lsn))
 }

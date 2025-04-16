@@ -25,9 +25,7 @@ use restate_storage_api::invocation_status_table::{
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::invocation::PurgeInvocationRequest;
-use restate_wal_protocol::{
-    Command, Destination, Envelope, Header, Source, append_envelope_to_bifrost,
-};
+use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 pub(super) struct Cleaner<Storage> {
     partition_id: PartitionId,
@@ -140,7 +138,7 @@ where
             };
 
             if SystemTime::now() >= expiration_time {
-                append_envelope_to_bifrost(
+                restate_bifrost::append_to_bifrost(
                     bifrost,
                     Arc::new(Envelope {
                         header: Header {

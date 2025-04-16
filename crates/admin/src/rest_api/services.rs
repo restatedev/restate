@@ -27,7 +27,7 @@ use restate_errors::warn_it;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_wal_protocol::{Command, Envelope, append_envelope_to_bifrost};
+use restate_wal_protocol::{Command, Envelope};
 use tracing::{debug, warn};
 
 /// List services
@@ -228,7 +228,7 @@ pub async fn modify_service_state<V>(
         state: new_state,
     };
 
-    let result = append_envelope_to_bifrost(
+    let result = restate_bifrost::append_to_bifrost(
         &state.bifrost,
         Arc::new(Envelope::new(
             create_envelope_header(partition_key),

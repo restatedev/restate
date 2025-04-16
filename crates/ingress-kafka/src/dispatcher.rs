@@ -29,9 +29,7 @@ use restate_types::schema::subscriptions::{
     EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Subscription,
 };
 use restate_types::{GenerationalNodeId, live};
-use restate_wal_protocol::{
-    Command, Destination, Envelope, Header, Source, append_envelope_to_bifrost,
-};
+use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 use std::borrow::Borrow;
 use std::sync::Arc;
 use tracing::debug;
@@ -176,7 +174,7 @@ impl KafkaIngressEvent {
 #[derive(Debug, thiserror::Error)]
 pub enum IngressDispatchError {
     #[error("bifrost error: {0}")]
-    WalProtocol(#[from] restate_wal_protocol::Error),
+    WalProtocol(#[from] restate_bifrost::AppendError),
     #[error("partition routing error: {0}")]
     PartitionRoutingError(#[from] PartitionTableError),
 }
@@ -221,7 +219,8 @@ impl DispatchKafkaEvent for KafkaIngressDispatcher {
             deduplication_id.to_string(),
             deduplication_index,
         );
-        let (log_id, lsn) = append_envelope_to_bifrost(&self.bifrost, Arc::new(envelope)).await?;
+        let (log_id, lsn) =
+            restate_bifrost::append_to_bifrost(&self.bifrost, Arc::new(envelope)).await?;
 
         debug!(
             log_id = %log_id,
