@@ -105,7 +105,7 @@ impl ReadStreamTask {
                 .bifrost
                 .replicated_loglet
                 .readahead_records
-                .into(),
+                .get() as usize,
         );
         // Reading from INVALID resets to OLDEST.
         let from_offset = from_offset.max(LogletOffset::OLDEST);
