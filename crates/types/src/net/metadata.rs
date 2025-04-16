@@ -18,6 +18,7 @@ use strum::EnumIter;
 use crate::Version;
 use crate::Versioned;
 use crate::logs::metadata::Logs;
+use crate::metadata::GlobalMetadata;
 use crate::net::TargetName;
 use crate::net::define_message;
 use crate::nodes_config::NodesConfiguration;
@@ -127,6 +128,67 @@ impl MetadataContainer {
             MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
             MetadataContainer::Logs(_) => MetadataKind::Logs,
             MetadataContainer::Schema(_) => MetadataKind::Schema,
+        }
+    }
+
+    pub fn extract<T>(self) -> Option<Arc<T>>
+    where
+        T: GlobalMetadata + Extraction<Output = T>,
+    {
+        T::extract_as_global_metadata(self)
+    }
+}
+
+pub trait Extraction: GlobalMetadata {
+    type Output;
+
+    fn extract_as_global_metadata(v: MetadataContainer) -> Option<Arc<Self::Output>>;
+}
+
+impl Extraction for NodesConfiguration {
+    type Output = NodesConfiguration;
+
+    fn extract_as_global_metadata(value: MetadataContainer) -> Option<Arc<Self::Output>> {
+        if let MetadataContainer::NodesConfiguration(v) = value {
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+impl Extraction for Schema {
+    type Output = Schema;
+
+    fn extract_as_global_metadata(value: MetadataContainer) -> Option<Arc<Self::Output>> {
+        if let MetadataContainer::Schema(v) = value {
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+impl Extraction for PartitionTable {
+    type Output = PartitionTable;
+
+    fn extract_as_global_metadata(value: MetadataContainer) -> Option<Arc<Self::Output>> {
+        if let MetadataContainer::PartitionTable(v) = value {
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+impl Extraction for Logs {
+    type Output = Logs;
+
+    fn extract_as_global_metadata(value: MetadataContainer) -> Option<Arc<Self::Output>> {
+        if let MetadataContainer::Logs(v) = value {
+            Some(v)
+        } else {
+            None
         }
     }
 }
