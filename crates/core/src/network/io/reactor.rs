@@ -30,7 +30,6 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
 use restate_types::{Version, Versioned};
 
-use crate::metadata::Urgency;
 use crate::network::metric_definitions::{
     NETWORK_MESSAGE_PROCESSING_DURATION, NETWORK_MESSAGE_RECEIVED, NETWORK_MESSAGE_RECEIVED_BYTES,
 };
@@ -425,12 +424,8 @@ impl MetadataVersions {
         .for_each(|(kind, version)| {
             if let Some(version) = version {
                 if version > self.get_latest_version(kind) {
-                    self.metadata.notify_observed_version(
-                        kind,
-                        version,
-                        Some(connection.clone()),
-                        Urgency::Normal,
-                    );
+                    self.metadata
+                        .notify_observed_version(kind, version, Some(connection.clone()));
                 }
                 // todo: store the latest if it's higher
             }
@@ -448,14 +443,9 @@ impl MetadataVersions {
         .for_each(|(kind, version)| {
             if let Some(version) = version {
                 if version > self.get_latest_version(kind) {
-                    self.metadata.notify_observed_version(
-                        kind,
-                        version,
-                        Some(connection.clone()),
-                        Urgency::Normal,
-                    );
+                    self.metadata
+                        .notify_observed_version(kind, version, Some(connection.clone()));
                 }
-                // todo: store the latest if it's higher
             }
         });
     }

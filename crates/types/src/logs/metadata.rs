@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, hash_map};
 use std::num::NonZeroU8;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Context;
 use bytestring::ByteString;
@@ -23,6 +24,8 @@ use super::LogletId;
 use super::builder::LogsBuilder;
 use crate::config::Configuration;
 use crate::logs::{LogId, Lsn, SequenceNumber};
+use crate::metadata::GlobalMetadata;
+use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::replicated_loglet::ReplicatedLogletParams;
 use crate::replication::ReplicationProperty;
 use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
@@ -352,6 +355,16 @@ impl Default for Logs {
             lookup_index: Default::default(),
             config: LogsConfiguration::default(),
         }
+    }
+}
+
+impl GlobalMetadata for Logs {
+    const KEY: &'static str = "bifrost_config";
+
+    const KIND: MetadataKind = MetadataKind::Logs;
+
+    fn into_container(self: Arc<Self>) -> MetadataContainer {
+        MetadataContainer::Logs(self)
     }
 }
 
