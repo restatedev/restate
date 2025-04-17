@@ -594,6 +594,7 @@ struct Member {
 
     tick_interval: Interval,
     status_update_interval: Interval,
+    log_trim_threshold: u64,
 
     my_member_id: MemberId,
     configuration: MetadataServerConfiguration,
@@ -701,6 +702,7 @@ impl Member {
             metadata_writer,
             tick_interval,
             status_update_interval,
+            log_trim_threshold: raft_options.log_trim_threshold.unwrap_or(1000),
             status_tx,
             pending_join_requests: HashMap::default(),
             read_index_to_request_id: VecDeque::default(),
@@ -1185,10 +1187,10 @@ impl Member {
 
     /// Checks whether it's time to snapshot the state machine and trim the Raft log.
     async fn try_trim_log(&mut self) -> Result<(), Error> {
-        // todo make configurable
-        const TRIM_THRESHOLD: u64 = 1000;
         let applied_index = self.raw_node.raft.raft_log.applied();
-        if applied_index.saturating_sub(self.raw_node.store().get_first_index()) >= TRIM_THRESHOLD {
+        if applied_index.saturating_sub(self.raw_node.store().get_first_index())
+            >= self.log_trim_threshold
+        {
             debug!(
                 "Trimming Raft log: [{}, {applied_index}]",
                 self.raw_node.store().get_first_index()

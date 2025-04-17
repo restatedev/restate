@@ -186,6 +186,12 @@ pub struct RaftOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub status_update_interval: humantime::Duration,
+
+    /// # The raft log trim threshold
+    ///
+    /// The threshold for trimming the raft log. The log will be trimmed if the number of apply entries
+    /// exceeds this threshold. The default value is `1000`.
+    pub log_trim_threshold: Option<u64>,
 }
 
 impl Default for RaftOptions {
@@ -195,6 +201,7 @@ impl Default for RaftOptions {
             raft_heartbeat_tick: NonZeroUsize::new(2).expect("be non zero"),
             raft_tick_interval: Duration::from_millis(100).into(),
             status_update_interval: Duration::from_secs(5).into(),
+            log_trim_threshold: Some(1000),
         }
     }
 }
