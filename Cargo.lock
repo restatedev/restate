@@ -7795,7 +7795,6 @@ dependencies = [
  "enum-map",
  "flexbuffers",
  "googletest",
- "restate-bifrost",
  "restate-core",
  "restate-invoker-api",
  "restate-storage-api",

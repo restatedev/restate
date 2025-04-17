@@ -21,7 +21,7 @@ use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::message::MessageIndex;
-use restate_wal_protocol::{Destination, Envelope, Header, Source, append_envelope_to_bifrost};
+use restate_wal_protocol::{Destination, Envelope, Header, Source};
 
 use crate::partition::shuffle::state_machine::StateMachine;
 use crate::partition::types::OutboxMessageExt;
@@ -226,7 +226,7 @@ where
             move |msg| {
                 let bifrost = bifrost.clone();
                 async move {
-                    append_envelope_to_bifrost(&bifrost, Arc::new(msg)).await?;
+                    restate_bifrost::append_to_bifrost(&bifrost, Arc::new(msg)).await?;
                     Ok(())
                 }
             },
