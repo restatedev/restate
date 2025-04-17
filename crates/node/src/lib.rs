@@ -14,8 +14,8 @@ mod network_server;
 mod roles;
 
 use anyhow::Context;
-use bytestring::ByteString;
 use prost_dto::IntoProst;
+use std::sync::Arc;
 use tracing::{debug, error, info, trace, warn};
 
 use codederror::CodedError;
@@ -26,7 +26,7 @@ use restate_core::network::{
     Swimlane,
 };
 use restate_core::partitions::{PartitionRoutingRefresher, spawn_partition_routing_refresher};
-use restate_core::{Metadata, TaskKind};
+use restate_core::{Metadata, MetadataWriter, TaskKind};
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_manager};
 use restate_log_server::LogServerService;
 use restate_metadata_server::{
@@ -38,8 +38,7 @@ use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::RecordCache;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
-use restate_types::metadata::Precondition;
-use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
+use restate_types::metadata::{GlobalMetadata, Precondition};
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
 };
@@ -47,7 +46,6 @@ use restate_types::partition_table::{PartitionReplication, PartitionTable, Parti
 use restate_types::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, NodeRpcStatus, WorkerStatus,
 };
-use restate_types::storage::StorageEncode;
 use restate_types::{GenerationalNodeId, Version, Versioned};
 
 use crate::cluster_marker::ClusterValidationError;
@@ -121,7 +119,6 @@ pub struct Node {
     updateable_config: Live<Configuration>,
     metadata_manager: MetadataManager,
     partition_routing_refresher: PartitionRoutingRefresher,
-    metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
     metadata_server_role: Option<BoxedMetadataServer>,
     base_role: BaseRole,
@@ -339,7 +336,6 @@ impl Node {
             partition_routing_refresher,
             bifrost: bifrost_svc,
             metadata_server_role: metadata_store_role,
-            metadata_store_client,
             base_role,
             admin_role,
             ingress_role,
@@ -364,13 +360,13 @@ impl Node {
         TaskCenter::spawn(TaskKind::RpcServer, "node-rpc-server", {
             let common_options = config.common.clone();
             let connection_manager = self.networking.connection_manager().clone();
-            let metadata_store_client = self.metadata_store_client.clone();
+            let metadata_writer = metadata_writer.clone();
             async move {
                 NetworkServer::run(
                     connection_manager,
                     self.server_builder,
                     common_options,
-                    metadata_store_client,
+                    metadata_writer,
                     self.prometheus,
                 )
                 .await?;
@@ -399,11 +395,11 @@ impl Node {
             } else {
                 TaskCenter::spawn(TaskKind::SystemBoot, "auto-provision-cluster", {
                     let cluster_configuration = ClusterConfiguration::from_configuration(&config);
-                    let metadata_store_client = self.metadata_store_client.clone();
+                    let metadata_writer = metadata_writer.clone();
                     let common_opts = config.common.clone();
                     async move {
                         let response = provision_cluster_metadata(
-                            &metadata_store_client,
+                            &metadata_writer,
                             &common_opts,
                             &cluster_configuration,
                         )
@@ -568,7 +564,10 @@ impl Node {
     }
 
     pub fn metadata_store_client(&self) -> MetadataStoreClient {
-        self.metadata_store_client.clone()
+        self.metadata_manager
+            .writer()
+            .raw_metadata_store_client()
+            .clone()
     }
 
     pub fn metadata_writer(&self) -> restate_core::MetadataWriter {
@@ -610,7 +609,7 @@ impl ClusterConfiguration {
 /// metadata store. In this case, the method does not try to clean the already written metadata
 /// up. Instead, the caller can retry to complete the provisioning.
 async fn provision_cluster_metadata(
-    metadata_store_client: &MetadataStoreClient,
+    metadata_writer: &MetadataWriter,
     common_opts: &CommonOptions,
     cluster_configuration: &ClusterConfiguration,
 ) -> anyhow::Result<bool> {
@@ -618,16 +617,14 @@ async fn provision_cluster_metadata(
         generate_initial_metadata(common_opts, cluster_configuration);
 
     let result = retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
-        metadata_store_client.provision(&initial_nodes_configuration)
+        metadata_writer
+            .raw_metadata_store_client()
+            .provision(&initial_nodes_configuration)
     })
     .await?;
 
     retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
-        write_initial_logs_dont_fail_if_it_exists(
-            metadata_store_client,
-            BIFROST_CONFIG_KEY.clone(),
-            initial_logs.clone(),
-        )
+        write_initial_logs_dont_fail_if_it_exists(metadata_writer, initial_logs.clone())
     })
     .await
     .context("failed provisioning the initial logs")?;
@@ -636,11 +633,11 @@ async fn provision_cluster_metadata(
     // The partition table metadata must be initialized only after the bifrost (logs) metadata.
     // Otherwise, the logs controller may begin creating logs with incorrect configurations
     // initialized by bifrost.
+    let initial_partition_table = Arc::new(initial_partition_table);
     retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
         write_initial_value_dont_fail_if_it_exists(
-            metadata_store_client,
-            PARTITION_TABLE_KEY.clone(),
-            &initial_partition_table,
+            metadata_writer,
+            Arc::clone(&initial_partition_table),
         )
     })
     .await
@@ -693,13 +690,13 @@ fn generate_initial_metadata(
     )
 }
 
-async fn write_initial_value_dont_fail_if_it_exists<T: Versioned + StorageEncode>(
-    metadata_store_client: &MetadataStoreClient,
-    key: ByteString,
-    initial_value: &T,
+async fn write_initial_value_dont_fail_if_it_exists<T: GlobalMetadata>(
+    metadata_writer: &MetadataWriter,
+    initial_value: Arc<T>,
 ) -> Result<(), WriteError> {
-    match metadata_store_client
-        .put(key, initial_value, Precondition::DoesNotExist)
+    match metadata_writer
+        .global_metadata()
+        .put(initial_value, Precondition::DoesNotExist)
         .await
     {
         Ok(_) => Ok(()),
@@ -712,12 +709,12 @@ async fn write_initial_value_dont_fail_if_it_exists<T: Versioned + StorageEncode
 }
 
 async fn write_initial_logs_dont_fail_if_it_exists(
-    metadata_store_client: &MetadataStoreClient,
-    key: ByteString,
+    metadata_writer: &MetadataWriter,
     initial_value: Logs,
 ) -> Result<(), ReadWriteError> {
-    let value = metadata_store_client
-        .read_modify_write(key, |current| match current {
+    let value = metadata_writer
+        .global_metadata()
+        .read_modify_write(|current| match current {
             None => Ok(initial_value.clone()),
             Some(current_value) => {
                 if current_value.configuration() == initial_value.configuration() {

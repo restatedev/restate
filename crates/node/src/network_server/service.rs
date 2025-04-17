@@ -11,12 +11,11 @@
 use axum::Json;
 use axum::routing::{MethodFilter, get, on};
 
-use restate_core::Identification;
 use restate_core::TaskCenter;
-use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::grpc::CoreNodeSvcHandler;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{ConnectionManager, NetworkServerBuilder};
+use restate_core::{Identification, MetadataWriter};
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::CommonOptions;
 use restate_types::protobuf::common::NodeStatus;
@@ -33,7 +32,7 @@ impl NetworkServer {
         connection_manager: ConnectionManager,
         mut server_builder: NetworkServerBuilder,
         options: CommonOptions,
-        metadata_store_client: MetadataStoreClient,
+        metadata_writer: MetadataWriter,
         prometheus: Prometheus,
     ) -> Result<(), anyhow::Error> {
         // Configure Metric Exporter
@@ -68,13 +67,14 @@ impl NetworkServer {
         });
 
         server_builder.register_grpc_service(
-            NodeCtlSvcHandler::new(metadata_store_client.clone()).into_server(),
-            restate_core::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
+            MetadataProxySvcHandler::new(metadata_writer.raw_metadata_store_client().clone())
+                .into_server(),
+            restate_core::protobuf::metadata_proxy_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder.register_grpc_service(
-            MetadataProxySvcHandler::new(metadata_store_client).into_server(),
-            restate_core::protobuf::metadata_proxy_svc::FILE_DESCRIPTOR_SET,
+            NodeCtlSvcHandler::new(metadata_writer).into_server(),
+            restate_core::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder.register_grpc_service(

@@ -24,7 +24,6 @@ use restate_core::protobuf::metadata_proxy_svc::{
 };
 use restate_metadata_server::grpc::new_metadata_server_client;
 
-use restate_core::Identification;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
@@ -32,6 +31,7 @@ use restate_core::protobuf::node_ctl_svc::{
     ClusterHealthResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest, GetMetadataResponse,
     IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse,
 };
+use restate_core::{Identification, MetadataWriter};
 use restate_core::{Metadata, MetadataKind};
 use restate_metadata_server::WriteError;
 use restate_types::Version;
@@ -47,14 +47,12 @@ use restate_types::storage::StorageCodec;
 use crate::{ClusterConfiguration, provision_cluster_metadata};
 
 pub struct NodeCtlSvcHandler {
-    metadata_store_client: MetadataStoreClient,
+    metadata_writer: MetadataWriter,
 }
 
 impl NodeCtlSvcHandler {
-    pub fn new(metadata_store_client: MetadataStoreClient) -> Self {
-        Self {
-            metadata_store_client,
-        }
+    pub fn new(metadata_writer: MetadataWriter) -> Self {
+        Self { metadata_writer }
     }
 
     pub fn into_server(self) -> NodeCtlSvcServer<Self> {
@@ -188,7 +186,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         }
 
         let newly_provisioned = provision_cluster_metadata(
-            &self.metadata_store_client,
+            &self.metadata_writer,
             &config.common,
             &cluster_configuration,
         )
