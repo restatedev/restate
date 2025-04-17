@@ -79,7 +79,7 @@ impl ConnectionReactor {
         let context_propagator = TraceContextPropagator::default();
         let mut seen_versions = MetadataVersions::new(Metadata::current());
         let connection_ref = UnboundedConnectionRef::new(
-            PeerAddress::ServerNode(connection.peer().into()),
+            PeerAddress::ServerNode(connection.peer()),
             connection.protocol_version,
             &tx,
         );
