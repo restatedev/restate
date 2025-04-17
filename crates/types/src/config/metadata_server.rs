@@ -191,8 +191,8 @@ pub struct RaftOptions {
 impl Default for RaftOptions {
     fn default() -> Self {
         RaftOptions {
-            raft_election_tick: NonZeroUsize::new(20).expect("20 to be non zero"),
-            raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
+            raft_election_tick: NonZeroUsize::new(10).expect("be non zero"),
+            raft_heartbeat_tick: NonZeroUsize::new(2).expect("be non zero"),
             raft_tick_interval: Duration::from_millis(100).into(),
             status_update_interval: Duration::from_secs(5).into(),
         }
