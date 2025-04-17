@@ -56,12 +56,6 @@ pub struct ConnectionInfo {
     )]
     pub address: Vec<AdvertisedAddress>,
 
-    /// Force a reload of the metadata from the metadata store. Typically, Restate nodes hold
-    /// a cached view of metadata such as cluster nodes or partition configuration. Use this flag
-    /// to always fetch the latest as part of the request.
-    #[arg(long)]
-    pub sync_metadata: bool,
-
     #[clap(skip)]
     nodes_configuration: Arc<Mutex<Option<NodesConfiguration>>>,
 
@@ -170,10 +164,7 @@ impl ConnectionInfo {
         let mut errors = NodesErrors::default();
         let mut open_connections = self.open_connections.lock().await;
 
-        let request = GetMetadataRequest {
-            kind: kind.into(),
-            sync: self.sync_metadata,
-        };
+        let request = GetMetadataRequest { kind: kind.into() };
 
         for address in addresses {
             let channel = open_connections.entry(address.clone()).or_insert_with(|| {

@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, instrument, trace, warn};
 
-use restate_core::{Metadata, TargetVersion, TaskCenter};
+use restate_core::{Metadata, TaskCenter};
 use restate_futures_util::overdue::OverdueLoggingExt;
+use restate_types::Versioned;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::logs::metadata::SegmentIndex;
@@ -178,23 +179,14 @@ impl Appender {
             .into();
         let start = Instant::now();
 
-        // Let's give metadata manager an opportunity to sync up to the latest log chain,
-        // we might be operating with an old view, but we'll only do this style of sync once.
-        // However, in the retry loop below, we can add a background sync request to metadata
-        // manager once it supports rate limiting sync requests (to avoid overloading metadata
-        // store)
         let metadata = Metadata::current();
-        let _ = metadata
-            .sync(restate_core::MetadataKind::Logs, TargetVersion::Latest)
-            .log_slow_after(
-                auto_recovery_threshold,
-                tracing::Level::INFO,
-                "Syncing the log chain from metadata store",
-            )
-            .await;
+        let mut logs = metadata.updateable_logs_metadata();
         loop {
+            let log_metadata = logs.live_load();
             bifrost_inner.fail_if_shutting_down()?;
-            let loglet = bifrost_inner.writeable_loglet(log_id).await?;
+            let loglet = bifrost_inner
+                .writeable_loglet_from_metadata(log_metadata, log_id)
+                .await?;
             let tone_escalated = start.elapsed() > auto_recovery_threshold;
             // Do we think that the last tail loglet is different and unsealed?
             if loglet.tail_lsn.is_none() && loglet.segment_index() > sealed_segment {
@@ -216,7 +208,7 @@ impl Appender {
             }
 
             // Okay, tail segment is still sealed
-            let log_metadata_version = Metadata::with_current(|m| m.logs_version());
+            let log_metadata_version = log_metadata.version();
             if start.elapsed() > auto_recovery_threshold
                 && error_recovery_strategy >= ErrorRecoveryStrategy::ExtendChainAllowed
                 && !TaskCenter::is_shutdown_requested()
