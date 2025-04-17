@@ -49,9 +49,10 @@ struct MetadataServerSvcClientWithAddress {
 
 impl MetadataServerSvcClientWithAddress {
     fn new(channel: ChannelWithAddress) -> Self {
+        let address = channel.address;
         Self {
-            client: new_metadata_server_client(channel.channel.clone()),
-            address: channel.address,
+            client: new_metadata_server_client(channel.channel),
+            address,
         }
     }
 
@@ -197,7 +198,7 @@ impl MetadataStore for GrpcMetadataServerClient {
                     // and we have an attempt left
                     if self.has_known_leader(&status) && attempt < MAX_RETRY_ATTEMPTS {
                         attempt += 1;
-                        debug!(%attempt, %status, "Retrying failed operation because we learned about the current leader.");
+                        tracing::info!(%attempt, %status, "Retrying failed operation because we learned about the current leader.");
                         continue;
                     }
                     Err(map_status_to_read_error(client.address(), status))
@@ -423,7 +424,6 @@ impl ChannelManager {
     /// metadata store role.
     async fn run(self, metadata: Metadata) -> anyhow::Result<()> {
         let mut nodes_config_watch = metadata.watch(MetadataKind::NodesConfiguration);
-        nodes_config_watch.mark_changed();
         let mut shutdown = std::pin::pin!(cancellation_watcher());
 
         loop {
