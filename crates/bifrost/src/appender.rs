@@ -11,9 +11,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, warn};
 
-use restate_core::{Metadata, TaskCenter};
+use restate_core::{Metadata, MetadataKind, TaskCenter};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::Versioned;
 use restate_types::config::Configuration;
@@ -173,17 +173,22 @@ impl Appender {
             .append_retry_policy()
             .into_iter();
 
-        let auto_recovery_threshold: Duration = Configuration::pinned()
-            .bifrost
-            .auto_recovery_interval
-            .into();
         let start = Instant::now();
 
         let metadata = Metadata::current();
         let mut logs = metadata.updateable_logs_metadata();
+        // initial sleep duration.
+        let mut sleep_dur = retry_iter
+            .next()
+            .expect("append retries should be infinite");
         loop {
-            let log_metadata = logs.live_load();
             bifrost_inner.fail_if_shutting_down()?;
+            let log_metadata = logs.live_load();
+            let auto_recovery_threshold: Duration = Configuration::pinned()
+                .bifrost
+                .auto_recovery_interval
+                .into();
+
             let loglet = bifrost_inner
                 .writeable_loglet_from_metadata(log_metadata, log_id)
                 .await?;
@@ -217,7 +222,7 @@ impl Appender {
                 let admin = BifrostAdmin::new(bifrost_inner);
                 info!(
                     %sealed_segment,
-                    "[Auto Recovery] Attempting to extend the chain to recover log availability with a new configuration. We waited for {:?} before triggering automatic recovery",
+                    "[Auto Recovery] Attempting to extend the chain to recover log availability with a new configuration. It has been {:?} since encountering the sealed loglet",
                     start.elapsed(),
                 );
                 if let Err(err) = admin
@@ -237,6 +242,8 @@ impl Appender {
                         "Could not reconfigure the log, perhaps something else beat us to it? We'll check",
                     );
                 } else {
+                    // note that we are reporting metadata version directly from `metadata` since
+                    // it might have been updated while sealing the loglet
                     info!(
                         log_metadata_version = %metadata.logs_version(),
                         "[Auto Recovery] Reconfiguration complete",
@@ -261,14 +268,24 @@ impl Appender {
                     );
                 }
             }
-            let sleep_dur = retry_iter
-                .next()
-                .expect("append retries should be infinite");
-            // backoff. This is at the bottom to avoid unnecessary sleeps in the happy path
-            trace!("Will retry the append after {sleep_dur:?}");
-            // todo: add async metadata sync request to _influence_ metadata manager to if it needs
-            // to look for newer log chain version.
-            tokio::time::sleep(sleep_dur).await;
+
+            tokio::select! {
+                biased;
+                // if error it means that metadata manager has stopped. We are shutting down.
+                // the check for shutdown in the loop above will catch if this happened and bubble
+                // up the shutdown error.
+                _ = metadata.wait_for_version(MetadataKind::Logs, log_metadata_version.next()) => {
+                    // do not advance the sleep duration. Successive metadata updates that are
+                    // irrelavant to this loglet should not increase the sleep duration.
+                }
+                // if no metadata changes happened, let's sleep to pace down the retries.
+                _ = tokio::time::sleep(sleep_dur) => {
+                    // backoff. This is at the bottom to avoid unnecessary sleeps in the happy path
+                    sleep_dur = retry_iter
+                        .next()
+                        .expect("append retries should be infinite");
+               }
+            }
         }
     }
 }
