@@ -388,7 +388,7 @@ where
                         self.handle_completion(partition, invocation_id, completion);
                     },
                     InputCommand::Notification { partition, invocation_id, notification } => {
-                        self.handle_notification(partition, invocation_id, notification);
+                        self.handle_notification(options, partition, invocation_id, notification);
                     },
                     InputCommand::StoredCommandAck { partition, invocation_id, command_index } => {
                         self.handle_stored_command_ack(options, partition, invocation_id, command_index);
@@ -868,24 +868,20 @@ where
     )]
     fn handle_notification(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         notification: RawNotification,
     ) {
-        if let Some((_, ism)) = self
-            .invocation_state_machine_manager
-            .resolve_invocation(partition, &invocation_id)
-        {
+        self.handle_retry_event(options, partition, invocation_id, |ism| {
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 restate.journal.ty = %notification.ty(),
                 "Sending entry"
             );
+
             ism.notify_entry(RawEntry::new(RawEntryHeader::default(), notification));
-        } else {
-            // If no state machine is registered, the PP will send a new invoke
-            trace!("No state machine found for given completion");
-        }
+        });
     }
 
     #[instrument(
