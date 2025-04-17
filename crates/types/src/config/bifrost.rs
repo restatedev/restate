@@ -19,12 +19,9 @@ use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
 use crate::logs::metadata::{NodeSetSize, ProviderKind};
-use crate::replication::ReplicationProperty;
 use crate::retries::RetryPolicy;
 
-use super::{
-    CommonOptions, RocksDbOptions, RocksDbOptionsBuilder, print_warning_deprecated_config_option,
-};
+use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 
 /// # Bifrost options
 #[serde_as]
@@ -290,24 +287,6 @@ pub struct ReplicatedLogletOptions {
     /// Value must be between 0 and 1. It will be clamped at `1.0`.
     pub readahead_trigger_ratio: f32,
 
-    /// # Default log replication factor
-    ///
-    /// Configures the default replication factor to be used by the replicated loglets.
-    ///
-    /// Note that this value only impacts the cluster initial provisioning and will not be respected after
-    /// the cluster has been provisioned.
-    ///
-    /// To update existing clusters use the `restatectl` utility.
-    // Also allow to specify the replication property as non-zero u8 value to make it simpler to
-    // pass it in via an env variable.
-    #[serde_as(as = "Option<crate::replication::ReplicationPropertyFromTo>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    #[deprecated(
-        since = "1.3.0",
-        note = "common.default_replication should be used instead. Will be removed with 1.4.0"
-    )]
-    pub default_log_replication: Option<ReplicationProperty>,
-
     /// # Default nodeset size
     ///
     /// Configures the target nodeset size used by the replicated loglet when generating new
@@ -331,10 +310,8 @@ fn nodeset_size_is_zero(i: &NodeSetSize) -> bool {
 
 impl Default for ReplicatedLogletOptions {
     fn default() -> Self {
-        #[allow(deprecated)]
         Self {
             maximum_inflight_records: NonZeroUsize::new(1000).unwrap(),
-
             sequencer_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,
@@ -352,7 +329,6 @@ impl Default for ReplicatedLogletOptions {
             readahead_records: NonZeroU16::new(100).unwrap(),
             readahead_trigger_ratio: 0.5,
             default_nodeset_size: NodeSetSize::default(),
-            default_log_replication: None,
         }
     }
 }
@@ -377,22 +353,12 @@ pub struct ReplicatedLogletOptionsShadow {
     log_server_retry_policy: RetryPolicy,
     readahead_records: NonZeroU16,
     readahead_trigger_ratio: f32,
-    #[serde_as(as = "Option<crate::replication::ReplicationPropertyFromTo>")]
-    default_log_replication: Option<ReplicationProperty>,
     #[serde(default, skip_serializing_if = "nodeset_size_is_zero")]
     default_nodeset_size: NodeSetSize,
 }
 
 impl From<ReplicatedLogletOptionsShadow> for ReplicatedLogletOptions {
     fn from(value: ReplicatedLogletOptionsShadow) -> Self {
-        if value.default_log_replication.is_some() {
-            print_warning_deprecated_config_option(
-                "admin.replicated-loglet.default-log-replication",
-                Some("default-replication"),
-            );
-        }
-
-        #[allow(deprecated)]
         Self {
             maximum_inflight_records: value.maximum_inflight_records,
             sequencer_retry_policy: value.sequencer_retry_policy,
@@ -401,7 +367,6 @@ impl From<ReplicatedLogletOptionsShadow> for ReplicatedLogletOptions {
             log_server_retry_policy: value.log_server_retry_policy,
             readahead_records: value.readahead_records,
             readahead_trigger_ratio: value.readahead_trigger_ratio,
-            default_log_replication: value.default_log_replication,
             default_nodeset_size: value.default_nodeset_size,
         }
     }
