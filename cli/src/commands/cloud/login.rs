@@ -174,7 +174,10 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
     tokio::pin!(result_fut);
 
     c_println!("Opening browser to {login_uri}");
-    open::that(login_uri.to_string())?;
+
+    if let Err(_err) = open::that(login_uri.to_string()) {
+        c_println!("Failed to open browser automatically. Please open the above URL manually.")
+    }
 
     let progress = ProgressBar::new_spinner();
     progress.set_style(indicatif::ProgressStyle::with_template("{spinner} {msg}").unwrap());
