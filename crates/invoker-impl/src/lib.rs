@@ -388,7 +388,7 @@ where
                         self.handle_completion(partition, invocation_id, completion);
                     },
                     InputCommand::Notification { partition, invocation_id, notification } => {
-                        self.handle_notification(partition, invocation_id, notification);
+                        self.handle_notification(options, partition, invocation_id, notification);
                     },
                     InputCommand::StoredCommandAck { partition, invocation_id, command_index } => {
                         self.handle_stored_command_ack(options, partition, invocation_id, command_index);
@@ -868,24 +868,20 @@ where
     )]
     fn handle_notification(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         notification: RawNotification,
     ) {
-        if let Some((_, ism)) = self
-            .invocation_state_machine_manager
-            .resolve_invocation(partition, &invocation_id)
-        {
+        self.handle_retry_event(options, partition, invocation_id, |ism| {
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 restate.journal.ty = %notification.ty(),
                 "Sending entry"
             );
+
             ism.notify_entry(RawEntry::new(RawEntryHeader::default(), notification));
-        } else {
-            // If no state machine is registered, the PP will send a new invoke
-            trace!("No state machine found for given completion");
-        }
+        });
     }
 
     #[instrument(
@@ -1281,6 +1277,7 @@ mod tests {
     use restate_types::invocation::ServiceType;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
+    use restate_types::journal_v2::{CompletionType, NotificationType};
     use restate_types::live::Constant;
     use restate_types::retries::RetryPolicy;
     use restate_types::schema::deployment::Deployment;
@@ -1692,5 +1689,93 @@ mod tests {
         // Check the quota, should not be changed
         let_assert!(InvokerConcurrencyQuota::Limited { available_slots } = &service_inner.quota);
         assert_eq!(*available_slots, 2);
+    }
+
+    #[test(restate_core::test)]
+    async fn notification_triggers_retry() {
+        let invoker_options = InvokerOptionsBuilder::default()
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, Some(1)))
+            .inactivity_timeout(Duration::ZERO.into())
+            .abort_timeout(Duration::ZERO.into())
+            .disable_eager_state(false)
+            .message_size_warning(NonZeroUsize::new(1024).unwrap())
+            .message_size_limit(None)
+            .build()
+            .unwrap();
+
+        let invocation_id = InvocationId::mock_random();
+        let invocation_target = InvocationTarget::mock_virtual_object();
+
+        // Create a mock ServiceInner that tracks when an invocation task is started
+        let (task_started_tx, mut task_started_rx) = mpsc::channel(1);
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock(
+            move |partition,
+                  invocation_id,
+                  invocation_target,
+                  _storage_reader,
+                  _invoker_tx,
+                  _invoker_rx,
+                  _input_journal| {
+                let task_started_tx = task_started_tx.clone();
+                async move {
+                    // Signal that the task has started
+                    let _ = task_started_tx
+                        .send((partition, invocation_id, invocation_target))
+                        .await;
+                    // Never end
+                    pending::<()>().await
+                }
+            },
+            None,
+        );
+
+        // Register a mock partition
+        let _ = service_inner.register_mock_partition(EmptyStorageReader);
+
+        // Create an invocation state machine
+        let mut ism = InvocationStateMachine::create(
+            invocation_target.clone(),
+            invoker_options.retry_policy.clone(),
+        );
+        let (tx, _rx) = mpsc::unbounded_channel();
+        ism.start(tokio::spawn(async {}).abort_handle(), tx);
+
+        // Add a notification proposal
+        ism.notify_new_notification_proposal(NotificationId::CompletionId(1));
+
+        // Put the state machine in the WaitingRetry state
+        ism.handle_task_error(None, true);
+
+        // Register the invocation state machine
+        service_inner
+            .invocation_state_machine_manager
+            .register_invocation(MOCK_PARTITION, invocation_id, ism);
+
+        // Fire the retry timer
+        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
+
+        // Create a notification
+        let notification = RawNotification::new(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(1),
+            Bytes::default(),
+        );
+
+        // Send the notification
+        service_inner.handle_notification(
+            &invoker_options,
+            MOCK_PARTITION,
+            invocation_id,
+            notification,
+        );
+
+        let (partition, id, target) =
+            tokio::time::timeout(Duration::from_millis(100), task_started_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(partition, MOCK_PARTITION);
+        assert_eq!(id, invocation_id);
+        assert_eq!(target, invocation_target);
     }
 }
