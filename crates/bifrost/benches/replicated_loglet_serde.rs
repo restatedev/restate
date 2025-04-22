@@ -21,8 +21,8 @@ use rand::distr::Alphanumeric;
 use rand::{Rng, random};
 
 use restate_bifrost::InputRecord;
-use restate_core::network::protobuf::network::Message;
-use restate_core::network::protobuf::network::message::{BinaryMessage, Body};
+use restate_core::network::protobuf::network::message::Body;
+use restate_core::network::protobuf::network::{Datagram, Message};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber, ProducerId};
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRpcRequestId};
@@ -30,9 +30,10 @@ use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext,
 };
 use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
-use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
+use restate_types::net::codec::{WireDecode, WireEncode};
 use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
 use restate_types::net::replicated_loglet::{Append, CommonRequestHeader};
+use restate_types::net::{RpcRequest, Service};
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::{Command, Destination, Envelope};
 
@@ -134,9 +135,17 @@ fn serialize_store_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> {
         known_archived: LogletOffset::INVALID,
     };
 
-    let body = Body::Encoded(BinaryMessage {
-        target: Store::TARGET.into(),
-        payload: store_message.encode_to_bytes(restate_types::net::ProtocolVersion::V1),
+    let body = Body::Datagram(Datagram {
+        datagram: Some(
+            restate_core::network::protobuf::network::RpcCall {
+                payload: store_message.encode_to_bytes(restate_types::net::ProtocolVersion::V1),
+                id: 88,
+                service: <Store as RpcRequest>::Service::TAG.into(),
+                message_type: Store::TYPE.into(),
+                sort_code: Some(12u64),
+            }
+            .into(),
+        ),
     });
 
     let message = Message {
@@ -164,9 +173,17 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
         payloads,
     };
 
-    let body = Body::Encoded(BinaryMessage {
-        target: Append::TARGET.into(),
-        payload: append_message.encode_to_bytes(restate_types::net::ProtocolVersion::V1),
+    let body = Body::Datagram(Datagram {
+        datagram: Some(
+            restate_core::network::protobuf::network::RpcCall {
+                payload: append_message.encode_to_bytes(restate_types::net::ProtocolVersion::V1),
+                id: 88,
+                service: <Append as RpcRequest>::Service::TAG.into(),
+                message_type: Append::TYPE.into(),
+                sort_code: Some(12u64),
+            }
+            .into(),
+        ),
     });
 
     let message = Message {
@@ -189,8 +206,11 @@ fn deserialize_append_message(serialized_message: Bytes) -> anyhow::Result<Appen
     let msg = Message::decode(serialized_message)?;
     let body = msg.body.unwrap();
     // we ignore non-deserializable messages (serde errors, or control signals in drain)
-    let msg_body = body.try_as_binary_body(restate_types::net::ProtocolVersion::V1)?;
-    Ok(Append::decode(msg_body.payload, protocol_version))
+    // let msg_body = body.try_as_binary_body(restate_types::net::ProtocolVersion::V1)?;
+    // Ok(Append::decode(msg_body.payload, protocol_version))
+    //
+    // disabled during fabric v2 refactoring, feel free to implement it if you need this bench
+    todo!()
 }
 
 fn replicated_loglet_append_serde(c: &mut Criterion) {

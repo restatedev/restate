@@ -127,6 +127,10 @@ impl UnboundedEgressSender {
         self.inner.is_closed()
     }
 
+    pub async fn closed(&self) {
+        self.inner.closed().await
+    }
+
     /// Starts a drain of this stream. Existing enqueued messages will be sent before
     /// terminating but no new messages will be accepted.
     pub fn unbounded_drain(&self, reason: DrainReason) {

@@ -76,122 +76,122 @@ pub mod test_util {
     use crate::network::io::EgressStream;
     use crate::network::protobuf::network::Message;
     use crate::network::protobuf::network::message::BinaryMessage;
-    use crate::network::{Connection, Incoming, MockPeerConnection, PartialPeerConnection};
+    use crate::network::{Connection, ConnectionManager, Incoming};
+    // use crate::network::{Connection, Incoming, MockPeerConnection, PartialPeerConnection};
     use crate::{Metadata, TaskCenter, TaskHandle, TaskKind, my_node_id};
-
-    #[derive(Clone)]
-    pub struct MockConnector {
-        pub sendbuf: usize,
-        pub new_connection_sender: mpsc::UnboundedSender<MockPeerConnection>,
-    }
-
-    #[cfg(any(test, feature = "test-util"))]
-    impl MockConnector {
-        pub fn new(sendbuf: usize) -> (Self, mpsc::UnboundedReceiver<MockPeerConnection>) {
-            let (new_connection_sender, rx) = mpsc::unbounded_channel();
-            (
-                Self {
-                    sendbuf,
-                    new_connection_sender,
-                },
-                rx,
-            )
-        }
-    }
-
-    impl TransportConnect for MockConnector {
-        async fn connect(
-            &self,
-            destination: &Destination,
-            output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
-        ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
-            let &Destination::Node(node_id) = destination else {
-                unimplemented!("MockConnector only supports Destination::Node");
-            };
-            let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
-            // validates that the node is known in the config
-            let current_generation = find_node(&nodes_config, node_id)?.current_generation;
-            info!(
-                "Attempting to fake a connection to node {} and current_generation is {}",
-                node_id, current_generation
-            );
-
-            let (sender, unbounded_sender, egress, drop_egress) =
-                EgressStream::create(self.sendbuf);
-
-            let peer_connection = PartialPeerConnection {
-                my_node_id: node_id,
-                peer: my_node_id(),
-                sender,
-                unbounded_sender,
-                recv_stream: output_stream.boxed(),
-                created: Instant::now(),
-                drop_egress,
-            };
-
-            let peer_connection = peer_connection.handshake(&nodes_config).await.unwrap();
-
-            if self.new_connection_sender.send(peer_connection).is_err() {
-                // receiver has closed, cannot accept connections
-                return Err(ConnectError::Transport(format!(
-                    "MockConnector has been terminated, cannot connect to {node_id}"
-                )));
-            }
-            Ok(egress)
-        }
-    }
-
-    /// Accepts all connections, performs handshake and sends all received messages to a single
-    /// stream
-    pub struct MessageCollectorMockConnector {
-        pub mock_connector: MockConnector,
-        pub tasks: Mutex<Vec<(Connection, TaskHandle<anyhow::Result<()>>)>>,
-    }
-
-    impl MessageCollectorMockConnector {
-        pub fn new(
-            sendbuf: usize,
-            sender: mpsc::Sender<(GenerationalNodeId, Incoming<BinaryMessage>)>,
-        ) -> Arc<Self> {
-            let (mock_connector, mut new_connections) = MockConnector::new(sendbuf);
-            let connector = Arc::new(Self {
-                mock_connector,
-                tasks: Default::default(),
-            });
-
-            // start acceptor
-            TaskCenter::spawn(TaskKind::Disposable, "test-connection-acceptor", {
-                let connector = connector.clone();
-                async move {
-                    while let Some(connection) = new_connections.recv().await {
-                        let (connection, task) = connection.forward_to_sender(sender.clone())?;
-                        connector.tasks.lock().push((connection, task));
-                    }
-                    Ok(())
-                }
-            })
-            .unwrap();
-            connector
-        }
-    }
-
-    impl TransportConnect for Arc<MessageCollectorMockConnector> {
-        async fn connect(
-            &self,
-            destination: &Destination,
-            output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
-        ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
-            self.mock_connector
-                .connect(destination, output_stream)
-                .await
-        }
-    }
-
+    //
+    // #[derive(Clone)]
+    // pub struct MockConnector {
+    //     pub sendbuf: usize,
+    //     pub new_connection_sender: mpsc::UnboundedSender<MockPeerConnection>,
+    // }
+    //
+    // #[cfg(any(test, feature = "test-util"))]
+    // impl MockConnector {
+    //     pub fn new(sendbuf: usize) -> (Self, mpsc::UnboundedReceiver<MockPeerConnection>) {
+    //         let (new_connection_sender, rx) = mpsc::unbounded_channel();
+    //         (
+    //             Self {
+    //                 sendbuf,
+    //                 new_connection_sender,
+    //             },
+    //             rx,
+    //         )
+    //     }
+    // }
+    //
+    // impl TransportConnect for MockConnector {
+    //     async fn connect(
+    //         &self,
+    //         destination: &Destination,
+    //         output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+    //     ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
+    //         let &Destination::Node(node_id) = destination else {
+    //             unimplemented!("MockConnector only supports Destination::Node");
+    //         };
+    //         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+    //         // validates that the node is known in the config
+    //         let current_generation = find_node(&nodes_config, node_id)?.current_generation;
+    //         info!(
+    //             "Attempting to fake a connection to node {} and current_generation is {}",
+    //             node_id, current_generation
+    //         );
+    //
+    //         let (sender, unbounded_sender, egress, drop_egress) =
+    //             EgressStream::create(self.sendbuf);
+    //
+    //         let peer_connection = PartialPeerConnection {
+    //             my_node_id: node_id,
+    //             peer: my_node_id(),
+    //             sender,
+    //             unbounded_sender,
+    //             recv_stream: output_stream.boxed(),
+    //             created: Instant::now(),
+    //             drop_egress,
+    //         };
+    //
+    //         let peer_connection = peer_connection.handshake(&nodes_config).await.unwrap();
+    //
+    //         if self.new_connection_sender.send(peer_connection).is_err() {
+    //             // receiver has closed, cannot accept connections
+    //             return Err(ConnectError::Transport(format!(
+    //                 "MockConnector has been terminated, cannot connect to {node_id}"
+    //             )));
+    //         }
+    //         Ok(egress)
+    //     }
+    // }
+    //
+    // /// Accepts all connections, performs handshake and sends all received messages to a single
+    // /// stream
+    // pub struct MessageCollectorMockConnector {
+    //     pub mock_connector: MockConnector,
+    //     pub tasks: Mutex<Vec<(Connection, TaskHandle<anyhow::Result<()>>)>>,
+    // }
+    //
+    // impl MessageCollectorMockConnector {
+    //     pub fn new(
+    //         sendbuf: usize,
+    //         sender: mpsc::Sender<(GenerationalNodeId, Incoming<BinaryMessage>)>,
+    //     ) -> Arc<Self> {
+    //         let (mock_connector, mut new_connections) = MockConnector::new(sendbuf);
+    //         let connector = Arc::new(Self {
+    //             mock_connector,
+    //             tasks: Default::default(),
+    //         });
+    //
+    //         // start acceptor
+    //         TaskCenter::spawn(TaskKind::Disposable, "test-connection-acceptor", {
+    //             let connector = connector.clone();
+    //             async move {
+    //                 while let Some(connection) = new_connections.recv().await {
+    //                     let (connection, task) = connection.forward_to_sender(sender.clone())?;
+    //                     connector.tasks.lock().push((connection, task));
+    //                 }
+    //                 Ok(())
+    //             }
+    //         })
+    //         .unwrap();
+    //         connector
+    //     }
+    // }
+    //
+    // impl TransportConnect for Arc<MessageCollectorMockConnector> {
+    //     async fn connect(
+    //         &self,
+    //         destination: &Destination,
+    //         output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+    //     ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
+    //         self.mock_connector
+    //             .connect(destination, output_stream)
+    //             .await
+    //     }
+    // }
+    //
     /// Transport that fails all outgoing connections
     #[derive(Default, Clone)]
     pub struct FailingConnector;
 
-    #[cfg(any(test, feature = "test-util"))]
     impl TransportConnect for FailingConnector {
         async fn connect(
             &self,
@@ -201,6 +201,24 @@ pub mod test_util {
             Result::<futures::stream::Empty<_>, _>::Err(ConnectError::Transport(
                 "Trying to connect using failing transport".to_string(),
             ))
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct PassthroughConnector(pub ConnectionManager);
+
+    impl TransportConnect for PassthroughConnector {
+        async fn connect(
+            &self,
+            _destination: &Destination,
+            output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+        ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
+            let output = self
+                .0
+                .accept_incoming_connection(output_stream)
+                .await
+                .map_err(|err| ConnectError::Transport(err.to_string()))?;
+            Ok(output)
         }
     }
 }

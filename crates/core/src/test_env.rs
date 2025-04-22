@@ -20,24 +20,24 @@ use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
 };
-use restate_types::net::AdvertisedAddress;
-use restate_types::net::codec::{Targeted, WireDecode};
+use restate_types::net::codec::WireDecode;
 use restate_types::net::metadata::MetadataKind;
+use restate_types::net::{AdvertisedAddress, Service, UnaryMessage};
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
 };
 use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, Version};
 
-use crate::TaskCenter;
 use crate::metadata_store::MetadataStoreClient;
 use crate::network::protobuf::network::Message;
 use crate::network::{
-    AcceptError, FailingConnector, Incoming, MessageHandler, MessageRouterBuilder, Networking,
-    TransportConnect,
+    AcceptError, BackPressureMode, Buffered, FailingConnector, Handler, Incoming,
+    MessageRouterBuilder, Networking, RawSvcUnary, TransportConnect,
 };
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{MetadataBuilder, TaskId, spawn_metadata_manager};
+use crate::{TaskCenter, TaskKind};
 
 pub struct TestCoreEnvBuilder<T> {
     pub my_node_id: GenerationalNodeId,
@@ -123,11 +123,22 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
         self
     }
 
-    pub fn add_message_handler<H>(mut self, handler: H) -> Self
+    pub fn register_buffered_service<H, S>(
+        mut self,
+        buffer_size: usize,
+        backpressure: BackPressureMode,
+        handler: H,
+    ) -> Self
     where
-        H: MessageHandler + Send + Sync + 'static,
+        H: Handler<Service = S> + Send + Sync + 'static,
+        S: Service,
     {
-        self.router_builder.add_message_handler(handler);
+        let buffered = self
+            .router_builder
+            .register_buffered_service(buffer_size, backpressure);
+        buffered
+            .start(TaskKind::NetworkMessageHandler, "service-handler", handler)
+            .unwrap();
         self
     }
 
@@ -246,13 +257,13 @@ pub fn create_mock_nodes_config(node_id: u32, generation: u32) -> NodesConfigura
     nodes_config
 }
 
-/// No-op message handler which simply drops the received messages. Useful if you don't want to
+/// No-op message handler which simply ignores the received messages. Useful if you don't want to
 /// react to network messages.
-pub struct NoOpMessageHandler<M> {
-    phantom_data: PhantomData<M>,
+pub struct NoOpMessageHandler<S: Service> {
+    phantom_data: PhantomData<S>,
 }
 
-impl<M> Default for NoOpMessageHandler<M> {
+impl<S: Service> Default for NoOpMessageHandler<S> {
     fn default() -> Self {
         NoOpMessageHandler {
             phantom_data: PhantomData,
@@ -260,13 +271,6 @@ impl<M> Default for NoOpMessageHandler<M> {
     }
 }
 
-impl<M> MessageHandler for NoOpMessageHandler<M>
-where
-    M: WireDecode + Targeted + Send + Sync,
-{
-    type MessageType = M;
-
-    async fn on_message(&self, _msg: Incoming<Self::MessageType>) {
-        // no-op
-    }
+impl<S: Service> Handler for NoOpMessageHandler<S> {
+    type Service = S;
 }

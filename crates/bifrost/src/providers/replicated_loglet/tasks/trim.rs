@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_core::{Metadata, TaskCenterFutureExt};
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, debug, instrument, trace, warn};
 
-use restate_core::network::{Incoming, Networking, TransportConnect};
+use restate_core::network::{Networking, TransportConnect};
+use restate_core::{Metadata, TaskCenterFutureExt};
+use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Status, Trim, Trimmed};
@@ -22,7 +23,6 @@ use restate_types::replication::NodeSet;
 use crate::loglet::OperationError;
 use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
-use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
 
 use super::util::Disposition;
@@ -51,19 +51,13 @@ struct TrimError;
 /// or higher (best effort).
 pub struct TrimTask<'a> {
     my_params: &'a ReplicatedLogletParams,
-    logservers_rpc: LogServersRpc,
     known_global_tail: TailOffsetWatch,
 }
 
 impl<'a> TrimTask<'a> {
-    pub fn new(
-        my_params: &'a ReplicatedLogletParams,
-        logservers_rpc: LogServersRpc,
-        known_global_tail: TailOffsetWatch,
-    ) -> Self {
+    pub fn new(my_params: &'a ReplicatedLogletParams, known_global_tail: TailOffsetWatch) -> Self {
         Self {
             my_params,
-            logservers_rpc,
             known_global_tail,
         }
     }
@@ -122,14 +116,12 @@ impl<'a> TrimTask<'a> {
                 .name("trim")
                 .spawn({
                     let networking = networking.clone();
-                    let trim_rpc_router = self.logservers_rpc.trim.clone();
                     let known_global_tail = self.known_global_tail.clone();
 
                     async move {
                         let task = RunOnSingleNode::new(
                             node_id,
                             request,
-                            &trim_rpc_router,
                             &known_global_tail,
                             Configuration::pinned()
                                 .bifrost
@@ -192,14 +184,13 @@ impl<'a> TrimTask<'a> {
     }
 }
 
-fn on_trim_response(msg: Incoming<Trimmed>) -> Disposition<()> {
-    if let Status::Ok = msg.body().header.status {
+fn on_trim_response(peer: PlainNodeId, msg: Trimmed) -> Disposition<()> {
+    if let Status::Ok = msg.header.status {
         Disposition::Return(())
     } else {
         trace!(
             "Trim request failed on node {}, status is {:?}",
-            msg.peer(),
-            msg.body().header.status
+            peer, msg.header.status
         );
         Disposition::Abort
     }

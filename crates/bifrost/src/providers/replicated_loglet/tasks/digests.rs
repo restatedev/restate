@@ -14,8 +14,7 @@ use rand::rng;
 use tokio::task::JoinSet;
 use tracing::{debug, trace, warn};
 
-use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{Networking, TransportConnect};
+use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenterFutureExt, cancellation_watcher};
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
@@ -170,7 +169,6 @@ impl Digests {
         entry: LogEntry<LogletOffset>,
         sequencer: GenerationalNodeId,
         networking: &Networking<T>,
-        store_rpc: &RpcRouter<Store>,
     ) -> Result<(), OperationError> {
         let metadata = Metadata::current();
         let offset = entry.sequence_number();
@@ -257,10 +255,23 @@ impl Digests {
                 .spawn({
                     let networking = networking.clone();
                     let msg = msg.clone();
-                    let store_rpc = store_rpc.clone();
+                    let loglet_id = self.loglet_id;
 
-                    async move { (node, store_rpc.call(&networking, node, msg).await) }
-                        .in_current_tc()
+                    async move {
+                        (
+                            node,
+                            networking
+                                .call_rpc(
+                                    node,
+                                    Swimlane::BifrostData,
+                                    msg,
+                                    Some(loglet_id.into()),
+                                    None,
+                                )
+                                .await,
+                        )
+                    }
+                    .in_current_tc()
                 })
                 .expect("to spawn store task for replicating records");
         }
@@ -292,21 +303,20 @@ impl Digests {
                 Some(Ok((peer, maybe_stored))) = inflight_stores.join_next() => {
                     // maybe_stored is err if we can't send the store (or shutdown)
                     match maybe_stored {
-                        Ok(stored) if stored.body().header.status == Status::Ok =>  {
+                        Ok(stored) if stored.header.status == Status::Ok =>  {
                             Some(peer)
                         }
                         Ok(stored) => {
                             // Store failed with some non-ok status
                             debug!(
                                 loglet_id = %self.loglet_id,
-                                peer = %stored.peer(),
+                                %peer,
                                 %offset,
                                 "Could not store record on node as part of the tail repair procedure. Log server responded with status={:?}",
-                                stored.body().header.status
+                                stored.header.status
                             );
                             None
                         }
-                        Err(RpcError::Shutdown(e)) => return Err(OperationError::Shutdown(e)),
                         // give up on this store.
                         Err(e) => {
                             debug!(
