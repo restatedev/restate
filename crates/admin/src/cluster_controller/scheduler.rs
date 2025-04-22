@@ -17,7 +17,7 @@ use rand::seq::IteratorRandom;
 use tracing::{Level, debug, enabled, info, instrument, trace, warn};
 
 use restate_core::metadata_store::{ReadError, ReadWriteError, WriteError};
-use restate_core::network::{Networking, Outgoing, TransportConnect};
+use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::cluster::cluster_state::RunMode;
@@ -406,7 +406,9 @@ impl<T: TransportConnect> Scheduler<T> {
                         // doesn't retry, we don't want to keep bombarding a node that's
                         // potentially dead.
                         async move {
-                            let Ok(connection) = networking.node_connection(node_id).await else {
+                            let Ok(connection) =
+                                networking.get_connection(node_id, Swimlane::General).await
+                            else {
                                 // ignore connection errors, no need to mark the task as failed
                                 // as it pollutes the log.
                                 return Ok(());
@@ -416,7 +418,7 @@ impl<T: TransportConnect> Scheduler<T> {
                                 // ditto
                                 return Ok(());
                             };
-                            permit.send(Outgoing::new(node_id, control_processors));
+                            permit.send_unary(control_processors, None);
                             Ok(())
                         }
                     },
@@ -561,7 +563,7 @@ mod tests {
     use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
     use restate_types::net::codec::WireDecode;
     use restate_types::net::partition_processor_manager::{ControlProcessors, ProcessorCommand};
-    use restate_types::net::{AdvertisedAddress, TargetName};
+    use restate_types::net::{AdvertisedAddress, ServiceTag};
     use restate_types::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
@@ -675,14 +677,14 @@ mod tests {
 
         let mut builder = TestCoreEnvBuilder::with_transport_connector(connector);
         builder.router_builder.add_raw_handler(
-            TargetName::ControlProcessors,
+            ServiceTag::ControlProcessors,
             // network messages going to my node is also written to `tx`
             Box::new(ForwardingHandler::new(GenerationalNodeId::new(1, 1), tx)),
         );
 
         let mut control_recv = ReceiverStream::new(control_recv)
             .filter_map(|(node_id, message)| async move {
-                if message.body().target() == TargetName::ControlProcessors {
+                if message.body().target() == ServiceTag::ControlProcessors {
                     let message = message
                         .try_map(|mut m| {
                             Ok::<_, Infallible>(ControlProcessors::decode(

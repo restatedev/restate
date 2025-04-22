@@ -9,8 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
-use restate_core::network::rpc_router::ConnectionAwareRpcRouter;
-use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
+use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
 use restate_ingress_http::HyperServerIngress;
 use restate_ingress_http::rpc_request_dispatcher::RpcRequestDispatcher;
@@ -35,13 +34,9 @@ impl<T: TransportConnect> IngressRole<T> {
         schema: Live<Schema>,
         partition_table: Live<PartitionTable>,
         partition_routing: PartitionRouting,
-        router_builder: &mut MessageRouterBuilder,
     ) -> Self {
-        let rpc_router = ConnectionAwareRpcRouter::new(router_builder);
-
         let dispatcher = RpcRequestDispatcher::new(PartitionProcessorRpcClient::new(
             networking,
-            rpc_router,
             partition_table,
             partition_routing,
         ));

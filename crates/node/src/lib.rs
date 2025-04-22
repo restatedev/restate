@@ -22,7 +22,8 @@ use codederror::CodedError;
 use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{ReadWriteError, WriteError, retry_on_retryable_error};
 use restate_core::network::{
-    GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
+    GrpcConnector, MessageRouterBuilder, NetworkSender as _, NetworkServerBuilder, Networking,
+    Swimlane,
 };
 use restate_core::partitions::{PartitionRoutingRefresher, spawn_partition_routing_refresher};
 use restate_core::{Metadata, TaskKind};
@@ -190,7 +191,7 @@ impl Node {
             (None, metadata_store_client)
         };
 
-        let metadata_manager =
+        let mut metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
         let mut router_builder = MessageRouterBuilder::default();
         let networking = Networking::with_grpc_connector();
@@ -207,7 +208,6 @@ impl Node {
         // Setup bifrost
         // replicated-loglet
         let replicated_loglet_factory = restate_bifrost::providers::replicated_loglet::Factory::new(
-            metadata_store_client.clone(),
             networking.clone(),
             record_cache.clone(),
             &mut router_builder,
@@ -293,7 +293,6 @@ impl Node {
                 metadata.updateable_schema(),
                 metadata.updateable_partition_table(),
                 partition_routing_refresher.partition_routing(),
-                &mut router_builder,
             ))
         } else {
             None
@@ -310,7 +309,6 @@ impl Node {
                     metadata,
                     metadata_manager.writer(),
                     &mut server_builder,
-                    &mut router_builder,
                     worker_role
                         .as_ref()
                         .map(|worker_role| worker_role.storage_query_context().clone()),
@@ -474,7 +472,10 @@ impl Node {
                     TaskKind::Disposable,
                     "announce-node-at-admin-node",
                     async move {
-                        if let Err(err) = networking.node_connection(admin_node_id).await {
+                        if let Err(err) = networking
+                            .get_connection(admin_node_id, Swimlane::Gossip)
+                            .await
+                        {
                             debug!(
                                 "Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}"
                             );

@@ -23,10 +23,9 @@ use tracing::{debug, info, trace, warn};
 
 use restate_bifrost::{Bifrost, SealedSegment};
 use restate_core::cancellation_token;
-use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
-    MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking, TransportConnect,
+    NetworkSender, NetworkServerBuilder, Networking, Swimlane, TransportConnect,
 };
 use restate_core::{
     Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind,
@@ -92,17 +91,14 @@ where
         health_status: HealthStatus<AdminStatus>,
         bifrost: Bifrost,
         networking: Networking<T>,
-        router_builder: &mut MessageRouterBuilder,
         server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
     ) -> Result<Self, BuildError> {
         let (command_tx, command_rx) = mpsc::channel(2);
 
-        let cluster_state_refresher =
-            ClusterStateRefresher::new(networking.clone(), router_builder);
+        let cluster_state_refresher = ClusterStateRefresher::new(networking.clone());
 
-        let processor_manager_client =
-            PartitionProcessorManagerClient::new(networking.clone(), router_builder);
+        let processor_manager_client = PartitionProcessorManagerClient::new(networking.clone());
 
         let options = configuration.live_load();
         let heartbeat_interval = Self::create_heartbeat_interval(&options.admin);
@@ -415,7 +411,7 @@ impl<T: TransportConnect> Service<T> {
                     "Asking node to snapshot partition"
                 );
 
-                let mut node_rpc_client = self.processor_manager_client.clone();
+                let node_rpc_client = self.processor_manager_client.clone();
                 let _ = TaskCenter::spawn_child(
                     TaskKind::Disposable,
                     "create-snapshot-response",
@@ -633,39 +629,34 @@ enum ClusterConfigurationUpdateError {
 #[derive(Clone)]
 struct PartitionProcessorManagerClient<N> {
     network_sender: N,
-    create_snapshot_router: RpcRouter<CreateSnapshotRequest>,
 }
 
 impl<N> PartitionProcessorManagerClient<N>
 where
     N: NetworkSender + 'static,
 {
-    pub fn new(network_sender: N, router_builder: &mut MessageRouterBuilder) -> Self {
-        let create_snapshot_router = RpcRouter::new(router_builder);
-
-        PartitionProcessorManagerClient {
-            network_sender,
-            create_snapshot_router,
-        }
+    pub fn new(network_sender: N) -> Self {
+        PartitionProcessorManagerClient { network_sender }
     }
 
     pub async fn create_snapshot(
-        &mut self,
+        &self,
         node_id: GenerationalNodeId,
         partition_id: PartitionId,
         min_target_lsn: Option<Lsn>,
     ) -> anyhow::Result<Snapshot> {
-        self.create_snapshot_router
-            .call(
-                &self.network_sender,
+        self.network_sender
+            .call_rpc(
                 node_id,
+                Swimlane::General,
                 CreateSnapshotRequest {
                     partition_id,
                     min_target_lsn,
                 },
+                Some(partition_id.into()),
+                None,
             )
             .await?
-            .into_body()
             .result
             .map_err(|e| anyhow!("Failed to create snapshot: {:?}", e))
     }
@@ -815,7 +806,7 @@ mod tests {
     use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::{Bifrost, BifrostService, ErrorRecoveryStrategy};
     use restate_core::network::{
-        FailingConnector, Incoming, MessageHandler, MockPeerConnection, NetworkServerBuilder,
+        FailingConnector, Incoming, MockPeerConnection, NetworkServerBuilder, UnaryMessageHandler,
     };
     use restate_core::test_env::NoOpMessageHandler;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
@@ -850,7 +841,6 @@ mod tests {
             HealthStatus::default(),
             bifrost.clone(),
             builder.networking.clone(),
-            &mut builder.router_builder,
             &mut NetworkServerBuilder::default(),
             builder.metadata_writer.clone(),
         )
@@ -885,7 +875,7 @@ mod tests {
         archived_lsn: Arc<AtomicU64>,
     }
 
-    impl MessageHandler for MockNodeStateHandler {
+    impl UnaryMessageHandler for MockNodeStateHandler {
         type MessageType = GetNodeState;
 
         async fn on_message(&self, msg: Incoming<Self::MessageType>) {

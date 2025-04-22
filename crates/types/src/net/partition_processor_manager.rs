@@ -14,13 +14,22 @@ use crate::Version;
 use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, SnapshotId};
 use crate::logs::{LogId, Lsn};
-use crate::net::define_rpc;
-use crate::net::{TargetName, define_message};
+use crate::net::{ServiceTag, define_service, define_unary_message};
+use crate::net::{default_wire_codec, define_rpc};
 
-define_message! {
-    @message = ControlProcessors,
-    @target = TargetName::ControlProcessors,
+pub struct PartitionManagerService;
+
+define_service! {
+    @service = PartitionManagerService,
+    @tag = ServiceTag::PartitionManagerService,
 }
+
+define_unary_message! {
+    @message = ControlProcessors,
+    @service = PartitionManagerService,
+}
+
+default_wire_codec!(ControlProcessors);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlProcessors {
@@ -64,9 +73,11 @@ impl From<RunMode> for ProcessorCommand {
 define_rpc! {
     @request = CreateSnapshotRequest,
     @response = CreateSnapshotResponse,
-    @request_target = TargetName::PartitionCreateSnapshotRequest,
-    @response_target = TargetName::PartitionCreateSnapshotResponse,
+    @service = PartitionManagerService,
 }
+
+default_wire_codec!(CreateSnapshotRequest);
+default_wire_codec!(CreateSnapshotResponse);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSnapshotRequest {

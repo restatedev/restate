@@ -11,9 +11,31 @@
 mod egress_sender;
 mod egress_stream;
 mod reactor;
+mod rpc_tracker;
+
+use std::sync::Arc;
 
 pub(crate) use egress_sender::WeakUnboundedEgressSender;
 
 pub use egress_sender::{EgressSender, UnboundedEgressSender};
 pub use egress_stream::{DrainReason, DropEgressStream, EgressMessage, EgressStream};
 pub use reactor::ConnectionReactor;
+
+use super::ConnectionClosed;
+
+pub struct Shared {
+    /// The sender for the egress stream.
+    tx: Option<UnboundedEgressSender>,
+    drop_egress: Option<DropEgressStream>,
+    reply_tracker: Arc<rpc_tracker::ReplyTracker>,
+}
+
+impl Shared {
+    pub fn unbounded_send(&self, message: EgressMessage) -> Result<(), ConnectionClosed> {
+        if let Some(ref sender) = self.tx {
+            sender.unbounded_send(message)
+        } else {
+            Err(ConnectionClosed)
+        }
+    }
+}

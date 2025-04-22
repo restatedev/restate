@@ -15,25 +15,39 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::TargetName;
+use super::ServiceTag;
 use crate::logs::metadata::SegmentIndex;
 use crate::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber, TailState};
-use crate::net::define_rpc;
+use crate::net::{default_wire_codec, define_rpc, define_service};
+
+pub struct SequencerDataService;
+define_service! {
+    @service = SequencerDataService,
+    @tag = ServiceTag::ReplicatedLogletSequencerDataService,
+}
+
+pub struct SequencerInfoService;
+define_service! {
+    @service = SequencerInfoService,
+    @tag = ServiceTag::ReplicatedLogletSequencerInfoService,
+}
 
 // ----- ReplicatedLoglet Sequencer API -----
 define_rpc! {
     @request = Append,
     @response = Appended,
-    @request_target = TargetName::ReplicatedLogletAppend,
-    @response_target = TargetName::ReplicatedLogletAppended,
+    @service = SequencerDataService,
 }
+default_wire_codec!(Append);
+default_wire_codec!(Appended);
 
 define_rpc! {
     @request = GetSequencerState,
     @response = SequencerState,
-    @request_target = TargetName::ReplicatedLogletGetSequencerState,
-    @response_target = TargetName::ReplicatedLogletSequencerState,
+    @service = SequencerInfoService,
 }
+default_wire_codec!(GetSequencerState);
+default_wire_codec!(SequencerState);
 
 /// Status of sequencer response.
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::IsVariant)]
