@@ -38,7 +38,6 @@ use super::error::ReplicatedLogletError;
 use super::metric_definitions::{BIFROST_RECORDS_ENQUEUED_BYTES, BIFROST_RECORDS_ENQUEUED_TOTAL};
 use super::read_path::{ReadStreamTask, ReplicatedLogletReadStream};
 use super::remote_sequencer::RemoteSequencer;
-use super::rpc_routers::{LogServersRpc, SequencersRpc};
 use super::tasks::{CheckSealOutcome, CheckSealTask, FindTailResult};
 
 #[derive(derive_more::Debug)]
@@ -50,10 +49,6 @@ pub(super) struct ReplicatedLoglet<T> {
     my_params: ReplicatedLogletParams,
     #[debug(skip)]
     networking: Networking<T>,
-    #[debug(skip)]
-    logservers_rpc: LogServersRpc,
-    #[debug(skip)]
-    sequencers_rpc: SequencersRpc,
     #[debug(skip)]
     record_cache: RecordCache,
     /// A shared watch for the last known global tail of the loglet.
@@ -73,8 +68,6 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         segment_index: SegmentIndex,
         my_params: ReplicatedLogletParams,
         networking: Networking<T>,
-        logservers_rpc: LogServersRpc,
-        sequencers_rpc: SequencersRpc,
         record_cache: RecordCache,
     ) -> Self {
         let known_global_tail = TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST));
@@ -92,7 +85,6 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
                     my_params.clone(),
                     selector_strategy,
                     networking.clone(),
-                    logservers_rpc.store.clone(),
                     record_cache.clone(),
                     known_global_tail.clone(),
                 ),
@@ -105,7 +97,6 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
                     my_params.clone(),
                     networking.clone(),
                     known_global_tail.clone(),
-                    sequencers_rpc.clone(),
                 ),
             }
         };
@@ -114,8 +105,6 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
             segment_index,
             my_params,
             networking,
-            logservers_rpc,
-            sequencers_rpc,
             record_cache,
             known_global_tail,
             sequencer,
@@ -216,7 +205,6 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
                         // happening.
                         let result = CheckSealTask::run(
                             &self.my_params,
-                            &self.logservers_rpc.get_loglet_info,
                             handle.sequencer_state().remote_log_servers(),
                             &self.known_global_tail,
                             &self.networking,
@@ -252,8 +240,6 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
                     self.segment_index,
                     self.my_params.clone(),
                     self.networking.clone(),
-                    self.logservers_rpc.clone(),
-                    self.sequencers_rpc.clone(),
                     self.known_global_tail.clone(),
                     self.record_cache.clone(),
                 );
@@ -297,12 +283,10 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         let known_global_tail = self.known_global_tail.clone();
         let my_params = self.my_params.clone();
         let networking = self.networking.clone();
-        let logservers_rpc = self.logservers_rpc.clone();
 
         let (rx_stream, reader_task) = ReadStreamTask::start(
             my_params,
             networking,
-            logservers_rpc,
             filter,
             from,
             to,
@@ -368,13 +352,9 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     )]
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
         trace!("get_trim_point() called");
-        GetTrimPointTask::new(
-            &self.my_params,
-            self.logservers_rpc.clone(),
-            self.known_global_tail.clone(),
-        )
-        .run(self.networking.clone())
-        .await
+        GetTrimPointTask::new(&self.my_params, self.known_global_tail.clone())
+            .run(self.networking.clone())
+            .await
     }
 
     #[instrument(
@@ -390,13 +370,9 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
     /// trim_point is inclusive (will be trimmed)
     async fn trim(&self, trim_point: LogletOffset) -> Result<(), OperationError> {
         trace!("trim() called");
-        TrimTask::new(
-            &self.my_params,
-            self.logservers_rpc.clone(),
-            self.known_global_tail.clone(),
-        )
-        .run(trim_point, self.networking.clone())
-        .await?;
+        TrimTask::new(&self.my_params, self.known_global_tail.clone())
+            .run(trim_point, self.networking.clone())
+            .await?;
         info!(
             loglet_id=%self.my_params.loglet_id,
             ?trim_point,
@@ -429,13 +405,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         }
 
         debug!("Attempting to seal loglet");
-        let _ = SealTask::run(
-            &self.my_params,
-            &self.logservers_rpc.seal,
-            &self.known_global_tail,
-            &self.networking,
-        )
-        .await?;
+        let _ = SealTask::run(&self.my_params, &self.known_global_tail, &self.networking).await?;
         // If we are the sequencer, we need to wait until the sequencer is drained.
         if let SequencerAccess::Local { handle } = &self.sequencer {
             handle.drain().await;

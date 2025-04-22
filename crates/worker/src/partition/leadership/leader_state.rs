@@ -12,15 +12,15 @@ use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_HANDLE_LEA
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
+use crate::partition::shuffle;
 use crate::partition::shuffle::HintSender;
 use crate::partition::state_machine::Action;
-use crate::partition::{respond_to_rpc, shuffle};
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use metrics::{Counter, counter};
 use restate_bifrost::CommitToken;
-use restate_core::network::Reciprocal;
+use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{TaskCenter, TaskHandle, TaskId};
 use restate_partition_store::PartitionStore;
 use restate_types::identifiers::{
@@ -46,7 +46,8 @@ use tracing::{debug, trace};
 
 const BATCH_READY_UP_TO: usize = 10;
 
-type RpcReciprocal = Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>;
+type RpcReciprocal =
+    Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>;
 
 pub struct LeaderState {
     partition_id: PartitionId,
@@ -208,11 +209,9 @@ impl LeaderState {
                 %request_id,
                 "Failing rpc because I lost leadership",
             );
-            respond_to_rpc(
-                reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
-                    self.partition_id,
-                ))),
-            );
+            reciprocal.send(Err(PartitionProcessorRpcError::LostLeadership(
+                self.partition_id,
+            )))
         }
         for fut in self.awaiting_rpc_self_propose.iter_mut() {
             fut.fail_with_lost_leadership(self.partition_id);
@@ -273,7 +272,9 @@ impl LeaderState {
     pub async fn handle_rpc_proposal_command(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        reciprocal: Reciprocal<
+            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        >,
         partition_key: PartitionKey,
         cmd: Command,
     ) {
@@ -283,19 +284,14 @@ impl LeaderState {
                 // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
                 let old_reciprocal = o.insert(reciprocal);
                 trace!(%request_id, "Replacing rpc with newer request");
-                respond_to_rpc(
-                    old_reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
-                        "retried".to_string(),
-                    ))),
-                );
+                old_reciprocal.send(Err(PartitionProcessorRpcError::Internal(
+                    "retried".to_string(),
+                )));
             }
             Entry::Vacant(v) => {
                 // In this case, no one proposed this command yet, let's try to propose it
                 if let Err(e) = self.self_proposer.propose(partition_key, cmd).await {
-                    respond_to_rpc(
-                        reciprocal
-                            .prepare(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
-                    );
+                    reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
                 } else {
                     v.insert(reciprocal);
                 }
@@ -307,7 +303,9 @@ impl LeaderState {
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
-        reciprocal: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        reciprocal: Reciprocal<
+            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        >,
     ) {
         match self
             .self_proposer
@@ -318,11 +316,7 @@ impl LeaderState {
                 self.awaiting_rpc_self_propose
                     .push(SelfAppendFuture::new(commit_token, reciprocal));
             }
-            Err(e) => {
-                respond_to_rpc(
-                    reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
-                );
-            }
+            Err(e) => reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
         }
     }
 
@@ -402,16 +396,14 @@ impl LeaderState {
                 ..
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    respond_to_rpc(
-                        response_tx.prepare(Ok(PartitionProcessorRpcResponse::Output(
-                            InvocationOutput {
-                                request_id,
-                                invocation_id,
-                                completion_expiry_time,
-                                response,
-                            },
-                        ))),
-                    );
+                    response_tx.send(Ok(PartitionProcessorRpcResponse::Output(
+                        InvocationOutput {
+                            request_id,
+                            invocation_id,
+                            completion_expiry_time,
+                            response,
+                        },
+                    )));
                 } else {
                     debug!(%request_id, "Ignoring sending ingress response because there is no awaiting rpc");
                 }
@@ -423,12 +415,12 @@ impl LeaderState {
                 ..
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    respond_to_rpc(response_tx.prepare(Ok(
-                        PartitionProcessorRpcResponse::Submitted(SubmittedInvocationNotification {
+                    response_tx.send(Ok(PartitionProcessorRpcResponse::Submitted(
+                        SubmittedInvocationNotification {
                             request_id,
                             execution_time,
                             is_new_invocation,
-                        }),
+                        },
                     )));
                 }
             }
@@ -456,13 +448,17 @@ impl LeaderState {
 
 struct SelfAppendFuture {
     commit_token: CommitToken,
-    response: Option<Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>,
+    response: Option<
+        Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>,
+    >,
 }
 
 impl SelfAppendFuture {
     fn new(
         commit_token: CommitToken,
-        response: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        response: Reciprocal<
+            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        >,
     ) -> Self {
         Self {
             commit_token,
@@ -472,25 +468,23 @@ impl SelfAppendFuture {
 
     fn fail_with_internal(&mut self) {
         if let Some(reciprocal) = self.response.take() {
-            respond_to_rpc(reciprocal.prepare(Err(PartitionProcessorRpcError::Internal(
+            reciprocal.send(Err(PartitionProcessorRpcError::Internal(
                 "error when proposing to bifrost".to_string(),
-            ))));
+            )));
         }
     }
 
     fn fail_with_lost_leadership(&mut self, this_partition_id: PartitionId) {
         if let Some(reciprocal) = self.response.take() {
-            respond_to_rpc(
-                reciprocal.prepare(Err(PartitionProcessorRpcError::LostLeadership(
-                    this_partition_id,
-                ))),
-            );
+            reciprocal.send(Err(PartitionProcessorRpcError::LostLeadership(
+                this_partition_id,
+            )));
         }
     }
 
     fn succeed_with_appended(&mut self) {
         if let Some(reciprocal) = self.response.take() {
-            respond_to_rpc(reciprocal.prepare(Ok(PartitionProcessorRpcResponse::Appended)));
+            reciprocal.send(Ok(PartitionProcessorRpcResponse::Appended));
         }
     }
 }

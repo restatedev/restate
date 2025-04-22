@@ -66,7 +66,6 @@ pub mod network {
             logs_version: Option<restate_types::Version>,
             schema_version: Option<restate_types::Version>,
             partition_table_version: Option<restate_types::Version>,
-            msg_id: u64,
             in_response_to: Option<u64>,
         ) -> Self {
             Self {
@@ -74,7 +73,7 @@ pub mod network {
                 my_logs_version: logs_version.map(Into::into),
                 my_schema_version: schema_version.map(Into::into),
                 my_partition_table_version: partition_table_version.map(Into::into),
-                msg_id,
+                msg_id: 0,
                 in_response_to,
                 span_context: None,
             }

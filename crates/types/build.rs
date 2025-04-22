@@ -99,7 +99,7 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
     prost_build::Config::new()
         .bytes(["."])
         .enum_attribute(
-            "TargetName",
+            "ServiceTag",
             "#[derive(::enum_map::Enum, ::derive_more::IsVariant, ::derive_more::Display)]",
         )
         .enum_attribute("NodeStatus", "#[derive(::serde::Serialize)]")

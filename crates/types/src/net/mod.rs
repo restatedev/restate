@@ -24,13 +24,12 @@ use std::str::FromStr;
 use anyhow::{Context, Error};
 use http::Uri;
 
-use self::codec::{Targeted, WireEncode};
 use crate::config::InvalidConfigurationError;
 pub use crate::protobuf::common::ProtocolVersion;
-pub use crate::protobuf::common::TargetName;
+pub use crate::protobuf::common::ServiceTag;
 
 pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
-pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
+pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V2;
 
 #[derive(
     Debug,
@@ -179,33 +178,45 @@ impl FromStr for BindAddress {
         }
     }
 }
-pub trait RpcRequest: Targeted {
-    type ResponseMessage: Targeted + WireEncode;
+
+pub trait Service: Send + Unpin + 'static {
+    const TAG: ServiceTag;
 }
 
-// to define a message, we need
-// - Message type
-// - message target
-//
-// Example:
-// ```
-//   define_message! {
-//       @message = IngressMessage,
-//       @target = TargetName::Ingress,
-//   }
-// ```
-macro_rules! define_message {
-    (
-        @message = $message:ty,
-        @target = $target:expr,
-    ) => {
-        impl $crate::net::Targeted for $message {
-            const TARGET: $crate::net::TargetName = $target;
-            fn kind(&self) -> &'static str {
-                stringify!($message)
-            }
-        }
+pub trait RpcRequest: codec::WireEncode + codec::WireDecode + Send + 'static {
+    const TYPE: &str;
+    type Service: Service;
+    type Response: RpcResponse;
+}
 
+pub trait RpcResponse: codec::WireEncode + codec::WireDecode + Unpin + Send {
+    type Service: Service;
+}
+
+pub trait SubscriptionRequest: codec::WireEncode + codec::WireDecode + Send + 'static {
+    const TYPE: &str;
+    type Service: Service;
+    type Response: SubscriptionResponse;
+}
+
+pub trait SubscriptionResponse: codec::WireEncode + codec::WireDecode + Unpin + Send {}
+
+pub trait UnaryMessage: codec::WireEncode + codec::WireDecode + Send + 'static {
+    const TYPE: &str;
+    type Service: Service;
+}
+
+/// Implements default wire codec for a type
+/// - Message type
+///
+/// Example:
+/// ```[no_run]
+///   default_wire_encode!(IngressMessage);
+/// ```
+macro_rules! default_wire_codec {
+    (
+        $message:ty
+    ) => {
         impl $crate::net::codec::WireEncode for $message {
             fn encode_to_bytes(
                 self,
@@ -231,46 +242,84 @@ macro_rules! define_message {
     };
 }
 
-// to define an RPC, we need
-// - Request type
-// - request target
-// - Response type
-// - response Target
-//
-// Example:
-// ```
-//   define_rpc! {
-//       @request = AttachRequest,
-//       @response = AttachResponse,
-//       @request_target = TargetName::ClusterController,
-//       @response_target = TargetName::AttachResponse,
-//   }
-// ```
+/// to define a service we need
+/// - Service type
+/// - Service Tag
+///
+/// Example:
+/// ```
+///   define_service! {
+///       @service = IngressService,
+///       @tag = ServiceTag::Ingress,
+///   }
+/// ```
+macro_rules! define_service {
+    (
+        @service = $service:ty,
+        @tag = $tag:expr,
+    ) => {
+        impl $crate::net::Service for $service {
+            const TAG: $crate::net::ServiceTag = $tag;
+        }
+    };
+}
+
+/// to define a unary message, we need
+/// - Message type
+/// - service type
+///
+/// Example:
+/// ```
+///   define_unary_message! {
+///       @message = IngressMessage,
+///       @service = IngressService,
+///   }
+/// ```
+macro_rules! define_unary_message {
+    (
+        @message = $message:ty,
+        @service = $service:ty,
+    ) => {
+        impl $crate::net::UnaryMessage for $message {
+            const TYPE: &str = stringify!($message);
+            type Service = $service;
+        }
+    };
+}
+
+/// to define an RPC, we need
+/// - Request type
+/// - request service tag
+/// - Service type
+///
+/// Example:
+/// ```
+///   define_rpc! {
+///       @request = AttachRequest,
+///       @response = AttachResponse,
+///       @service = ClusterControllerService,
+///   }
+/// ```
 macro_rules! define_rpc {
     (
         @request = $request:ty,
         @response = $response:ty,
-        @request_target = $request_target:expr,
-        @response_target = $response_target:expr,
+        @service = $service:ty,
     ) => {
         impl $crate::net::RpcRequest for $request {
-            type ResponseMessage = $response;
+            const TYPE: &str = stringify!($request);
+            type Response = $response;
+            type Service = $service;
         }
 
-        $crate::net::define_message! {
-            @message = $request,
-            @target = $request_target,
-        }
-
-        $crate::net::define_message! {
-            @message = $response,
-            @target = $response_target,
+        impl $crate::net::RpcResponse for $response {
+            type Service = $service;
         }
     };
 }
 
 #[allow(unused_imports)]
-use {define_message, define_rpc};
+use {default_wire_codec, define_rpc, define_service, define_unary_message};
 
 #[cfg(test)]
 mod tests {

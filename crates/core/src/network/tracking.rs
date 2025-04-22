@@ -30,8 +30,10 @@ pub trait ConnectionTracking {
 }
 
 /// Null tracker
+#[derive(Clone, Copy, Default)]
 pub struct NoopTracker;
 /// Null router
+#[derive(Clone, Copy, Default)]
 pub struct NoopRouter;
 
 impl ConnectionTracking for NoopTracker {

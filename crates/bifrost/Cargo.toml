@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["replicated-loglet"]
 local-loglet = ["dep:restate-rocksdb", "dep:rocksdb"]
 replicated-loglet = ["auto-extend"]
 memory-loglet = ["restate-types/memory-loglet"]

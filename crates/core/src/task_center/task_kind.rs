@@ -81,11 +81,6 @@ pub enum TaskKind {
     SocketHandler,
     #[strum(props(OnError = "log", runtime = "default"))]
     H2Stream,
-    /// A task that handles a single RPC request. The task is executed on the default runtime to
-    /// decouple it from the lifetime of the originating runtime. Use this task kind if you want to
-    /// make sure that the rpc response is sent even if the originating runtime is dropped.
-    #[strum(props(OnCancel = "abort", OnError = "log", runtime = "default"))]
-    RpcResponse,
     /// A type for ingress until we start enforcing timeouts for inflight requests. This enables us
     /// to shut down cleanly without waiting indefinitely.
     #[strum(props(OnCancel = "abort", runtime = "ingress"))]
