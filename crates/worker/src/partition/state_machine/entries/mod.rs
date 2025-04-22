@@ -119,13 +119,13 @@ where
 
         // In case we get a notification (e.g. awakeable completion),
         // but we haven't pinned the deployment yet, we might need to run a migration to V2.
-        if let Some(meta) = self.invocation_status.get_invocation_metadata() {
-            if meta.pinned_deployment.is_none() {
+        if let Some(metadata) = self.invocation_status.get_invocation_metadata_mut() {
+            if metadata.pinned_deployment.is_none() {
                 // The pinned deployment wasn't established yet, but we have a V2 journal entry.
                 // So we need to try to run the migration
                 VerifyOrMigrateJournalTableToV2Command {
                     invocation_id: self.invocation_id,
-                    journal_length: meta.journal_metadata.length,
+                    metadata,
                 }
                 .apply(ctx)
                 .await?;
@@ -443,7 +443,7 @@ mod tests {
                 .unwrap(),
             all!(
                 matchers::storage::has_journal_length(3),
-                matchers::storage::has_commands(1)
+                matchers::storage::has_commands(2)
             )
         );
 
@@ -462,7 +462,7 @@ mod tests {
                 .unwrap(),
             all!(
                 matchers::storage::has_journal_length(4),
-                matchers::storage::has_commands(1)
+                matchers::storage::has_commands(2)
             )
         );
 

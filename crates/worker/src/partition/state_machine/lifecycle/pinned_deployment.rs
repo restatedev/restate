@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use super::VerifyOrMigrateJournalTableToV2Command;
-use tracing::trace;
 
 use crate::debug_if_leader;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
@@ -25,6 +24,7 @@ use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use tracing::trace;
 
 pub struct OnPinnedDeploymentCommand {
     pub invocation_id: InvocationId,
@@ -57,7 +57,7 @@ where
         if self.pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4 {
             VerifyOrMigrateJournalTableToV2Command {
                 invocation_id: self.invocation_id,
-                journal_length: in_flight_invocation_metadata.journal_metadata.length,
+                metadata: &mut in_flight_invocation_metadata,
             }
             .apply(ctx)
             .await?;
