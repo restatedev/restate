@@ -53,7 +53,6 @@ async fn create_snapshot(
                 client
                     .get_metadata(GetMetadataRequest {
                         kind: MetadataKind::PartitionTable.into(),
-                        sync: false,
                     })
                     .await
             })

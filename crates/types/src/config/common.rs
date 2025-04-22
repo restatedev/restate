@@ -251,7 +251,7 @@ pub struct CommonOptions {
 
     /// # Rocksdb stall detection threshold
     ///
-    /// This defines the duration afterwhich a write is to be considered in "stall" state. For
+    /// This defines the duration after which a write is to be considered in "stall" state. For
     /// every write that meets this threshold, the system will increment the
     /// `restate.rocksdb_stall_flare` gauge, if the write is unstalled, the guage will be updated
     /// accordingly.
@@ -279,11 +279,23 @@ pub struct CommonOptions {
 
     /// # Metadata update interval
     ///
-    /// The interval at which each node checks for metadata updates it has observed from different
-    /// nodes or other sources.
+    /// The idle time after which the node will check for metadata updates from metadata store.
+    /// This helps the node detect if it has been operating with stale metadata for extended period
+    /// of time, primarily because it didn't interact with other peers in the cluster during that
+    /// period.
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub metadata_update_interval: humantime::Duration,
+
+    /// # Timeout for metadata peer-to-peer fetching
+    ///
+    /// When a node detects that a new metadata version exists, it'll attempt to fetch it from
+    /// its peers. After this timeout duration has passed, the node will attempt to fetch the
+    /// metadata from metadata store as well. This is to ensure that the nodes converge quickly
+    /// while reducing the load on the metadata store.
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub metadata_fetch_from_peer_timeout: humantime::Duration,
 
     /// # Network error retry policy
     ///
@@ -449,7 +461,8 @@ impl Default for CommonOptions {
             rocksdb_enable_stall_on_memory_limit: false,
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
-            metadata_update_interval: Duration::from_secs(3).into(),
+            metadata_update_interval: Duration::from_secs(10).into(),
+            metadata_fetch_from_peer_timeout: Duration::from_secs(3).into(),
             network_error_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(10),
                 2.0,
@@ -567,9 +580,9 @@ impl Default for MetadataClientOptions {
             keep_alive_timeout: Duration::from_secs(5).into(),
             backoff_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
-                2.0,
+                1.5,
                 Some(10),
-                Some(Duration::from_millis(3000)),
+                Some(Duration::from_millis(1000)),
             ),
         }
     }
@@ -845,6 +858,8 @@ pub struct CommonOptionsShadow {
     rocksdb: RocksDbOptions,
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     metadata_update_interval: humantime::Duration,
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    metadata_fetch_from_peer_timeout: humantime::Duration,
     network_error_retry_policy: RetryPolicy,
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     initialization_timeout: humantime::Duration,
@@ -977,6 +992,7 @@ impl From<CommonOptionsShadow> for CommonOptions {
             rocksdb_perf_level: value.rocksdb_perf_level,
             rocksdb: value.rocksdb,
             metadata_update_interval: value.metadata_update_interval,
+            metadata_fetch_from_peer_timeout: value.metadata_fetch_from_peer_timeout,
             network_error_retry_policy: value.network_error_retry_policy,
             initialization_timeout: value.initialization_timeout,
             disable_telemetry: value.disable_telemetry,

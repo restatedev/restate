@@ -100,7 +100,6 @@ impl PartitionLocator for MetadataAwarePartitionLocator {
         let my_node_id = self.metadata.my_node_id();
         match self.partition_routing.get_node_by_partition(partition_id) {
             None => {
-                self.partition_routing.request_refresh();
                 bail!("node lookup for partition {} failed", partition_id)
             }
             Some(node_id) if node_id.as_generational().is_some_and(|id| id == my_node_id) => {

@@ -93,7 +93,7 @@ where
 
         #[cfg(feature = "metadata-api")]
         let router = router.merge(crate::metadata_api::router(
-            self.metadata_writer.metadata_store_client(),
+            self.metadata_writer.raw_metadata_store_client(),
         ));
 
         // Merge Web UI router
