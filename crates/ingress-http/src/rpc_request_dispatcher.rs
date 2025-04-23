@@ -8,23 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{RequestDispatcher, RequestDispatcherError};
 use anyhow::anyhow;
+use std::future::Future;
+use std::time::Duration;
+use tracing::{Instrument, debug_span, trace};
+
 use restate_core::network::TransportConnect;
-use restate_core::network::partition_processor_rpc_client::{
-    AttachInvocationResponse, GetInvocationOutputResponse,
-};
-use restate_core::network::partition_processor_rpc_client::{
-    PartitionProcessorRpcClient, PartitionProcessorRpcClientError,
-};
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithInvocationId};
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
 use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::retries::RetryPolicy;
-use std::future::Future;
-use std::time::Duration;
-use tracing::{Instrument, debug_span, trace};
+
+use crate::partition_processor_rpc_client::{
+    AttachInvocationResponse, GetInvocationOutputResponse,
+};
+use crate::partition_processor_rpc_client::{
+    PartitionProcessorRpcClient, PartitionProcessorRpcClientError,
+};
+use crate::{RequestDispatcher, RequestDispatcherError};
 
 pub struct RpcRequestDispatcher<C> {
     partition_processor_rpc_client: PartitionProcessorRpcClient<C>,

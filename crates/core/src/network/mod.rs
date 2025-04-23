@@ -22,7 +22,6 @@ mod multiplex;
 pub mod net_util;
 mod network_sender;
 mod networking;
-pub mod partition_processor_rpc_client;
 pub mod protobuf;
 mod server_builder;
 pub mod tonic_service_filter;

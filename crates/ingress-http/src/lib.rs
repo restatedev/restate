@@ -11,6 +11,7 @@
 mod handler;
 mod layers;
 mod metric_definitions;
+pub mod partition_processor_rpc_client;
 pub mod rpc_request_dispatcher;
 mod server;
 
@@ -20,9 +21,7 @@ use bytes::Bytes;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 
-use restate_core::network::partition_processor_rpc_client::{
-    AttachInvocationResponse, GetInvocationOutputResponse,
-};
+use partition_processor_rpc_client::{AttachInvocationResponse, GetInvocationOutputResponse};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
