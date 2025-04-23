@@ -144,6 +144,14 @@ docker-debug:
     # podman builds do not work without --platform set, even though it claims to default to host arch
     docker buildx build . --platform linux/{{ _docker_arch }} --file docker/debug.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --build-arg RESTATE_FEATURES={{ features }} --load
 
+docker-local-fedora:
+    # Build the restate-server binary locally
+    just arch={{ _arch }} features={{ features }} build -p restate-server
+    # Move the binary to the location expected by the Dockerfile
+    cp target/debug/restate-server restate-server
+    # Build the Docker image using the local.Dockerfile
+    docker buildx build . --platform linux/{{ _docker_arch }} --file docker/local-fedora.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --load
+
 notice-file:
     cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH <code@restate.dev>\n" && cat) > NOTICE
 
