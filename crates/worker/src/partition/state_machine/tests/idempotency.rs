@@ -15,7 +15,9 @@ use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
 use restate_storage_api::inbox_table::{InboxEntry, ReadOnlyInboxTable, SequenceNumberInboxEntry};
-use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
+use restate_storage_api::invocation_status_table::{
+    CompletedInvocation, JournalMetadata, StatusTimestamps,
+};
 use restate_types::identifiers::{IdempotencyId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
@@ -231,12 +233,12 @@ async fn complete_already_completed_invocation() {
         &invocation_id,
         &InvocationStatus::Completed(CompletedInvocation {
             invocation_target: invocation_target.clone(),
-            span_context: ServiceInvocationSpanContext::default(),
             source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
             idempotency_key: Some(idempotency_key.clone()),
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(response_bytes.clone()),
             completion_retention_duration: Default::default(),
+            journal_metadata: JournalMetadata::empty(),
         }),
     )
     .await
