@@ -23,7 +23,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::network::Reciprocal;
+use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
@@ -51,10 +51,10 @@ use crate::partition::cleaner::Cleaner;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
+use crate::partition::shuffle;
 use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
-use crate::partition::{respond_to_rpc, shuffle};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
@@ -511,18 +511,18 @@ where
     pub async fn handle_rpc_proposal_command(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        reciprocal: Reciprocal<
+            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        >,
         partition_key: PartitionKey,
         cmd: Command,
     ) {
         match &mut self.state {
             State::Follower | State::Candidate { .. } => {
                 // Just fail the rpc
-                respond_to_rpc(
-                    reciprocal.prepare(Err(PartitionProcessorRpcError::NotLeader(
-                        self.partition_processor_metadata.partition_id,
-                    ))),
-                );
+                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
+                    self.partition_processor_metadata.partition_id,
+                )))
             }
             State::Leader(leader_state) => {
                 leader_state
@@ -537,14 +537,16 @@ where
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
-        reciprocal: Reciprocal<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        reciprocal: Reciprocal<
+            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        >,
     ) {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => respond_to_rpc(reciprocal.prepare(Err(
-                PartitionProcessorRpcError::NotLeader(
+            State::Follower | State::Candidate { .. } => {
+                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
                     self.partition_processor_metadata.partition_id,
-                ),
-            ))),
+                )))
+            }
             State::Leader(leader_state) => {
                 leader_state
                     .self_propose_and_respond_asynchronously(partition_key, cmd, reciprocal)

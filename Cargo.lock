@@ -6571,6 +6571,7 @@ dependencies = [
  "prost-dto",
  "prost-types",
  "rand 0.9.0",
+ "restate-admin",
  "restate-admin-rest-model",
  "restate-bifrost",
  "restate-core",
@@ -6850,6 +6851,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_with",
+ "smartstring",
  "static_assertions",
  "strum",
  "test-log",
@@ -7099,6 +7101,7 @@ dependencies = [
 name = "restate-log-server"
 version = "1.3.3-dev"
 dependencies = [
+ "ahash 0.8.11",
  "anyhow",
  "async-trait",
  "bitflags 2.8.0",

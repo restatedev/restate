@@ -10,8 +10,10 @@
 
 use std::convert::Infallible;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
+use bytes::Bytes;
 use futures::{FutureExt, Stream};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
@@ -22,28 +24,27 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use restate_types::Versioned;
 use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
+use restate_types::net::{ProtocolVersion, RpcRequest, Service, ServiceTag, UnaryMessage};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
 
 use super::EgressSender;
 use super::egress_sender::{Sent, UnboundedEgressSender};
+use super::rpc_tracker::ReplyTracker;
 use crate::Metadata;
+use crate::network::compat::V1Compat;
+use crate::network::protobuf::network::message::BinaryMessage;
+use crate::network::protobuf::network::{self, Datagram};
 use crate::network::protobuf::network::{
     Header, Message, SpanContext, message, message::Body, message::ConnectionControl,
 };
+use crate::network::{ReplyRx, RpcReplyTx};
 
 /// A handle to drop the egress stream remotely, or to be notified if the egress stream has been
 /// terminated via other means.
 // todo: make pub(crate) after its usage in tests is removed
 pub struct DropEgressStream(oneshot::Receiver<Infallible>);
-
-impl DropEgressStream {
-    /// same effect as dropping, closing the egress stream and dropping any messages in the buffer
-    pub fn close(&mut self) {
-        self.0.close();
-    }
-}
 
 impl Future for DropEgressStream {
     type Output = ();
@@ -75,12 +76,33 @@ impl From<DrainReason> for Body {
     }
 }
 
-// todo: make this pub(crate) when OwnedConnection::new_fake() stops needing it
 pub enum EgressMessage {
     #[cfg(any(test, feature = "test-util"))]
     /// An egress message to send to peer. Used only in tests, header must be populated correctly
     /// by sender
     RawMessage(Message),
+    UnaryMessage(Body, Option<Span>),
+    Unary {
+        service_tag: ServiceTag,
+        msg_type: String,
+        payload: Bytes,
+        sort_code: Option<u64>,
+        span: Option<Span>,
+        version: ProtocolVersion,
+        #[cfg(any(test, feature = "test-util"))]
+        header: Option<Header>,
+    },
+    RpcCall {
+        service_tag: ServiceTag,
+        msg_type: String,
+        payload: Bytes,
+        reply_sender: RpcReplyTx,
+        sort_code: Option<u64>,
+        span: Option<Span>,
+        version: ProtocolVersion,
+        #[cfg(any(test, feature = "test-util"))]
+        header: Option<Header>,
+    },
     /// An egress body to send to peer, header is populated by egress stream
     /// todo: remove Header once msg-id/in-response-to are removed (est. v1.4)
     Message(Header, Body, Option<Span>),
@@ -89,6 +111,74 @@ pub enum EgressMessage {
     /// A signal to close the bounded stream. The inner stream cannot receive further messages but
     /// we'll continue to drain all buffered messages before dropping.
     Close(DrainReason),
+}
+
+impl EgressMessage {
+    pub fn make_rpc_message<M: RpcRequest>(
+        message: M,
+        sort_code: Option<u64>,
+        protocol_version: ProtocolVersion,
+    ) -> (EgressMessage, ReplyRx<M::Response>) {
+        let (reply_sender, reply_token) = ReplyRx::new(protocol_version);
+        let payload = message.encode_to_bytes(protocol_version);
+        (
+            EgressMessage::RpcCall {
+                payload,
+                reply_sender,
+                span: Some(Span::current()),
+                sort_code,
+                service_tag: M::Service::TAG,
+                msg_type: M::TYPE.into(),
+                version: protocol_version,
+                #[cfg(any(test, feature = "test-util"))]
+                header: None,
+            },
+            reply_token,
+        )
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn make_rpc_message_with_header<M: RpcRequest>(
+        message: M,
+        sort_code: Option<u64>,
+        protocol_version: ProtocolVersion,
+        header: Header,
+    ) -> (EgressMessage, ReplyRx<M::Response>) {
+        let (reply_sender, reply_token) = ReplyRx::new(protocol_version);
+        let payload = message.encode_to_bytes(protocol_version);
+        (
+            EgressMessage::RpcCall {
+                payload,
+                reply_sender,
+                span: Some(Span::current()),
+                sort_code,
+                service_tag: M::Service::TAG,
+                msg_type: M::TYPE.into(),
+                version: protocol_version,
+                header: Some(header),
+            },
+            reply_token,
+        )
+    }
+
+    pub fn make_unary_message<M: UnaryMessage>(
+        message: M,
+        sort_code: Option<u64>,
+        protocol_version: ProtocolVersion,
+    ) -> EgressMessage {
+        let payload = message.encode_to_bytes(protocol_version);
+
+        EgressMessage::Unary {
+            service_tag: M::Service::TAG,
+            msg_type: M::TYPE.into(),
+            sort_code,
+            span: Some(Span::current()),
+            payload,
+            version: protocol_version,
+            #[cfg(any(test, feature = "test-util"))]
+            header: None,
+        }
+    }
 }
 
 struct MetadataVersionCache {
@@ -142,11 +232,14 @@ enum Decision {
 ///
 // todo: make pub(crate) after its usage in tests is removed
 pub struct EgressStream {
+    // consider making this cache-padded
+    msg_id: u64,
     state: State,
     /// requests or unary messages are written to this channel
     bounded: Option<mpsc::Receiver<EgressMessage>>,
     /// responses to rpcs or handshake and other control signals are written to this channel
     unbounded: Option<mpsc::UnboundedReceiver<EgressMessage>>,
+    reply_tracker: Arc<ReplyTracker>,
     /// The sole purpose of this channel, is to force drop the egress channel even if the inner stream's
     /// didn't wake us up. For instance, if there is no available space on the socket's sendbuf and
     /// we still want to drop this stream. We'll signal this by dropping the receiver.
@@ -162,26 +255,30 @@ pub struct EgressStream {
 }
 
 impl EgressStream {
-    pub fn create(
-        capacity: usize,
-    ) -> (EgressSender, UnboundedEgressSender, Self, DropEgressStream) {
+    pub fn create(capacity: usize) -> (EgressSender, Self, super::Shared) {
         let (unbounded_tx, unbounded) = mpsc::unbounded_channel();
         let (tx, rx) = mpsc::channel(capacity);
         let (drop_tx, drop_rx) = oneshot::channel();
+        let reply_tracker: Arc<ReplyTracker> = Default::default();
         (
             EgressSender::new(tx),
-            UnboundedEgressSender::new(unbounded_tx),
             Self {
+                msg_id: 0,
                 state: State::default(),
                 bounded: Some(rx),
                 unbounded: Some(unbounded),
+                reply_tracker: reply_tracker.clone(),
                 drop_notification: Some(drop_tx),
                 metadata_cache: MetadataVersionCache::new(),
                 context_propagator: Default::default(),
                 sent_request_stream_drained: false,
                 sent_response_stream_drained: false,
             },
-            DropEgressStream(drop_rx),
+            super::Shared {
+                tx: Some(UnboundedEgressSender::new(unbounded_tx)),
+                drop_egress: Some(DropEgressStream(drop_rx)),
+                reply_tracker,
+            },
         )
     }
 
@@ -190,6 +287,12 @@ impl EgressStream {
         self.unbounded.take();
         self.drop_notification.take();
         self.state = State::Closed;
+    }
+
+    #[inline(always)]
+    fn next_msg_id(&mut self) -> u64 {
+        self.msg_id = self.msg_id.wrapping_add(1);
+        self.msg_id
     }
 
     fn stop_external_senders(&mut self) {
@@ -249,6 +352,7 @@ impl EgressStream {
         match entry {
             #[cfg(any(test, feature = "test-util"))]
             Poll::Ready(Some(EgressMessage::RawMessage(msg))) => Decision::Ready(msg),
+            // todo: remove header
             Poll::Ready(Some(EgressMessage::Message(mut header, body, span))) => {
                 self.fill_header(&mut header, span);
                 let msg = Message {
@@ -256,6 +360,133 @@ impl EgressStream {
                     body: Some(body),
                 };
                 Decision::Ready(msg)
+            }
+            Poll::Ready(Some(EgressMessage::UnaryMessage(body, span))) => {
+                let mut header = Header::default();
+                self.fill_header(&mut header, span);
+                let msg = Message {
+                    header: Some(header),
+                    body: Some(body),
+                };
+                Decision::Ready(msg)
+            }
+            Poll::Ready(Some(EgressMessage::Unary {
+                payload,
+                msg_type,
+                sort_code,
+                service_tag,
+                span,
+                version,
+                #[cfg(any(test, feature = "test-util"))]
+                    header: custom_header,
+            })) => {
+                let mut header = Header::default();
+                self.fill_header(&mut header, span);
+                #[cfg(any(test, feature = "test-util"))]
+                let mut header = custom_header.unwrap_or(header);
+                let msg_id = self.next_msg_id();
+                if let ProtocolVersion::V1 = version {
+                    // compatibility mode for v1.
+                    let Some(v1_target) =
+                        V1Compat::translate_v2_tag_to_v1_target(service_tag, &msg_type)
+                    else {
+                        // You are trying to send a V2 only message to V1 node.
+                        // dropping the message.
+                        return Decision::Continue;
+                    };
+                    header.msg_id = msg_id;
+                    let body = BinaryMessage {
+                        payload,
+                        target: v1_target.into(),
+                    };
+                    let msg = Message {
+                        header: Some(header),
+                        body: Some(body.into()),
+                    };
+                    Decision::Ready(msg)
+                } else {
+                    let body = Datagram {
+                        datagram: Some(
+                            network::Unary {
+                                payload,
+                                target: service_tag as i32,
+                                message_type: msg_type,
+                                sort_code,
+                            }
+                            .into(),
+                        ),
+                    };
+                    let msg = Message {
+                        header: Some(header),
+                        body: Some(body.into()),
+                    };
+                    Decision::Ready(msg)
+                }
+            }
+            Poll::Ready(Some(EgressMessage::RpcCall {
+                payload,
+                msg_type,
+                service_tag,
+                sort_code,
+                reply_sender,
+                span,
+                version,
+                #[cfg(any(test, feature = "test-util"))]
+                    header: custom_header,
+            })) => {
+                // note: if we want to support remote cancellation in the future, we need to
+                // generate a new oneshot channel here and spawn a task to connect the two +
+                // monitor the original sender for closure.
+                if reply_sender.is_closed() {
+                    return Decision::Continue;
+                }
+
+                let mut header = Header::default();
+                self.fill_header(&mut header, span);
+                #[cfg(any(test, feature = "test-util"))]
+                let mut header = custom_header.unwrap_or(header);
+
+                let msg_id = self.next_msg_id();
+                if let ProtocolVersion::V1 = version {
+                    // compatibility mode for v1.
+                    let Some(v1_target) =
+                        V1Compat::translate_v2_tag_to_v1_target(service_tag, &msg_type)
+                    else {
+                        // You are trying to send a V2 only message to V1 node.
+                        // dropping the message.
+                        return Decision::Continue;
+                    };
+                    header.msg_id = msg_id;
+                    self.reply_tracker.register_rpc(msg_id, reply_sender);
+                    let body = BinaryMessage {
+                        payload,
+                        target: v1_target.into(),
+                    };
+                    let msg = Message {
+                        header: Some(header),
+                        body: Some(body.into()),
+                    };
+                    Decision::Ready(msg)
+                } else {
+                    self.reply_tracker.register_rpc(msg_id, reply_sender);
+                    let body = Datagram {
+                        datagram: Some(
+                            network::RpcCall {
+                                payload,
+                                id: msg_id,
+                                service: service_tag as i32,
+                                message_type: msg_type,
+                                sort_code,
+                            }
+                            .into(),
+                        ),
+                    };
+                    let msg = Message {
+                        header: Some(header),
+                        body: Some(body.into()),
+                    };
+                    Decision::Ready(msg)
+                }
             }
             Poll::Ready(Some(EgressMessage::WithNotifer(body, span, notifier))) => {
                 let mut header = Header::default();

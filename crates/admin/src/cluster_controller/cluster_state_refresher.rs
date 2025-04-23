@@ -13,34 +13,28 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::watch;
-use tracing::{debug, trace};
+use tracing::trace;
 
-use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{
-    MessageRouterBuilder, NetworkError, Networking, Outgoing, TransportConnect,
-};
+use restate_core::network::net_util::CommonClientConnectionOptions;
+use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind,
 };
 use restate_types::Version;
-use restate_types::cluster::cluster_state::{
-    AliveNode, ClusterState, DeadNode, NodeState, SuspectNode,
-};
+use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState};
+use restate_types::config::Configuration;
 use restate_types::net::node::GetNodeState;
 use restate_types::time::MillisSinceEpoch;
 
 pub struct ClusterStateRefresher<T> {
     network_sender: Networking<T>,
-    get_state_router: RpcRouter<GetNodeState>,
     in_flight_refresh: Option<TaskHandle<anyhow::Result<()>>>,
     cluster_state_update_rx: watch::Receiver<Arc<ClusterState>>,
     cluster_state_update_tx: Arc<watch::Sender<Arc<ClusterState>>>,
 }
 
 impl<T: TransportConnect> ClusterStateRefresher<T> {
-    pub fn new(network_sender: Networking<T>, router_builder: &mut MessageRouterBuilder) -> Self {
-        let get_state_router = RpcRouter::new(router_builder);
-
+    pub fn new(network_sender: Networking<T>) -> Self {
         let initial_state = ClusterState {
             last_refreshed: None,
             nodes_config_version: Version::INVALID,
@@ -53,7 +47,6 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
 
         Self {
             network_sender,
-            get_state_router,
             in_flight_refresh: None,
             cluster_state_update_rx,
             cluster_state_update_tx: Arc::new(cluster_state_update_tx),
@@ -90,7 +83,6 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
         }
 
         self.in_flight_refresh = Self::start_refresh_task(
-            self.get_state_router.clone(),
             self.network_sender.clone(),
             Arc::clone(&self.cluster_state_update_tx),
         )?;
@@ -99,13 +91,13 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
     }
 
     fn start_refresh_task(
-        get_state_router: RpcRouter<GetNodeState>,
         network_sender: Networking<T>,
         cluster_state_tx: Arc<watch::Sender<Arc<ClusterState>>>,
     ) -> Result<Option<TaskHandle<anyhow::Result<()>>>, ShutdownError> {
         let refresh = async move {
             trace!("Refreshing cluster state");
             let last_state = Arc::clone(&cluster_state_tx.borrow());
+            let heartbeat_timeout = Configuration::pinned().networking.keep_alive_timeout();
             let metadata = Metadata::current();
             // make sure we have a partition table that equals or newer than last refresh
             let partition_table_version = metadata
@@ -126,30 +118,24 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             let mut join_set = tokio::task::JoinSet::new();
             for (_, node_config) in nodes_config.iter() {
                 let node_id = node_config.current_generation;
-                let rpc_router = get_state_router.clone();
                 let network_sender = network_sender.clone();
                 join_set
                     .build_task()
                     .name("get-nodes-state")
                     .spawn(
                         async move {
-                            match network_sender.node_connection(node_id).await {
-                                Ok(connection) => {
-                                    let outgoing = Outgoing::new(node_id, GetNodeState::default())
-                                        .assign_connection(connection);
-
-                                    (
+                            (
+                                node_id,
+                                network_sender
+                                    .call_rpc(
                                         node_id,
-                                        rpc_router
-                                            .call_outgoing_timeout(
-                                                outgoing,
-                                                std::time::Duration::from_secs(1), // todo: make configurable
-                                            )
-                                            .await,
+                                        Swimlane::Gossip,
+                                        GetNodeState::default(),
+                                        None,
+                                        Some(heartbeat_timeout),
                                     )
-                                }
-                                Err(network_error) => (node_id, Err(network_error.into())),
-                            }
+                                    .await,
+                            )
                         }
                         .in_current_tc_as_task(TaskKind::InPlace, "get-nodes-state"),
                     )
@@ -157,33 +143,14 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
             }
             while let Some(Ok((node_id, result))) = join_set.join_next().await {
                 match result {
-                    Ok(response) => {
-                        let peer = response.peer();
-                        let msg = response.into_body();
+                    Ok(msg) => {
                         nodes.insert(
                             node_id.as_plain(),
                             NodeState::Alive(AliveNode {
                                 last_heartbeat_at: MillisSinceEpoch::now(),
-                                generational_node_id: peer,
+                                generational_node_id: node_id,
                                 partitions: msg.partition_processor_state.unwrap_or_default(),
                                 uptime: msg.uptime,
-                            }),
-                        );
-                    }
-                    Err(NetworkError::RemoteVersionMismatch(msg)) => {
-                        // When **this** node has just started, other peers might not have
-                        // learned about the new metadata version and then they can
-                        // return a RemoteVersionMismatch error.
-                        // In this case we are not sure about the peer state but it's
-                        // definitely not dead!
-                        // Hence we set it as Suspect node. This gives it enough time to update
-                        // its metadata, before we know the exact state
-                        debug!("Node {node_id} is marked as Suspect: {msg}");
-                        nodes.insert(
-                            node_id.as_plain(),
-                            NodeState::Suspect(SuspectNode {
-                                generational_node_id: node_id,
-                                last_attempt: MillisSinceEpoch::now(),
                             }),
                         );
                     }

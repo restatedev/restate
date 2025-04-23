@@ -11,10 +11,16 @@
 use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
 
-use super::TargetName;
+use super::ServiceTag;
 use crate::GenerationalNodeId;
 use crate::identifiers::{PartitionId, PartitionKey};
-use crate::net::define_rpc;
+use crate::net::{default_wire_codec, define_rpc, define_service};
+
+pub struct RemoteDataFusionService;
+define_service! {
+    @service = RemoteDataFusionService,
+    @tag = ServiceTag::RemoteDataFusionService,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ScannerId(pub GenerationalNodeId, pub u64);
@@ -79,20 +85,23 @@ pub struct RemoteQueryScannerClosed {
 define_rpc! {
     @request = RemoteQueryScannerOpen,
     @response = RemoteQueryScannerOpened,
-    @request_target = TargetName::RemoteQueryScannerOpen,
-    @response_target = TargetName::RemoteQueryScannerOpened,
+    @service = RemoteDataFusionService,
 }
+default_wire_codec!(RemoteQueryScannerOpen);
+default_wire_codec!(RemoteQueryScannerOpened);
 
 define_rpc! {
     @request = RemoteQueryScannerNext,
     @response = RemoteQueryScannerNextResult,
-    @request_target = TargetName::RemoteQueryScannerNext,
-    @response_target = TargetName::RemoteQueryScannerNextResult,
+    @service = RemoteDataFusionService,
 }
+default_wire_codec!(RemoteQueryScannerNext);
+default_wire_codec!(RemoteQueryScannerNextResult);
 
 define_rpc! {
     @request = RemoteQueryScannerClose,
     @response = RemoteQueryScannerClosed,
-    @request_target = TargetName::RemoteQueryScannerClose,
-    @response_target = TargetName::RemoteQueryScannerClosed,
+    @service = RemoteDataFusionService,
 }
+default_wire_codec!(RemoteQueryScannerClose);
+default_wire_codec!(RemoteQueryScannerClosed);

@@ -15,13 +15,25 @@ use bitflags::bitflags;
 use prost_dto::{FromProst, IntoProst};
 use serde::{Deserialize, Serialize};
 
-use super::codec::{WireDecode, WireEncode};
-use super::{RpcRequest, TargetName};
+use super::{RpcResponse, ServiceTag};
 use crate::GenerationalNodeId;
 use crate::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
+use crate::net::define_service;
 use crate::time::MillisSinceEpoch;
 
-pub trait LogServerRequest: RpcRequest + WireEncode + Sync + Send + 'static {
+pub struct LogServerDataService;
+define_service! {
+    @service = LogServerDataService,
+    @tag = ServiceTag::LogServerDataService,
+}
+
+pub struct LogServerInfoService;
+define_service! {
+    @service = LogServerInfoService,
+    @tag = ServiceTag::LogServerInfoService,
+}
+
+pub trait LogServerMessage {
     fn header(&self) -> &LogServerRequestHeader;
     fn header_mut(&mut self) -> &mut LogServerRequestHeader;
     fn refresh_header(&mut self, known_global_tail: LogletOffset) {
@@ -33,7 +45,7 @@ pub trait LogServerRequest: RpcRequest + WireEncode + Sync + Send + 'static {
     }
 }
 
-pub trait LogServerResponse: WireDecode + Sync + Send {
+pub trait LogServerResponse: RpcResponse {
     fn header(&self) -> &LogServerResponseHeader;
 }
 
@@ -41,17 +53,17 @@ macro_rules! define_logserver_rpc {
     (
         @request = $request:ty,
         @response = $response:ty,
-        @request_target = $request_target:expr,
-        @response_target = $response_target:expr,
+        @service = $service:ty,
     ) => {
         crate::net::define_rpc! {
             @request = $request,
             @response = $response,
-            @request_target = $request_target,
-            @response_target = $response_target,
+            @service = $service,
         }
+        crate::net::default_wire_codec!($request);
+        crate::net::default_wire_codec!($response);
 
-        impl LogServerRequest for $request {
+        impl LogServerMessage for $request {
             fn header(&self) -> &LogServerRequestHeader {
                 &self.header
             }
@@ -64,6 +76,29 @@ macro_rules! define_logserver_rpc {
         impl LogServerResponse for $response {
             fn header(&self) -> &LogServerResponseHeader {
                 &self.header
+            }
+        }
+    };
+}
+
+macro_rules! define_logserver_unary {
+    (
+        @message = $message:ty,
+        @service = $service:ty,
+    ) => {
+        crate::net::define_unary_message! {
+            @message = $message,
+            @service = $service,
+        }
+        crate::net::default_wire_codec!($message);
+
+        impl LogServerMessage for $message {
+            fn header(&self) -> &LogServerRequestHeader {
+                &self.header
+            }
+
+            fn header_mut(&mut self) -> &mut LogServerRequestHeader {
+                &mut self.header
             }
         }
     };
@@ -99,68 +134,63 @@ pub enum Status {
 // Requests: Bifrost -> LogServer //
 // Responses LogServer -> Bifrost //
 
+// -- Data Service
+
 // Store
 define_logserver_rpc! {
     @request = Store,
     @response = Stored,
-    @request_target = TargetName::LogServerStore,
-    @response_target = TargetName::LogServerStored,
-}
-
-// Release
-define_logserver_rpc! {
-    @request = Release,
-    @response = Released,
-    @request_target = TargetName::LogServerRelease,
-    @response_target = TargetName::LogServerReleased,
-}
-
-// Seal
-define_logserver_rpc! {
-    @request = Seal,
-    @response = Sealed,
-    @request_target = TargetName::LogServerSeal,
-    @response_target = TargetName::LogServerSealed,
-}
-
-// GetLogletInfo
-define_logserver_rpc! {
-    @request = GetLogletInfo,
-    @response = LogletInfo,
-    @request_target = TargetName::LogServerGetLogletInfo,
-    @response_target = TargetName::LogServerLogletInfo,
-}
-
-// Trim
-define_logserver_rpc! {
-    @request = Trim,
-    @response = Trimmed,
-    @request_target = TargetName::LogServerTrim,
-    @response_target = TargetName::LogServerTrimmed,
+    @service = LogServerDataService,
 }
 
 // GetRecords
 define_logserver_rpc! {
     @request = GetRecords,
     @response = Records,
-    @request_target = TargetName::LogServerGetRecords,
-    @response_target = TargetName::LogServerRecords,
+    @service = LogServerDataService,
+}
+
+// -- Info Service
+
+// Release -- Unary
+define_logserver_unary! {
+    @message = Release,
+    @service = LogServerInfoService,
+}
+
+// Seal
+define_logserver_rpc! {
+    @request = Seal,
+    @response = Sealed,
+    @service = LogServerInfoService,
+}
+
+// GetLogletInfo
+define_logserver_rpc! {
+    @request = GetLogletInfo,
+    @response = LogletInfo,
+    @service = LogServerInfoService,
+}
+
+// Trim
+define_logserver_rpc! {
+    @request = Trim,
+    @response = Trimmed,
+    @service = LogServerInfoService,
 }
 
 // WaitForTail
 define_logserver_rpc! {
     @request = WaitForTail,
     @response = TailUpdated,
-    @request_target = TargetName::LogServerWaitForTail,
-    @response_target = TargetName::LogServerTailUpdated,
+    @service = LogServerInfoService,
 }
 
 // GetDigest
 define_logserver_rpc! {
     @request = GetDigest,
     @response = Digest,
-    @request_target = TargetName::LogServerGetDigest,
-    @response_target = TargetName::LogServerDigest,
+    @service = LogServerInfoService,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,30 +335,6 @@ impl Stored {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Release {
     pub header: LogServerRequestHeader,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Released {
-    pub header: LogServerResponseHeader,
-}
-
-impl Released {
-    pub fn empty() -> Self {
-        Self {
-            header: LogServerResponseHeader::empty(),
-        }
-    }
-
-    pub fn new(tail_state: TailState<LogletOffset>, known_global_tail: LogletOffset) -> Self {
-        Self {
-            header: LogServerResponseHeader::new(tail_state, known_global_tail),
-        }
-    }
-
-    pub fn status(mut self, status: Status) -> Self {
-        self.header.status = status;
-        self
-    }
 }
 
 // ** SEAL

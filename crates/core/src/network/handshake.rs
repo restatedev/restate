@@ -14,7 +14,6 @@ use futures::Stream;
 use tokio_stream::StreamExt;
 
 use restate_types::net::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
-use tracing::debug;
 
 use super::HandshakeError;
 use super::protobuf::network::{Header, Hello, Message, Welcome, message};
@@ -58,11 +57,6 @@ where
 }
 
 pub fn negotiate_protocol_version(hello: &Hello) -> Result<ProtocolVersion, HandshakeError> {
-    debug!(
-        "Negotiating peer protocol version: [{}:{}]",
-        hello.min_protocol_version, hello.max_protocol_version
-    );
-
     let selected_proto_version_number =
         std::cmp::min(CURRENT_PROTOCOL_VERSION as i32, hello.max_protocol_version);
 

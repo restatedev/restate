@@ -163,11 +163,8 @@ impl Worker {
             .map_err(BuildError::SnapshotRepository)?,
         );
 
-        // handle RPCs
-        router_builder.add_message_handler(partition_processor_manager.message_handler());
-
         let remote_scanner_manager = RemoteScannerManager::new(
-            create_remote_scanner_service(networking, router_builder),
+            create_remote_scanner_service(networking),
             create_partition_locator(partition_routing, metadata.clone()),
         );
         let storage_query_context = QueryContext::with_user_tables(
