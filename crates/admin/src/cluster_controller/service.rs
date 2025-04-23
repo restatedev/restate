@@ -23,10 +23,9 @@ use tracing::{debug, info, trace, warn};
 
 use restate_bifrost::{Bifrost, SealedSegment};
 use restate_core::cancellation_token;
-use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
-    MessageRouterBuilder, NetworkSender, NetworkServerBuilder, Networking, TransportConnect,
+    NetworkSender, NetworkServerBuilder, Networking, Swimlane, TransportConnect,
 };
 use restate_core::{
     Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind,
@@ -92,17 +91,14 @@ where
         health_status: HealthStatus<AdminStatus>,
         bifrost: Bifrost,
         networking: Networking<T>,
-        router_builder: &mut MessageRouterBuilder,
         server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
     ) -> Result<Self, BuildError> {
         let (command_tx, command_rx) = mpsc::channel(2);
 
-        let cluster_state_refresher =
-            ClusterStateRefresher::new(networking.clone(), router_builder);
+        let cluster_state_refresher = ClusterStateRefresher::new(networking.clone());
 
-        let processor_manager_client =
-            PartitionProcessorManagerClient::new(networking.clone(), router_builder);
+        let processor_manager_client = PartitionProcessorManagerClient::new(networking.clone());
 
         let options = configuration.live_load();
         let heartbeat_interval = Self::create_heartbeat_interval(&options.admin);
@@ -415,7 +411,7 @@ impl<T: TransportConnect> Service<T> {
                     "Asking node to snapshot partition"
                 );
 
-                let mut node_rpc_client = self.processor_manager_client.clone();
+                let node_rpc_client = self.processor_manager_client.clone();
                 let _ = TaskCenter::spawn_child(
                     TaskKind::Disposable,
                     "create-snapshot-response",
@@ -633,39 +629,34 @@ enum ClusterConfigurationUpdateError {
 #[derive(Clone)]
 struct PartitionProcessorManagerClient<N> {
     network_sender: N,
-    create_snapshot_router: RpcRouter<CreateSnapshotRequest>,
 }
 
 impl<N> PartitionProcessorManagerClient<N>
 where
     N: NetworkSender + 'static,
 {
-    pub fn new(network_sender: N, router_builder: &mut MessageRouterBuilder) -> Self {
-        let create_snapshot_router = RpcRouter::new(router_builder);
-
-        PartitionProcessorManagerClient {
-            network_sender,
-            create_snapshot_router,
-        }
+    pub fn new(network_sender: N) -> Self {
+        PartitionProcessorManagerClient { network_sender }
     }
 
     pub async fn create_snapshot(
-        &mut self,
+        &self,
         node_id: GenerationalNodeId,
         partition_id: PartitionId,
         min_target_lsn: Option<Lsn>,
     ) -> anyhow::Result<Snapshot> {
-        self.create_snapshot_router
-            .call(
-                &self.network_sender,
+        self.network_sender
+            .call_rpc(
                 node_id,
+                Swimlane::General,
                 CreateSnapshotRequest {
                     partition_id,
                     min_target_lsn,
                 },
+                Some(partition_id.into()),
+                None,
             )
             .await?
-            .into_body()
             .result
             .map_err(|e| anyhow!("Failed to create snapshot: {:?}", e))
     }
@@ -808,14 +799,15 @@ mod tests {
     use googletest::assert_that;
     use googletest::matchers::eq;
     use test_log::test;
-    use tracing::{debug, info};
+    use tracing::info;
 
     use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
     use restate_bifrost::loglet::FindTailOptions;
     use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::{Bifrost, BifrostService, ErrorRecoveryStrategy};
     use restate_core::network::{
-        FailingConnector, Incoming, MessageHandler, MockPeerConnection, NetworkServerBuilder,
+        BackPressureMode, ConnectionDirection, FailingConnector, Handler, Incoming,
+        MessageRouterBuilder, NetworkServerBuilder, RawSvcRpc, Swimlane, Verdict,
     };
     use restate_core::test_env::NoOpMessageHandler;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
@@ -830,8 +822,8 @@ mod tests {
     use restate_types::logs::metadata::ProviderKind;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::net::AdvertisedAddress;
-    use restate_types::net::node::{GetNodeState, NodeStateResponse};
-    use restate_types::net::partition_processor_manager::ControlProcessors;
+    use restate_types::net::node::{GetNodeState, GossipService, NodeStateResponse};
+    use restate_types::net::partition_processor_manager::PartitionManagerService;
     use restate_types::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
     };
@@ -840,7 +832,7 @@ mod tests {
     #[test(restate_core::test)]
     async fn manual_log_trim() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
-        let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
+        let builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let bifrost_svc = BifrostService::new(builder.metadata_writer.clone())
             .with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
@@ -850,7 +842,6 @@ mod tests {
             HealthStatus::default(),
             bifrost.clone(),
             builder.networking.clone(),
-            &mut builder.router_builder,
             &mut NetworkServerBuilder::default(),
             builder.metadata_writer.clone(),
         )
@@ -878,23 +869,38 @@ mod tests {
         Ok(())
     }
 
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     struct MockNodeStateHandler {
-        applied_lsn: Arc<AtomicU64>,
-        persisted_lsn: Arc<AtomicU64>,
-        archived_lsn: Arc<AtomicU64>,
+        inner: Arc<HandlerState>,
     }
 
-    impl MessageHandler for MockNodeStateHandler {
-        type MessageType = GetNodeState;
+    #[derive(Default)]
+    struct HandlerState {
+        applied_lsn: AtomicU64,
+        persisted_lsn: AtomicU64,
+        archived_lsn: AtomicU64,
+    }
 
-        async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-            let peer_id = msg.peer();
+    impl Handler for MockNodeStateHandler {
+        type Service = GossipService;
+
+        async fn on_rpc(&mut self, msg: Incoming<RawSvcRpc<Self::Service>>) {
+            let msg = match msg.try_into_typed::<GetNodeState>() {
+                Ok(msg) => msg,
+                Err(msg) => {
+                    msg.fail(Verdict::MessageUnrecognized);
+                    return;
+                }
+            };
 
             let partition_processor_status = PartitionProcessorStatus {
-                last_applied_log_lsn: Some(Lsn::from(self.applied_lsn.load(Ordering::Relaxed))),
-                last_persisted_log_lsn: Some(Lsn::from(self.persisted_lsn.load(Ordering::Relaxed))),
-                last_archived_log_lsn: match self.archived_lsn.load(Ordering::Relaxed) {
+                last_applied_log_lsn: Some(Lsn::from(
+                    self.inner.applied_lsn.load(Ordering::Relaxed),
+                )),
+                last_persisted_log_lsn: Some(Lsn::from(
+                    self.inner.persisted_lsn.load(Ordering::Relaxed),
+                )),
+                last_archived_log_lsn: match self.inner.archived_lsn.load(Ordering::Relaxed) {
                     0 => None,
                     n => Some(Lsn::from(n)),
                 },
@@ -902,15 +908,10 @@ mod tests {
             };
 
             let state = [(PartitionId::MIN, partition_processor_status)].into();
-            let response = msg.to_rpc_response(NodeStateResponse {
+            msg.into_reciprocal().send(NodeStateResponse {
                 partition_processor_state: Some(state),
                 uptime: Duration::from_secs(100),
             });
-
-            // We are not really sending something back to target, we just need to provide a known
-            // node_id. The response will be sent to a handler running on the very same node.
-            debug!("{} sending response: {:?}", peer_id, &response);
-            response.send().await.expect("send should succeed");
         }
     }
 
@@ -933,46 +934,55 @@ mod tests {
             ..Default::default()
         };
 
-        let applied_lsn = Arc::new(AtomicU64::new(0));
-        let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let archived_lsn = Arc::new(AtomicU64::new(0));
-
-        let get_node_state_handler = Arc::new(MockNodeStateHandler {
-            applied_lsn: applied_lsn.clone(),
-            persisted_lsn: persisted_lsn.clone(),
-            archived_lsn: archived_lsn.clone(),
-        });
+        let handler_state = Arc::new(HandlerState::default());
+        let get_node_state_handler = MockNodeStateHandler {
+            inner: handler_state.clone(),
+        };
 
         let (node_env, bifrost, cluster_state) = create_test_env_with_nodes(config, 2, |builder| {
             builder
-                .add_message_handler(get_node_state_handler.clone())
-                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
+                .register_buffered_service(
+                    10,
+                    BackPressureMode::Lossy,
+                    NoOpMessageHandler::<PartitionManagerService>::default(),
+                )
+                .register_buffered_service(
+                    128,
+                    BackPressureMode::Lossy,
+                    get_node_state_handler.clone(),
+                )
         })
         .await?;
 
         // simulate a connection from node 2 so we can have a connection between the two nodes
-        let node_2 = MockPeerConnection::connect(
-            GenerationalNodeId::new(2, 2),
-            node_env.metadata.nodes_config_version(),
-            node_env
-                .metadata
-                .nodes_config_ref()
-                .cluster_name()
-                .to_owned(),
-            node_env.networking.connection_manager(),
-            10,
-        )
-        .await?;
-        // let node2 receive messages and use the same message handler as node1
-        let (_node_2, _node2_reactor) =
-            node_2.process_with_message_handler(get_node_state_handler)?;
+        let mut router = MessageRouterBuilder::default();
+        router
+            .register_buffered_service(128, BackPressureMode::Lossy)
+            .start(
+                TaskKind::NetworkMessageHandler,
+                "service-handler",
+                get_node_state_handler.clone(),
+            )
+            .unwrap();
+
+        let _node2 = node_env
+            .networking
+            .connection_manager()
+            .accept_fake_server_connection(
+                GenerationalNodeId::new(2, 2),
+                Swimlane::default(),
+                ConnectionDirection::Bidirectional,
+                // let node2 receive messages and use the same message handler as node1
+                Some(router.build().into()),
+            )
+            .await?;
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
             let lsn = appender.append("").await?;
             assert_eq!(Lsn::from(i), lsn);
         }
-        applied_lsn.store(
+        handler_state.applied_lsn.store(
             bifrost
                 .find_tail(LOG_ID, FindTailOptions::default())
                 .await?
@@ -996,11 +1006,11 @@ mod tests {
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
         // only trim once archived LSN reported
-        archived_lsn.store(6, Ordering::Relaxed);
+        handler_state.archived_lsn.store(6, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
 
-        archived_lsn.store(11, Ordering::Relaxed);
+        handler_state.archived_lsn.store(11, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(11), bifrost.get_trim_point(LOG_ID).await?);
 
@@ -1027,17 +1037,23 @@ mod tests {
             ..Default::default()
         };
 
-        let applied_lsn = Arc::new(AtomicU64::new(0));
-        let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let get_node_state_handler = Arc::new(MockNodeStateHandler {
-            applied_lsn: applied_lsn.clone(),
-            persisted_lsn: Arc::clone(&persisted_lsn),
-            archived_lsn: Arc::new(AtomicU64::new(0)), // not used in this test
-        });
-        let (_, bifrost, _) = create_test_env_with_nodes(config, 1, |builder| {
+        let handler_state = Arc::new(HandlerState::default());
+        let get_node_state_handler = MockNodeStateHandler {
+            inner: handler_state.clone(),
+        };
+
+        let (_node_env, bifrost, _) = create_test_env_with_nodes(config, 1, |builder| {
             builder
-                .add_message_handler(get_node_state_handler.clone())
-                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
+                .register_buffered_service(
+                    10,
+                    BackPressureMode::Lossy,
+                    NoOpMessageHandler::<PartitionManagerService>::default(),
+                )
+                .register_buffered_service(
+                    128,
+                    BackPressureMode::Lossy,
+                    get_node_state_handler.clone(),
+                )
         })
         .await?;
 
@@ -1046,7 +1062,7 @@ mod tests {
             let lsn = appender.append(format!("record{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);
         }
-        applied_lsn.store(
+        handler_state.applied_lsn.store(
             bifrost
                 .find_tail(LOG_ID, FindTailOptions::default())
                 .await?
@@ -1058,11 +1074,11 @@ mod tests {
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        persisted_lsn.store(3, Ordering::Relaxed);
+        handler_state.persisted_lsn.store(3, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(bifrost.get_trim_point(LOG_ID).await?, Lsn::from(3));
 
-        persisted_lsn.store(20, Ordering::Relaxed);
+        handler_state.persisted_lsn.store(20, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
 
@@ -1092,28 +1108,33 @@ mod tests {
         // this configuration will activate archived LSN-only trimming, even for single nodes
         config.worker.snapshots.destination = Some("a-repository-somewhere".to_string());
 
-        let applied_lsn = Arc::new(AtomicU64::new(0));
-        let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let archived_lsn = Arc::new(AtomicU64::new(0));
+        let handler_state = Arc::new(HandlerState::default());
+        let get_node_state_handler = MockNodeStateHandler {
+            inner: handler_state.clone(),
+        };
 
-        let (_, bifrost, cluster_state) = create_test_env_with_nodes(config, 1, |builder| {
-            let n1_msg_handler = MockNodeStateHandler {
-                applied_lsn: applied_lsn.clone(),
-                persisted_lsn: persisted_lsn.clone(),
-                archived_lsn: archived_lsn.clone(),
-            };
-            builder
-                .add_message_handler(n1_msg_handler)
-                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
-        })
-        .await?;
+        let (_node_env, bifrost, cluster_state) =
+            create_test_env_with_nodes(config, 1, |builder| {
+                builder
+                    .register_buffered_service(
+                        10,
+                        BackPressureMode::Lossy,
+                        NoOpMessageHandler::<PartitionManagerService>::default(),
+                    )
+                    .register_buffered_service(
+                        128,
+                        BackPressureMode::Lossy,
+                        get_node_state_handler.clone(),
+                    )
+            })
+            .await?;
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
             let lsn = appender.append(format!("record{i}")).await?;
             assert_eq!(Lsn::from(i), lsn);
         }
-        applied_lsn.store(
+        handler_state.applied_lsn.store(
             bifrost
                 .find_tail(LOG_ID, FindTailOptions::default())
                 .await?
@@ -1122,7 +1143,7 @@ mod tests {
                 .as_u64(),
             Ordering::Relaxed,
         );
-        persisted_lsn.store(10, Ordering::Relaxed);
+        handler_state.persisted_lsn.store(10, Ordering::Relaxed);
 
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(cluster_state.current().nodes.len(), 1);
@@ -1138,11 +1159,11 @@ mod tests {
         // we default to trimming by archived_lsn only, just like in multi-node
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        persisted_lsn.store(20, Ordering::Relaxed);
+        handler_state.persisted_lsn.store(20, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        archived_lsn.store(20, Ordering::Relaxed);
+        handler_state.archived_lsn.store(20, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
 
@@ -1166,31 +1187,27 @@ mod tests {
             ..Default::default()
         };
 
-        let applied_lsn = Arc::new(AtomicU64::new(0));
-        let persisted_lsn = Arc::new(AtomicU64::new(0));
-        let archived_lsn = Arc::new(AtomicU64::new(0));
-
-        let (_node_env, bifrost, cluster_state) =
-            create_test_env_with_nodes(config, 2, |builder| {
-                assert_eq!(
-                    builder.nodes_config.iter().count(),
-                    2,
-                    "expect two nodes in config"
-                );
-
-                let get_node_state_handler = MockNodeStateHandler {
-                    applied_lsn: applied_lsn.clone(),
-                    persisted_lsn: persisted_lsn.clone(),
-                    archived_lsn: archived_lsn.clone(),
-                };
-
-                builder
-                    .add_message_handler(get_node_state_handler)
-                    .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
-            })
-            .await?;
+        let handler_state = Arc::new(HandlerState::default());
+        let get_node_state_handler = MockNodeStateHandler {
+            inner: handler_state.clone(),
+        };
 
         // We don't set up a mock N2 message handler in this test, so it will implicitly be treated as dead
+        let (_node_env, bifrost, cluster_state) =
+            create_test_env_with_nodes(config, 2, |builder| {
+                builder
+                    .register_buffered_service(
+                        10,
+                        BackPressureMode::Lossy,
+                        NoOpMessageHandler::<PartitionManagerService>::default(),
+                    )
+                    .register_buffered_service(
+                        128,
+                        BackPressureMode::Lossy,
+                        get_node_state_handler.clone(),
+                    )
+            })
+            .await?;
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
@@ -1198,7 +1215,7 @@ mod tests {
             assert_eq!(Lsn::from(i), lsn);
         }
 
-        applied_lsn.store(
+        handler_state.applied_lsn.store(
             bifrost
                 .find_tail(LOG_ID, FindTailOptions::default())
                 .await?
@@ -1224,11 +1241,11 @@ mod tests {
         );
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        archived_lsn.store(10, Ordering::Relaxed);
+        handler_state.archived_lsn.store(10, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(10), bifrost.get_trim_point(LOG_ID).await?);
 
-        archived_lsn.store(20, Ordering::Relaxed);
+        handler_state.archived_lsn.store(20, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
 
@@ -1259,44 +1276,49 @@ mod tests {
             ..Default::default()
         };
 
-        let n1_applied_lsn = Arc::new(AtomicU64::new(0));
-        let n2_applied_lsn = Arc::new(AtomicU64::new(0));
-        let archived_lsn = Arc::new(AtomicU64::new(0));
+        let n1_handler_state = Arc::new(HandlerState::default());
+        let n2_handler_state = Arc::new(HandlerState::default());
 
         let (node_env, bifrost, cluster_state) = create_test_env_with_nodes(config, 2, |builder| {
-            assert_eq!(
-                builder.nodes_config.iter().count(),
-                2,
-                "expect two nodes in config"
-            );
-            let n1_msg_handler = MockNodeStateHandler {
-                applied_lsn: n1_applied_lsn.clone(),
-                archived_lsn: archived_lsn.clone(),
-                ..Default::default()
-            };
             builder
-                .add_message_handler(n1_msg_handler)
-                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
+                .register_buffered_service(
+                    10,
+                    BackPressureMode::Lossy,
+                    NoOpMessageHandler::<PartitionManagerService>::default(),
+                )
+                .register_buffered_service(
+                    128,
+                    BackPressureMode::Lossy,
+                    MockNodeStateHandler {
+                        inner: n1_handler_state.clone(),
+                    },
+                )
         })
         .await?;
 
-        let n2_msg_handler = MockNodeStateHandler {
-            applied_lsn: n2_applied_lsn.clone(),
-            ..Default::default()
-        };
-        let node_2_conn = MockPeerConnection::connect(
-            GenerationalNodeId::new(2, 2),
-            node_env.metadata.nodes_config_version(),
-            node_env
-                .metadata
-                .nodes_config_ref()
-                .cluster_name()
-                .to_owned(),
-            node_env.networking.connection_manager(),
-            10,
-        )
-        .await?;
-        node_2_conn.process_with_message_handler(n2_msg_handler)?;
+        // simulate a connection from node 2 so we can have a connection between the two nodes
+        let mut router = MessageRouterBuilder::default();
+        router
+            .register_buffered_service(128, BackPressureMode::Lossy)
+            .start(
+                TaskKind::NetworkMessageHandler,
+                "service-handler",
+                MockNodeStateHandler {
+                    inner: n2_handler_state.clone(),
+                },
+            )
+            .unwrap();
+
+        let _node2_conn = node_env
+            .networking
+            .connection_manager()
+            .accept_fake_server_connection(
+                GenerationalNodeId::new(2, 2),
+                Swimlane::default(),
+                ConnectionDirection::Bidirectional,
+                Some(router.build().into()),
+            )
+            .await?;
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::default())?;
         for i in 1..=20 {
@@ -1304,8 +1326,8 @@ mod tests {
             assert_eq!(Lsn::from(i), lsn);
         }
 
-        n1_applied_lsn.store(15, Ordering::Relaxed);
-        n2_applied_lsn.store(10, Ordering::Relaxed);
+        n1_handler_state.applied_lsn.store(15, Ordering::Relaxed);
+        n2_handler_state.applied_lsn.store(10, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert!(
             cluster_state
@@ -1316,19 +1338,21 @@ mod tests {
         );
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        n1_applied_lsn.store(20, Ordering::Relaxed);
-        n2_applied_lsn.store(10, Ordering::Relaxed);
-        archived_lsn.store(15, Ordering::Relaxed);
+        n1_handler_state.applied_lsn.store(20, Ordering::Relaxed);
+        n2_handler_state.applied_lsn.store(10, Ordering::Relaxed);
+
+        n1_handler_state.archived_lsn.store(15, Ordering::Relaxed);
+        n2_handler_state.archived_lsn.store(15, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        n2_applied_lsn.store(15, Ordering::Relaxed);
+        n2_handler_state.applied_lsn.store(15, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(15), bifrost.get_trim_point(LOG_ID).await?);
 
-        n2_applied_lsn.store(20, Ordering::Relaxed);
-        n2_applied_lsn.store(20, Ordering::Relaxed);
-        archived_lsn.store(20, Ordering::Relaxed);
+        n2_handler_state.applied_lsn.store(20, Ordering::Relaxed);
+        n1_handler_state.archived_lsn.store(20, Ordering::Relaxed);
+        n2_handler_state.archived_lsn.store(20, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
 
@@ -1344,7 +1368,7 @@ mod tests {
         F: FnMut(TestCoreEnvBuilder<FailingConnector>) -> TestCoreEnvBuilder<FailingConnector>,
     {
         restate_types::config::set_current_config(config);
-        let mut builder = TestCoreEnvBuilder::with_incoming_only_connector();
+        let builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let bifrost_svc = BifrostService::new(builder.metadata_writer.clone())
             .with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
@@ -1356,7 +1380,6 @@ mod tests {
             HealthStatus::default(),
             bifrost.clone(),
             builder.networking.clone(),
-            &mut builder.router_builder,
             &mut server_builder,
             builder.metadata_writer.clone(),
         )

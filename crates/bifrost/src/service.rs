@@ -17,7 +17,9 @@ use tracing::{debug, error, trace};
 use restate_core::{
     MetadataWriter, TaskCenter, TaskCenterFutureExt, TaskKind, cancellation_watcher,
 };
+#[cfg(feature = "local-loglet")]
 use restate_types::config::LocalLogletOptions;
+#[cfg(feature = "local-loglet")]
 use restate_types::live::BoxLiveLoad;
 use restate_types::logs::metadata::ProviderKind;
 

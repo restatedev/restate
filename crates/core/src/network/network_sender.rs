@@ -8,38 +8,53 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::net::codec::{Targeted, WireEncode};
+use std::time::Duration;
 
-use super::{NetworkSendError, NoConnection, Outgoing};
+use restate_types::NodeId;
+use restate_types::net::RpcRequest;
+
+use super::connection::OwnedSendPermit;
+use super::{ConnectError, Connection, RpcError};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Swimlane {
+    #[default]
+    General,
+    Gossip,
+    BifrostData,
+    IngressData,
+}
 
 /// Send NetworkMessage to nodes
-pub trait NetworkSender<S = NoConnection>: Send + Sync
-where
-    S: super::private::Sealed,
-{
-    /// Send a message to a peer node. Order of messages is not guaranteed since underlying
-    /// implementations might load balance message writes across multiple connections or re-order
-    /// messages in-flight based on priority. If ordered delivery is required, then use
-    /// [`restate_network::ConnectionSender`] instead.
-    ///
-    /// Establishing connections is handled internally with basic retries for straight-forward
-    /// failures.
-    ///
-    /// If `to` is a NodeID with generation, then it's guaranteed that messages will be sent to
-    /// this particular generation, otherwise, it'll be routed to the latest generation available
-    /// in nodes configuration at the time of the call. This might return
-    /// [[`NetworkSendError::OldPeerGeneration`]] if the node is not the latest generation.
-    ///
-    /// It returns Ok(()) when the message is:
-    /// - Successfully serialized to the wire format based on the negotiated protocol
-    /// - Serialized message was enqueued on the send buffer of the socket
-    ///
-    /// That means that this is not a guarantee that the message has been sent
-    /// over the network or that the peer have received it.
-    fn send<M>(
+pub trait NetworkSender: Send + Sync {
+    /// Get a connection to a peer node
+    fn get_connection<N>(
         &self,
-        message: Outgoing<M, S>,
-    ) -> impl std::future::Future<Output = Result<(), NetworkSendError<Outgoing<M, S>>>> + Send
+        node_id: N,
+        swimlane: Swimlane,
+    ) -> impl std::future::Future<Output = Result<Connection, ConnectError>> + Send
     where
-        M: WireEncode + Targeted + Send + Sync;
+        N: Into<NodeId> + Send;
+
+    /// Acquire an owned send permit for a node
+    fn reserve_owned<N>(
+        &self,
+        node_id: N,
+        swimlane: Swimlane,
+    ) -> impl std::future::Future<Output = Option<OwnedSendPermit>> + Send
+    where
+        N: Into<NodeId> + Send;
+
+    /// Call an RPC method on a peer node
+    fn call_rpc<M, N>(
+        &self,
+        node_id: N,
+        swimlane: Swimlane,
+        message: M,
+        sort_code: Option<u64>,
+        timeout: Option<Duration>,
+    ) -> impl std::future::Future<Output = Result<M::Response, RpcError>> + Send
+    where
+        M: RpcRequest,
+        N: Into<NodeId> + Send;
 }
