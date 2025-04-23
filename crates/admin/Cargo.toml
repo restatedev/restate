@@ -71,10 +71,12 @@ tracing = { workspace = true }
 xxhash-rust = { workspace = true }
 
 [dev-dependencies]
+restate-admin = {path = ".", default-features = false, features = ["memory-loglet"]}
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+
 
 googletest = { workspace = true }
 tempfile = { workspace = true }

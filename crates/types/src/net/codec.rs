@@ -17,55 +17,6 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::protobuf::common::ProtocolVersion;
-use crate::protobuf::common::TargetName;
-
-pub trait Targeted {
-    const TARGET: TargetName;
-    fn target(&self) -> TargetName {
-        Self::TARGET
-    }
-    fn kind(&self) -> &'static str;
-}
-
-impl<T> Targeted for &T
-where
-    T: Targeted,
-{
-    const TARGET: TargetName = T::TARGET;
-    fn kind(&self) -> &'static str {
-        (*self).kind()
-    }
-}
-
-impl<T> Targeted for &mut T
-where
-    T: Targeted,
-{
-    const TARGET: TargetName = T::TARGET;
-    fn kind(&self) -> &'static str {
-        (**self).kind()
-    }
-}
-
-impl<T> Targeted for Box<T>
-where
-    T: Targeted,
-{
-    const TARGET: TargetName = T::TARGET;
-    fn kind(&self) -> &'static str {
-        (**self).kind()
-    }
-}
-
-impl<T> Targeted for Arc<T>
-where
-    T: Targeted,
-{
-    const TARGET: TargetName = T::TARGET;
-    fn kind(&self) -> &'static str {
-        (**self).kind()
-    }
-}
 
 pub trait WireEncode {
     fn encode_to_bytes(self, protocol_version: ProtocolVersion) -> Bytes;
@@ -127,7 +78,7 @@ where
 /// encoding for network messages since networking has its own protocol versioning.
 pub fn encode_default<T: Serialize>(value: T, protocol_version: ProtocolVersion) -> Vec<u8> {
     match protocol_version {
-        ProtocolVersion::V1 => {
+        ProtocolVersion::V2 | ProtocolVersion::V1 => {
             flexbuffers::to_vec(value).expect("network message serde can't fail")
         }
         ProtocolVersion::Unknown => {
@@ -143,8 +94,8 @@ pub fn decode_default<T: DeserializeOwned>(
     protocol_version: ProtocolVersion,
 ) -> Result<T, anyhow::Error> {
     match protocol_version {
-        ProtocolVersion::V1 => flexbuffers::from_slice(buf.chunk())
-            .context("failed decoding V1 (flexbuffers) network message"),
+        ProtocolVersion::V2 | ProtocolVersion::V1 => flexbuffers::from_slice(buf.chunk())
+            .context("failed decoding (flexbuffers) network message"),
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
         }

@@ -112,7 +112,7 @@ impl SpawnPartitionProcessorTask {
         let status_reader = invoker.status_reader();
 
         let (control_tx, control_rx) = mpsc::channel(2);
-        let (rpc_tx, rpc_rx) = mpsc::channel(128);
+        let (net_tx, net_rx) = mpsc::channel(128);
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());
 
@@ -124,7 +124,7 @@ impl SpawnPartitionProcessorTask {
             status,
             options,
             control_rx,
-            rpc_rx,
+            net_rx,
             watch_tx,
             invoker.handle(),
         );
@@ -175,7 +175,7 @@ impl SpawnPartitionProcessorTask {
             key_range,
             control_tx,
             status_reader,
-            rpc_tx,
+            net_tx,
             watch_rx,
         );
 

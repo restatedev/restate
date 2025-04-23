@@ -14,7 +14,7 @@ use metrics::{Counter, counter};
 use tokio::sync::mpsc;
 use tracing::{info, trace};
 
-use restate_core::network::{NetworkError, Networking, TransportConnect};
+use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, my_node_id};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
@@ -30,7 +30,6 @@ use crate::providers::replicated_loglet::metric_definitions::{
     BIFROST_REPLICATED_READ_CACHE_FILTERED, BIFROST_REPLICATED_READ_CACHE_HIT,
     BIFROST_REPLICATED_READ_TOTAL,
 };
-use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 use crate::providers::replicated_loglet::tasks::GetTrimPointTask;
 
 #[derive(Debug, thiserror::Error)]
@@ -58,7 +57,6 @@ impl Default for Stats {
 
 pub struct ReadStreamTask {
     my_params: ReplicatedLogletParams,
-    logservers_rpc: LogServersRpc,
     filter: KeyFilter,
     global_tail_watch: TailOffsetWatch,
     last_known_tail: LogletOffset,
@@ -83,7 +81,6 @@ impl ReadStreamTask {
     pub async fn start<T: TransportConnect>(
         my_params: ReplicatedLogletParams,
         networking: Networking<T>,
-        logservers_rpc: LogServersRpc,
         filter: KeyFilter,
         from_offset: LogletOffset,
         read_to: Option<LogletOffset>,
@@ -112,7 +109,6 @@ impl ReadStreamTask {
 
         let task = Self {
             my_params,
-            logservers_rpc,
             filter,
             read_pointer: from_offset,
             read_to,
@@ -178,26 +174,23 @@ impl ReadStreamTask {
         // might not observe some of the future trim point updates if we already have the records
         // in the record cache. If we failed to determine the trim point, we'll ignore it and
         // continue.
-        let trim_point = match GetTrimPointTask::new(
-            &self.my_params,
-            self.logservers_rpc.clone(),
-            self.global_tail_watch.clone(),
-        )
-        .run(networking.clone())
-        .await
-        {
-            Ok(trim_point) => trim_point,
-            Err(e) => {
-                info!(
-                    loglet_id = %self.my_params.loglet_id,
-                    offset = %self.read_pointer,
-                    "Could not determine the trim point while creating the read stream: {e}. \
-                        This should not impact reading if records are cached in memory or if \
-                        log-servers came back alive later.",
-                );
-                None
-            }
-        };
+        let trim_point =
+            match GetTrimPointTask::new(&self.my_params, self.global_tail_watch.clone())
+                .run(networking.clone())
+                .await
+            {
+                Ok(trim_point) => trim_point,
+                Err(e) => {
+                    info!(
+                        loglet_id = %self.my_params.loglet_id,
+                        offset = %self.read_pointer,
+                        "Could not determine the trim point while creating the read stream: {e}. \
+                            This should not impact reading if records are cached in memory or if \
+                            log-servers came back alive later.",
+                    );
+                    None
+                }
+            };
 
         // [important]
         // We rely on the periodic task owned by the provider to refresh our view of the tail.
@@ -530,19 +523,22 @@ impl ReadStreamTask {
             server
         );
 
-        let maybe_records = self
-            .logservers_rpc
-            .get_records
-            .call_timeout(networking, server, request, timeout)
+        let maybe_records = networking
+            .call_rpc(
+                server,
+                Swimlane::BifrostData,
+                request,
+                Some(self.my_params.loglet_id.into()),
+                Some(timeout),
+            )
             .await;
 
         match maybe_records {
             Ok(records) => {
                 self.global_tail_watch
-                    .notify_offset_update(records.body().known_global_tail);
-                Ok(ServerReadResult::Records(records.into_body().records))
+                    .notify_offset_update(records.known_global_tail);
+                Ok(ServerReadResult::Records(records.records))
             }
-            Err(NetworkError::Shutdown(e)) => Err(OperationError::Shutdown(e)),
             Err(e) => {
                 trace!(
                     loglet_id = %self.my_params.loglet_id,

@@ -12,8 +12,6 @@ use std::pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::remote_query_scanner_manager::RemoteScannerManager;
-use crate::{decode_schema, encode_record_batch};
 use ahash::HashMap;
 use anyhow::Context;
 use datafusion::error::DataFusionError;
@@ -23,12 +21,19 @@ use tokio::time::Instant;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::warn;
 
-use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
-use restate_core::{cancellation_watcher, my_node_id};
-use restate_types::net::remote_query_scanner::{
-    RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
-    RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened, ScannerId,
+use restate_core::network::{
+    BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver, Verdict,
 };
+use restate_core::{cancellation_watcher, my_node_id};
+use restate_types::net::RpcRequest;
+use restate_types::net::remote_query_scanner::{
+    RemoteDataFusionService, RemoteQueryScannerClose, RemoteQueryScannerClosed,
+    RemoteQueryScannerNext, RemoteQueryScannerNextResult, RemoteQueryScannerOpen,
+    RemoteQueryScannerOpened, ScannerId,
+};
+
+use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::{decode_schema, encode_record_batch};
 
 struct Scanner {
     stream: SendableRecordBatchStream,
@@ -70,9 +75,7 @@ impl Scanner {
 pub struct RemoteQueryScannerServer {
     expire_old_scanners_after: Duration,
     remote_scanner_manager: RemoteScannerManager,
-    open_stream: MessageStream<RemoteQueryScannerOpen>,
-    next_stream: MessageStream<RemoteQueryScannerNext>,
-    close_stream: MessageStream<RemoteQueryScannerClose>,
+    network_rx: ServiceReceiver<RemoteDataFusionService>,
 }
 
 impl RemoteQueryScannerServer {
@@ -81,16 +84,12 @@ impl RemoteQueryScannerServer {
         remote_scanner_manager: RemoteScannerManager,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
-        let open_stream = router_builder.subscribe_to_stream(64);
-        let next_stream = router_builder.subscribe_to_stream(64);
-        let close_stream = router_builder.subscribe_to_stream(64);
+        let network_rx = router_builder.register_service(64, BackPressureMode::PushBack);
 
         Self {
             expire_old_scanners_after,
             remote_scanner_manager,
-            open_stream,
-            next_stream,
-            close_stream,
+            network_rx,
         }
     }
 
@@ -98,49 +97,48 @@ impl RemoteQueryScannerServer {
         let RemoteQueryScannerServer {
             expire_old_scanners_after,
             remote_scanner_manager,
-            mut open_stream,
-            mut next_stream,
-            mut close_stream,
+            network_rx,
         } = self;
 
         let mut shutdown = pin::pin!(cancellation_watcher());
         let mut next_scanner_id = 1u64;
         let mut scanners: HashMap<ScannerId, Scanner> = Default::default();
         let mut interval = time::interval(expire_old_scanners_after);
+        let mut network_rx = network_rx.start();
 
         loop {
             tokio::select! {
                         biased;
                         _ = &mut shutdown => {
                             // stop accepting messages
-                            drop(open_stream);
-                            drop(next_stream);
-                            drop(close_stream);
                             return Ok(());
                         },
-                        Some(scan_req) = open_stream.next() => {
-                            next_scanner_id += 1;
-                            let scanner_id = ScannerId(my_node_id(), next_scanner_id);
-                            Self::on_open(scanner_id, scan_req, &mut scanners, remote_scanner_manager.clone()).await;
-                        },
-                        Some(next_req) = next_stream.next() => {
-                            let (reciprocal, req) = next_req.split();
-                            let id = req.scanner_id;
-                            let res = Self::on_next(&mut scanners, req).await;
-                            let outgoing = reciprocal.prepare(res);
-                            if outgoing.send().await.is_err() {
-                                    scanners.remove(&id);
+                        Some(msg) = network_rx.next() => {
+                            match msg {
+                                ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerOpen::TYPE => {
+                                    let scan_req = msg.into_typed::<RemoteQueryScannerOpen>();
+                                    next_scanner_id += 1;
+                                    let scanner_id = ScannerId(my_node_id(), next_scanner_id);
+                                    Self::on_open(scanner_id, scan_req, &mut scanners, remote_scanner_manager.clone()).await;
+                                }
+                                ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerNext::TYPE => {
+                                    let next_req = msg.into_typed::<RemoteQueryScannerNext>();
+                                    let (reciprocal, req) = next_req.split();
+                                    let res = Self::on_next(&mut scanners, req).await;
+                                    reciprocal.send(res);
+                                }
+                                ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerClose::TYPE => {
+                                    let close_req = msg.into_typed::<RemoteQueryScannerClose>();
+                                    let (reciprocal, close_req) = close_req.split();
+                                    scanners.remove(&close_req.scanner_id);
+                                    let res = RemoteQueryScannerClosed {
+                                        scanner_id: close_req.scanner_id,
+                                    };
+                                    reciprocal.send(res);
+                                }
+                                msg => { msg.fail(Verdict::MessageUnrecognized); }
                             }
                         },
-                        Some(close_req) = close_stream.next() => {
-                            let id  = close_req.body().scanner_id;
-                            scanners.remove(&id);
-                            let res = RemoteQueryScannerClosed {
-                                scanner_id: id,
-                            };
-                            let outgoing = close_req.into_outgoing(res);
-                            let _ = outgoing.send().await;
-                       },
                        now = interval.tick() => {
                            Self::try_expire_scanners(&now,  expire_old_scanners_after ,&mut scanners);
                        }
@@ -150,7 +148,7 @@ impl RemoteQueryScannerServer {
 
     async fn on_open(
         scanner_id: ScannerId,
-        scan_req: Incoming<RemoteQueryScannerOpen>,
+        scan_req: Incoming<Rpc<RemoteQueryScannerOpen>>,
         scanners: &mut HashMap<ScannerId, Scanner>,
         remote_scanner_manager: RemoteScannerManager,
     ) {
@@ -162,15 +160,12 @@ impl RemoteQueryScannerServer {
                 maybe_scanner.err().unwrap()
             );
             let response = RemoteQueryScannerOpened::Failure;
-            let _ = reciprocal.prepare(response).send().await;
+            reciprocal.send(response);
             return;
         };
         scanners.insert(scanner_id, scanner);
         let response = RemoteQueryScannerOpened::Success { scanner_id };
-        let outgoing = reciprocal.prepare(response);
-        if outgoing.send().await.is_err() {
-            scanners.remove(&scanner_id);
-        }
+        reciprocal.send(response);
     }
 
     async fn on_next(

@@ -13,8 +13,7 @@ use std::collections::BTreeMap;
 use tokio::task::JoinSet;
 use tracing::{Instrument, debug, instrument, trace};
 
-use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{Incoming, Networking, TransportConnect};
+use restate_core::network::{Networking, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenterFutureExt};
 use restate_types::PlainNodeId;
 use restate_types::net::log_server::{
@@ -57,7 +56,6 @@ impl CheckSealTask {
     #[instrument(skip_all)]
     pub async fn run<T: TransportConnect>(
         my_params: &ReplicatedLogletParams,
-        get_loglet_info_rpc: &RpcRouter<GetLogletInfo>,
         log_servers: &RemoteLogServerManager,
         known_global_tail: &TailOffsetWatch,
         networking: &Networking<T>,
@@ -131,7 +129,6 @@ impl CheckSealTask {
                 .name("check-seal")
                 .spawn({
                     let networking = networking.clone();
-                    let rpc_router = get_loglet_info_rpc.clone();
                     let known_global_tail = known_global_tail.clone();
                     let local_tail = local_tails.get(&node_id).cloned();
 
@@ -139,7 +136,6 @@ impl CheckSealTask {
                         let task = RunOnSingleNode::new(
                             node_id,
                             request,
-                            &rpc_router,
                             &known_global_tail,
                             // do not retry
                             RetryPolicy::None,
@@ -207,21 +203,20 @@ impl CheckSealTask {
 
 fn on_info_response(
     server_local_tail: Option<TailOffsetWatch>,
-) -> impl Fn(Incoming<LogletInfo>) -> Disposition<LogServerResponseHeader> {
-    move |msg: Incoming<LogletInfo>| -> Disposition<LogServerResponseHeader> {
-        if let Status::Ok = msg.body().header.status {
+) -> impl Fn(PlainNodeId, LogletInfo) -> Disposition<LogServerResponseHeader> {
+    move |peer: PlainNodeId, msg: LogletInfo| -> Disposition<LogServerResponseHeader> {
+        if let Status::Ok = msg.header.status {
             if let Some(server_local_tail) = &server_local_tail {
-                server_local_tail.notify_offset_update(msg.body().local_tail);
-                if msg.body().header.sealed {
+                server_local_tail.notify_offset_update(msg.local_tail);
+                if msg.header.sealed {
                     server_local_tail.notify_seal();
                 }
             }
-            Disposition::Return(msg.into_body().header)
+            Disposition::Return(msg.header)
         } else {
             trace!(
                 "GetLogletInfo request failed on node {}, status is {:?}",
-                msg.peer(),
-                msg.body().header.status
+                peer, msg.header.status
             );
             Disposition::Abort
         }
