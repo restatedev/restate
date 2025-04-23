@@ -246,8 +246,19 @@ impl InvocationStatus {
     #[inline]
     pub fn into_journal_metadata(self) -> Option<JournalMetadata> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(metadata.journal_metadata),
-            InvocationStatus::Suspended { metadata, .. } => Some(metadata.journal_metadata),
+            InvocationStatus::Invoked(InFlightInvocationMetadata {
+                journal_metadata, ..
+            })
+            | InvocationStatus::Suspended {
+                metadata:
+                    InFlightInvocationMetadata {
+                        journal_metadata, ..
+                    },
+                ..
+            }
+            | InvocationStatus::Completed(CompletedInvocation {
+                journal_metadata, ..
+            }) => Some(journal_metadata),
             _ => None,
         }
     }
@@ -255,8 +266,19 @@ impl InvocationStatus {
     #[inline]
     pub fn get_journal_metadata(&self) -> Option<&JournalMetadata> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(&metadata.journal_metadata),
-            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.journal_metadata),
+            InvocationStatus::Invoked(InFlightInvocationMetadata {
+                journal_metadata, ..
+            })
+            | InvocationStatus::Suspended {
+                metadata:
+                    InFlightInvocationMetadata {
+                        journal_metadata, ..
+                    },
+                ..
+            }
+            | InvocationStatus::Completed(CompletedInvocation {
+                journal_metadata, ..
+            }) => Some(journal_metadata),
             _ => None,
         }
     }
@@ -264,8 +286,19 @@ impl InvocationStatus {
     #[inline]
     pub fn get_journal_metadata_mut(&mut self) -> Option<&mut JournalMetadata> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(&mut metadata.journal_metadata),
-            InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.journal_metadata),
+            InvocationStatus::Invoked(InFlightInvocationMetadata {
+                journal_metadata, ..
+            })
+            | InvocationStatus::Suspended {
+                metadata:
+                    InFlightInvocationMetadata {
+                        journal_metadata, ..
+                    },
+                ..
+            }
+            | InvocationStatus::Completed(CompletedInvocation {
+                journal_metadata, ..
+            }) => Some(journal_metadata),
             _ => None,
         }
     }
@@ -380,6 +413,10 @@ impl JournalMetadata {
 
     pub fn initialize(span_context: ServiceInvocationSpanContext) -> Self {
         Self::new(0, 0, span_context)
+    }
+
+    pub fn empty() -> Self {
+        Self::initialize(ServiceInvocationSpanContext::empty())
     }
 }
 
@@ -601,17 +638,25 @@ impl InFlightInvocationMetadata {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletedInvocation {
     pub invocation_target: InvocationTarget,
-    pub span_context: ServiceInvocationSpanContext,
     pub source: Source,
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
     pub response_result: ResponseResult,
     pub completion_retention_duration: Duration,
+    pub journal_metadata: JournalMetadata,
+    pub pinned_deployment: Option<PinnedDeployment>,
+}
+
+#[derive(PartialEq, Eq)]
+pub enum JournalRetentionPolicy {
+    Retain,
+    Drop,
 }
 
 impl CompletedInvocation {
     pub fn from_in_flight_invocation_metadata(
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
+        journal_retention_policy: JournalRetentionPolicy,
         response_result: ResponseResult,
     ) -> Self {
         in_flight_invocation_metadata
@@ -620,13 +665,18 @@ impl CompletedInvocation {
 
         Self {
             invocation_target: in_flight_invocation_metadata.invocation_target,
-            span_context: in_flight_invocation_metadata.journal_metadata.span_context,
             source: in_flight_invocation_metadata.source,
             idempotency_key: in_flight_invocation_metadata.idempotency_key,
             timestamps: in_flight_invocation_metadata.timestamps,
             response_result,
             completion_retention_duration: in_flight_invocation_metadata
                 .completion_retention_duration,
+            journal_metadata: if journal_retention_policy == JournalRetentionPolicy::Retain {
+                in_flight_invocation_metadata.journal_metadata
+            } else {
+                JournalMetadata::empty()
+            },
+            pinned_deployment: in_flight_invocation_metadata.pinned_deployment,
         }
     }
 
@@ -720,12 +770,13 @@ mod test_util {
                     "mock",
                     VirtualObjectHandlerType::Exclusive,
                 ),
-                span_context: ServiceInvocationSpanContext::default(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 idempotency_key: None,
                 timestamps,
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
+                journal_metadata: JournalMetadata::empty(),
+                pinned_deployment: None,
             }
         }
 
@@ -737,12 +788,13 @@ mod test_util {
                     "mock",
                     VirtualObjectHandlerType::Exclusive,
                 ),
-                span_context: ServiceInvocationSpanContext::default(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 idempotency_key: None,
                 timestamps: StatusTimestamps::now(),
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
+                journal_metadata: JournalMetadata::empty(),
+                pinned_deployment: None,
             }
         }
     }
