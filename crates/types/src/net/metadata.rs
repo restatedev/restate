@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::bail;
+use bytes::Bytes;
 use enum_map::Enum;
 use prost_dto::{FromProst, IntoProst};
 use serde::{Deserialize, Serialize};
@@ -18,14 +19,20 @@ use strum::EnumIter;
 use crate::Version;
 use crate::Versioned;
 use crate::logs::metadata::Logs;
-use crate::net::TargetName;
-use crate::net::define_message;
+use crate::metadata::GlobalMetadata;
+use crate::net::ServiceTag;
+use crate::net::{default_wire_codec, define_rpc, define_service};
 use crate::nodes_config::NodesConfiguration;
 use crate::partition_table::PartitionTable;
 use crate::schema::Schema;
 
-use super::RpcRequest;
+use super::ProtocolVersion;
+use super::codec;
+use super::codec::WireDecode;
+use super::codec::WireEncode;
 
+// NOTE: this type is kept for V1 message fabric compatibility
+// V2 fabric uses `GetMetadataRequest` and `MetadataUpdate` directly
 #[derive(
     Debug,
     Clone,
@@ -39,13 +46,89 @@ pub enum MetadataMessage {
     GetMetadataRequest(GetMetadataRequest),
     MetadataUpdate(MetadataUpdate),
 }
+default_wire_codec!(MetadataMessage);
 
-impl RpcRequest for MetadataMessage {
-    type ResponseMessage = MetadataMessage;
+pub struct MetadataManagerService;
+define_service! {
+    @service = MetadataManagerService,
+    @tag = ServiceTag::MetadataManagerService,
 }
-define_message! {
-    @message = MetadataMessage,
-    @target = TargetName::MetadataManager,
+
+define_rpc! {
+    @request = GetMetadataRequest,
+    @response = MetadataUpdate,
+    @service = MetadataManagerService,
+}
+
+// -- Custom encoding logic to handle compatibility with V1 protocol
+//
+impl WireEncode for GetMetadataRequest {
+    fn encode_to_bytes(self, protocol_version: ProtocolVersion) -> Bytes {
+        if let ProtocolVersion::V1 = protocol_version {
+            // V1 protocol sends `GetMetadataRequest` as a `MetadataMessage`
+            return Bytes::from(crate::net::codec::encode_default(
+                MetadataMessage::GetMetadataRequest(self),
+                protocol_version,
+            ));
+        }
+
+        Bytes::from(codec::encode_default(self, protocol_version))
+    }
+}
+impl WireDecode for GetMetadataRequest {
+    type Error = anyhow::Error;
+    fn try_decode(
+        buf: impl bytes::Buf,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Self, anyhow::Error>
+    where
+        Self: Sized,
+    {
+        if let ProtocolVersion::V1 = protocol_version {
+            // V1 protocol sends `GetMetadataRequest` as a `MetadataMessage`
+            let message =
+                crate::net::codec::decode_default::<MetadataMessage>(buf, protocol_version)?;
+            if let MetadataMessage::GetMetadataRequest(request) = message {
+                return Ok(request);
+            }
+            bail!("Invalid message type");
+        }
+        codec::decode_default(buf, protocol_version)
+    }
+}
+
+impl WireEncode for MetadataUpdate {
+    fn encode_to_bytes(self, protocol_version: ProtocolVersion) -> Bytes {
+        if let ProtocolVersion::V1 = protocol_version {
+            // V1 protocol sends `MetadataUpdate` as a `MetadataMessage`
+            return Bytes::from(codec::encode_default(
+                MetadataMessage::MetadataUpdate(self),
+                protocol_version,
+            ));
+        }
+        Bytes::from(codec::encode_default(self, protocol_version))
+    }
+}
+impl WireDecode for MetadataUpdate {
+    type Error = anyhow::Error;
+    fn try_decode(
+        buf: impl bytes::Buf,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Self, anyhow::Error>
+    where
+        Self: Sized,
+    {
+        if let ProtocolVersion::V1 = protocol_version {
+            // V1 protocol sends `MetadataUpdate` as a `MetadataMessage`
+            let message =
+                crate::net::codec::decode_default::<MetadataMessage>(buf, protocol_version)?;
+            if let MetadataMessage::MetadataUpdate(update) = message {
+                return Ok(update);
+            }
+            bail!("Invalid message type");
+        }
+        codec::decode_default(buf, protocol_version)
+    }
 }
 
 /// The kind of versioned metadata that can be synchronized across nodes.
@@ -127,6 +210,67 @@ impl MetadataContainer {
             MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
             MetadataContainer::Logs(_) => MetadataKind::Logs,
             MetadataContainer::Schema(_) => MetadataKind::Schema,
+        }
+    }
+
+    pub fn extract<T>(self) -> Option<Arc<T>>
+    where
+        T: GlobalMetadata + Extraction<Output = T>,
+    {
+        T::extract_as_global_metadata(self)
+    }
+}
+
+pub trait Extraction: GlobalMetadata {
+    type Output;
+
+    fn extract_as_global_metadata(v: MetadataContainer) -> Option<Arc<Self::Output>>;
+}
+
+impl Extraction for NodesConfiguration {
+    type Output = NodesConfiguration;
+
+    fn extract_as_global_metadata(value: MetadataContainer) -> Option<Arc<Self::Output>> {
+        if let MetadataContainer::NodesConfiguration(v) = value {
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+impl Extraction for Schema {
+    type Output = Schema;
+
+    fn extract_as_global_metadata(value: MetadataContainer) -> Option<Arc<Self::Output>> {
+        if let MetadataContainer::Schema(v) = value {
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+impl Extraction for PartitionTable {
+    type Output = PartitionTable;
+
+    fn extract_as_global_metadata(value: MetadataContainer) -> Option<Arc<Self::Output>> {
+        if let MetadataContainer::PartitionTable(v) = value {
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+impl Extraction for Logs {
+    type Output = Logs;
+
+    fn extract_as_global_metadata(value: MetadataContainer) -> Option<Arc<Self::Output>> {
+        if let MetadataContainer::Logs(v) = value {
+            Some(v)
+        } else {
+            None
         }
     }
 }

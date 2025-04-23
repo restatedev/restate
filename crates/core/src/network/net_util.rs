@@ -189,7 +189,7 @@ where
     let mut configuration = Configuration::live();
     let mut shutdown = std::pin::pin!(cancellation_watcher());
     let graceful_shutdown = GracefulShutdown::new();
-    let task_name: Arc<str> = Arc::from(format!("{}-socket", server_name));
+    let task_name: Arc<str> = Arc::from(format!("{server_name}-socket"));
     loop {
         tokio::select! {
             biased;
@@ -237,11 +237,11 @@ where
 
     debug!("Draining current connections");
     tokio::select! {
-        _ = graceful_shutdown.shutdown() => {
+        () = graceful_shutdown.shutdown() => {
             debug!("All connections completed gracefully");
 
         },
-        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+        () = tokio::time::sleep(Duration::from_secs(30)) => {
             info!("Some connections are taking longer to drain, dropping them");
         }
     }

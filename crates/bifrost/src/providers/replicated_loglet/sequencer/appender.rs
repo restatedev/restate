@@ -15,9 +15,10 @@ use tokio::{sync::OwnedSemaphorePermit, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, trace, warn};
 
+use restate_core::network::{NetworkSender, RpcError, Swimlane};
 use restate_core::{
     Metadata, TaskCenterFutureExt,
-    network::{Incoming, NetworkError, Networking, TransportConnect, rpc_router::RpcRouter},
+    network::{Networking, TransportConnect},
 };
 use restate_types::replicated_loglet::Spread;
 use restate_types::retries::with_jitter;
@@ -59,7 +60,6 @@ enum State {
 /// Appender makes sure a batch of records will run to completion
 pub(crate) struct SequencerAppender<T> {
     sequencer_shared_state: Arc<SequencerSharedState>,
-    store_router: RpcRouter<Store>,
     networking: Networking<T>,
     first_offset: LogletOffset,
     records: Arc<[Record]>,
@@ -80,7 +80,6 @@ impl<T: TransportConnect> SequencerAppender<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sequencer_shared_state: Arc<SequencerSharedState>,
-        store_router: RpcRouter<Store>,
         networking: Networking<T>,
         first_offset: LogletOffset,
         records: Arc<[Record]>,
@@ -101,7 +100,6 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
         Self {
             sequencer_shared_state,
-            store_router,
             networking,
             checker,
             nodeset_status,
@@ -315,7 +313,6 @@ impl<T: TransportConnect> SequencerAppender<T> {
                         networking: self.networking.clone(),
                         first_offset: self.first_offset,
                         records: self.records.clone(),
-                        rpc_router: self.store_router.clone(),
                         store_timeout,
                     };
                     async move { (node_id, store_task.run().await) }.in_current_tc()
@@ -337,16 +334,16 @@ impl<T: TransportConnect> SequencerAppender<T> {
             };
 
             let stored = match store_result {
-                StoreTaskStatus::Error(NetworkError::Shutdown(_)) => {
+                StoreTaskStatus::Shutdown => {
                     return State::Cancelled;
                 }
-                StoreTaskStatus::Error(NetworkError::Timeout(_)) => {
+                StoreTaskStatus::Error(RpcError::Timeout(spent)) => {
                     // Yes, I know those checks are ugly, but it's a quick and dirty way until we
                     // have a nice macro for it.
                     if self.current_wave >= TONE_ESCALATION_THRESHOLD {
-                        debug!(peer = %node_id, "Timeout waiting for node {} to commit a batch", node_id);
+                        debug!(peer = %node_id, "Timeout waiting for node {} to commit a batch, spent={:?}", node_id, spent);
                     } else {
-                        trace!(peer = %node_id, "Timeout waiting for node {} to commit a batch", node_id);
+                        trace!(peer = %node_id, "Timeout waiting for node {} to commit a batch, spent={:?}", node_id, spent);
                     }
                     self.nodeset_status.merge(node_id, PerNodeStatus::timeout());
                     self.graylist.insert(node_id);
@@ -548,11 +545,12 @@ impl Display for NodeAttributes {
 enum StoreTaskStatus {
     Sealed,
     Stored(Stored),
-    Error(NetworkError),
+    Error(RpcError),
+    Shutdown,
 }
 
-impl From<Result<StoreTaskStatus, NetworkError>> for StoreTaskStatus {
-    fn from(value: Result<StoreTaskStatus, NetworkError>) -> Self {
+impl From<Result<StoreTaskStatus, RpcError>> for StoreTaskStatus {
+    fn from(value: Result<StoreTaskStatus, RpcError>) -> Self {
         match value {
             Ok(result) => result,
             Err(err) => Self::Error(err),
@@ -568,7 +566,6 @@ struct LogServerStoreTask<T> {
     networking: Networking<T>,
     first_offset: LogletOffset,
     records: Arc<[Record]>,
-    rpc_router: RpcRouter<Store>,
     store_timeout: Duration,
 }
 
@@ -603,7 +600,7 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
         result.into()
     }
 
-    async fn send(&mut self) -> Result<StoreTaskStatus, NetworkError> {
+    async fn send(&mut self) -> Result<StoreTaskStatus, RpcError> {
         let server = self
             .sequencer_shared_state
             .log_server_manager
@@ -618,12 +615,9 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
             .wait_for_offset_or_seal(self.first_offset);
 
         let tail_state = tokio::select! {
-            local_state = server_local_tail => {
-                local_state?
-            }
-            global_state = global_tail => {
-                global_state?
-            }
+            Ok(l) = server_local_tail => l,
+            Ok(g) = global_tail => g,
+            else => return Ok(StoreTaskStatus::Shutdown),
         };
 
         match tail_state {
@@ -642,18 +636,11 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
             }
         }
 
-        let incoming = match self.try_send(server).await {
-            Ok(incoming) => incoming,
-            Err(err) => {
-                return Err(err);
-            }
-        };
+        let stored = self.try_send(server).await?;
 
-        server
-            .local_tail()
-            .notify_offset_update(incoming.body().local_tail);
+        server.local_tail().notify_offset_update(stored.local_tail);
 
-        match incoming.body().status {
+        match stored.status {
             Status::Sealing | Status::Sealed => {
                 server.local_tail().notify_seal();
                 self.sequencer_shared_state.mark_as_maybe_sealed();
@@ -664,14 +651,15 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
             }
         }
 
-        Ok(StoreTaskStatus::Stored(incoming.into_body()))
+        Ok(StoreTaskStatus::Stored(stored))
     }
 
-    async fn try_send(&self, server: &RemoteLogServer) -> Result<Incoming<Stored>, NetworkError> {
+    async fn try_send(&self, server: &RemoteLogServer) -> Result<Stored, RpcError> {
         let timeout_at = MillisSinceEpoch::after(self.store_timeout);
+        let loglet_id = *self.sequencer_shared_state.loglet_id();
         let store = Store {
             header: LogServerRequestHeader::new(
-                *self.sequencer_shared_state.loglet_id(),
+                loglet_id,
                 self.sequencer_shared_state
                     .known_global_tail
                     .latest_offset(),
@@ -685,22 +673,22 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
         };
 
         let store_start_time = Instant::now();
-
         // note: we are over-indexing on the fact that currently the sequencer will send one
         // message at a time per log-server. My argument to make us not sticking to a single
         // connection is that the complexity with the previous design didn't add any value. When we
         // support pipelined writes, it's unlikely that we'll also be doing the coordination through
         // the offset watch as we are currently doing (due to its lock-contention downside). It'll be a different design altogether.
-        match self
-            .rpc_router
-            .call_timeout(&self.networking, self.node_id, store, self.store_timeout)
-            .await
-        {
-            Ok(incoming) => {
-                server.store_latency().record(store_start_time.elapsed());
-                Ok(incoming)
-            }
-            Err(err) => Err(err),
-        }
+        let stored = self
+            .networking
+            .call_rpc(
+                self.node_id,
+                Swimlane::BifrostData,
+                store,
+                Some(loglet_id.into()),
+                Some(self.store_timeout),
+            )
+            .await?;
+        server.store_latency().record(store_start_time.elapsed());
+        Ok(stored)
     }
 }

@@ -108,6 +108,12 @@ impl From<PartitionId> for u32 {
     }
 }
 
+impl From<PartitionId> for u64 {
+    fn from(value: PartitionId) -> Self {
+        u64::from(value.0)
+    }
+}
+
 impl PartitionId {
     /// It's your responsibility to ensure the value is within the valid range.
     pub const fn new_unchecked(v: u16) -> Self {

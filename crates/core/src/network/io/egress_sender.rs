@@ -51,7 +51,7 @@ impl Future for SendToken {
 #[derive(derive_more::Deref, Clone)]
 pub struct EgressSender {
     #[deref]
-    pub(crate) inner: mpsc::Sender<EgressMessage>,
+    inner: mpsc::Sender<EgressMessage>,
 }
 
 impl EgressSender {
@@ -59,7 +59,7 @@ impl EgressSender {
         Self { inner: sender }
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(feature = "test-util")]
     pub fn new_closed() -> Self {
         let (inner, _rx) = mpsc::channel(1);
         Self { inner }
@@ -125,6 +125,10 @@ impl UnboundedEgressSender {
 
     pub fn is_closed(&self) -> bool {
         self.inner.is_closed()
+    }
+
+    pub async fn closed(&self) {
+        self.inner.closed().await
     }
 
     /// Starts a drain of this stream. Existing enqueued messages will be sent before
