@@ -12,25 +12,26 @@ use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyCo
 use assert2::let_assert;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::invocation_status_table::InFlightInvocationMetadata;
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
 use restate_types::identifiers::InvocationId;
 use restate_types::journal as journal_v1;
+use restate_types::journal_v2::Entry;
 use restate_types::journal_v2::command::InputCommand;
-use restate_types::journal_v2::{Entry, EntryIndex};
 
-pub struct VerifyOrMigrateJournalTableToV2Command {
+pub struct VerifyOrMigrateJournalTableToV2Command<'e> {
     pub invocation_id: InvocationId,
-    pub journal_length: EntryIndex,
+    pub metadata: &'e mut InFlightInvocationMetadata,
 }
 
-impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for VerifyOrMigrateJournalTableToV2Command
+impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
+    for VerifyOrMigrateJournalTableToV2Command<'e>
 where
     S: journal_table_v1::JournalTable + journal_table_v2::JournalTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         // Check if we need to perform journal table migrations!
-        if self.journal_length == 1 {
+        if self.metadata.journal_metadata.length == 1 {
             // This contains only the input entry, we can run a migration
             if let Some(old_journal_entry) =
                 journal_table_v1::ReadOnlyJournalTable::get_journal_entry(
@@ -67,14 +68,17 @@ where
                 journal_table_v1::JournalTable::delete_journal(ctx.storage, &self.invocation_id, 1)
                     .await
                     .map_err(Error::Storage)?;
+
+                // Mutate the journal metadata commands
+                self.metadata.journal_metadata.commands = 1;
             } else {
                 // We're already in journal table v2, nothing to migrate!!!
             }
-        } else if self.journal_length >= 1 {
+        } else if self.metadata.journal_metadata.length >= 1 {
             // We can just check corruption here.
             // Length can be greater than 1 when we have either Completions (in the old table) or Notifications (in the new table).
             // Because of the different Awakeable id format, we cannot incur in the situation where we write to the old table for a Completion arrived before the pinned deployment.
-            debug_assert!(
+            assert!(
                 journal_table_v2::ReadOnlyJournalTable::get_journal_entry(
                     ctx.storage,
                     self.invocation_id,
