@@ -17,10 +17,73 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest};
+use restate_types::invocation::{
+    InvocationTermination, PurgeInvocationRequest, TrimBy, TrimInvocationRequest,
+};
 use restate_wal_protocol::{Command, Envelope};
 use serde::Deserialize;
 use tracing::warn;
+
+/// Time travel an invocation
+#[openapi(
+    summary = "Time travel an invocation",
+    description = "Time travel the given invocation. Time travel trims the invocation journal from the given index (inclusive) onward and resumes the invocation afterwards.",
+    operation_id = "time_travel_invocation",
+    tags = "invocation",
+    parameters(
+        path(
+            name = "invocation_id",
+            description = "Invocation identifier.",
+            schema = "std::string::String"
+        ),
+        path(
+            name = "trim_index",
+            description = "Trim entry index, inclusive. The index MUST correspond to a command entry, otherwise this operation will be ignored.",
+            schema = "u32"
+        ),
+    ),
+    responses(
+        ignore_return_type = true,
+        response(
+            status = "202",
+            description = "Accepted",
+            content = "okapi_operation::Empty",
+        ),
+        from_type = "MetaApiError",
+    )
+)]
+pub async fn time_travel_invocation<V>(
+    State(state): State<AdminServiceState<V>>,
+    Path((invocation_id, trim_index)): Path<(String, u32)>,
+) -> Result<StatusCode, MetaApiError> {
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
+
+    let cmd = Command::TrimInvocation(TrimInvocationRequest {
+        invocation_id,
+        trim_by: TrimBy::CommandEntryIndex {
+            entry_index: trim_index,
+        },
+    });
+
+    let partition_key = invocation_id.partition_key();
+
+    let result = restate_bifrost::append_to_bifrost(
+        &state.bifrost,
+        Arc::new(Envelope::new(create_envelope_header(partition_key), cmd)),
+    )
+    .await;
+
+    if let Err(err) = result {
+        warn!("Could not append time travel command to the cluster: {err}");
+        Err(MetaApiError::Internal(
+            "Failed sending time travel command to the cluster.".to_owned(),
+        ))
+    } else {
+        Ok(StatusCode::ACCEPTED)
+    }
+}
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub enum DeletionMode {

@@ -836,6 +836,8 @@ impl SpanRelation {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TrimBy {
     CommandEntryIndex {
+        /// Entry index **inclusive**.
+        ///
         /// Note: the index MUST correspond to a [`journal_v2::Command`], otherwise the command will be ignored.
         entry_index: EntryIndex,
     },
