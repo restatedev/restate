@@ -78,7 +78,7 @@ where
             // We can just check corruption here.
             // Length can be greater than 1 when we have either Completions (in the old table) or Notifications (in the new table).
             // Because of the different Awakeable id format, we cannot incur in the situation where we write to the old table for a Completion arrived before the pinned deployment.
-            debug_assert!(
+            assert!(
                 journal_table_v2::ReadOnlyJournalTable::get_journal_entry(
                     ctx.storage,
                     self.invocation_id,
