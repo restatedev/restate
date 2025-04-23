@@ -13,16 +13,11 @@ use std::sync::LazyLock;
 
 pub(crate) const NETWORK_CONNECTION_CREATED: &str = "restate.network.connection_created.total";
 pub(crate) const NETWORK_CONNECTION_DROPPED: &str = "restate.network.connection_dropped.total";
-pub(crate) const NETWORK_MESSAGE_RECEIVED: &str = "restate.network.message_received.total";
 pub(crate) const NETWORK_MESSAGE_RECEIVED_BYTES: &str =
     "restate.network.message_received_bytes.total";
 
 pub(crate) const NETWORK_MESSAGE_PROCESSING_DURATION: &str =
     "restate.network.message_processing_duration.seconds";
-
-#[cfg(debug_assertions)]
-pub(crate) const NETWORK_MESSAGE_DECODE_DURATION: &str =
-    "restate.network.message_decode_duration.seconds";
 
 pub static INCOMING_CONNECTION: LazyLock<Counter> =
     LazyLock::new(|| counter!(NETWORK_CONNECTION_CREATED, "direction" => "incoming"));
@@ -48,12 +43,6 @@ pub fn describe_metrics() {
         NETWORK_MESSAGE_RECEIVED_BYTES,
         Unit::Bytes,
         "Number of bytes received by message name"
-    );
-
-    describe_counter!(
-        NETWORK_MESSAGE_RECEIVED,
-        Unit::Count,
-        "Number of messages received by message type"
     );
 
     describe_histogram!(

@@ -23,13 +23,12 @@ use tracing::{debug, info, instrument, trace};
 
 use restate_core::{
     ShutdownError, TaskCenter, TaskKind,
-    network::{Networking, TransportConnect, rpc_router::RpcRouter},
+    network::{Networking, TransportConnect},
 };
 use restate_types::{
     GenerationalNodeId,
     config::Configuration,
     logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber},
-    net::log_server::Store,
     replicated_loglet::ReplicatedLogletParams,
     replication::{NodeSet, ReplicationProperty},
 };
@@ -108,7 +107,6 @@ pub struct Sequencer<T> {
     // the other bits of data in this struct.
     next_write_offset: CachePadded<AtomicU32>,
     networking: Networking<T>,
-    rpc_router: RpcRouter<Store>,
     /// The value we read from configuration, we keep it around because we can't get the original
     /// capacity directly from `record_permits` Semaphore.
     max_inflight_records_in_config: AtomicUsize,
@@ -139,7 +137,6 @@ impl<T: TransportConnect> Sequencer<T> {
         my_params: ReplicatedLogletParams,
         selector_strategy: SelectorStrategy,
         networking: Networking<T>,
-        rpc_router: RpcRouter<Store>,
         record_cache: RecordCache,
         known_global_tail: TailOffsetWatch,
     ) -> Self {
@@ -177,7 +174,6 @@ impl<T: TransportConnect> Sequencer<T> {
         Self {
             sequencer_shared_state,
             next_write_offset,
-            rpc_router,
             networking,
             record_permits,
             record_cache,
@@ -315,7 +311,6 @@ impl<T: TransportConnect> Sequencer<T> {
 
         let appender = SequencerAppender::new(
             Arc::clone(&self.sequencer_shared_state),
-            self.rpc_router.clone(),
             self.networking.clone(),
             offset,
             payloads,

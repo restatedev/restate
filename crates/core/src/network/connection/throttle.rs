@@ -20,9 +20,9 @@ use tracing::trace;
 
 use crate::network::{ConnectError, Destination};
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(feature = "test-util")]
 const MAX_DELAY: Duration = Duration::from_secs(1);
-#[cfg(not(any(test, feature = "test-util")))]
+#[cfg(not(feature = "test-util"))]
 const MAX_DELAY: Duration = Duration::from_secs(5);
 
 const INITIAL_DELAY: Duration = Duration::from_millis(250);
