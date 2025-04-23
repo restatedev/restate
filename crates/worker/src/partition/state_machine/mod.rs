@@ -454,8 +454,12 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.on_terminate_invocation(invocation_termination).await
             }
             Command::PurgeInvocation(purge_invocation_request) => {
-                self.on_purge_invocation(purge_invocation_request.invocation_id)
-                    .await
+                lifecycle::OnPurgeCommand {
+                    invocation_id: purge_invocation_request.invocation_id,
+                }
+                .apply(self)
+                .await?;
+                Ok(())
             }
             Command::PatchState(mutation) => self.handle_external_state_mutation(mutation).await,
             Command::AnnounceLeader(_) => {
@@ -3774,7 +3778,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             journal_table_v2::JournalTable::delete_journal(
                 self.storage,
                 invocation_id,
-                journal_length,
+                Some(journal_length),
             )
             .await
             .map_err(Error::Storage)?
