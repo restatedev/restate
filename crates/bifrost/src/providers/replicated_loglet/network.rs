@@ -10,20 +10,19 @@
 
 use std::sync::Arc;
 
-use futures::StreamExt;
-use tracing::{instrument, trace};
+use tracing::instrument;
 
 use restate_core::network::{
-    Incoming, MessageRouterBuilder, MessageStream, PeerMetadataVersion, Reciprocal,
-    TransportConnect,
+    Handler, Incoming, Oneshot, RawSvcRpc, Reciprocal, Rpc, TransportConnect,
 };
-use restate_core::{Metadata, MetadataKind, TaskCenter, TaskKind, cancellation_watcher};
-use restate_types::config::ReplicatedLogletOptions;
+use restate_core::{Metadata, MetadataKind, TaskCenter, TaskKind};
+use restate_types::Version;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::logs::{LogletOffset, SequenceNumber};
+use restate_types::net::RpcRequest;
 use restate_types::net::replicated_loglet::{
-    Append, Appended, CommonRequestHeader, CommonResponseHeader, GetSequencerState, SequencerState,
-    SequencerStatus,
+    Append, Appended, CommonRequestHeader, CommonResponseHeader, GetSequencerState,
+    SequencerDataService, SequencerInfoService, SequencerState, SequencerStatus,
 };
 
 use super::error::ReplicatedLogletError;
@@ -43,11 +42,7 @@ macro_rules! return_error_status {
             },
         };
 
-        let _ =
-            TaskCenter::spawn_unmanaged(TaskKind::Disposable, "append-return-error", async move {
-                let _ = $reciprocal.prepare(msg).send().await;
-            });
-
+        $reciprocal.send(msg);
         return;
     }};
     ($reciprocal:expr, $status:expr) => {{
@@ -60,140 +55,33 @@ macro_rules! return_error_status {
             },
         };
 
-        let _ =
-            TaskCenter::spawn_unmanaged(TaskKind::Disposable, "append-return-error", async move {
-                let _ = $reciprocal.prepare(msg).send().await;
-            });
-
+        $reciprocal.send(msg);
         return;
     }};
 }
 
-pub struct RequestPump {
-    append_stream: MessageStream<Append>,
-    get_sequencer_state_stream: MessageStream<GetSequencerState>,
+pub struct SequencerDataRpcHandler<T> {
+    provider: Arc<ReplicatedLogletProvider<T>>,
 }
 
-impl RequestPump {
-    pub fn new(_opts: &ReplicatedLogletOptions, router_builder: &mut MessageRouterBuilder) -> Self {
-        // todo(asoli) read from opts
-        let queue_length = 128;
-        let append_stream = router_builder.subscribe_to_stream(queue_length);
-        let get_sequencer_state_stream = router_builder.subscribe_to_stream(queue_length);
-        Self {
-            append_stream,
-            get_sequencer_state_stream,
+impl<T> SequencerDataRpcHandler<T> {
+    pub fn new(provider: Arc<ReplicatedLogletProvider<T>>) -> Self {
+        Self { provider }
+    }
+}
+
+impl<T: TransportConnect> Handler for SequencerDataRpcHandler<T> {
+    type Service = SequencerDataService;
+    /// handle rpc request
+    async fn on_rpc(&mut self, message: Incoming<RawSvcRpc<Self::Service>>) {
+        if message.msg_type() == Append::TYPE {
+            let request = message.into_typed::<Append>();
+            self.handle_append(request).await;
         }
     }
+}
 
-    /// Must run in task-center context
-    pub async fn run<T: TransportConnect>(
-        mut self,
-        provider: Arc<ReplicatedLogletProvider<T>>,
-    ) -> anyhow::Result<()> {
-        trace!("Starting replicated loglet request pump");
-        let mut cancel = std::pin::pin!(cancellation_watcher());
-        loop {
-            tokio::select! {
-                biased;
-                _ = &mut cancel => {
-                    break;
-                }
-                Some(get_sequencer_state) = self.get_sequencer_state_stream.next() => {
-                    self.handle_get_sequencer_state(&provider, get_sequencer_state).await;
-                }
-                Some(append) = self.append_stream.next() => {
-                    self.handle_append(&provider, append).await;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    #[instrument(level = "debug", skip_all)]
-    async fn handle_get_sequencer_state<T: TransportConnect>(
-        &mut self,
-        provider: &ReplicatedLogletProvider<T>,
-        incoming: Incoming<GetSequencerState>,
-    ) {
-        let req_metadata_version = *incoming.metadata_version();
-        let (reciprocal, msg) = incoming.split();
-
-        let loglet = match self
-            .get_loglet(provider, &req_metadata_version, &msg.header)
-            .await
-        {
-            Ok(loglet) => loglet,
-            Err(err) => {
-                let response = SequencerState {
-                    header: CommonResponseHeader {
-                        known_global_tail: None,
-                        sealed: None,
-                        status: err,
-                    },
-                };
-                let _ = reciprocal.prepare(response).try_send();
-                return;
-            }
-        };
-
-        if !loglet.is_sequencer_local() {
-            let response = SequencerState {
-                header: CommonResponseHeader {
-                    known_global_tail: None,
-                    sealed: None,
-                    status: SequencerStatus::NotSequencer,
-                },
-            };
-            let _ = reciprocal.prepare(response).try_send();
-            return;
-        }
-
-        if msg.force_seal_check {
-            let _ = TaskCenter::spawn(TaskKind::Disposable, "remote-check-seal", async move {
-                match loglet.find_tail_inner(FindTailFlags::ForceSealCheck).await {
-                    Ok(tail) => {
-                        let sequencer_state = SequencerState {
-                            header: CommonResponseHeader {
-                                known_global_tail: Some(tail.offset()),
-                                sealed: Some(tail.is_sealed()),
-                                status: SequencerStatus::Ok,
-                            },
-                        };
-                        let _ = reciprocal.prepare(sequencer_state).try_send();
-                    }
-                    Err(err) => {
-                        let failure = SequencerState {
-                            header: CommonResponseHeader {
-                                known_global_tail: None,
-                                sealed: None,
-                                status: SequencerStatus::Error {
-                                    retryable: true,
-                                    message: err.to_string(),
-                                },
-                            },
-                        };
-                        let _ = reciprocal.prepare(failure).try_send();
-                    }
-                }
-                Ok(())
-            });
-        } else {
-            // if we are not forced to check the seal, we can just return the last known tail from the
-            // sequencer's view
-            let tail = loglet.last_known_global_tail();
-            let sequencer_state = SequencerState {
-                header: CommonResponseHeader {
-                    known_global_tail: Some(tail.offset()),
-                    sealed: Some(tail.is_sealed()),
-                    status: SequencerStatus::Ok,
-                },
-            };
-            let _ = reciprocal.prepare(sequencer_state).try_send();
-        }
-    }
-
+impl<T: TransportConnect> SequencerDataRpcHandler<T> {
     /// Infallible handle_append method
     #[instrument(
         level="trace",
@@ -202,28 +90,17 @@ impl RequestPump {
             otel.name = "replicatged_loglet::network: handle_append",
         )
     )]
-    async fn handle_append<T: TransportConnect>(
-        &mut self,
-        provider: &ReplicatedLogletProvider<T>,
-        mut incoming: Incoming<Append>,
-    ) {
-        incoming.follow_from_sender();
+    async fn handle_append(&mut self, incoming: Incoming<Rpc<Append>>) {
+        let peer_logs_version = incoming.metadata_version().logs;
+        let (reciprocal, append) = incoming.split();
 
-        let loglet = match self
-            .get_loglet(
-                provider,
-                incoming.metadata_version(),
-                &incoming.body().header,
-            )
-            .await
-        {
+        let loglet = match get_loglet(&self.provider, peer_logs_version, &append.header).await {
             Ok(loglet) => loglet,
             Err(err) => {
-                return_error_status!(incoming.create_reciprocal(), err);
+                return_error_status!(reciprocal, err);
             }
         };
 
-        let (reciprocal, append) = incoming.split();
         if !loglet.is_sequencer_local() {
             return_error_status!(reciprocal, SequencerStatus::NotSequencer);
         }
@@ -243,73 +120,170 @@ impl RequestPump {
             global_tail: global_tail.clone(),
         };
 
-        let _ = TaskCenter::spawn_unmanaged(TaskKind::Disposable, "wait-appended", task.run());
+        tokio::spawn(task.run());
     }
+}
 
-    async fn get_loglet<T: TransportConnect>(
-        &self,
-        provider: &ReplicatedLogletProvider<T>,
-        peer_version: &PeerMetadataVersion,
-        header: &CommonRequestHeader,
-    ) -> Result<Arc<ReplicatedLoglet<T>>, SequencerStatus> {
-        let metadata = Metadata::current();
-        let mut current_logs_version = metadata.logs_version();
-        let request_logs_version = peer_version.logs.unwrap_or(current_logs_version);
+pub struct SequencerInfoRpcHandler<T> {
+    provider: Arc<ReplicatedLogletProvider<T>>,
+}
 
-        loop {
-            if let Some(loglet) = provider.get_active_loglet(header.log_id, header.segment_index) {
-                if loglet.params().loglet_id == header.loglet_id {
-                    return Ok(loglet);
-                }
+impl<T> SequencerInfoRpcHandler<T> {
+    pub fn new(provider: Arc<ReplicatedLogletProvider<T>>) -> Self {
+        Self { provider }
+    }
+}
 
-                return Err(SequencerStatus::LogletIdMismatch);
-            }
-
-            match self.create_loglet(provider, header) {
-                Ok(loglet) => return Ok(loglet),
-                Err(SequencerStatus::UnknownLogId | SequencerStatus::UnknownSegmentIndex) => {
-                    // possible outdated metadata
-                }
-                Err(status) => return Err(status),
-            }
-
-            if request_logs_version > current_logs_version {
-                tracing::trace!(%current_logs_version, target_version=%request_logs_version, "We don't have the required logs metadata version, waiting");
-                match metadata
-                    .wait_for_version(MetadataKind::Logs, request_logs_version)
-                    .await
-                {
-                    Err(_) => return Err(SequencerStatus::Shutdown),
-                    Ok(version) => {
-                        current_logs_version = version;
-                    }
-                }
-            } else {
-                return Err(SequencerStatus::UnknownLogId);
-            }
+impl<T: TransportConnect> Handler for SequencerInfoRpcHandler<T> {
+    type Service = SequencerInfoService;
+    /// handle rpc request
+    async fn on_rpc(&mut self, message: Incoming<RawSvcRpc<Self::Service>>) {
+        if message.msg_type() == GetSequencerState::TYPE {
+            let request = message.into_typed::<GetSequencerState>();
+            self.handle_get_sequencer_state(request).await;
         }
     }
+}
 
-    fn create_loglet<T: TransportConnect>(
-        &self,
-        provider: &ReplicatedLogletProvider<T>,
-        header: &CommonRequestHeader,
-    ) -> Result<Arc<ReplicatedLoglet<T>>, SequencerStatus> {
-        // search the chain
-        let logs = Metadata::with_current(|m| m.logs_ref());
-        let chain = logs
-            .chain(&header.log_id)
-            .ok_or(SequencerStatus::UnknownLogId)?;
+impl<T: TransportConnect> SequencerInfoRpcHandler<T> {
+    #[instrument(level = "debug", skip_all)]
+    async fn handle_get_sequencer_state(&mut self, incoming: Incoming<Rpc<GetSequencerState>>) {
+        let peer_logs_version = incoming.metadata_version().logs;
+        let (reciprocal, msg) = incoming.split();
 
-        let segment = chain
-            .iter()
-            .rev()
-            .find(|segment| segment.index() == header.segment_index)
-            .ok_or(SequencerStatus::UnknownSegmentIndex)?;
+        let loglet = match get_loglet(&self.provider, peer_logs_version, &msg.header).await {
+            Ok(loglet) => loglet,
+            Err(err) => {
+                let response = SequencerState {
+                    header: CommonResponseHeader {
+                        known_global_tail: None,
+                        sealed: None,
+                        status: err,
+                    },
+                };
+                reciprocal.send(response);
+                return;
+            }
+        };
 
-        provider
-            .get_or_create_loglet(header.log_id, header.segment_index, &segment.config.params)
-            .map_err(SequencerStatus::from)
+        if !loglet.is_sequencer_local() {
+            let response = SequencerState {
+                header: CommonResponseHeader {
+                    known_global_tail: None,
+                    sealed: None,
+                    status: SequencerStatus::NotSequencer,
+                },
+            };
+            reciprocal.send(response);
+            return;
+        }
+
+        if msg.force_seal_check {
+            let _ = TaskCenter::spawn(TaskKind::Disposable, "remote-check-seal", async move {
+                match loglet.find_tail_inner(FindTailFlags::ForceSealCheck).await {
+                    Ok(tail) => {
+                        let sequencer_state = SequencerState {
+                            header: CommonResponseHeader {
+                                known_global_tail: Some(tail.offset()),
+                                sealed: Some(tail.is_sealed()),
+                                status: SequencerStatus::Ok,
+                            },
+                        };
+                        reciprocal.send(sequencer_state);
+                    }
+                    Err(err) => {
+                        let failure = SequencerState {
+                            header: CommonResponseHeader {
+                                known_global_tail: None,
+                                sealed: None,
+                                status: SequencerStatus::Error {
+                                    retryable: true,
+                                    message: err.to_string(),
+                                },
+                            },
+                        };
+                        reciprocal.send(failure);
+                    }
+                }
+                Ok(())
+            });
+        } else {
+            // if we are not forced to check the seal, we can just return the last known tail from the
+            // sequencer's view
+            let tail = loglet.last_known_global_tail();
+            let sequencer_state = SequencerState {
+                header: CommonResponseHeader {
+                    known_global_tail: Some(tail.offset()),
+                    sealed: Some(tail.is_sealed()),
+                    status: SequencerStatus::Ok,
+                },
+            };
+            reciprocal.send(sequencer_state);
+        }
+    }
+}
+
+fn create_loglet<T: TransportConnect>(
+    provider: &ReplicatedLogletProvider<T>,
+    header: &CommonRequestHeader,
+) -> Result<Arc<ReplicatedLoglet<T>>, SequencerStatus> {
+    // search the chain
+    let logs = Metadata::with_current(|m| m.logs_ref());
+    let chain = logs
+        .chain(&header.log_id)
+        .ok_or(SequencerStatus::UnknownLogId)?;
+
+    let segment = chain
+        .iter()
+        .rev()
+        .find(|segment| segment.index() == header.segment_index)
+        .ok_or(SequencerStatus::UnknownSegmentIndex)?;
+
+    provider
+        .get_or_create_loglet(header.log_id, header.segment_index, &segment.config.params)
+        .map_err(SequencerStatus::from)
+}
+
+async fn get_loglet<T: TransportConnect>(
+    provider: &ReplicatedLogletProvider<T>,
+    peer_logs_version: Option<Version>,
+    header: &CommonRequestHeader,
+) -> Result<Arc<ReplicatedLoglet<T>>, SequencerStatus> {
+    let metadata = Metadata::current();
+    let mut current_logs_version = metadata.logs_version();
+    let request_logs_version = peer_logs_version.unwrap_or(current_logs_version);
+
+    loop {
+        if let Some(loglet) = provider.get_active_loglet(header.log_id, header.segment_index) {
+            if loglet.params().loglet_id == header.loglet_id {
+                return Ok(loglet);
+            }
+
+            return Err(SequencerStatus::LogletIdMismatch);
+        }
+
+        match create_loglet(provider, header) {
+            Ok(loglet) => return Ok(loglet),
+            Err(SequencerStatus::UnknownLogId | SequencerStatus::UnknownSegmentIndex) => {
+                // possible outdated metadata
+            }
+            Err(status) => return Err(status),
+        }
+
+        if request_logs_version > current_logs_version {
+            tracing::trace!(%current_logs_version, target_version=%request_logs_version, "We don't have the required logs metadata version, waiting");
+            match metadata
+                .wait_for_version(MetadataKind::Logs, request_logs_version)
+                .await
+            {
+                Err(_) => return Err(SequencerStatus::Shutdown),
+                Ok(version) => {
+                    current_logs_version = version;
+                }
+            }
+        } else {
+            return Err(SequencerStatus::UnknownLogId);
+        }
     }
 }
 
@@ -336,7 +310,7 @@ impl From<ReplicatedLogletError> for SequencerStatus {
 
 struct WaitForCommitTask {
     loglet_commit: LogletCommit,
-    reciprocal: Reciprocal<Appended>,
+    reciprocal: Reciprocal<Oneshot<Appended>>,
     global_tail: TailOffsetWatch,
 }
 
@@ -388,7 +362,6 @@ impl WaitForCommitTask {
             },
         };
 
-        // ignore connection drop errors, no point of logging an error here.
-        let _ = self.reciprocal.prepare(appended).send().await;
+        self.reciprocal.send(appended);
     }
 }
