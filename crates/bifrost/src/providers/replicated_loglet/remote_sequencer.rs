@@ -21,13 +21,11 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
 use restate_core::{
     ShutdownError, TaskCenter, TaskKind,
     network::{
-        ConnectError, Connection, ConnectionClosed, DiscoveryError, NetworkError, NetworkSendError,
-        Networking, Outgoing, TransportConnect,
-        rpc_router::{RpcRouter, RpcToken},
+        ConnectError, Connection, ConnectionClosed, DiscoveryError, NetworkError,
+        NetworkSender as _, Networking, ReplyRx, Swimlane, TransportConnect,
     },
 };
 use restate_types::{
-    GenerationalNodeId,
     config::Configuration,
     errors::MaybeRetryableError,
     logs::{LogId, Record, metadata::SegmentIndex},
@@ -36,7 +34,6 @@ use restate_types::{
 };
 use tracing::instrument;
 
-use super::rpc_routers::SequencersRpc;
 use crate::loglet::{
     AppendError, LogletCommit, LogletCommitResolver, OperationError, util::TailOffsetWatch,
 };
@@ -48,7 +45,6 @@ pub struct RemoteSequencer<T> {
     networking: Networking<T>,
     max_inflight_records_in_config: AtomicUsize,
     record_permits: Arc<Semaphore>,
-    sequencers_rpc: SequencersRpc,
     known_global_tail: TailOffsetWatch,
     connection: Arc<Mutex<Option<RemoteSequencerConnection>>>,
     maybe_sealed: AtomicBool,
@@ -74,7 +70,6 @@ where
         params: ReplicatedLogletParams,
         networking: Networking<T>,
         known_global_tail: TailOffsetWatch,
-        sequencers_rpc: SequencersRpc,
     ) -> Self {
         let max_inflight_records_in_config: usize = Configuration::pinned()
             .bifrost
@@ -91,7 +86,6 @@ where
             networking,
             max_inflight_records_in_config: AtomicUsize::new(max_inflight_records_in_config),
             record_permits,
-            sequencers_rpc,
             known_global_tail,
             connection: Arc::default(),
             maybe_sealed: AtomicBool::new(false),
@@ -146,35 +140,37 @@ where
             Err(err) => return self.on_handle_network_error(err),
         };
 
-        let mut msg = Append {
-            header: CommonRequestHeader {
-                log_id: self.log_id,
-                loglet_id: self.params.loglet_id,
-                segment_index: self.segment_index,
-            },
-            payloads,
-        };
+        let loglet_id = self.params.loglet_id;
 
-        let rpc_token = loop {
-            match connection
-                .send(&self.sequencers_rpc.append, self.params.sequencer, msg)
-                .await
-            {
-                Ok(token) => break token,
-                Err(err) => {
+        let permit = loop {
+            match connection.inner.reserve_owned().await {
+                Some(permit) => {
+                    break permit;
+                }
+                None => {
                     // re-connect
                     connection = match self.renew_connection(connection).await {
                         Ok(connection) => connection,
                         Err(err) => return self.on_handle_network_error(err),
                     };
-                    msg = err.original;
                     continue;
                 }
             };
         };
+
+        let msg = Append {
+            header: CommonRequestHeader {
+                log_id: self.log_id,
+                loglet_id,
+                segment_index: self.segment_index,
+            },
+            payloads,
+        };
+
+        let reply_rx = permit.send_rpc(msg, Some(loglet_id.into()));
         let (commit_token, commit_resolver) = LogletCommit::deferred();
 
-        connection.resolve_on_appended(permits, rpc_token, commit_resolver);
+        connection.resolve_on_appended(permits, reply_rx, commit_resolver);
 
         Ok(commit_token)
     }
@@ -201,7 +197,7 @@ where
 
         let connection = self
             .networking
-            .node_connection(self.params.sequencer)
+            .get_connection(self.params.sequencer, Swimlane::BifrostData)
             .await?;
         let connection =
             RemoteSequencerConnection::start(self.known_global_tail.clone(), connection)?;
@@ -227,7 +223,7 @@ where
 
         let connection = self
             .networking
-            .node_connection(self.params.sequencer)
+            .get_connection(self.params.sequencer, Swimlane::BifrostData)
             .await?;
 
         let connection =
@@ -273,31 +269,14 @@ impl RemoteSequencerConnection {
         })
     }
 
-    /// Send append message to remote sequencer.
-    ///
-    /// It's up to the caller to retry on [`NetworkError`]
-    pub async fn send(
-        &self,
-        rpc_router: &RpcRouter<Append>,
-        sequencer: GenerationalNodeId,
-        msg: Append,
-    ) -> Result<RpcToken<Appended>, NetworkSendError<Append>> {
-        let outgoing = Outgoing::new(sequencer, msg).assign_connection(self.inner.clone());
-
-        rpc_router
-            .send_on_connection(outgoing)
-            .await
-            .map_err(|err| NetworkSendError::new(err.original.into_body(), err.source))
-    }
-
     pub fn resolve_on_appended(
         &self,
         permit: OwnedSemaphorePermit,
-        rpc_token: RpcToken<Appended>,
+        reply_rx: ReplyRx<Appended>,
         commit_resolver: LogletCommitResolver,
     ) {
         let inflight_append = RemoteInflightAppend {
-            rpc_token,
+            reply_rx,
             commit_resolver,
             permit,
         };
@@ -323,8 +302,6 @@ impl RemoteSequencerConnection {
         connection: Connection,
         mut rx: mpsc::UnboundedReceiver<RemoteInflightAppend>,
     ) -> anyhow::Result<()> {
-        let mut closed = std::pin::pin!(connection.closed());
-
         // handle all rpc tokens in an infinite loop
         // this loop only breaks when it encounters a terminal
         // AppendError.
@@ -332,37 +309,26 @@ impl RemoteSequencerConnection {
         // and drained. The same error is then used to resolve
         // all pending tokens
         let err = loop {
-            let inflight = tokio::select! {
-                inflight = rx.recv() => {
-                    inflight
-                }
-                _ = &mut closed => {
-                    break AppendError::retryable(NetworkError::ConnectionClosed(ConnectionClosed));
-                }
-            };
-
-            let Some(inflight) = inflight else {
+            let Some(inflight) = rx.recv().await else {
                 // connection was dropped.
                 break AppendError::retryable(NetworkError::ConnectionClosed(ConnectionClosed));
             };
 
             let RemoteInflightAppend {
-                rpc_token,
+                reply_rx,
                 commit_resolver,
                 permit: _permit,
             } = inflight;
 
-            let appended = tokio::select! {
-                incoming = rpc_token.recv() => {
-                    incoming.map_err(AppendError::Shutdown)
-                },
-                _ = &mut closed => {
-                    Err(AppendError::retryable(NetworkError::ConnectionClosed(ConnectionClosed)))
-                }
-            };
+            // A failure in one of the appends should result in rewinding the retry
+            // stream back. Therefore, we mark this as a bad connection (by closing the channel) to
+            // signal to the writer that all appends from this point onwards should be retried.
+            let appended = reply_rx.await.map_err(|_| {
+                AppendError::retryable(NetworkError::ConnectionClosed(ConnectionClosed))
+            });
 
             let appended = match appended {
-                Ok(appended) => appended.into_body(),
+                Ok(appended) => appended,
                 Err(err) => {
                     // this can only be a terminal error (either shutdown or connection is closing)
                     commit_resolver.error(err.clone());
@@ -430,7 +396,7 @@ impl RemoteSequencerConnection {
 }
 
 pub(crate) struct RemoteInflightAppend {
-    rpc_token: RpcToken<Appended>,
+    reply_rx: ReplyRx<Appended>,
     commit_resolver: LogletCommitResolver,
     permit: OwnedSemaphorePermit,
 }
@@ -487,33 +453,31 @@ impl TryFrom<SequencerStatus> for RemoteSequencerError {
 #[cfg(test)]
 mod test {
     use std::{
-        future::Future,
-        sync::{
-            Arc,
-            atomic::{AtomicU32, Ordering},
-        },
+        sync::atomic::{AtomicU32, Ordering},
         time::Duration,
     };
 
     use rand::Rng;
 
     use restate_core::{
-        TestCoreEnvBuilder,
-        network::{Incoming, MessageHandler, MockConnector},
+        TestCoreEnv, TestCoreEnvBuilder,
+        network::{FailingConnector, Handler, Incoming, RawSvcRpc, Verdict},
     };
     use restate_types::{
         GenerationalNodeId,
         logs::{LogId, LogletOffset, Record, SequenceNumber, TailState},
-        net::replicated_loglet::{Append, Appended, CommonResponseHeader, SequencerStatus},
+        net::{
+            RpcRequest,
+            replicated_loglet::{
+                Append, Appended, CommonResponseHeader, SequencerDataService, SequencerStatus,
+            },
+        },
         replicated_loglet::ReplicatedLogletParams,
         replication::{NodeSet, ReplicationProperty},
     };
 
     use super::RemoteSequencer;
-    use crate::{
-        loglet::{AppendError, util::TailOffsetWatch},
-        providers::replicated_loglet::rpc_routers::SequencersRpc,
-    };
+    use crate::loglet::{AppendError, util::TailOffsetWatch};
 
     struct SequencerMockHandler {
         offset: AtomicU32,
@@ -538,40 +502,51 @@ mod test {
         }
     }
 
-    impl MessageHandler for SequencerMockHandler {
-        type MessageType = Append;
-        async fn on_message(&self, msg: Incoming<Self::MessageType>) {
-            let last_offset = self
-                .offset
-                .fetch_add(msg.body().payloads.len() as u32, Ordering::Relaxed);
+    impl Handler for SequencerMockHandler {
+        type Service = SequencerDataService;
 
-            let outgoing = msg.into_outgoing(Appended {
-                last_offset: LogletOffset::from(last_offset),
-                header: CommonResponseHeader {
-                    known_global_tail: None,
-                    sealed: Some(false),
-                    status: self.reply_status.clone(),
-                },
-            });
-            let delay = rand::rng().random_range(50..350);
-            tokio::time::sleep(Duration::from_millis(delay)).await;
-            outgoing.send().await.unwrap();
+        async fn on_rpc(&mut self, message: Incoming<RawSvcRpc<Self::Service>>) {
+            if message.msg_type() == Append::TYPE {
+                let msg = message.into_typed::<Append>();
+                let (reciprocal, msg) = msg.split();
+                let last_offset = self
+                    .offset
+                    .fetch_add(msg.payloads.len() as u32, Ordering::Relaxed);
+
+                let delay = rand::rng().random_range(50..350);
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                reciprocal.send(Appended {
+                    last_offset: LogletOffset::from(last_offset),
+                    header: CommonResponseHeader {
+                        known_global_tail: None,
+                        sealed: Some(false),
+                        status: self.reply_status.clone(),
+                    },
+                });
+            } else {
+                message.fail(Verdict::MessageUnrecognized);
+            }
         }
     }
 
-    async fn setup<F, O>(sequencer: SequencerMockHandler, test: F)
-    where
-        O: Future<Output = ()>,
-        F: FnOnce(RemoteSequencer<Arc<MockConnector>>) -> O,
-    {
-        let (connector, _receiver) = MockConnector::new(100);
-        let connector = Arc::new(connector);
-
-        let mut builder = TestCoreEnvBuilder::with_transport_connector(Arc::clone(&connector))
+    async fn create_test_env(
+        sequencer_handler: SequencerMockHandler,
+    ) -> TestCoreEnv<FailingConnector> {
+        let builder = TestCoreEnvBuilder::with_incoming_only_connector()
             .add_mock_nodes_config()
-            .add_message_handler(sequencer);
+            .register_buffered_service(
+                10,
+                restate_core::network::BackPressureMode::PushBack,
+                sequencer_handler,
+            );
 
-        let sequencer_rpc = SequencersRpc::new(&mut builder.router_builder);
+        builder.build().await
+    }
+
+    #[restate_core::test]
+    async fn test_remote_stream_ok() {
+        let handler = SequencerMockHandler::default();
+        let test_env = create_test_env(handler).await;
 
         let params = ReplicatedLogletParams {
             loglet_id: 1.into(),
@@ -580,68 +555,69 @@ mod test {
             sequencer: GenerationalNodeId::new(1, 1),
         };
         let known_global_tail = TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST));
+
         let remote_sequencer = RemoteSequencer::new(
             LogId::new(1),
             1.into(),
             params,
-            builder.networking.clone(),
+            test_env.networking.clone(),
             known_global_tail,
-            sequencer_rpc,
         );
 
-        let _env = builder.build().await;
-        test(remote_sequencer).await;
-    }
+        let records: Vec<Record> = vec!["record 1".into(), "record 2".into(), "record 3".into()];
 
-    #[restate_core::test]
-    async fn test_remote_stream_ok() {
-        let handler = SequencerMockHandler::default();
+        let commit_1 = remote_sequencer
+            .append(records.clone().into())
+            .await
+            .unwrap();
 
-        setup(handler, |remote_sequencer| async move {
-            let records: Vec<Record> =
-                vec!["record 1".into(), "record 2".into(), "record 3".into()];
+        let commit_2 = remote_sequencer
+            .append(records.clone().into())
+            .await
+            .unwrap();
 
-            let commit_1 = remote_sequencer
-                .append(records.clone().into())
-                .await
-                .unwrap();
-
-            let commit_2 = remote_sequencer
-                .append(records.clone().into())
-                .await
-                .unwrap();
-
-            let first_offset_1 = commit_1.await.unwrap();
-            assert_eq!(first_offset_1, 1.into());
-            let first_offset_2 = commit_2.await.unwrap();
-            assert_eq!(first_offset_2, 4.into());
-        })
-        .await;
+        let first_offset_1 = commit_1.await.unwrap();
+        assert_eq!(first_offset_1, 1.into());
+        let first_offset_2 = commit_2.await.unwrap();
+        assert_eq!(first_offset_2, 4.into());
     }
 
     #[restate_core::test]
     async fn test_remote_stream_sealed() {
         let handler = SequencerMockHandler::with_reply_status(SequencerStatus::Sealed);
+        let test_env = create_test_env(handler).await;
 
-        setup(handler, |remote_sequencer| async move {
-            let records: Vec<Record> =
-                vec!["record 1".into(), "record 2".into(), "record 3".into()];
+        let params = ReplicatedLogletParams {
+            loglet_id: 1.into(),
+            nodeset: NodeSet::default(),
+            replication: ReplicationProperty::new(1.try_into().unwrap()),
+            sequencer: GenerationalNodeId::new(1, 1),
+        };
+        let known_global_tail = TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST));
 
-            let commit_1 = remote_sequencer
-                .append(records.clone().into())
-                .await
-                .unwrap();
+        let remote_sequencer = RemoteSequencer::new(
+            LogId::new(1),
+            1.into(),
+            params,
+            test_env.networking.clone(),
+            known_global_tail,
+        );
 
-            let commit_2 = remote_sequencer
-                .append(records.clone().into())
-                .await
-                .unwrap();
+        let records: Vec<Record> = vec!["record 1".into(), "record 2".into(), "record 3".into()];
 
-            let first_offset_1 = commit_1.await;
-            assert!(matches!(first_offset_1, Err(AppendError::Sealed)));
-            let first_offset_2 = commit_2.await;
-            assert!(matches!(first_offset_2, Err(AppendError::Sealed)));
-        })
-        .await;
+        let commit_1 = remote_sequencer
+            .append(records.clone().into())
+            .await
+            .unwrap();
+
+        let commit_2 = remote_sequencer
+            .append(records.clone().into())
+            .await
+            .unwrap();
+
+        let first_offset_1 = commit_1.await;
+        assert!(matches!(first_offset_1, Err(AppendError::Sealed)));
+        let first_offset_2 = commit_2.await;
+        assert!(matches!(first_offset_2, Err(AppendError::Sealed)));
     }
 }

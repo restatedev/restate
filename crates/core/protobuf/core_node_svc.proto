@@ -18,4 +18,17 @@ service CoreNodeSvc {
   // Create a bidirectional node-to-node stream
   rpc CreateConnection(stream restate.network.Message)
       returns (stream restate.network.Message);
+
+  // Send one-off rpc without establishing a stream
+  rpc CallRpc(RpcRequest) returns (RpcResponse);
+}
+
+message RpcRequest {
+  restate.network.Header header = 1;
+  restate.network.RpcCall rpc_call = 2;
+}
+
+message RpcResponse {
+  restate.network.Header header = 1;
+  restate.network.RpcReply rpc_reply = 2;
 }

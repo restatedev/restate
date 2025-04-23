@@ -18,29 +18,74 @@ use restate_types::nodes_config::NodesConfigError;
 
 use crate::ShutdownError;
 
+use super::protobuf::network::{rpc_reply, watch_update};
+
 #[derive(Debug, thiserror::Error)]
 #[error("connection closed")]
 pub struct ConnectionClosed;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RouterError {
-    #[error("target not registered: {0}")]
-    NotRegisteredTarget(String),
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
+    #[error("target service has not started serving requests yet")]
+    ServiceNotReady,
+    #[error("target service has stopped serving requests")]
+    ServiceStopped,
+    #[error("target service has no capacity")]
+    CapacityExceeded,
+    #[error("target service was not found")]
+    ServiceNotFound,
+    #[error("message was unrecognized")]
+    MessageUnrecognized,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("send error: {source}")]
-pub struct NetworkSendError<M> {
-    pub original: M,
-    #[source]
-    pub source: NetworkError,
+impl From<RouterError> for rpc_reply::Status {
+    fn from(value: RouterError) -> Self {
+        match value {
+            RouterError::ServiceNotReady => Self::ServiceNotReady,
+            RouterError::ServiceStopped => Self::ServiceStopped,
+            RouterError::CapacityExceeded => Self::LoadShedding,
+            RouterError::ServiceNotFound => Self::ServiceNotFound,
+            RouterError::MessageUnrecognized => Self::MessageUnrecognized,
+        }
+    }
 }
 
-impl<M> NetworkSendError<M> {
-    pub fn new(original: M, source: NetworkError) -> Self {
-        Self { original, source }
+/// A type to communicate rpc processing error to the caller
+///
+/// This is used by service handlers to report back that they are not able to process
+/// the request. Note that this is only a subset of the errors in the network protocol
+/// to ensure that the handler adheres to the contract of the rpc protocol.
+///
+/// The rest of the errors are emitted by the message routing infrastructure.
+pub enum Verdict {
+    /// The target service is known but the message type is not recognized by the handler
+    MessageUnrecognized,
+    /// The sort code does not translate into a valid service target
+    SortCodeNotFound,
+    /// The service decided to drop the request due to load shedding
+    /// Note that the service **must not** process this message. The status
+    /// returns gives the caller the guarantee that it's safe to retry the request
+    /// without causing any duplication.
+    LoadShedding,
+}
+
+impl From<Verdict> for rpc_reply::Status {
+    fn from(value: Verdict) -> Self {
+        match value {
+            Verdict::MessageUnrecognized => Self::MessageUnrecognized,
+            Verdict::SortCodeNotFound => Self::SortCodeNotFound,
+            Verdict::LoadShedding => Self::LoadShedding,
+        }
+    }
+}
+
+impl From<Verdict> for watch_update::Start {
+    fn from(value: Verdict) -> Self {
+        match value {
+            Verdict::MessageUnrecognized => Self::MessageUnrecognized,
+            Verdict::SortCodeNotFound => Self::SortCodeNotFound,
+            Verdict::LoadShedding => Self::LoadShedding,
+        }
     }
 }
 
