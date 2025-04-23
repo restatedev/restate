@@ -128,7 +128,9 @@ pub mod v1 {
         use bytestring::ByteString;
         use opentelemetry::trace::TraceState;
         use prost::Message;
-        use restate_storage_api::invocation_status_table::CompletionRangeEpochMap;
+        use restate_storage_api::invocation_status_table::{
+            CompletionRangeEpochMap, JournalMetadata,
+        };
         use restate_types::deployment::PinnedDeployment;
 
         use crate::protobuf_types::ConversionError;
@@ -580,13 +582,21 @@ pub mod v1 {
                             restate_storage_api::invocation_status_table::CompletedInvocation {
                                 timestamps,
                                 invocation_target,
-                                span_context: expect_or_fail!(span_context)?.try_into()?,
                                 source,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 response_result: expect_or_fail!(result)?.try_into()?,
                                 completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
+                                journal_metadata:  restate_storage_api::invocation_status_table::JournalMetadata {
+                                    length: journal_length,
+                                    commands,
+                                    span_context: expect_or_fail!(span_context)?.try_into()?,
+                                },
+                                pinned_deployment: derive_pinned_deployment(
+                                    deployment_id,
+                                    service_protocol_version,
+                                )?,
                             },
                         ))
                     }
@@ -885,51 +895,62 @@ pub mod v1 {
                     restate_storage_api::invocation_status_table::InvocationStatus::Completed(
                         restate_storage_api::invocation_status_table::CompletedInvocation {
                             invocation_target,
-                            span_context,
                             source,
                             idempotency_key,
                             timestamps,
                             response_result,
                             completion_retention_duration,
+                            journal_metadata,
+                            pinned_deployment
                         },
-                    ) => InvocationStatusV2 {
-                        status: invocation_status_v2::Status::Completed.into(),
-                        invocation_target: Some(invocation_target.into()),
-                        source: Some(source.into()),
-                        span_context: Some(span_context.into()),
-                        // SAFETY: We're only mapping data types here
-                        creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                        modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                        inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
-                            .map(|t| t.as_u64()),
-                        scheduled_transition_time: unsafe {
-                            timestamps.scheduled_transition_time()
+                    ) => {
+                        let (deployment_id, service_protocol_version) = match pinned_deployment {
+                            None => (None, None),
+                            Some(pinned_deployment) => (
+                                Some(pinned_deployment.deployment_id.to_string()),
+                                Some(pinned_deployment.service_protocol_version.as_repr()),
+                            ),
+                        };
+
+                        InvocationStatusV2 {
+                            status: invocation_status_v2::Status::Completed.into(),
+                            invocation_target: Some(invocation_target.into()),
+                            source: Some(source.into()),
+                            span_context: Some(journal_metadata.span_context.into()),
+                            // SAFETY: We're only mapping data types here
+                            creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                            modification_time: unsafe { timestamps.modification_time() }.as_u64(),
+                            inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
+                                .map(|t| t.as_u64()),
+                            scheduled_transition_time: unsafe {
+                                timestamps.scheduled_transition_time()
+                            }
+                                .map(|t| t.as_u64()),
+                            running_transition_time: unsafe { timestamps.running_transition_time() }
+                                .map(|t| t.as_u64()),
+                            completed_transition_time: unsafe {
+                                timestamps.completed_transition_time()
+                            }
+                                .map(|t| t.as_u64()),
+                            response_sinks: vec![],
+                            argument: None,
+                            headers: vec![],
+                            execution_time: None,
+                            completion_retention_duration: Some(completion_retention_duration.into()),
+                            idempotency_key: idempotency_key.map(|key| key.to_string()),
+                            inbox_sequence_number: None,
+                            journal_length: journal_metadata.length,
+                            commands: journal_metadata.commands,
+                            deployment_id,
+                            service_protocol_version,
+                            hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                            current_invocation_epoch: 0,
+                            trim_points: vec![],
+                            waiting_for_completions: vec![],
+                            waiting_for_signal_indexes: vec![],
+                            waiting_for_signal_names: vec![],
+                            result: Some(response_result.into()),
                         }
-                        .map(|t| t.as_u64()),
-                        running_transition_time: unsafe { timestamps.running_transition_time() }
-                            .map(|t| t.as_u64()),
-                        completed_transition_time: unsafe {
-                            timestamps.completed_transition_time()
-                        }
-                        .map(|t| t.as_u64()),
-                        response_sinks: vec![],
-                        argument: None,
-                        headers: vec![],
-                        execution_time: None,
-                        completion_retention_duration: Some(completion_retention_duration.into()),
-                        idempotency_key: idempotency_key.map(|key| key.to_string()),
-                        inbox_sequence_number: None,
-                        journal_length: 0,
-                        commands: 0,
-                        deployment_id: None,
-                        service_protocol_version: None,
-                        hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                        current_invocation_epoch: 0,
-                        trim_points: vec![],
-                        waiting_for_completions: vec![],
-                        waiting_for_signal_indexes: vec![],
-                        waiting_for_signal_names: vec![],
-                        result: Some(response_result.into()),
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Free => {
                         panic!("Unexpected serialization of Free status. This is a bug of the invocation status table")
@@ -1498,7 +1519,6 @@ pub mod v1 {
                 Ok(
                     restate_storage_api::invocation_status_table::CompletedInvocation {
                         invocation_target,
-                        span_context: Default::default(),
                         source,
                         timestamps:
                             restate_storage_api::invocation_status_table::StatusTimestamps::new(
@@ -1517,6 +1537,8 @@ pub mod v1 {
                         // The value Duration::MAX here disables the new cleaner task business logic.
                         // Look at crates/worker/src/partition/cleaner.rs for more details.
                         completion_retention_duration: std::time::Duration::MAX,
+                        journal_metadata: JournalMetadata::empty(),
+                        pinned_deployment: None,
                     },
                 )
             }
@@ -1534,8 +1556,10 @@ pub mod v1 {
                     response_result,
                     // We don't store this in the old invocation status table
                     completion_retention_duration: _,
-                    // The old invocation status table doesn't support span context on Completed
-                    span_context: _,
+                    // The old invocation status table doesn't support journal metadata on Completed
+                    journal_metadata: _,
+                    // The old invocation status table doesn't support PinnedDeployment on Completed
+                    pinned_deployment: _,
                 } = value;
 
                 Completed {

@@ -90,9 +90,6 @@ pub(crate) fn append_invocation_status_row(
             row.status("completed");
             fill_invoked_by(&mut row, output, completed.source);
 
-            // We fill the span context only for the new table, as the old table will contain always the empty value
-            fill_span_context(&mut row, output, &completed.span_context);
-
             match completed.response_result {
                 ResponseResult::Success(_) => {
                     row.completion_result("success");

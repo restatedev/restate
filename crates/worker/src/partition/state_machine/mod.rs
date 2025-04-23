@@ -33,7 +33,7 @@ use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempoten
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatusTable,
-    PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
+    JournalRetentionPolicy, PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_table::ReadOnlyJournalTable;
@@ -1975,6 +1975,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             if !completion_retention_time.is_zero() {
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
+                    JournalRetentionPolicy::Drop,
                     response_result,
                 );
                 self.do_store_completed_invocation(invocation_id, completed_invocation)
