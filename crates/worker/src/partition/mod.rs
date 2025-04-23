@@ -18,14 +18,14 @@ use assert2::let_assert;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
 use metrics::{SharedString, counter, gauge, histogram};
-use restate_bifrost::loglet::FindTailOptions;
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{Span, debug, error, info, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::network::{HasConnection, Incoming, Outgoing};
-use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
+use restate_bifrost::loglet::FindTailOptions;
+use restate_core::network::{Oneshot, Reciprocal, ServiceMessage, Verdict};
+use restate_core::{ShutdownError, cancellation_watcher};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -54,10 +54,11 @@ use restate_types::invocation::{
 };
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
+use restate_types::net::RpcRequest;
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, GetInvocationOutputResponseMode, IngressResponseResult,
-    InvocationOutput, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
+    InvocationOutput, PartitionLeaderService, PartitionProcessorRpcError,
+    PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::MillisSinceEpoch;
@@ -101,7 +102,7 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     status: PartitionProcessorStatus,
     invoker_tx: InvokerInputSender,
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
-    rpc_rx: mpsc::Receiver<Incoming<PartitionProcessorRpcRequest>>,
+    network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
 }
 
@@ -117,7 +118,7 @@ where
         status: PartitionProcessorStatus,
         options: &WorkerOptions,
         control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
-        rpc_rx: mpsc::Receiver<Incoming<PartitionProcessorRpcRequest>>,
+        network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         invoker_tx: InvokerInputSender,
     ) -> Self {
@@ -131,7 +132,7 @@ where
             max_command_batch_size: options.max_command_batch_size(),
             invoker_tx,
             control_rx,
-            rpc_rx,
+            network_svc_rx,
             status_watch_tx,
         }
     }
@@ -150,7 +151,7 @@ where
             max_command_batch_size,
             invoker_tx,
             control_rx,
-            rpc_rx,
+            network_svc_rx: rpc_rx,
             status_watch_tx,
             status,
             ..
@@ -189,7 +190,7 @@ where
             partition_store,
             bifrost,
             control_rx,
-            rpc_rx,
+            network_leader_svc_rx: rpc_rx,
             status_watch_tx,
             status,
         })
@@ -222,7 +223,7 @@ pub struct PartitionProcessor<InvokerSender> {
     state_machine: StateMachine,
     bifrost: Bifrost,
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
-    rpc_rx: mpsc::Receiver<Incoming<PartitionProcessorRpcRequest>>,
+    network_leader_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     status: PartitionProcessorStatus,
 
@@ -293,12 +294,11 @@ where
         self.control_rx.close();
         while self.control_rx.recv().await.is_some() {}
 
-        // Drain rpc_rx
-        self.rpc_rx.close();
-        while let Some(msg) = self.rpc_rx.recv().await {
-            respond_to_rpc(msg.into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
-                self.partition_id,
-            ))));
+        // Drain leader network service
+        self.network_leader_svc_rx.close();
+        while let Some(msg) = self.network_leader_svc_rx.recv().await {
+            // signals that we are not the leader anymore
+            msg.fail(Verdict::SortCodeNotFound);
         }
 
         res
@@ -422,11 +422,12 @@ where
         info!("Partition {} started", self.partition_id);
 
         loop {
+            let rpc_rx_len = self.network_leader_svc_rx.len();
             let utilization =
-                (self.rpc_rx.len() as f64 * 100.0) / self.rpc_rx.max_capacity() as f64;
+                (rpc_rx_len as f64 * 100.0) / self.network_leader_svc_rx.max_capacity() as f64;
 
             rpc_queue_utilization.set(utilization);
-            rpc_queue_len.set(self.rpc_rx.len() as f64);
+            rpc_queue_len.set(rpc_rx_len as f64);
 
             tokio::select! {
                 Some(command) = self.control_rx.recv() => {
@@ -434,8 +435,16 @@ where
                         warn!("Failed executing command: {err}");
                     }
                 }
-                Some(rpc) = self.rpc_rx.recv() => {
-                    self.on_rpc(rpc, &mut partition_store).await;
+                Some(msg) = self.network_leader_svc_rx.recv() => {
+                    match msg {
+                        ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
+                            let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
+                            // note: split() decodes the payload
+                            let (response_tx, body) = msg.split();
+                            self.on_rpc(response_tx, body, &mut partition_store).await;
+                        }
+                        msg => { msg.fail(Verdict::MessageUnrecognized); }
+                    }
                 }
                 _ = status_update_timer.tick() => {
                     self.status_watch_tx.send_modify(|old| {
@@ -551,15 +560,15 @@ where
 
     async fn on_rpc(
         &mut self,
-        rpc: Incoming<PartitionProcessorRpcRequest>,
+        response_tx: Reciprocal<
+            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
+        >,
+        body: PartitionProcessorRpcRequest,
         partition_store: &mut PartitionStore,
     ) {
-        let (
-            response_tx,
-            PartitionProcessorRpcRequest {
-                request_id, inner, ..
-            },
-        ) = rpc.split();
+        let PartitionProcessorRpcRequest {
+            request_id, inner, ..
+        } = body;
         match inner {
             PartitionProcessorRpcRequestInner::AppendInvocation(
                 invocation_request,
@@ -631,7 +640,7 @@ where
                     )
                     .await
                 {
-                    respond_to_rpc(response_tx.prepare(Ok(ready_result)));
+                    response_tx.send(Ok(ready_result));
                     return;
                 }
 
@@ -652,16 +661,14 @@ where
                 invocation_query,
                 GetInvocationOutputResponseMode::ReplyIfNotReady,
             ) => {
-                respond_to_rpc(
-                    response_tx.prepare(
-                        self.handle_rpc_get_invocation_output(
-                            request_id,
-                            invocation_query,
-                            partition_store,
-                        )
-                        .await
-                        .map_err(|err| PartitionProcessorRpcError::Internal(err.to_string())),
-                    ),
+                response_tx.send(
+                    self.handle_rpc_get_invocation_output(
+                        request_id,
+                        invocation_query,
+                        partition_store,
+                    )
+                    .await
+                    .map_err(|err| PartitionProcessorRpcError::Internal(err.to_string())),
                 );
             }
             PartitionProcessorRpcRequestInner::AppendInvocationResponse(invocation_response) => {
@@ -899,22 +906,4 @@ where
 
         Ok(())
     }
-}
-
-fn respond_to_rpc(
-    outgoing: Outgoing<
-        Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
-        HasConnection,
-    >,
-) {
-    // ignore shutdown errors
-    let _ = TaskCenter::spawn_child(
-        // Use RpcResponse kind to make sure that the response is sent on the default runtime and
-        // not the partition processor runtime which might be dropped. Otherwise, we risk that the
-        // response is never sent even though the connection is still open. If the default runtime is
-        // dropped, then the process is shutting down which would also close all open connections.
-        TaskKind::RpcResponse,
-        "partition-processor-rpc-response",
-        async { outgoing.send().await.map_err(Into::into) },
-    );
 }

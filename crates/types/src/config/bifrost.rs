@@ -107,7 +107,7 @@ impl BifrostOptions {
 impl Default for BifrostOptions {
     fn default() -> Self {
         Self {
-            default_provider: ProviderKind::Local,
+            default_provider: ProviderKind::Replicated,
             replicated_loglet: ReplicatedLogletOptions::default(),
             local: LocalLogletOptions::default(),
             read_retry_policy: RetryPolicy::exponential(

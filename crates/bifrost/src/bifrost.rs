@@ -16,9 +16,11 @@ use enum_map::EnumMap;
 use tokio::time::Instant;
 use tracing::{info, instrument, warn};
 
+#[cfg(all(any(test, feature = "test-util"), feature = "local-loglet"))]
+use restate_types::live::LiveLoadExt;
+
 use restate_core::{Metadata, MetadataWriter};
 use restate_types::config::Configuration;
-use restate_types::live::LiveLoadExt;
 use restate_types::logs::metadata::Logs;
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};

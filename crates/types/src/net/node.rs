@@ -13,15 +13,25 @@ use std::{collections::BTreeMap, time::Duration};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use super::TargetName;
+use super::ServiceTag;
+use crate::net::{default_wire_codec, define_rpc, define_service};
 use crate::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
 
-super::define_rpc! {
-    @request=GetNodeState,
-    @response=NodeStateResponse,
-    @request_target=TargetName::NodeGetNodeStateRequest,
-    @response_target=TargetName::NodeGetNodeStateResponse,
+pub struct GossipService;
+
+define_service! {
+    @service = GossipService,
+    @tag = ServiceTag::GossipService,
 }
+
+define_rpc! {
+    @request = GetNodeState,
+    @response = NodeStateResponse,
+    @service = GossipService,
+}
+
+default_wire_codec!(GetNodeState);
+default_wire_codec!(NodeStateResponse);
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct GetNodeState {}
