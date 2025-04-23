@@ -16,14 +16,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use ulid::Ulid;
 
-use restate_core::network::Incoming;
-use restate_core::{TaskCenter, TaskKind};
+use restate_core::network::{ServiceMessage, Verdict};
 use restate_invoker_impl::ChannelStatusReader;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
-use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-};
+use restate_types::identifiers::{LeaderEpoch, PartitionKey};
+use restate_types::net::partition_processor::PartitionLeaderService;
 use restate_types::time::MillisSinceEpoch;
 
 use crate::partition::PartitionProcessorControlCommand;
@@ -280,74 +277,18 @@ impl ProcessorState {
         }
     }
 
-    pub fn try_send_rpc(
-        &self,
-        partition_id: PartitionId,
-        partition_processor_rpc: Incoming<PartitionProcessorRpcRequest>,
-    ) {
+    pub fn try_send_rpc(&self, msg: ServiceMessage<PartitionLeaderService>) {
         match self {
-            ProcessorState::Starting { .. } => {
-                let _ = TaskCenter::spawn(
-                    TaskKind::Disposable,
-                    "partition-processor-rpc",
-                    async move {
-                        partition_processor_rpc
-                            .into_outgoing(Err(PartitionProcessorRpcError::Starting))
-                            .send()
-                            .await
-                            .map_err(Into::into)
-                    },
-                );
-            }
+            ProcessorState::Starting { .. } => msg.fail(Verdict::LoadShedding),
             ProcessorState::Started { processor, .. } => {
-                if let Err(err) = processor
-                    .as_ref()
-                    .expect("must be some")
-                    .try_send_rpc(partition_processor_rpc)
-                {
+                if let Err(err) = processor.as_ref().expect("must be some").try_send_rpc(msg) {
                     match err {
-                        TrySendError::Full(req) => {
-                            let _ = TaskCenter::spawn(
-                                TaskKind::Disposable,
-                                "partition-processor-rpc",
-                                async move {
-                                    req.into_outgoing(Err(PartitionProcessorRpcError::Busy))
-                                        .send()
-                                        .await
-                                        .map_err(Into::into)
-                                },
-                            );
-                        }
-                        TrySendError::Closed(req) => {
-                            let _ = TaskCenter::spawn(
-                                TaskKind::Disposable,
-                                "partition-processor-rpc",
-                                async move {
-                                    req.into_outgoing(Err(PartitionProcessorRpcError::NotLeader(
-                                        partition_id,
-                                    )))
-                                    .send()
-                                    .await
-                                    .map_err(Into::into)
-                                },
-                            );
-                        }
+                        TrySendError::Full(msg) => msg.fail(Verdict::LoadShedding),
+                        TrySendError::Closed(msg) => msg.fail(Verdict::SortCodeNotFound),
                     }
                 }
             }
-            ProcessorState::Stopping { .. } => {
-                let _ = TaskCenter::spawn(
-                    TaskKind::Disposable,
-                    "partition-processor-rpc",
-                    async move {
-                        partition_processor_rpc
-                            .into_outgoing(Err(PartitionProcessorRpcError::Stopping))
-                            .send()
-                            .await
-                            .map_err(Into::into)
-                    },
-                );
-            }
+            ProcessorState::Stopping { .. } => msg.fail(Verdict::SortCodeNotFound),
         }
     }
 
@@ -375,7 +316,7 @@ pub struct StartedProcessor {
     key_range: RangeInclusive<PartitionKey>,
     control_tx: mpsc::Sender<PartitionProcessorControlCommand>,
     status_reader: ChannelStatusReader,
-    rpc_tx: mpsc::Sender<Incoming<PartitionProcessorRpcRequest>>,
+    network_svc_tx: mpsc::Sender<ServiceMessage<PartitionLeaderService>>,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
 }
 
@@ -385,7 +326,7 @@ impl StartedProcessor {
         key_range: RangeInclusive<PartitionKey>,
         control_tx: mpsc::Sender<PartitionProcessorControlCommand>,
         status_reader: ChannelStatusReader,
-        rpc_tx: mpsc::Sender<Incoming<PartitionProcessorRpcRequest>>,
+        network_svc_tx: mpsc::Sender<ServiceMessage<PartitionLeaderService>>,
         watch_rx: watch::Receiver<PartitionProcessorStatus>,
     ) -> Self {
         Self {
@@ -394,7 +335,7 @@ impl StartedProcessor {
             key_range,
             control_tx,
             status_reader,
-            rpc_tx,
+            network_svc_tx,
             watch_rx,
         }
     }
@@ -432,8 +373,8 @@ impl StartedProcessor {
 
     pub fn try_send_rpc(
         &self,
-        rpc: Incoming<PartitionProcessorRpcRequest>,
-    ) -> Result<(), TrySendError<Incoming<PartitionProcessorRpcRequest>>> {
-        self.rpc_tx.try_send(rpc)
+        msg: ServiceMessage<PartitionLeaderService>,
+    ) -> Result<(), TrySendError<ServiceMessage<PartitionLeaderService>>> {
+        self.network_svc_tx.try_send(msg)
     }
 }
