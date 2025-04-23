@@ -13,9 +13,6 @@ use http::{Method, Request, Response};
 use http_body_util::Full;
 use tracing::{info, warn};
 
-use restate_core::network::partition_processor_rpc_client::{
-    AttachInvocationResponse, GetInvocationOutputResponse,
-};
 use restate_types::identifiers::ServiceId;
 use restate_types::invocation::InvocationQuery;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
@@ -24,6 +21,9 @@ use super::Handler;
 use super::HandlerError;
 use super::path_parsing::WorkflowRequestType;
 use crate::RequestDispatcher;
+use crate::partition_processor_rpc_client::{
+    AttachInvocationResponse, GetInvocationOutputResponse,
+};
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
