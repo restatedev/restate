@@ -11,6 +11,10 @@
 use assert2::let_assert;
 use tracing::trace;
 
+use restate_core::ShutdownError;
+use restate_core::network::{NetworkSender, RpcReplyError, Swimlane};
+use restate_core::network::{Networking, TransportConnect};
+use restate_core::partitions::PartitionRouting;
 use restate_types::identifiers::{
     InvocationId, PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -24,12 +28,6 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
 
-use crate::ShutdownError;
-use crate::network::{Networking, TransportConnect};
-use crate::partitions::PartitionRouting;
-
-use super::{ConnectError, NetworkSender, RpcReplyError, Swimlane};
-
 #[derive(Debug, thiserror::Error)]
 pub enum PartitionProcessorRpcClientError {
     #[error(transparent)]
@@ -37,7 +35,7 @@ pub enum PartitionProcessorRpcClientError {
     #[error("cannot find node for partition {0}")]
     UnknownNode(PartitionId),
     #[error(transparent)]
-    Connect(#[from] ConnectError),
+    Connect(#[from] restate_core::network::ConnectError),
     #[error("failed sending request")]
     SendFailed,
     #[error(transparent)]

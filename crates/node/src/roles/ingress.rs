@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_core::network::partition_processor_rpc_client::PartitionProcessorRpcClient;
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
 use restate_ingress_http::HyperServerIngress;
+use restate_ingress_http::partition_processor_rpc_client::PartitionProcessorRpcClient;
 use restate_ingress_http::rpc_request_dispatcher::RpcRequestDispatcher;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
