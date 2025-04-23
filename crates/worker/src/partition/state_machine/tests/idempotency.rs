@@ -239,6 +239,7 @@ async fn complete_already_completed_invocation() {
             response_result: ResponseResult::Success(response_bytes.clone()),
             completion_retention_duration: Default::default(),
             journal_metadata: JournalMetadata::empty(),
+            pinned_deployment: None,
         }),
     )
     .await
