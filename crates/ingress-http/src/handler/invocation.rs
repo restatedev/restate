@@ -17,7 +17,7 @@ use super::Handler;
 use super::HandlerError;
 use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
 use crate::RequestDispatcher;
-use restate_core::network::partition_processor_rpc_client::{
+use crate::partition_processor_rpc_client::{
     AttachInvocationResponse, GetInvocationOutputResponse,
 };
 use restate_types::identifiers::IdempotencyId;
