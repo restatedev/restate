@@ -97,8 +97,8 @@ impl Default for NetworkingOptions {
                 Some(Duration::from_millis(3000)),
             ),
             handshake_timeout: Duration::from_secs(3).into(),
-            http2_keep_alive_interval: Duration::from_secs(5).into(),
-            http2_keep_alive_timeout: Duration::from_secs(5).into(),
+            http2_keep_alive_interval: Duration::from_secs(1).into(),
+            http2_keep_alive_timeout: Duration::from_secs(3).into(),
             http2_adaptive_window: true,
             // 2MiB
             data_stream_window_size: NonZeroByteCount::new(
