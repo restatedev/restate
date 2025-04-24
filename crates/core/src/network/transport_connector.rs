@@ -16,7 +16,7 @@ use restate_types::NodeId;
 use restate_types::nodes_config::{NodeConfig, NodesConfigError, NodesConfiguration};
 
 use super::protobuf::network::Message;
-use super::{ConnectError, Destination, DiscoveryError};
+use super::{ConnectError, Destination, DiscoveryError, Swimlane};
 
 /// Finds a node in nodes configuration by ID and maps the error to [`DiscoveryError`]
 pub fn find_node(
@@ -41,6 +41,7 @@ pub trait TransportConnect: Clone + Send + Sync + 'static {
     fn connect(
         &self,
         destination: &Destination,
+        swimlane: Swimlane,
         output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
     ) -> impl Future<
         Output = Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError>,
@@ -51,11 +52,12 @@ impl<T: TransportConnect> TransportConnect for std::sync::Arc<T> {
     fn connect(
         &self,
         destination: &Destination,
+        swimlane: Swimlane,
         output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
     ) -> impl Future<
         Output = Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError>,
     > + Send {
-        (**self).connect(destination, output_stream)
+        (**self).connect(destination, swimlane, output_stream)
     }
 }
 
@@ -78,7 +80,7 @@ pub mod test_util {
     use crate::network::handshake::negotiate_protocol_version;
     use crate::network::io::{ConnectionReactor, EgressMessage, EgressStream};
     use crate::network::protobuf::network::{Header, Message, Welcome};
-    use crate::network::tracking::{NoopRouter, NoopTracker};
+    use crate::network::tracking::NoopTracker;
     use crate::network::{
         Connection, ConnectionManager, HandshakeError, MessageRouter, MockPeerConnection,
         PeerMetadataVersion, Swimlane,
@@ -131,6 +133,7 @@ pub mod test_util {
         async fn connect(
             &self,
             destination: &Destination,
+            swimlane: Swimlane,
             mut output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
         ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
             let &Destination::Node(peer_node_id) = destination else {
@@ -157,12 +160,7 @@ pub mod test_util {
                 my_node_id, peer_node_id, current_generation
             );
 
-            let (tx, egress, shared) = EgressStream::create(
-                Configuration::pinned()
-                    .networking
-                    .outbound_queue_length
-                    .get(),
-            );
+            let (tx, egress, shared) = EgressStream::create_loopback();
 
             let (header, hello) = crate::network::handshake::wait_for_hello(
                 &mut output_stream,
@@ -194,24 +192,18 @@ pub mod test_util {
                 ))
                 .unwrap();
 
-            let connection = Connection::new(my_node_id, selected_protocol_version, tx);
+            let connection =
+                Connection::new(my_node_id, selected_protocol_version, hello.swimlane(), tx);
             let reactor =
                 ConnectionReactor::new(connection.clone(), shared, Some(peer_metadata), router)
                     .start(
                         TaskKind::RemoteConnectionReactor,
                         NoopTracker,
-                        NoopRouter,
-                        output_stream,
                         false,
+                        output_stream,
                     )?;
 
-            let connection = MockPeerConnection::new(
-                peer_node_id,
-                // todo: use correct swimlane from TransportConnect,
-                Swimlane::default(),
-                reactor,
-                connection,
-            );
+            let connection = MockPeerConnection::new(peer_node_id, swimlane, reactor, connection);
 
             let _ = self.new_connection_sender.send(connection);
             Ok(egress)
@@ -226,6 +218,7 @@ pub mod test_util {
         async fn connect(
             &self,
             _destination: &Destination,
+            _swimlane: Swimlane,
             _output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
         ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
             Result::<futures::stream::Empty<_>, _>::Err(ConnectError::Transport(
@@ -241,6 +234,7 @@ pub mod test_util {
         async fn connect(
             &self,
             _destination: &Destination,
+            _swimlane: Swimlane,
             output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
         ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
             let output = self

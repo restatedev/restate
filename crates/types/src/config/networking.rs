@@ -11,6 +11,8 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+use restate_serde_util::NonZeroByteCount;
+
 use crate::retries::RetryPolicy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -58,24 +60,32 @@ pub struct NetworkingOptions {
     /// # HTTP/2 Adaptive Window
     pub http2_adaptive_window: bool,
 
-    /// # Connection Send Buffer
+    /// # Data Stream Window Size
     ///
-    /// The number of messages that can be queued on the outbound stream of a single
-    /// connection.
-    pub outbound_queue_length: NonZeroUsize,
-
-    /// # Number of connections to each peer
+    /// Controls the number of bytes the can be sent on every data stream before inducing
+    /// back pressure. Data streams are used for sending messages between nodes.
     ///
-    /// This is used as a guiding value for how many connections every node can
-    /// maintain with each peer. With more connections, concurrency of network message
-    /// processing increases, but it also increases the memory and CPU overhead.
-    pub num_concurrent_connections: NonZeroUsize,
+    /// The value should is often derived from BDP (Bandwidth Delay Product) of the network. For
+    /// instance, if the network has a bandwidth of 10 Gbps with a round-trip time of 5 ms, the BDP
+    /// is 10 Gbps * 0.005 s = 6.25 MB. This means that the window size should be at least 6.25 MB
+    /// to fully utilize the network bandwidth assuming the latency is constant. Our recommendation
+    /// is to set the window size to 2x the BDP to account for any variations in latency.
+    ///
+    /// If network latency is high, it's recommended to set this to a higher value.
+    /// Maximum theoretical value is 2^31-1 (2 GiB - 1), but we will sanitize this value to 500 MiB.
+    data_stream_window_size: NonZeroByteCount,
 }
 
 impl NetworkingOptions {
-    #[inline(always)]
-    pub fn num_concurrent_connections(&self) -> usize {
-        self.num_concurrent_connections.get()
+    pub fn stream_window_size(&self) -> u32 {
+        // santize to 500MiB if set higher
+        let stream_window_size = self.data_stream_window_size.as_u64().min(500 * 1024 * 1024); // Sanitize to 500MiB if set higher.
+
+        u32::try_from(stream_window_size).expect("window size too big")
+    }
+
+    pub fn connection_window_size(&self) -> u32 {
+        self.stream_window_size() * 3
     }
 }
 
@@ -90,11 +100,13 @@ impl Default for NetworkingOptions {
                 Some(Duration::from_millis(3000)),
             ),
             handshake_timeout: Duration::from_secs(3).into(),
-            outbound_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
             http2_keep_alive_interval: Duration::from_secs(5).into(),
             http2_keep_alive_timeout: Duration::from_secs(5).into(),
             http2_adaptive_window: true,
-            num_concurrent_connections: NonZeroUsize::new(3).unwrap(),
+            // 2MiB
+            data_stream_window_size: NonZeroByteCount::new(
+                NonZeroUsize::new(2 * 1024 * 1024 * 1024).expect("Non zero number"),
+            ),
         }
     }
 }
