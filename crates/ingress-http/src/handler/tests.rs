@@ -18,20 +18,17 @@ use futures::FutureExt;
 use http::StatusCode;
 use http::{HeaderValue, Method, Request, Response};
 use http_body_util::{BodyExt, Empty, Full};
-use restate_types::live::Live;
 use tower::ServiceExt;
 use tracing_test::traced_test;
 
 use restate_core::TestCoreEnv;
-use restate_core::network::partition_processor_rpc_client::{
-    AttachInvocationResponse, GetInvocationOutputResponse,
-};
 use restate_test_util::{assert, assert_eq};
 use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId, WithInvocationId};
 use restate_types::invocation::{
     InvocationQuery, InvocationTarget, InvocationTargetType, VirtualObjectHandlerType,
     WorkflowHandlerType,
 };
+use restate_types::live::Live;
 use restate_types::net::partition_processor::{
     IngressResponseResult, InvocationOutput, SubmittedInvocationNotification,
 };
@@ -47,6 +44,9 @@ use super::mocks::*;
 use super::service_handler::*;
 use crate::MockRequestDispatcher;
 use crate::handler::responses::X_RESTATE_ID;
+use crate::partition_processor_rpc_client::{
+    AttachInvocationResponse, GetInvocationOutputResponse,
+};
 
 #[restate_core::test]
 #[traced_test]
