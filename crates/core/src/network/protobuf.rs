@@ -28,12 +28,25 @@ pub mod network {
 
     use self::message::{ConnectionControl, Signal};
 
+    impl std::fmt::Display for ConnectionDirection {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.as_str_name())
+        }
+    }
+
+    impl std::fmt::Display for Swimlane {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.as_str_name())
+        }
+    }
+
     impl Hello {
         #[must_use]
         pub fn new(
             my_node_id: Option<GenerationalNodeId>,
             cluster_name: String,
             direction: ConnectionDirection,
+            swimlane: Swimlane,
         ) -> Self {
             Self {
                 direction: direction.into(),
@@ -41,6 +54,7 @@ pub mod network {
                 max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
                 my_node_id: my_node_id.map(Into::into),
                 cluster_name,
+                swimlane: swimlane.into(),
             }
         }
     }
