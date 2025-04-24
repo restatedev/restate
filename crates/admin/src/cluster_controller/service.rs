@@ -791,7 +791,6 @@ impl SealAndExtendTask {
 mod tests {
     use super::Service;
 
-    use std::num::NonZero;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
@@ -812,9 +811,7 @@ mod tests {
     use restate_core::test_env::NoOpMessageHandler;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{NodeState, PartitionProcessorStatus};
-    use restate_types::config::{
-        AdminOptionsBuilder, BifrostOptions, Configuration, NetworkingOptions,
-    };
+    use restate_types::config::{AdminOptionsBuilder, BifrostOptions, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
@@ -923,13 +920,7 @@ mod tests {
         let admin_options = AdminOptionsBuilder::default()
             .log_trim_check_interval(interval_duration.into())
             .build()?;
-        let networking = NetworkingOptions {
-            // we are using failing transport so we only want to use the mock connection we created.
-            num_concurrent_connections: NonZero::new(1).unwrap(),
-            ..Default::default()
-        };
         let config = Configuration {
-            networking,
             admin: admin_options,
             ..Default::default()
         };
@@ -970,7 +961,7 @@ mod tests {
             .connection_manager()
             .accept_fake_server_connection(
                 GenerationalNodeId::new(2, 2),
-                Swimlane::default(),
+                Swimlane::Gossip,
                 ConnectionDirection::Bidirectional,
                 // let node2 receive messages and use the same message handler as node1
                 Some(router.build().into()),
@@ -1021,18 +1012,11 @@ mod tests {
     async fn single_node_no_snapshots_auto_trim_log_by_persisted_lsn() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let networking = NetworkingOptions {
-            // we are using failing transport so we only want to use the mock connection we created.
-            num_concurrent_connections: NonZero::new(1).unwrap(),
-            ..Default::default()
-        };
-
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
             .log_trim_check_interval(interval_duration.into())
             .build()?;
         let config = Configuration {
-            networking,
             admin: admin_options,
             ..Default::default()
         };
@@ -1089,18 +1073,11 @@ mod tests {
     async fn single_node_with_snapshots_auto_trim_log_by_archived_lsn() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
-        let networking = NetworkingOptions {
-            // we are using failing transport so we only want to use the mock connection we created.
-            num_concurrent_connections: NonZero::new(1).unwrap(),
-            ..Default::default()
-        };
-
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
             .log_trim_check_interval(interval_duration.into())
             .build()?;
         let mut config: Configuration = Configuration {
-            networking,
             admin: admin_options,
             ..Default::default()
         };
@@ -1263,14 +1240,8 @@ mod tests {
 
         let mut bifrost_options = BifrostOptions::default();
         bifrost_options.default_provider = ProviderKind::InMemory;
-        let networking = NetworkingOptions {
-            // we are using failing transport so we only want to use the mock connection we created.
-            num_concurrent_connections: NonZero::new(1).unwrap(),
-            ..Default::default()
-        };
 
         let config = Configuration {
-            networking,
             admin: admin_options,
             bifrost: bifrost_options,
             ..Default::default()
@@ -1314,7 +1285,7 @@ mod tests {
             .connection_manager()
             .accept_fake_server_connection(
                 GenerationalNodeId::new(2, 2),
-                Swimlane::default(),
+                Swimlane::Gossip,
                 ConnectionDirection::Bidirectional,
                 Some(router.build().into()),
             )

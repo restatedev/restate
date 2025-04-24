@@ -63,20 +63,6 @@ pub struct NetworkingOptions {
     /// The number of messages that can be queued on the outbound stream of a single
     /// connection.
     pub outbound_queue_length: NonZeroUsize,
-
-    /// # Number of connections to each peer
-    ///
-    /// This is used as a guiding value for how many connections every node can
-    /// maintain with each peer. With more connections, concurrency of network message
-    /// processing increases, but it also increases the memory and CPU overhead.
-    pub num_concurrent_connections: NonZeroUsize,
-}
-
-impl NetworkingOptions {
-    #[inline(always)]
-    pub fn num_concurrent_connections(&self) -> usize {
-        self.num_concurrent_connections.get()
-    }
 }
 
 impl Default for NetworkingOptions {
@@ -94,7 +80,6 @@ impl Default for NetworkingOptions {
             http2_keep_alive_interval: Duration::from_secs(1).into(),
             http2_keep_alive_timeout: Duration::from_secs(3).into(),
             http2_adaptive_window: true,
-            num_concurrent_connections: NonZeroUsize::new(3).unwrap(),
         }
     }
 }

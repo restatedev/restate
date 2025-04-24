@@ -78,7 +78,7 @@ pub mod test_util {
     use crate::network::handshake::negotiate_protocol_version;
     use crate::network::io::{ConnectionReactor, EgressMessage, EgressStream};
     use crate::network::protobuf::network::{Header, Message, Welcome};
-    use crate::network::tracking::{NoopRouter, NoopTracker};
+    use crate::network::tracking::NoopTracker;
     use crate::network::{
         Connection, ConnectionManager, HandshakeError, MessageRouter, MockPeerConnection,
         PeerMetadataVersion, Swimlane,
@@ -194,15 +194,15 @@ pub mod test_util {
                 ))
                 .unwrap();
 
-            let connection = Connection::new(my_node_id, selected_protocol_version, tx);
+            let connection =
+                Connection::new(my_node_id, selected_protocol_version, hello.swimlane(), tx);
             let reactor =
                 ConnectionReactor::new(connection.clone(), shared, Some(peer_metadata), router)
                     .start(
                         TaskKind::RemoteConnectionReactor,
                         NoopTracker,
-                        NoopRouter,
-                        output_stream,
                         false,
+                        output_stream,
                     )?;
 
             let connection = MockPeerConnection::new(
