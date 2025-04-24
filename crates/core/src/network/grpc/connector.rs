@@ -15,24 +15,23 @@ use tokio::io;
 use tokio::net::UnixStream;
 use tokio_stream::StreamExt;
 use tonic::codec::CompressionEncoding;
+use tonic::transport::Endpoint;
 use tonic::transport::channel::Channel;
+use tracing::debug;
 
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::net::AdvertisedAddress;
-use tonic::transport::Endpoint;
-use tracing::debug;
 
 use super::MAX_MESSAGE_SIZE;
 use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
 use crate::network::transport_connector::find_node;
-use crate::network::{ConnectError, Destination, TransportConnect};
+use crate::network::{ConnectError, Destination, Swimlane, TransportConnect};
 use crate::{Metadata, TaskCenter, TaskKind};
 
 #[derive(Clone, Default)]
 pub struct GrpcConnector {
-    // todo: cache channels for the same address
     _private: (),
 }
 
@@ -40,6 +39,7 @@ impl TransportConnect for GrpcConnector {
     async fn connect(
         &self,
         destination: &Destination,
+        swimlane: Swimlane,
         output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
     ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
         let address = match destination {
@@ -52,7 +52,7 @@ impl TransportConnect for GrpcConnector {
         };
 
         debug!("Connecting to {} at {}", destination, address);
-        let channel = create_channel(address, &Configuration::pinned().networking);
+        let channel = create_channel(address, swimlane, &Configuration::pinned().networking);
 
         // Establish the connection
         let mut client = CoreNodeSvcClient::new(channel)
@@ -67,7 +67,11 @@ impl TransportConnect for GrpcConnector {
     }
 }
 
-fn create_channel(address: AdvertisedAddress, options: &NetworkingOptions) -> Channel {
+fn create_channel(
+    address: AdvertisedAddress,
+    swimlane: Swimlane,
+    options: &NetworkingOptions,
+) -> Channel {
     let endpoint = match &address {
         AdvertisedAddress::Uds(_) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
@@ -75,6 +79,17 @@ fn create_channel(address: AdvertisedAddress, options: &NetworkingOptions) -> Ch
         }
         AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
     };
+
+    // If we started to reuse channels, then we should set the connection window size high enough
+    // to cover the max number of streams (taken into account the global http2 limit)
+    let stream_window_size = match swimlane {
+        Swimlane::BifrostData | Swimlane::IngressData => options.data_stream_window_size.as_u64(),
+        _ => options.control_stream_window_size.as_u64(),
+    }
+    .min(500 * 1024 * 1024); // Sanitize to 500MiB if set higher.
+
+    let stream_window_size = u32::try_from(stream_window_size).expect("window size too big");
+    let connection_window_size = stream_window_size * 3;
 
     let endpoint = endpoint
         .user_agent(format!(
@@ -86,6 +101,8 @@ fn create_channel(address: AdvertisedAddress, options: &NetworkingOptions) -> Ch
         .http2_keep_alive_interval(*options.http2_keep_alive_interval)
         .keep_alive_timeout(*options.http2_keep_alive_timeout)
         .http2_adaptive_window(options.http2_adaptive_window)
+        .initial_stream_window_size(stream_window_size)
+        .initial_connection_window_size(connection_window_size)
         .keep_alive_while_idle(true)
         // this true by default, but this is to guard against any change in defaults
         .tcp_nodelay(true);

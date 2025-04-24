@@ -252,7 +252,18 @@ pub struct EgressStream {
 }
 
 impl EgressStream {
-    pub fn create(capacity: usize) -> (EgressSender, Self, super::Shared) {
+    // for loopback connections, we set the capacity high to avoid CSP-related deadlocks
+    pub fn create_loopback() -> (EgressSender, Self, super::Shared) {
+        Self::new(1024)
+    }
+
+    pub fn create() -> (EgressSender, Self, super::Shared) {
+        // We want the majority of the buffering to happen on the socket so we set the capacity
+        // pretty low.
+        Self::new(10)
+    }
+
+    fn new(capacity: usize) -> (EgressSender, Self, super::Shared) {
         let (unbounded_tx, unbounded) = mpsc::unbounded_channel();
         let (tx, rx) = mpsc::channel(capacity);
         let (drop_tx, drop_rx) = oneshot::channel();
