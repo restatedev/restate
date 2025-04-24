@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::hash_map;
 use std::sync::Arc;
 
 use ahash::HashMap;
@@ -15,17 +16,18 @@ use futures::future::{BoxFuture, Shared};
 use futures::{FutureExt, Stream};
 use metrics::counter;
 use parking_lot::Mutex;
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, info, trace};
 
 use restate_types::config::Configuration;
 use restate_types::nodes_config::{NodesConfigError, NodesConfiguration};
 use restate_types::{GenerationalNodeId, Merge, NodeId, PlainNodeId};
 
+use super::Swimlane;
 use super::connection::Connection;
 use super::io::{ConnectionReactor, EgressMessage, EgressStream};
 use super::protobuf::network::ConnectionDirection;
 use super::protobuf::network::{Header, Message, Welcome};
-use super::tracking::{ConnectionTracking, PeerRouting};
+use super::tracking::ConnectionTracking;
 use super::transport_connector::{TransportConnect, find_node};
 use super::{
     AcceptError, ConnectError, Destination, DiscoveryError, HandshakeError, MessageRouter,
@@ -34,7 +36,7 @@ use crate::network::PeerMetadataVersion;
 use crate::network::connection::ConnectThrottle;
 use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
 use crate::network::metric_definitions::{NETWORK_CONNECTION_CREATED, NETWORK_CONNECTION_DROPPED};
-use crate::{Metadata, ShutdownError, TaskCenter, TaskId, TaskKind, my_node_id};
+use crate::{Metadata, TaskId, TaskKind, my_node_id};
 
 #[derive(Copy, Clone, PartialOrd, PartialEq, Default)]
 struct GenStatus {
@@ -71,7 +73,7 @@ impl Merge for GenStatus {
 
 struct ConnectionManagerInner {
     router: Arc<MessageRouter>,
-    connection_by_gen_id: HashMap<GenerationalNodeId, Vec<Connection>>,
+    connection_by_gen_id: HashMap<(GenerationalNodeId, Swimlane), Connection>,
     /// This tracks the max generation we observed from connection attempts regardless of our nodes
     /// configuration. We cannot accept connections from nodes older than ones we have observed
     /// already.
@@ -79,23 +81,145 @@ struct ConnectionManagerInner {
 }
 
 impl ConnectionManagerInner {
-    fn get_random_connection(
+    fn get_connection(
         &self,
-        peer_node_id: &GenerationalNodeId,
-        target_concurrency: usize,
+        peer_node_id: GenerationalNodeId,
+        swimlane: Swimlane,
     ) -> Option<Connection> {
-        use rand::prelude::IndexedRandom;
         self.connection_by_gen_id
-            .get(peer_node_id)
-            .and_then(|connections| {
-                // Suggest we create new connection if the number
-                // of connections is below the target
-                if connections.len() >= target_concurrency {
-                    connections.choose(&mut rand::rng()).cloned()
-                } else {
-                    None
+            .get(&(peer_node_id, swimlane))
+            .cloned()
+    }
+
+    fn create_loopback_connection(
+        &mut self,
+        swimlane: Swimlane,
+        connection_manager: ConnectionManager,
+    ) -> Result<Connection, ConnectError> {
+        let (tx, egress, shared) = EgressStream::create(
+            Configuration::pinned()
+                .networking
+                .outbound_queue_length
+                .get(),
+        );
+        let connection = Connection::new(
+            my_node_id(),
+            restate_types::net::CURRENT_PROTOCOL_VERSION,
+            swimlane,
+            tx,
+        );
+
+        let reactor = ConnectionReactor::new(connection.clone(), shared, None, self.router.clone());
+
+        let previous = self.register(connection.clone());
+
+        let task_id = match reactor.start(TaskKind::LocalReactor, connection_manager, false, egress)
+        {
+            Ok(task_id) => task_id,
+            Err(e) => {
+                self.deregister(&connection);
+                // put back the previous connection
+                if let Some(existing) = previous {
+                    self.register(existing);
                 }
+                return Err(e.into());
+            }
+        };
+
+        debug!(%swimlane, %task_id, "express path connection reactor started");
+
+        Ok(connection)
+    }
+
+    fn can_discover(&self, node_id: GenerationalNodeId) -> Result<(), DiscoveryError> {
+        if self
+            .observed_generations
+            .get(&node_id.as_plain())
+            .map(|status| {
+                node_id.generation() < status.generation
+                    || (node_id.generation() == status.generation && status.gone)
             })
+            .unwrap_or(false)
+        {
+            return Err(DiscoveryError::NodeIsGone(node_id.into()).into());
+        }
+
+        Ok(())
+    }
+
+    /// returns existing connection if there was any
+    fn register(&mut self, connection: Connection) -> Option<Connection> {
+        self.connection_by_gen_id
+            .insert((connection.peer, connection.swimlane), connection)
+    }
+
+    fn deregister(&mut self, connection: &Connection) {
+        let peer = connection.peer;
+        let swimlane = connection.swimlane;
+        trace!(%swimlane, "connection was unregistered {}", peer);
+        match self.connection_by_gen_id.entry((peer, swimlane)) {
+            hash_map::Entry::Occupied(c) if c.get() == connection => {
+                c.remove();
+            }
+            _ => {}
+        }
+    }
+
+    fn update_generation_or_preempt(
+        &mut self,
+        nodes_config: &NodesConfiguration,
+        peer_node_id: GenerationalNodeId,
+    ) -> Result<(), AcceptError> {
+        let known_status = self
+            .observed_generations
+            .get(&peer_node_id.as_plain())
+            .copied()
+            .unwrap_or(GenStatus::new(peer_node_id.generation()));
+
+        if known_status.generation > peer_node_id.generation() {
+            // This peer is _older_ than the one we have seen in the past, we cannot accept
+            // this connection. We terminate the stream immediately.
+            return Err(AcceptError::OldPeerGeneration(format!(
+                "newer generation '{}' has been observed",
+                NodeId::new_generational(peer_node_id.id(), known_status.generation)
+            )));
+        }
+
+        if known_status.generation == peer_node_id.generation() && known_status.gone {
+            // This peer was observed to have shutdown before. We cannot accept new connections from this peer.
+            return Err(AcceptError::PreviouslyShutdown);
+        }
+
+        if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
+            match e {
+                NodesConfigError::UnknownNodeId(_) => {}
+                NodesConfigError::Deleted(_) => return Err(AcceptError::PreviouslyShutdown),
+                NodesConfigError::GenerationMismatch { expected, found } => {
+                    if found.is_newer_than(expected) {
+                        return Err(AcceptError::OldPeerGeneration(format!(
+                            "newer generation '{}' has been observed",
+                            found
+                        )));
+                    }
+                }
+            }
+        }
+
+        // todo: if we have connections with an older generation, we request to drop it.
+        // However, more than one connection with the same generation is allowed.
+        // if known_status.generation < connection.peer.generation() {
+        // todo: Terminate old node's connections
+        // }
+
+        // update observed generation
+        let new_status = GenStatus::new(peer_node_id.generation());
+        self.observed_generations
+            .entry(peer_node_id.as_plain())
+            .and_modify(|status| {
+                status.merge(new_status);
+            })
+            .or_insert(new_status);
+        Ok(())
     }
 }
 
@@ -117,7 +241,7 @@ type SharedConnectionAttempt =
 #[derive(Clone, Default)]
 pub struct ConnectionManager {
     inner: Arc<Mutex<ConnectionManagerInner>>,
-    in_flight_connects: Arc<Mutex<HashMap<Destination, SharedConnectionAttempt>>>,
+    in_flight_connects: Arc<Mutex<HashMap<(Destination, Swimlane), SharedConnectionAttempt>>>,
 }
 
 impl ConnectionManager {
@@ -158,13 +282,22 @@ impl ConnectionManager {
         // Timeouts are used in both ways (expectation to receive Hello/Welcome within a time
         // window) to avoid dangling resources by misbehaving peers or under sever load conditions.
         // The client can retry with an exponential backoff on handshake timeout.
-        debug!("Accepting incoming connection");
-
         let (header, hello) = wait_for_hello(
             &mut incoming,
             Configuration::pinned().networking.handshake_timeout.into(),
         )
         .await?;
+
+        let should_register = matches!(
+            hello.direction(),
+            ConnectionDirection::Unknown
+                | ConnectionDirection::Bidirectional
+                | ConnectionDirection::Reverse
+        );
+
+        // -- Lock is held
+        let mut guard = self.inner.lock();
+
         let nodes_config = metadata.nodes_config_ref();
         let my_node_id = metadata.my_node_id();
         // NodeId **must** be generational at this layer, we may support accepting connections from
@@ -216,7 +349,7 @@ impl ConnectionManager {
                 .get(),
         );
 
-        self.update_generation_or_preempt(&nodes_config, peer_node_id)?;
+        guard.update_generation_or_preempt(&nodes_config, peer_node_id)?;
 
         let peer_metadata = PeerMetadataVersion::from(header);
 
@@ -229,33 +362,51 @@ impl ConnectionManager {
                 None,
             ))
             .map_err(|_| HandshakeError::PeerDropped)?;
-        let connection = Connection::new(peer_node_id, selected_protocol_version, sender);
-
-        let should_register = matches!(
-            hello.direction(),
-            ConnectionDirection::Unknown
-                | ConnectionDirection::Bidirectional
-                | ConnectionDirection::Reverse
+        let connection = Connection::new(
+            peer_node_id,
+            selected_protocol_version,
+            hello.swimlane(),
+            sender,
         );
 
         // Register the connection.
-        let task_id = self.start_connection_reactor(
+        let router = guard.router.clone();
+
+        let existing_connection = if should_register {
+            guard.register(connection.clone())
+        } else {
+            None
+        };
+
+        let reactor =
+            ConnectionReactor::new(connection.clone(), shared, Some(peer_metadata), router);
+
+        let task_id = match reactor.start(
             TaskKind::ConnectionReactor,
-            connection,
-            shared,
+            self.clone(),
+            !should_register,
             incoming,
-            should_register,
-            Some(peer_metadata),
-        )?;
+        ) {
+            Ok(task_id) => task_id,
+            Err(e) => {
+                guard.deregister(&connection);
+                // put back the previous connection
+                if let Some(existing) = existing_connection {
+                    guard.register(existing);
+                }
+                return Err(e.into());
+            }
+        };
 
         debug!(
-            direction_at_peer = %hello.direction(),
+            direction = %hello.direction(),
             task_id = %task_id,
             peer = %peer_node_id,
+            swimlane = %hello.swimlane(),
             "Incoming connection accepted from node {}", peer_node_id
         );
 
-        counter!(NETWORK_CONNECTION_CREATED, "direction" => "incoming").increment(1);
+        counter!(NETWORK_CONNECTION_CREATED, "direction" => "incoming", "swimlane" => hello.swimlane().as_str_name()).increment(1);
 
         // Our output stream, i.e. responses.
         Ok(egress)
@@ -270,11 +421,11 @@ impl ConnectionManager {
     pub async fn accept_fake_server_connection(
         &self,
         node_id: GenerationalNodeId,
-        swimlane: super::Swimlane,
+        swimlane: Swimlane,
         direction: ConnectionDirection,
         message_router: Option<Arc<MessageRouter>>,
     ) -> Result<super::MockPeerConnection, ConnectError> {
-        use crate::network::tracking::{NoopRouter, NoopTracker};
+        use crate::network::tracking::NoopTracker;
         use crate::network::{MockPeerConnection, PassthroughConnector};
 
         let transport = PassthroughConnector(self.clone());
@@ -283,12 +434,13 @@ impl ConnectionManager {
             Destination::Address(restate_types::net::AdvertisedAddress::Uds(
                 "/tmp/fake".into(),
             )),
+            swimlane,
             transport,
             direction,
             TaskKind::ConnectionReactor,
             message_router.unwrap_or_default(),
             NoopTracker,
-            NoopRouter,
+            true,
         )
         .await?;
 
@@ -305,6 +457,7 @@ impl ConnectionManager {
     pub async fn get_or_connect<C>(
         &self,
         node_id: impl Into<NodeId>,
+        swimlane: Swimlane,
         transport_connector: &C,
     ) -> Result<Connection, ConnectError>
     where
@@ -329,43 +482,40 @@ impl ConnectionManager {
             return Err(DiscoveryError::NodeIsGone(node_id.into()).into());
         }
 
-        // find a connection by node_id
-        if let Some(connection) = self.inner.lock().get_random_connection(
-            &node_id,
-            Configuration::pinned()
-                .networking
-                .num_concurrent_connections(),
-        ) {
-            return Ok(connection);
-        }
+        let router = {
+            // -- Lock held
+            let mut guard = self.inner.lock();
 
-        if my_node_id_opt.is_some_and(|my_node| my_node == node_id) {
-            return self.connect_loopback();
-        }
+            // find a connection by node_id
+            if let Some(connection) = guard.get_connection(node_id, swimlane) {
+                return Ok(connection);
+            }
 
-        if self
-            .inner
-            .lock()
-            .observed_generations
-            .get(&node_id.as_plain())
-            .map(|status| {
-                node_id.generation() < status.generation
-                    || (node_id.generation() == status.generation && status.gone)
-            })
-            .unwrap_or(false)
-        {
-            return Err(DiscoveryError::NodeIsGone(node_id.into()).into());
-        }
+            if my_node_id_opt.is_some_and(|my_node| my_node == node_id) {
+                return guard.create_loopback_connection(swimlane, self.clone());
+            }
+
+            // fail if the node is seen as gone before
+            guard.can_discover(node_id)?;
+            guard.router.clone()
+        };
 
         // We have no connection. We attempt to create a new connection or latch onto an
         // existing attempt.
-        self.create_forward_shared_connection(Destination::Node(node_id), transport_connector)
-            .await
+        self.create_forward_shared_connection(
+            Destination::Node(node_id),
+            swimlane,
+            router,
+            transport_connector,
+        )
+        .await
     }
 
     async fn create_forward_shared_connection<C>(
         &self,
         dest: Destination,
+        swimlane: Swimlane,
+        router: Arc<MessageRouter>,
         transport_connector: &C,
     ) -> Result<Connection, ConnectError>
     where
@@ -376,7 +526,7 @@ impl ConnectionManager {
             let mut in_flight = self.in_flight_connects.lock();
 
             // If yes, clone that shared future so multiple callers coalesce
-            if let Some(existing) = in_flight.get(&dest) {
+            if let Some(existing) = in_flight.get(&(dest.clone(), swimlane)) {
                 existing.clone()
             } else {
                 // 2) Not in flight. Check the throttle window for recent failures
@@ -386,20 +536,20 @@ impl ConnectionManager {
                 let fut = {
                     let dest = dest.clone();
                     let transport_connector = transport_connector.clone();
-                    let router = self.inner.lock().router.clone();
                     let conn_tracker = self.clone();
-                    let peer_router = self.clone();
                     async move {
                         // Actually attempt/force to connect. We checked throttling before creating this
                         // future.
                         Connection::force_connect(
                             dest,
+                            swimlane,
                             transport_connector,
                             ConnectionDirection::Forward,
                             TaskKind::ConnectionReactor,
                             router,
                             conn_tracker,
-                            peer_router,
+                            // connection-manager managed connections are not dedicated
+                            false,
                         )
                         .await
                     }
@@ -408,7 +558,7 @@ impl ConnectionManager {
                 };
 
                 // Put it in the map so other concurrent callers share the same future
-                in_flight.insert(dest.clone(), fut.clone());
+                in_flight.insert((dest.clone(), swimlane), fut.clone());
                 fut
             }
         };
@@ -418,167 +568,36 @@ impl ConnectionManager {
 
         // 5) Remove the completed future so subsequent calls can attempt a fresh connect
         let mut in_flight = self.in_flight_connects.lock();
-        in_flight.remove(&dest);
+        in_flight.remove(&(dest, swimlane));
 
         Ok(maybe_connection?.0)
-    }
-
-    #[instrument(skip_all)]
-    fn connect_loopback(&self) -> Result<Connection, ConnectError> {
-        if TaskCenter::is_shutdown_requested() {
-            return Err(ConnectError::Shutdown(ShutdownError));
-        }
-        debug!("Creating an express path connection to self");
-        let (tx, egress, shared) = EgressStream::create(
-            Configuration::pinned()
-                .networking
-                .outbound_queue_length
-                .get(),
-        );
-        let connection = Connection::new(
-            my_node_id(),
-            restate_types::net::CURRENT_PROTOCOL_VERSION,
-            tx,
-        );
-
-        self.start_connection_reactor(
-            TaskKind::LocalReactor,
-            connection.clone(),
-            shared,
-            egress,
-            // loopback is always registered
-            true,
-            None,
-        )?;
-
-        Ok(connection)
-    }
-
-    fn update_generation_or_preempt(
-        &self,
-        nodes_config: &NodesConfiguration,
-        peer_node_id: GenerationalNodeId,
-    ) -> Result<(), AcceptError> {
-        // Lock is held, don't perform expensive or async operations here.
-        let mut guard = self.inner.lock();
-        let known_status = guard
-            .observed_generations
-            .get(&peer_node_id.as_plain())
-            .copied()
-            .unwrap_or(GenStatus::new(peer_node_id.generation()));
-
-        if known_status.generation > peer_node_id.generation() {
-            // This peer is _older_ than the one we have seen in the past, we cannot accept
-            // this connection. We terminate the stream immediately.
-            return Err(AcceptError::OldPeerGeneration(format!(
-                "newer generation '{}' has been observed",
-                NodeId::new_generational(peer_node_id.id(), known_status.generation)
-            )));
-        }
-
-        if known_status.generation == peer_node_id.generation() && known_status.gone {
-            // This peer was observed to have shutdown before. We cannot accept new connections from this peer.
-            return Err(AcceptError::PreviouslyShutdown);
-        }
-
-        if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
-            match e {
-                NodesConfigError::UnknownNodeId(_) => {}
-                NodesConfigError::Deleted(_) => return Err(AcceptError::PreviouslyShutdown),
-                NodesConfigError::GenerationMismatch { expected, found } => {
-                    if found.is_newer_than(expected) {
-                        return Err(AcceptError::OldPeerGeneration(format!(
-                            "newer generation '{}' has been observed",
-                            found
-                        )));
-                    }
-                }
-            }
-        }
-
-        // todo: if we have connections with an older generation, we request to drop it.
-        // However, more than one connection with the same generation is allowed.
-        // if known_status.generation < connection.peer.generation() {
-        // todo: Terminate old node's connections
-        // }
-
-        // update observed generation
-        let new_status = GenStatus::new(peer_node_id.generation());
-        guard
-            .observed_generations
-            .entry(peer_node_id.as_plain())
-            .and_modify(|status| {
-                status.merge(new_status);
-            })
-            .or_insert(new_status);
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn start_connection_reactor<S>(
-        &self,
-        task_kind: TaskKind,
-        connection: Connection,
-        shared: super::io::Shared,
-        incoming: S,
-        should_register: bool,
-        peer_metadata: Option<PeerMetadataVersion>,
-    ) -> Result<TaskId, ShutdownError>
-    where
-        S: Stream<Item = Message> + Unpin + Send + 'static,
-    {
-        let router = self.inner.lock().router.clone();
-
-        let reactor = ConnectionReactor::new(connection, shared, peer_metadata, router);
-
-        let task_id = reactor.start(
-            task_kind,
-            self.clone(),
-            self.clone(),
-            incoming,
-            should_register,
-        )?;
-
-        Ok(task_id)
-    }
-}
-
-impl PeerRouting for ConnectionManager {
-    fn register(&self, connection: &Connection) {
-        let peer = connection.peer;
-        let mut guard = self.inner.lock();
-        guard
-            .connection_by_gen_id
-            .entry(connection.peer)
-            .or_default()
-            .push(connection.clone());
-        trace!("connection to {} was registered", peer);
-    }
-
-    fn deregister(&self, connection: &Connection) {
-        let mut guard = self.inner.lock();
-        let peer = connection.peer;
-        trace!("connection reactor was deregistered {}", peer);
-        if let Some(connections) = guard.connection_by_gen_id.get_mut(&peer) {
-            let len_before = connections.len();
-            connections.retain(|c| c != connection && !c.is_closed());
-            if len_before > 0 && connections.is_empty() {
-                info!(%peer, "All registered connections to this node were terminated");
-            }
-        }
     }
 }
 
 impl ConnectionTracking for ConnectionManager {
-    fn connection_created(&self, conn: &Connection) {
-        trace!("Connection reactor started: {}", conn.peer);
+    fn connection_draining(&self, conn: &Connection) {
+        trace!(
+            swimlane = %conn.swimlane,
+            "Connection started draining: {}", conn.peer);
+        self.inner.lock().deregister(conn);
+    }
+
+    fn connection_created(&self, conn: &Connection, is_dedicated: bool) {
+        if !is_dedicated {
+            self.inner.lock().register(conn.clone());
+        }
+        trace!(
+            swimlane = %conn.swimlane,
+            "Connection reactor started: {}", conn.peer);
     }
 
     fn connection_dropped(&self, conn: &Connection) {
         debug!(
+            swimlane = %conn.swimlane,
             "Connection terminated, connection lived for {:?}",
             conn.created.elapsed()
         );
+        self.inner.lock().deregister(conn);
         counter!(NETWORK_CONNECTION_DROPPED).increment(1);
     }
 
@@ -692,6 +711,7 @@ mod tests {
             my_node_id: Some(my_node_id.into()),
             cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
             direction: ConnectionDirection::Bidirectional.into(),
+            swimlane: Swimlane::default().into(),
         };
         let hello = Message::new(
             Header::new(metadata.nodes_config_version(), None, None, None, None),
@@ -719,6 +739,7 @@ mod tests {
             my_node_id: Some(my_node_id.into()),
             cluster_name: "Random-cluster".to_owned(),
             direction: ConnectionDirection::Bidirectional.into(),
+            swimlane: Swimlane::default().into(),
         };
         let hello = Message::new(
             Header::new(metadata.nodes_config_version(), None, None, None, None),
@@ -756,6 +777,7 @@ mod tests {
             Some(my_node_id),
             metadata.nodes_config_ref().cluster_name().to_owned(),
             ConnectionDirection::Bidirectional,
+            Swimlane::default(),
         );
         let hello = Message::new(
             Header::new(metadata.nodes_config_version(), None, None, None, None),
