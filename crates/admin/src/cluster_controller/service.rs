@@ -43,7 +43,6 @@ use restate_types::logs::metadata::{
     ReplicatedLogletConfig, SegmentIndex,
 };
 use restate_types::logs::{LogId, LogletId, Lsn};
-use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
 use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
@@ -447,8 +446,8 @@ impl<T: TransportConnect> Service<T> {
     ) -> anyhow::Result<()> {
         let logs = self
             .metadata_writer
-            .raw_metadata_store_client()
-            .read_modify_write(BIFROST_CONFIG_KEY.clone(), |current: Option<Logs>| {
+            .global_metadata()
+            .read_modify_write(|current: Option<Arc<Logs>>| {
                 let logs = current.expect("logs should be initialized by BifrostService");
 
                 // allow to switch the default provider from a non-replicated loglet to the
@@ -461,7 +460,7 @@ impl<T: TransportConnect> Service<T> {
                     ));
                 }
 
-                let mut builder = logs.into_builder();
+                let mut builder = logs.as_ref().clone().into_builder();
 
                 builder.set_configuration(LogsConfiguration {
                     default_provider: default_provider.clone(),
@@ -476,9 +475,7 @@ impl<T: TransportConnect> Service<T> {
             .await;
 
         match logs {
-            Ok(logs) => {
-                self.metadata_writer.update(Arc::new(logs)).await?;
-            }
+            Ok(_) => {}
             Err(ReadModifyWriteError::FailedOperation(
                 ClusterConfigurationUpdateError::Unchanged,
             )) => {
@@ -489,14 +486,13 @@ impl<T: TransportConnect> Service<T> {
 
         let partition_table = self
             .metadata_writer
-            .raw_metadata_store_client()
+            .global_metadata()
             .read_modify_write(
-                PARTITION_TABLE_KEY.clone(),
-                |current: Option<PartitionTable>| {
+                |current: Option<Arc<PartitionTable>>| {
                     let partition_table =
                         current.ok_or(ClusterConfigurationUpdateError::MissingPartitionTable)?;
 
-                    let mut builder: PartitionTableBuilder = partition_table.into();
+                    let mut builder = PartitionTableBuilder::from(partition_table.as_ref().clone());
 
                     if let Some(partition_replication) = &partition_replication {
                         if !matches!(builder.partition_replication(), PartitionReplication::Limit(current) if current == partition_replication) {
@@ -521,11 +517,7 @@ impl<T: TransportConnect> Service<T> {
             .await;
 
         match partition_table {
-            Ok(partition_table) => {
-                self.metadata_writer
-                    .update(Arc::new(partition_table))
-                    .await?;
-            }
+            Ok(_) => {}
             Err(ReadModifyWriteError::FailedOperation(
                 ClusterConfigurationUpdateError::Unchanged,
             )) => {

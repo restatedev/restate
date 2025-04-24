@@ -91,8 +91,8 @@ impl Default for NetworkingOptions {
             ),
             handshake_timeout: Duration::from_secs(3).into(),
             outbound_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
-            http2_keep_alive_interval: Duration::from_secs(5).into(),
-            http2_keep_alive_timeout: Duration::from_secs(5).into(),
+            http2_keep_alive_interval: Duration::from_secs(1).into(),
+            http2_keep_alive_timeout: Duration::from_secs(3).into(),
             http2_adaptive_window: true,
             num_concurrent_connections: NonZeroUsize::new(3).unwrap(),
         }
