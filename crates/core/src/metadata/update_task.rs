@@ -364,6 +364,7 @@ async fn update_from_metadata_store<T: GlobalMetadata>(client: MetadataStoreClie
         None,
         Some(Duration::from_secs(1)),
     );
+    let mut retry_iter = retry.clone().into_iter();
 
     loop {
         // relentlessly retry, exponential backoff is applied
@@ -380,6 +381,8 @@ async fn update_from_metadata_store<T: GlobalMetadata>(client: MetadataStoreClie
             Ok(value) => return value,
             Err(err) => {
                 debug!("Failed to fetch metadata from metadata store: {err}");
+                let dur = retry_iter.next().expect("infinite retry");
+                tokio::time::sleep(dur).await;
             }
         }
     }
