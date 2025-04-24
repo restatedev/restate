@@ -13,10 +13,15 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tracing::{debug, info, trace, warn};
+use tokio_stream::StreamExt;
+use tracing::{debug, info, trace};
 
+use restate_types::live::Pinned;
 use restate_types::logs::metadata::Logs;
-use restate_types::net::metadata::{MetadataMessage, MetadataUpdate};
+use restate_types::net::RpcRequest;
+use restate_types::net::metadata::GetMetadataRequest;
+use restate_types::net::metadata::MetadataManagerService;
+use restate_types::net::metadata::MetadataUpdate;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
@@ -25,12 +30,11 @@ use restate_types::{Version, Versioned};
 use super::MetadataBuilder;
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
 use crate::cancellation_watcher;
-use crate::is_cancellation_requested;
 use crate::metadata::update_task::GlobalMetadataUpdateTask;
 use crate::metadata_store::MetadataStoreClient;
-use crate::network::Incoming;
-use crate::network::Reciprocal;
-use crate::network::{MessageHandler, MessageRouterBuilder};
+use crate::network::{
+    MessageRouterBuilder, Oneshot, Reciprocal, ServiceMessage, ServiceReceiver, Verdict,
+};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
@@ -58,125 +62,6 @@ impl From<Option<Version>> for TargetVersion {
 
 pub(super) enum Command {
     UpdateMetadata(MetadataContainer, Option<oneshot::Sender<Version>>),
-}
-
-/// A handler for processing network messages targeting metadata manager
-/// (dev.restate.common.TargetName = METADATA_MANAGER)
-struct MetadataMessageHandler {
-    sender: CommandSender,
-    metadata: Metadata,
-}
-
-impl MetadataMessageHandler {
-    fn send_metadata(
-        &self,
-        to: Reciprocal<MetadataMessage>,
-        metadata_kind: MetadataKind,
-        min_version: Option<Version>,
-    ) {
-        match metadata_kind {
-            MetadataKind::NodesConfiguration => self.send_nodes_config(to, min_version),
-            MetadataKind::PartitionTable => self.send_partition_table(to, min_version),
-            MetadataKind::Logs => self.send_logs(to, min_version),
-            MetadataKind::Schema => self.send_schema(to, min_version),
-        };
-    }
-
-    fn send_nodes_config(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
-        if self.metadata.nodes_config_version() != Version::INVALID {
-            let config = self.metadata.nodes_config_snapshot();
-            self.send_metadata_internal(to, version, config, "nodes_config");
-        }
-    }
-
-    fn send_partition_table(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
-        if self.metadata.partition_table_version() != Version::INVALID {
-            let partition_table = self.metadata.partition_table_snapshot();
-            self.send_metadata_internal(to, version, partition_table, "partition_table");
-        }
-    }
-
-    fn send_logs(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
-        if self.metadata.logs_version() != Version::INVALID {
-            let logs = self.metadata.logs_snapshot();
-            self.send_metadata_internal(to, version, logs, "logs");
-        }
-    }
-
-    fn send_schema(&self, to: Reciprocal<MetadataMessage>, version: Option<Version>) {
-        if self.metadata.schema_version() != Version::INVALID {
-            let schema = self.metadata.schema_snapshot();
-            self.send_metadata_internal(to, version, schema, "schema");
-        }
-    }
-
-    fn send_metadata_internal<T>(
-        &self,
-        to: Reciprocal<MetadataMessage>,
-        version: Option<Version>,
-        metadata: Arc<T>,
-        metadata_name: &str,
-    ) where
-        T: Versioned + Clone + Send + Sync + 'static,
-        MetadataContainer: From<Arc<T>>,
-    {
-        if version.is_some_and(|min_version| min_version > metadata.version()) {
-            // We don't have the version that the peer is asking for. Just ignore.
-            info!(
-                kind = metadata_name,
-                version = %metadata.version(),
-                requested_min_version = ?version,
-                "Peer requested metadata version but we don't have it, ignoring their request",
-            );
-            return;
-        }
-        trace!(
-            kind = metadata_name,
-            version = %metadata.version(),
-            requested_min_version = ?version,
-            "Sending metadata to peer",
-        );
-        let outgoing = to.prepare(MetadataMessage::MetadataUpdate(MetadataUpdate {
-            container: MetadataContainer::from(metadata),
-        }));
-
-        tokio::spawn(outgoing.send());
-    }
-}
-
-impl MessageHandler for MetadataMessageHandler {
-    type MessageType = MetadataMessage;
-
-    async fn on_message(&self, envelope: Incoming<MetadataMessage>) {
-        let (reciprocal, msg) = envelope.split();
-        match msg {
-            MetadataMessage::MetadataUpdate(update) => {
-                debug!(
-                    kind  = %update.container.kind(),
-                    version = %update.container.version(),
-                    peer = %reciprocal.peer(),
-                    "Received metadata update from peer",
-                );
-                if let Err(e) = self
-                    .sender
-                    .send(Command::UpdateMetadata(update.container, None))
-                {
-                    if !is_cancellation_requested() {
-                        warn!("Failed to send metadata message to metadata manager: {}", e);
-                    }
-                }
-            }
-            MetadataMessage::GetMetadataRequest(request) => {
-                debug!(
-                    kind  = %request.metadata_kind,
-                    requested_min_version = ?request.min_version,
-                    peer = %reciprocal.peer(),
-                    "Received GetMetadataRequest from peer",
-                );
-                self.send_metadata(reciprocal, request.metadata_kind, request.min_version);
-            }
-        };
-    }
 }
 
 /// A set of senders for global metadata update tasks
@@ -209,6 +94,7 @@ pub struct MetadataManager {
     metadata: Metadata,
     inbound: CommandReceiver,
     metadata_store_client: MetadataStoreClient,
+    service_op_rx: ServiceReceiver<MetadataManagerService>,
 }
 
 impl MetadataManager {
@@ -220,14 +106,13 @@ impl MetadataManager {
             metadata: metadata_builder.metadata,
             inbound: metadata_builder.receiver,
             metadata_store_client,
+            service_op_rx: ServiceReceiver::default(),
         }
     }
 
-    pub fn register_in_message_router(&self, sr_builder: &mut MessageRouterBuilder) {
-        sr_builder.add_message_handler(MetadataMessageHandler {
-            sender: self.metadata.sender.clone(),
-            metadata: self.metadata.clone(),
-        });
+    pub fn register_in_message_router(&mut self, sr_builder: &mut MessageRouterBuilder) {
+        self.service_op_rx =
+            sr_builder.register_service(10, crate::network::BackPressureMode::Lossy);
     }
 
     pub fn metadata(&self) -> &Metadata {
@@ -299,15 +184,19 @@ impl MetadataManager {
             schema,
         };
 
+        let mut network_rx = self.service_op_rx.take().start();
         loop {
             tokio::select! {
                 biased;
-                _ = &mut cancel => {
-                    info!("Metadata manager stopped");
+                () = &mut cancel => {
+                    drop(network_rx);
                     break;
                 }
                 Some(cmd) = self.inbound.recv() => {
                     self.handle_command(cmd, &updaters);
+                }
+                Some(service_op) = network_rx.next() => {
+                    self.handle_network_message(service_op);
                 }
             }
         }
@@ -322,6 +211,18 @@ impl MetadataManager {
         match cmd {
             Command::UpdateMetadata(value, callback) => {
                 self.update_metadata(value, updaters, callback)
+            }
+        }
+    }
+
+    fn handle_network_message(&mut self, msg: ServiceMessage<MetadataManagerService>) {
+        match msg {
+            ServiceMessage::Rpc(msg) if msg.msg_type() == GetMetadataRequest::TYPE => {
+                let (reciprocal, request) = msg.into_typed::<GetMetadataRequest>().split();
+                self.send_metadata(reciprocal, request.metadata_kind, request.min_version);
+            }
+            msg => {
+                msg.fail(Verdict::MessageUnrecognized);
             }
         }
     }
@@ -354,6 +255,83 @@ impl MetadataManager {
                     .send(super::update_task::Command::Update { value, callback });
             }
         }
+    }
+
+    fn send_metadata(
+        &self,
+        to: Reciprocal<Oneshot<MetadataUpdate>>,
+        metadata_kind: MetadataKind,
+        min_version: Option<Version>,
+    ) {
+        match metadata_kind {
+            MetadataKind::NodesConfiguration => self.send_nodes_config(to, min_version),
+            MetadataKind::PartitionTable => self.send_partition_table(to, min_version),
+            MetadataKind::Logs => self.send_logs(to, min_version),
+            MetadataKind::Schema => self.send_schema(to, min_version),
+        };
+    }
+
+    fn send_nodes_config(&self, to: Reciprocal<Oneshot<MetadataUpdate>>, version: Option<Version>) {
+        if self.metadata.nodes_config_version() != Version::INVALID {
+            let config = self.metadata.nodes_config_ref();
+            self.send_metadata_internal(to, version, config, "nodes_config");
+        }
+    }
+
+    fn send_partition_table(
+        &self,
+        to: Reciprocal<Oneshot<MetadataUpdate>>,
+        version: Option<Version>,
+    ) {
+        if self.metadata.partition_table_version() != Version::INVALID {
+            let partition_table = self.metadata.partition_table_ref();
+            self.send_metadata_internal(to, version, partition_table, "partition_table");
+        }
+    }
+
+    fn send_logs(&self, to: Reciprocal<Oneshot<MetadataUpdate>>, version: Option<Version>) {
+        if self.metadata.logs_version() != Version::INVALID {
+            let logs = self.metadata.logs_ref();
+            self.send_metadata_internal(to, version, logs, "logs");
+        }
+    }
+
+    fn send_schema(&self, to: Reciprocal<Oneshot<MetadataUpdate>>, version: Option<Version>) {
+        if self.metadata.schema_version() != Version::INVALID {
+            let schema = self.metadata.schema_ref();
+            self.send_metadata_internal(to, version, schema, "schema");
+        }
+    }
+
+    fn send_metadata_internal<T>(
+        &self,
+        to: Reciprocal<Oneshot<MetadataUpdate>>,
+        version: Option<Version>,
+        metadata: Pinned<T>,
+        metadata_name: &str,
+    ) where
+        T: Versioned + Clone + Send + Sync + 'static,
+        MetadataContainer: From<Arc<T>>,
+    {
+        if version.is_some_and(|min_version| min_version > metadata.version()) {
+            // We don't have the version that the peer is asking for. Just ignore.
+            info!(
+                kind = metadata_name,
+                version = %metadata.version(),
+                requested_min_version = ?version,
+                "Peer requested metadata version but we don't have it, ignoring their request",
+            );
+            return;
+        }
+        trace!(
+            kind = metadata_name,
+            version = %metadata.version(),
+            requested_min_version = ?version,
+            "Sending metadata to peer",
+        );
+        to.send(MetadataUpdate {
+            container: MetadataContainer::from(metadata.into_arc()),
+        });
     }
 }
 

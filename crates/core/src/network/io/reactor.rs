@@ -9,39 +9,45 @@
 // by the Apache License, Version 2.0.
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use enum_map::{EnumMap, enum_map};
 use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
-use metrics::{counter, histogram};
+use metrics::counter;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use prost::Message as _;
-use tokio::time::{Instant, Sleep};
+use tokio::sync::oneshot;
+use tokio::time::Sleep;
 use tracing::{Instrument, Span, debug, info, trace, warn};
 
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
 use restate_types::net::metadata::MetadataKind;
+use restate_types::net::{ProtocolVersion, ServiceTag};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
 use restate_types::{Version, Versioned};
 
-use crate::network::metric_definitions::{
-    NETWORK_MESSAGE_PROCESSING_DURATION, NETWORK_MESSAGE_RECEIVED, NETWORK_MESSAGE_RECEIVED_BYTES,
-};
-use crate::network::protobuf::network::message::{Body, Signal};
+use crate::network::compat::V1Compat;
+use crate::network::incoming::{RawRpc, RawUnary, RpcReplyPort};
+use crate::network::io::EgressMessage;
+use crate::network::metric_definitions::NETWORK_MESSAGE_RECEIVED_BYTES;
+use crate::network::protobuf::network::message::{BinaryMessage, Body, Signal};
+use crate::network::protobuf::network::{Datagram, RpcReply, datagram, rpc_reply};
 use crate::network::protobuf::network::{Header, Message};
 use crate::network::tracking::{ConnectionTracking, PeerRouting};
 use crate::network::{
-    Connection, Handler, Incoming, PeerAddress, PeerMetadataVersion, UnboundedConnectionRef,
+    Connection, Incoming, MessageRouter, PeerAddress, PeerMetadataVersion, ReplyEnvelope,
+    RouterError, RpcReplyError, UnboundedConnectionRef, compat,
 };
 use crate::{Metadata, ShutdownError, TaskCenter, TaskContext, TaskId, TaskKind};
 
-use super::{DrainReason, DropEgressStream, UnboundedEgressSender};
+use super::DrainReason;
 
 enum Decision {
     Continue,
@@ -61,26 +67,27 @@ enum State {
 pub struct ConnectionReactor {
     state: State,
     connection: Connection,
+    shared: super::Shared,
     connection_ref: UnboundedConnectionRef,
-    tx: Option<UnboundedEgressSender>,
-    drop_egress: Option<DropEgressStream>,
     context_propagator: TraceContextPropagator,
     seen_versions: Option<MetadataVersions>,
+    router: Arc<MessageRouter>,
 }
 
 impl ConnectionReactor {
+    #[must_use]
     pub fn new(
         connection: Connection,
-        tx: UnboundedEgressSender,
-        drop_egress: DropEgressStream,
+        shared: super::Shared,
         peer_metadata: Option<PeerMetadataVersion>,
+        router: Arc<MessageRouter>,
     ) -> Self {
         let context_propagator = TraceContextPropagator::default();
         let mut seen_versions = MetadataVersions::new(Metadata::current());
         let connection_ref = UnboundedConnectionRef::new(
             PeerAddress::ServerNode(connection.peer()),
             connection.protocol_version,
-            &tx,
+            shared.tx.as_ref().unwrap(),
         );
         if let Some(peer_metadata) = peer_metadata {
             seen_versions.notify_peer_metadata(peer_metadata, &connection_ref);
@@ -89,17 +96,16 @@ impl ConnectionReactor {
             state: State::Active,
             connection,
             connection_ref,
-            tx: Some(tx),
-            drop_egress: Some(drop_egress),
+            shared,
             context_propagator,
             seen_versions: Some(seen_versions),
+            router,
         }
     }
 
     pub fn start<S>(
         self,
         task_kind: TaskKind,
-        router: impl Handler + Sync + 'static,
         conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
         peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
         incoming: S,
@@ -122,7 +128,7 @@ impl ConnectionReactor {
         match TaskCenter::spawn(
             task_kind,
             "network-connection-reactor",
-            self.run_reactor(router, incoming, conn_tracker, peer_router)
+            self.run_reactor(incoming, conn_tracker, peer_router)
                 .instrument(span),
         ) {
             Ok(task) => Ok(task),
@@ -135,8 +141,8 @@ impl ConnectionReactor {
     }
 
     fn send_drain_signal(&self, reason: DrainReason) {
-        if let Some(tx) = &self.tx {
-            tx.unbounded_drain(reason)
+        if let Some(tx) = &self.shared.tx {
+            tx.unbounded_drain(reason);
         }
     }
 
@@ -158,10 +164,9 @@ impl ConnectionReactor {
 
     pub async fn run_reactor<S>(
         mut self,
-        router: impl Handler,
         mut incoming: S,
-        conn_tracker: impl ConnectionTracking,
-        peer_router: impl PeerRouting,
+        conn_tracker: impl ConnectionTracking + Sync + Send + 'static,
+        peer_router: impl PeerRouting + Sync + Send + 'static,
     ) -> anyhow::Result<()>
     where
         S: Stream<Item = Message> + Unpin + Send,
@@ -178,7 +183,7 @@ impl ConnectionReactor {
                     // read a message from the stream
                     tokio::select! {
                         biased;
-                        _ = &mut cancellation => {
+                        () = &mut cancellation => {
                             if TaskCenter::is_shutdown_requested() {
                                 // We want to make the distinction between whether we are terminating the
                                 // connection, or whether the node is shutting down.
@@ -189,7 +194,7 @@ impl ConnectionReactor {
                             // we only drain the connection if we were the initiators of the termination
                         },
                         msg = incoming.next() => {
-                            self.handle_message(msg, &router).await
+                            self.handle_message(msg).await
                         }
                     }
                 }
@@ -197,20 +202,20 @@ impl ConnectionReactor {
                     ref mut drain_timeout,
                 } => {
                     tokio::select! {
-                        _ = drain_timeout => {
+                        () = drain_timeout => {
                             debug!("Drain timed out, closing connection");
                             Decision::Drop
                         },
                         msg = incoming.next() => {
-                            self.handle_message(msg, &router).await
+                            self.handle_message(msg).await
                         }
                     }
                 }
                 State::WaitForEgress => {
-                    self.tx.take();
+                    self.shared.tx.take();
                     if tokio::time::timeout(
                         Duration::from_secs(5),
-                        OptionFuture::from(self.drop_egress.take())
+                        OptionFuture::from(self.shared.drop_egress.take())
                             .log_slow_after(
                                 Duration::from_secs(2),
                                 tracing::Level::INFO,
@@ -238,7 +243,7 @@ impl ConnectionReactor {
                     self.switch_to_draining(DrainReason::ConnectionDrain, &peer_router);
                 }
                 (_, Decision::DrainEgress) => {
-                    self.tx.take();
+                    self.shared.tx.take();
                     self.state = State::WaitForEgress;
                 }
                 (State::Draining { .. }, Decision::NotifyPeerShutdown) => {
@@ -249,8 +254,9 @@ impl ConnectionReactor {
                     self.send_drain_signal(reason);
                 }
                 (_, Decision::Drop) => break,
-                (State::WaitForEgress, Decision::NotifyPeerShutdown) => unreachable!(),
-                (State::WaitForEgress, Decision::Drain(_)) => unreachable!(),
+                (State::WaitForEgress, Decision::NotifyPeerShutdown | Decision::Drain(_)) => {
+                    unreachable!()
+                }
             }
         }
 
@@ -261,7 +267,8 @@ impl ConnectionReactor {
         Ok(())
     }
 
-    async fn handle_message(&mut self, msg: Option<Message>, router: &impl Handler) -> Decision {
+    #[allow(clippy::too_many_lines)]
+    async fn handle_message(&mut self, msg: Option<Message>) -> Decision {
         let msg = match msg {
             Some(msg) => msg,
             None if self.state.is_active() => {
@@ -274,7 +281,6 @@ impl ConnectionReactor {
             }
         };
 
-        let processing_started = Instant::now();
         // body are not allowed to be empty.
         let Some(body) = msg.body else {
             return Decision::Drain(DrainReason::CodecError(
@@ -304,7 +310,7 @@ impl ConnectionReactor {
                         // No more requests coming, but rpc responses might still arrive.
                         // We don't need tx anymore. We'll not create future responder
                         // tasks.
-                        self.tx.take();
+                        self.shared.tx.take();
                         Decision::Drain(DrainReason::ConnectionDrain)
                     }
                     Signal::ResponseStreamDrained => {
@@ -324,53 +330,450 @@ impl ConnectionReactor {
                 Decision::Drop
             }
 
-            Body::Encoded(msg) => {
-                let encoded_len = msg.encoded_len();
-                let target = msg.target();
+            Body::Datagram(Datagram { datagram: None }) => {
+                // Wrong, we'll ignore.
+                Decision::Continue
+            }
 
+            // RPC CALL
+            Body::Datagram(Datagram {
+                datagram: Some(datagram::Datagram::RpcCall(rpc_call)),
+            }) => {
+                let Some(tx) = self.shared.tx.as_ref() else {
+                    // egress for responses has been drained
+                    return Decision::Continue;
+                };
+                let target_service = rpc_call.service();
                 let parent_context = header
                     .span_context
                     .as_ref()
                     .map(|span_ctx| self.context_propagator.extract(span_ctx));
 
-                // unconstrained: We want to avoid yielding if the message router has capacity,
-                // this is to improve tail latency of message processing. We still give tokio
-                // a yielding point when reading the next message but it would be excessive to
-                // introduce more than one yielding point in this reactor loop.
-                if let Err(e) = tokio::task::unconstrained(
-                    router.call(
-                        Incoming::from_parts(
-                            msg,
-                            self.connection.clone(),
-                            header.msg_id,
-                            header.in_response_to,
-                            PeerMetadataVersion::from(header),
-                        )
-                        .with_parent_context(parent_context),
-                        self.connection.protocol_version,
-                    ),
-                )
+                let encoded_len = rpc_call.payload.len();
+                let (reply_port, reply_rx) = RpcReplyPort::new();
+                let raw_rpc = RawRpc {
+                    reply_port,
+                    payload: rpc_call.payload,
+                    sort_code: rpc_call.sort_code,
+                };
+                let incoming = Incoming::new(
+                    self.connection.protocol_version,
+                    raw_rpc,
+                    self.connection.peer,
+                    PeerMetadataVersion::from(header),
+                    parent_context,
+                );
+                trace!(
+                    "Received RPC call: {target_service}::{}",
+                    rpc_call.message_type
+                );
+                // ship to the service router, dropping the reply port will close the responder
+                // task.
+                match tokio::task::unconstrained(self.router.call_rpc(
+                    target_service,
+                    rpc_call.message_type,
+                    incoming,
+                ))
                 .await
                 {
-                    warn!(
-                        target = target.as_str_name(),
-                        "Error processing message: {e}"
-                    );
+                    Ok(()) => { /* spawn reply task */ }
+                    Err(err) => {
+                        send_rpc_error(tx, err, rpc_call.id);
+                    }
                 }
-                histogram!(NETWORK_MESSAGE_PROCESSING_DURATION, "target" => target.as_str_name())
-                    .record(processing_started.elapsed());
-                counter!(NETWORK_MESSAGE_RECEIVED, "target" => target.as_str_name()).increment(1);
+
+                counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target_service.as_str_name())
+                    .increment(encoded_len as u64);
+
+                spawn_rpc_responder(tx.clone(), rpc_call.id, reply_rx, target_service);
+
+                Decision::Continue
+            }
+            // UNARY MESSAGE
+            Body::Datagram(Datagram {
+                datagram: Some(datagram::Datagram::Unary(unary)),
+            }) => {
+                let parent_context = header
+                    .span_context
+                    .as_ref()
+                    .map(|span_ctx| self.context_propagator.extract(span_ctx));
+                let metadata_versions = PeerMetadataVersion::from(header);
+                let target = unary.target();
+                let encoded_len = unary.payload.len();
+                let incoming = Incoming::new(
+                    self.connection.protocol_version,
+                    RawUnary {
+                        payload: unary.payload,
+                        sort_code: unary.sort_code,
+                    },
+                    self.connection.peer(),
+                    metadata_versions,
+                    parent_context,
+                );
+                trace!("Received Unary call: {target}::{}", unary.message_type);
+
+                let _ = tokio::task::unconstrained(self.router.call_unary(
+                    target,
+                    unary.message_type,
+                    incoming,
+                ))
+                .await;
+
                 counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target.as_str_name())
                     .increment(encoded_len as u64);
-                trace!(
-                    target = target.as_str_name(),
-                    "Processed message in {:?}",
-                    processing_started.elapsed()
-                );
                 Decision::Continue
+            }
+            // RPC REPLY
+            Body::Datagram(Datagram {
+                datagram: Some(datagram::Datagram::RpcReply(msg)),
+            }) => {
+                if let Some(reply_sender) = self.shared.reply_tracker.pop_rpc_sender(&msg.id) {
+                    // validate the input. If no body was set, then we report "unknown" error.
+                    let _ = match msg.body {
+                        Some(rpc_reply::Body::Status(status)) => {
+                            let status = RpcReplyError::from(status);
+                            trace!("Received RPC response with status {status}!");
+                            reply_sender.send(crate::network::RawRpcReply::Error(status))
+                        }
+                        Some(rpc_reply::Body::Payload(payload)) => {
+                            trace!("Received RPC response with payload!");
+                            reply_sender.send(crate::network::RawRpcReply::Success(payload))
+                        }
+                        None => {
+                            warn!(
+                                "Received RPC response for message {} with empty body!",
+                                msg.id
+                            );
+                            reply_sender.send(crate::network::RawRpcReply::Error(
+                                RpcReplyError::Unknown(0),
+                            ))
+                        }
+                    };
+                }
+                Decision::Continue
+            }
+            Body::Datagram(Datagram {
+                datagram: Some(datagram::Datagram::Watch(_watch)),
+            }) => {
+                // watch request
+                todo!()
+            }
+            Body::Datagram(Datagram {
+                datagram: Some(datagram::Datagram::WatchUpdate(_msg)),
+            }) => {
+                // watch message
+                todo!()
+            }
+            Body::Datagram(Datagram {
+                datagram: Some(datagram::Datagram::Ping(msg)),
+            }) => {
+                if let Some(tx) = self.shared.tx.as_ref() {
+                    let datagram = Body::Datagram(Datagram {
+                        datagram: Some(msg.flip().into()),
+                    });
+                    let _ = tx.unbounded_send(EgressMessage::Message(
+                        Header::default(),
+                        datagram,
+                        None,
+                    ));
+                }
+                Decision::Continue
+            }
+            Body::Datagram(Datagram {
+                datagram: Some(datagram::Datagram::Pong(_msg)),
+            }) => {
+                // watch message
+                // TODO: handle pong messages
+                Decision::Continue
+            }
+
+            // Compatibility layer for V1 protocol
+            Body::Encoded(msg) => {
+                if self.connection.protocol_version() >= ProtocolVersion::V2 {
+                    warn!(
+                        "Peer sent a legacy encoded message on V2 protocol. This message will be ignored"
+                    );
+                    return Decision::Drop;
+                }
+                let encoded_len = msg.payload.len();
+                let old_target = msg.target();
+
+                // Our strategy is to tradeoff performance for compatibility with V1 protocol. We
+                // assume that nodes that negotiate V1 protocol are on their way of being upgraded
+                // to a newer version. Therefore, we accept the performance hit until they are
+                // upgraded.
+                //
+                // The performance hit stems from the fact that we'll decode the message using the
+                // old protocol and then re-encode using the new envelopes before passing them down
+                // to the router. We'll not hide the fact that this is V1 protocol, so when
+                // services send RPC replies, we'll be still be able to perform the conversion of
+                // those responses back to V1 protocol before shipping them out.
+                //
+                // This means that service handlers can use the new APIs regardless of the
+                // negotiated protocol.
+
+                // A heuristic to determine if this is a RPC reply
+                if let Some(in_response_to) = header.in_response_to {
+                    // This is a RPC reply
+                    if let Some(reply_sender) =
+                        self.shared.reply_tracker.pop_rpc_sender(&in_response_to)
+                    {
+                        // V1 doesn't support RPC statuses.
+                        // todo: handle routing errors
+                        trace!("Received LEGACY RPC response with payload!");
+                        let _ =
+                            reply_sender.send(crate::network::RawRpcReply::Success(msg.payload));
+                    }
+                    // if we didn't find the original RPC, it's okay, we'll simply ignore this
+                    // response. This matches the behaviour of V2.
+                    return Decision::Continue;
+                }
+
+                // How do we determine if this is an RPC call or unary?
+                //
+                // We use a hard-coded mapping from the old target names.
+                match V1Compat::new(old_target, &msg.payload) {
+                    compat::V1Compat::Rpc {
+                        v2_service,
+                        v1_response,
+                        sort_code,
+                        msg_type,
+                    } => {
+                        // Rpc call
+                        let Some(tx) = self.shared.tx.as_ref() else {
+                            // egress for responses has been drained
+                            return Decision::Continue;
+                        };
+                        counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => v2_service.as_str_name())
+                            .increment(encoded_len as u64);
+                        self.handle_v1_rpc(
+                            old_target,
+                            v2_service,
+                            v1_response,
+                            header,
+                            msg.payload,
+                            sort_code,
+                            msg_type,
+                            tx.clone(),
+                        )
+                        .await
+                    }
+                    compat::V1Compat::Unary {
+                        v2_service,
+                        sort_code,
+                        msg_type,
+                    } => {
+                        // unary
+                        counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => v2_service.as_str_name())
+                            .increment(encoded_len as u64);
+                        self.handle_v1_unary(
+                            old_target,
+                            v2_service,
+                            header,
+                            msg.payload,
+                            sort_code,
+                            msg_type,
+                        )
+                        .await
+                    }
+                    compat::V1Compat::Invalid => {
+                        // wat?
+                        warn!("Peer sent a bad protocol message from V1");
+                        Decision::Drop
+                    }
+                }
             }
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_v1_rpc(
+        &self,
+        v1_target: ServiceTag,
+        v2_service: ServiceTag,
+        v1_response_target: ServiceTag,
+        header: Header,
+        payload: Bytes,
+        sort_code: Option<u64>,
+        msg_type: String,
+        tx: super::UnboundedEgressSender,
+    ) -> Decision {
+        let id = header.msg_id;
+        // What do we need to figure out from the original message?
+        // - The message type (in V2)
+        // - The sort-code
+        let parent_context = header
+            .span_context
+            .as_ref()
+            .map(|span_ctx| self.context_propagator.extract(span_ctx));
+
+        let (reply_port, reply_rx) = RpcReplyPort::new();
+        let raw_rpc = RawRpc {
+            reply_port,
+            payload,
+            sort_code,
+        };
+        let incoming = Incoming::new(
+            self.connection.protocol_version,
+            raw_rpc,
+            self.connection.peer,
+            PeerMetadataVersion::from(header),
+            parent_context,
+        );
+        trace!("Received V1 RPC call: {v1_target}::{}", msg_type);
+        match tokio::task::unconstrained(self.router.call_rpc(v2_service, msg_type, incoming)).await
+        {
+            Ok(()) => { /* spawn reply task */ }
+            Err(err) => {
+                // we can't send rpc errors in v1, so we ignore and drop the message instead.
+                // this will result in a small leak of receiver tasks on V2's side.
+                send_rpc_error(&tx, err, id);
+            }
+        }
+
+        spawn_v1_rpc_responder(tx, id, reply_rx, v2_service, v1_response_target);
+
+        Decision::Continue
+    }
+
+    async fn handle_v1_unary(
+        &self,
+        v1_target: ServiceTag,
+        v2_service: ServiceTag,
+        header: Header,
+        payload: Bytes,
+        sort_code: Option<u64>,
+        msg_type: String,
+    ) -> Decision {
+        let parent_context = header
+            .span_context
+            .as_ref()
+            .map(|span_ctx| self.context_propagator.extract(span_ctx));
+        let metadata_versions = PeerMetadataVersion::from(header);
+        let incoming = Incoming::new(
+            self.connection.protocol_version,
+            RawUnary { payload, sort_code },
+            self.connection.peer(),
+            metadata_versions,
+            parent_context,
+        );
+        trace!("Received V1 Unary ({}) call: {v1_target}", msg_type);
+
+        let _ = tokio::task::unconstrained(self.router.call_unary(v2_service, msg_type, incoming))
+            .await;
+        Decision::Continue
+    }
+}
+
+fn send_rpc_error(tx: &super::UnboundedEgressSender, err: RouterError, id: u64) {
+    let body = RpcReply {
+        id,
+        body: Some(rpc_reply::Body::Status(rpc_reply::Status::from(err) as i32)),
+    };
+
+    let datagram = Body::Datagram(Datagram {
+        datagram: Some(body.into()),
+    });
+    let header = Header {
+        // for compatibility with V1 protocol
+        in_response_to: Some(id),
+        ..Default::default()
+    };
+
+    let _ = tx.unbounded_send(EgressMessage::Message(header, datagram, None));
+}
+
+/// A task to ship the reply or an error back to the caller
+fn spawn_rpc_responder(
+    tx: super::UnboundedEgressSender,
+    id: u64,
+    reply_rx: oneshot::Receiver<ReplyEnvelope>,
+    _target_service: ServiceTag,
+) {
+    // this is rpc-call, spawning a responder task
+    tokio::spawn(async move {
+        tokio::select! {
+            reply = reply_rx => {
+                match reply {
+                    Ok(envelope) => {
+                        let body = RpcReply { id, body: Some(envelope.body) };
+                        let datagram = Body::Datagram(Datagram { datagram: Some(body.into())});
+                        let _ = tx.unbounded_send(EgressMessage::Message(
+                            Header::default(),
+                            datagram,
+                            Some(envelope.span),
+                        ));
+                        // todo(asoli): here is a good place to measure total rpc
+                        // processing time.
+                    }
+                    // reply_port was closed, we'll not respond.
+                    Err(_) => {
+                        let body = RpcReply { id, body: Some(rpc_reply::Body::Status(rpc_reply::Status::Dropped.into())), };
+                        let datagram = Body::Datagram(Datagram { datagram: Some(body.into())});
+                        let _ = tx.unbounded_send(EgressMessage::Message(
+                            Header::default(),
+                            datagram,
+                            None,
+                        ));
+                    }
+                }
+            }
+            () = tx.closed() => {
+                // connection was dropped. Nothing to be done here.
+            }
+        }
+    });
+}
+
+/// A task to ship the reply or an error back to the caller
+fn spawn_v1_rpc_responder(
+    tx: super::UnboundedEgressSender,
+    id: u64,
+    reply_rx: oneshot::Receiver<ReplyEnvelope>,
+    _v2_service: ServiceTag,
+    v1_response_target: ServiceTag,
+) {
+    // this is rpc-call, spawning a responder task
+    tokio::spawn(async move {
+        tokio::select! {
+            reply = reply_rx => {
+                match reply {
+                    Ok(envelope) => {
+                        // the assumption here is that the payload is already encoded in the
+                        // right v1 envelope.
+                        let payload = match envelope.body {
+                                // what do we do with status?
+                                // Options:
+                                // 1. ignore v2-only errors [chosen]
+                                // 2. convert it to v1 message in known cases (PP rpc responses)
+                                rpc_reply::Body::Status(_status) => return,
+                                rpc_reply::Body::Payload(bytes) => bytes,
+                        };
+                        let datagram = Body::Encoded(BinaryMessage {payload, target: v1_response_target.into() });
+                        let header = Header {
+                            // for compatibility with V1 protocol
+                            in_response_to: Some(id),
+                            ..Default::default()
+                        };
+
+                        let _ = tx.unbounded_send(EgressMessage::Message(
+                            header,
+                            datagram,
+                            Some(envelope.span),
+                        ));
+                        // todo(asoli): here is a good place to measure total rpc
+                        // processing time.
+                    }
+                    // reply_port was closed, we'll not respond.
+                    // V1 doesn't support dropped notifications
+                    Err(_) => {}
+                }
+            }
+            () = tx.closed() => {
+                // connection was dropped. Nothing to be done here.
+            }
+        }
+    });
 }
 
 #[derive(derive_more::Index, derive_more::IndexMut)]
@@ -400,8 +803,8 @@ impl MetadataVersions {
         };
 
         Self {
-            metadata,
             versions,
+            metadata,
             nodes_config,
             schema,
             partition_table,

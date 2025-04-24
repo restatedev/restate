@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod message_handler;
 mod persisted_lsn_watchdog;
 mod processor_state;
 mod spawn_processor_task;
@@ -24,7 +23,6 @@ use itertools::{Either, Itertools};
 use metrics::gauge;
 use rand::Rng;
 use rand::seq::SliceRandom;
-use restate_types::retries::with_jitter;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
@@ -33,7 +31,9 @@ use tracing::{debug, error, info, info_span, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
-use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
+use restate_core::network::{
+    BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver, Verdict,
+};
 use restate_core::worker_api::{
     ProcessorsManagerCommand, ProcessorsManagerHandle, SnapshotCreated, SnapshotError,
     SnapshotResult,
@@ -60,14 +60,15 @@ use restate_types::live::LiveLoadExt;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-};
+use restate_types::net::partition_processor::PartitionLeaderService;
 use restate_types::net::partition_processor_manager::{
-    ControlProcessor, ControlProcessors, ProcessorCommand,
+    ControlProcessor, ControlProcessors, CreateSnapshotRequest, CreateSnapshotResponse,
+    PartitionManagerService, ProcessorCommand, Snapshot, SnapshotError as NetSnapshotError,
 };
+use restate_types::net::{RpcRequest as _, UnaryMessage};
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::WorkerStatus;
+use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString, Version};
 
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
@@ -80,7 +81,6 @@ use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_LAST_APPLIED_LSN_LAG};
 use crate::partition::ProcessorError;
 use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
-use crate::partition_processor_manager::message_handler::PartitionProcessorManagerMessageHandler;
 use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
@@ -95,8 +95,8 @@ pub struct PartitionProcessorManager {
 
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
-    incoming_update_processors: MessageStream<ControlProcessors>,
-    incoming_partition_processor_rpc: MessageStream<PartitionProcessorRpcRequest>,
+    ppm_svc_rx: ServiceReceiver<PartitionManagerService>,
+    pp_rpc_rx: ServiceReceiver<PartitionLeaderService>,
     bifrost: Bifrost,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
@@ -187,8 +187,8 @@ impl PartitionProcessorManager {
         bifrost: Bifrost,
         snapshot_repository: Option<SnapshotRepository>,
     ) -> Self {
-        let incoming_update_processors = router_builder.subscribe_to_stream(2);
-        let incoming_partition_processor_rpc = router_builder.subscribe_to_stream(128);
+        let ppm_svc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
+        let pp_rpc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
         Self {
@@ -198,8 +198,8 @@ impl PartitionProcessorManager {
             name_cache: Default::default(),
             metadata_store_client,
             partition_store_manager,
-            incoming_update_processors,
-            incoming_partition_processor_rpc,
+            ppm_svc_rx,
+            pp_rpc_rx,
             bifrost,
             rx,
             tx,
@@ -223,10 +223,6 @@ impl PartitionProcessorManager {
 
     pub fn handle(&self) -> ProcessorsManagerHandle {
         ProcessorsManagerHandle::new(self.tx.clone())
-    }
-
-    pub(crate) fn message_handler(&self) -> PartitionProcessorManagerMessageHandler {
-        PartitionProcessorManagerMessageHandler::new(self.handle())
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -258,6 +254,8 @@ impl PartitionProcessorManager {
         let mut update_target_tail_lsns = tokio::time::interval(Duration::from_secs(1));
         update_target_tail_lsns.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+        let mut ppm_svc_rx = self.ppm_svc_rx.take().start();
+        let mut pp_rpc_rx = self.pp_rpc_rx.take().start();
         self.health_status.update(WorkerStatus::Ready);
         loop {
             tokio::select! {
@@ -270,9 +268,8 @@ impl PartitionProcessorManager {
                 _ = update_target_tail_lsns.tick() => {
                     self.update_target_tail_lsns();
                 }
-                Some(control_processors) = self.incoming_update_processors.next() => {
-                    self.pending_control_processors = Some(PendingControlProcessors::new(control_processors.peer(), control_processors.into_body()));
-                    self.on_control_processors();
+                Some(op) = ppm_svc_rx.next() => {
+                    self.handle_ppm_service_op(op);
                 }
                 _ = logs_version_watcher.changed(), if self.pending_control_processors.is_some() => {
                     // logs version has changed. and we have a control_processors message
@@ -289,7 +286,7 @@ impl PartitionProcessorManager {
                 Some(event) = self.asynchronous_operations.join_next() => {
                     self.on_asynchronous_event(event.expect("asynchronous operations must not panic"));
                 }
-                Some(partition_processor_rpc) = self.incoming_partition_processor_rpc.next() => {
+                Some(partition_processor_rpc) = pp_rpc_rx.next() => {
                     self.on_partition_processor_rpc(partition_processor_rpc);
                 }
                 Some(result) = self.snapshot_export_tasks.next() => {
@@ -311,6 +308,7 @@ impl PartitionProcessorManager {
 
     async fn shutdown(&mut self) {
         debug!("Shutting down partition processor manager.");
+        self.rx.close();
 
         self.health_status.update(WorkerStatus::Unknown);
 
@@ -339,31 +337,45 @@ impl PartitionProcessorManager {
         }
     }
 
-    fn on_partition_processor_rpc(
-        &self,
-        partition_processor_rpc: Incoming<PartitionProcessorRpcRequest>,
-    ) {
-        let partition_id = partition_processor_rpc.body().partition_id;
+    fn handle_ppm_service_op(&mut self, msg: ServiceMessage<PartitionManagerService>) {
+        match msg {
+            ServiceMessage::Unary(msg) if msg.msg_type() == ControlProcessors::TYPE => {
+                let msg = msg.into_typed::<ControlProcessors>();
+                let peer = msg.peer();
+                let body = msg.into_body();
 
-        match self.processor_states.get(&partition_id) {
-            None => {
-                // ignore shutdown errors
-                let _ = TaskCenter::spawn(
-                    TaskKind::Disposable,
-                    "partition-processor-rpc-response",
-                    async move {
-                        partition_processor_rpc
-                            .to_rpc_response(Err(PartitionProcessorRpcError::NotLeader(
-                                partition_id,
-                            )))
-                            .send()
-                            .await
-                            .map_err(Into::into)
-                    },
-                );
+                self.pending_control_processors = Some(PendingControlProcessors::new(peer, body));
+                self.on_control_processors();
             }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == CreateSnapshotRequest::TYPE => {
+                let request = msg.into_typed::<CreateSnapshotRequest>();
+                self.handle_create_snapshot_request(request);
+            }
+            msg => {
+                msg.fail(Verdict::MessageUnrecognized);
+            }
+        }
+    }
+
+    fn on_partition_processor_rpc(&self, msg: ServiceMessage<PartitionLeaderService>) {
+        // We want the partition processor to decode the request and that we we only do the routing here.
+        let Some(sort_code) = msg.sort_code() else {
+            // this is a message for a partition we don't run
+            msg.fail(Verdict::SortCodeNotFound);
+            return;
+        };
+
+        // if this doesn't fit, then the partition id is not valid.
+        let Ok(partition_id) = u16::try_from(sort_code) else {
+            error!(%sort_code, "Invalid partition id in RPC request. This indicates a protocol bug!");
+            return;
+        };
+
+        let partition_id = PartitionId::from(partition_id);
+        match self.processor_states.get(&partition_id) {
+            None => msg.fail(Verdict::SortCodeNotFound),
             Some(processor_state) => {
-                processor_state.try_send_rpc(partition_id, partition_processor_rpc);
+                processor_state.try_send_rpc(msg);
             }
         }
     }
@@ -1161,6 +1173,31 @@ impl PartitionProcessorManager {
             .await?;
         Ok(epoch.epoch())
     }
+
+    fn handle_create_snapshot_request(&mut self, request: Incoming<Rpc<CreateSnapshotRequest>>) {
+        let (sender, rx) = oneshot::channel();
+        let (reciprocal, body) = request.split();
+        self.on_create_snapshot(body.partition_id, body.min_target_lsn, sender);
+        tokio::spawn(async move {
+            let Ok(result) = rx.await else {
+                // dropping the reciprocal will notify the sender that the request will not
+                // complete.
+                return;
+            };
+            match result {
+                Ok(snapshot) => reciprocal.send(CreateSnapshotResponse {
+                    result: Ok(Snapshot {
+                        snapshot_id: snapshot.snapshot_id,
+                        log_id: snapshot.log_id,
+                        min_applied_lsn: snapshot.min_applied_lsn,
+                    }),
+                }),
+                Err(err) => reciprocal.send(CreateSnapshotResponse {
+                    result: Err(NetSnapshotError::SnapshotCreationFailed(err.to_string())),
+                }),
+            };
+        });
+    }
 }
 
 struct AsynchronousEvent {
@@ -1218,8 +1255,7 @@ mod tests {
     use googletest::IntoTestResult;
     use restate_bifrost::BifrostService;
     use restate_bifrost::providers::memory_loglet;
-    use restate_core::network::MockPeerConnection;
-    use restate_core::network::protobuf::network::Header;
+    use restate_core::network::{ConnectionDirection, Swimlane};
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
@@ -1293,15 +1329,17 @@ mod tests {
             partition_processor_manager.run(),
         )?;
 
-        let connection = MockPeerConnection::connect(
-            node_id,
-            env.metadata.nodes_config_version(),
-            env.metadata.nodes_config_ref().cluster_name().to_owned(),
-            env.networking.connection_manager(),
-            10,
-        )
-        .await
-        .into_test_result()?;
+        let connection = env
+            .networking
+            .connection_manager()
+            .accept_fake_server_connection(
+                node_id,
+                Swimlane::default(),
+                ConnectionDirection::Forward,
+                None,
+            )
+            .await?
+            .into_inner();
 
         let start_processor_command = ControlProcessors {
             min_logs_table_version: Version::MIN,
@@ -1322,17 +1360,20 @@ mod tests {
 
         // let's check whether we can start and stop the partition processor multiple times
         for i in 0..=10 {
-            connection
-                .send_raw(
-                    if i % 2 == 0 {
-                        start_processor_command.clone()
-                    } else {
-                        stop_processor_command.clone()
-                    },
-                    Header::default(),
-                )
+            let permit = connection
+                .reserve()
                 .await
+                .ok_or_else(|| anyhow::anyhow!("connection dropped"))
                 .into_test_result()?;
+
+            permit.send_unary(
+                if i % 2 == 0 {
+                    start_processor_command.clone()
+                } else {
+                    stop_processor_command.clone()
+                },
+                None,
+            );
         }
 
         loop {
@@ -1343,10 +1384,13 @@ mod tests {
                 break;
             } else {
                 // make sure that we eventually start the partition processor
-                connection
-                    .send_raw(start_processor_command.clone(), Header::default())
+                let permit = connection
+                    .reserve()
                     .await
+                    .ok_or_else(|| anyhow::anyhow!("connection dropped"))
                     .into_test_result()?;
+
+                permit.send_unary(start_processor_command.clone(), None);
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }

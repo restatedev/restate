@@ -13,8 +13,7 @@ use std::time::Duration;
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
 
-use restate_core::network::rpc_router::{RpcError, RpcRouter};
-use restate_core::network::{NetworkError, Networking, TransportConnect};
+use restate_core::network::{NetworkSender, Networking, RpcError, Swimlane, TransportConnect};
 use restate_core::{Metadata, TaskCenterFutureExt};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
@@ -28,7 +27,6 @@ use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
 use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::loglet::FindTailFlags;
 use crate::providers::replicated_loglet::replication::NodeSetChecker;
-use crate::providers::replicated_loglet::rpc_routers::{LogServersRpc, SequencersRpc};
 
 /// Represents a task to determine and repair the tail of the loglet by consulting f-majority
 /// nodes in the nodeset assuming we are not the sequencer node.
@@ -49,8 +47,6 @@ pub struct FindTailTask<T> {
     segment_index: SegmentIndex,
     my_params: ReplicatedLogletParams,
     networking: Networking<T>,
-    logservers_rpc: LogServersRpc,
-    sequencers_rpc: SequencersRpc,
     known_global_tail: TailOffsetWatch,
     record_cache: RecordCache,
 }
@@ -74,8 +70,6 @@ impl<T: TransportConnect> FindTailTask<T> {
         segment_index: SegmentIndex,
         my_params: ReplicatedLogletParams,
         networking: Networking<T>,
-        logservers_rpc: LogServersRpc,
-        sequencers_rpc: SequencersRpc,
         known_global_tail: TailOffsetWatch,
         record_cache: RecordCache,
     ) -> Self {
@@ -84,8 +78,6 @@ impl<T: TransportConnect> FindTailTask<T> {
             segment_index,
             networking,
             my_params,
-            logservers_rpc,
-            sequencers_rpc,
             known_global_tail,
             record_cache,
         }
@@ -125,18 +117,17 @@ impl<T: TransportConnect> FindTailTask<T> {
         // todo: use cluster-state information when this becomes node-level available to avoid
         // the sequencer node if it's known to be dead.
         if let Ok(seq_state) = self
-            .sequencers_rpc
-            .get_seq_state
-            .call_timeout(
-                &self.networking,
+            .networking
+            .call_rpc(
                 self.my_params.sequencer,
+                Swimlane::default(),
                 get_seq_state,
+                Some(self.my_params.loglet_id.into()),
                 // todo: configure timeout?
-                Duration::from_millis(500),
+                Some(Duration::from_millis(500)),
             )
             .await
         {
-            let seq_state = seq_state.into_body();
             if seq_state.header.status.is_ok() {
                 let global_tail = seq_state
                     .header
@@ -188,14 +179,12 @@ impl<T: TransportConnect> FindTailTask<T> {
                     .name("find-tail")
                     .spawn({
                         let networking = self.networking.clone();
-                        let get_loglet_info_rpc = self.logservers_rpc.get_loglet_info.clone();
                         let known_global_tail = self.known_global_tail.clone();
                         let node = *node;
                         async move {
                             let task = FindTailOnNode {
                                 node_id: node,
                                 loglet_id: self.my_params.loglet_id,
-                                get_loglet_info_rpc: &get_loglet_info_rpc,
                                 known_global_tail: &known_global_tail,
                             };
                             task.run(&networking).await
@@ -306,7 +295,6 @@ impl<T: TransportConnect> FindTailTask<T> {
                             match RepairTail::new(
                                 self.my_params.clone(),
                                 self.networking.clone(),
-                                self.logservers_rpc.clone(),
                                 self.record_cache.clone(),
                                 self.known_global_tail.clone(),
                                 current_known_global,
@@ -353,7 +341,6 @@ impl<T: TransportConnect> FindTailTask<T> {
                         // This returns when we have f-majority sealed.
                         if let Err(e) = SealTask::run(
                             &self.my_params,
-                            &self.logservers_rpc.seal,
                             &self.known_global_tail,
                             &self.networking,
                         )
@@ -419,7 +406,6 @@ impl<T: TransportConnect> FindTailTask<T> {
                         let task = WaitForTailOnNode {
                             node_id: *node,
                             loglet_id: self.my_params.loglet_id,
-                            wait_for_tail_rpc: self.logservers_rpc.wait_for_tail.clone(),
                             known_global_tail: self.known_global_tail.clone(),
                         };
                         inflight_tail_update_watches
@@ -508,7 +494,6 @@ impl<T: TransportConnect> FindTailTask<T> {
 pub(super) struct FindTailOnNode<'a> {
     pub(super) node_id: PlainNodeId,
     pub(super) loglet_id: LogletId,
-    pub(super) get_loglet_info_rpc: &'a RpcRouter<GetLogletInfo>,
     pub(super) known_global_tail: &'a TailOffsetWatch,
 }
 
@@ -529,23 +514,28 @@ impl<'a> FindTailOnNode<'a> {
             ),
         };
 
-        let maybe_info = self
-            .get_loglet_info_rpc
-            .call_timeout(networking, self.node_id, request, request_timeout)
+        let maybe_info = networking
+            .call_rpc(
+                self.node_id,
+                Swimlane::default(),
+                request,
+                Some(self.loglet_id.into()),
+                Some(request_timeout),
+            )
             .await;
 
         match maybe_info {
             Ok(msg) => {
                 self.known_global_tail
-                    .notify_offset_update(msg.body().header.known_global_tail);
+                    .notify_offset_update(msg.header.known_global_tail);
                 // We retry on the following errors.
-                match msg.body().status {
+                match msg.status {
                     Status::Ok | Status::Sealed => {
                         return (
                             self.node_id,
                             NodeTailStatus::Known {
-                                local_tail: msg.body().header.local_tail,
-                                sealed: msg.body().header.sealed,
+                                local_tail: msg.header.local_tail,
+                                sealed: msg.header.sealed,
                             },
                         );
                     }
@@ -559,12 +549,12 @@ impl<'a> FindTailOnNode<'a> {
                             loglet_id = %self.loglet_id,
                             peer = %self.node_id,
                             "Unexpected status from log-server when calling GetLogletInfo: {:?}",
-                            msg.body().status
+                            msg.status
                         );
                     }
                 }
             }
-            Err(NetworkError::Timeout(spent)) => {
+            Err(RpcError::Timeout(spent)) => {
                 trace!(
                     "Timeout when getting loglet info from node_id={} for loglet_id={}. Configured timeout={:?}, spent={:?}",
                     self.node_id, self.loglet_id, request_timeout, spent,
@@ -585,7 +575,6 @@ impl<'a> FindTailOnNode<'a> {
 struct WaitForTailOnNode {
     node_id: PlainNodeId,
     loglet_id: LogletId,
-    wait_for_tail_rpc: RpcRouter<WaitForTail>,
     known_global_tail: TailOffsetWatch,
 }
 
@@ -595,11 +584,6 @@ impl WaitForTailOnNode {
         requested_tail: LogletOffset,
         networking: Networking<T>,
     ) -> (PlainNodeId, NodeTailStatus) {
-        let request_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
-
         let retry_policy = Configuration::pinned()
             .bifrost
             .replicated_loglet
@@ -618,25 +602,27 @@ impl WaitForTailOnNode {
                 ),
             };
             // loop and retry until this task is aborted.
-            let maybe_updated = tokio::time::timeout(
-                request_timeout,
-                self.wait_for_tail_rpc
-                    .call(&networking, self.node_id, request),
-            )
-            .await;
+            let maybe_updated = networking
+                .call_rpc(
+                    self.node_id,
+                    Swimlane::default(),
+                    request,
+                    Some(self.loglet_id.into()),
+                    None,
+                )
+                .await;
 
             match maybe_updated {
-                Ok(Ok(msg)) => {
+                Ok(msg) => {
                     self.known_global_tail
-                        .notify_offset_update(msg.body().header.known_global_tail);
-                    // We retry on the following errors.
-                    match msg.body().status {
+                        .notify_offset_update(msg.header.known_global_tail);
+                    match msg.status {
                         Status::Ok | Status::Sealed => {
                             return (
                                 self.node_id,
                                 NodeTailStatus::Known {
-                                    local_tail: msg.body().header.local_tail,
-                                    sealed: msg.body().header.sealed,
+                                    local_tail: msg.header.local_tail,
+                                    sealed: msg.header.sealed,
                                 },
                             );
                         }
@@ -648,28 +634,16 @@ impl WaitForTailOnNode {
                         Status::SequencerMismatch | Status::OutOfBounds | Status::Malformed => {
                             error!(
                                 "Unexpected status from log-server node_id={} when waiting for tail update for loglet_id={}: {:?}",
-                                self.node_id,
-                                self.loglet_id,
-                                msg.body().status
+                                self.node_id, self.loglet_id, msg.status
                             );
                             return (self.node_id, NodeTailStatus::Unknown);
                         }
                     }
                 }
-                Ok(Err(RpcError::SendError(e))) => {
+                Err(e) => {
                     trace!(
                         "Failed to watch loglet tail updates from node_id={} for loglet_id={}: {:?}",
-                        self.node_id, self.loglet_id, e.original
-                    );
-                }
-                Ok(Err(RpcError::Shutdown(_))) => {
-                    // RPC router has shutdown, terminating.
-                    return (self.node_id, NodeTailStatus::Unknown);
-                }
-                Err(_timeout_error) => {
-                    trace!(
-                        "Timeout when attempting to watch loglet tail updates from node_id={} for loglet_id={}. Configured timeout={:?} ",
-                        self.node_id, self.loglet_id, request_timeout
+                        self.node_id, self.loglet_id, e
                     );
                 }
             }

@@ -20,9 +20,9 @@ use tracing::trace;
 
 use crate::network::{ConnectError, Destination};
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(feature = "test-util")]
 const MAX_DELAY: Duration = Duration::from_secs(1);
-#[cfg(not(any(test, feature = "test-util")))]
+#[cfg(not(feature = "test-util"))]
 const MAX_DELAY: Duration = Duration::from_secs(5);
 
 const INITIAL_DELAY: Duration = Duration::from_millis(250);
@@ -47,8 +47,7 @@ impl ConnectThrottle {
 
     /// Checks if a connection to the given destination is allowed.
     pub fn may_connect(dest: &Destination) -> Result<(), ConnectError> {
-        let failures = THROTTLE.destination_state.read();
-        if let Some(state) = failures.get(dest) {
+        if let Some(state) = THROTTLE.destination_state.read().get(dest) {
             let now = Instant::now();
             let remaining = state.down_until.saturating_duration_since(now);
             if !remaining.is_zero() {
