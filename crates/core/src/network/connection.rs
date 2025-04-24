@@ -41,6 +41,7 @@ use super::HandshakeError;
 use super::MessageRouter;
 use super::PeerAddress;
 use super::ReplyRx;
+use super::Swimlane;
 use super::TransportConnect;
 use super::handshake::wait_for_welcome;
 use super::io::ConnectionReactor;
@@ -51,7 +52,6 @@ use super::io::{DrainReason, EgressMessage, EgressSender};
 use super::protobuf::network::Header;
 use super::protobuf::network::Hello;
 use super::tracking::ConnectionTracking;
-use super::tracking::PeerRouting;
 
 /// A permit to send a single message over a connection
 ///
@@ -156,6 +156,7 @@ pub struct Connection {
     pub(crate) protocol_version: ProtocolVersion,
     #[debug(skip)]
     pub(crate) sender: EgressSender,
+    pub(crate) swimlane: Swimlane,
     pub(crate) created: Instant,
 }
 
@@ -163,101 +164,101 @@ impl Connection {
     pub(crate) fn new(
         peer: GenerationalNodeId,
         protocol_version: ProtocolVersion,
+        swimlane: Swimlane,
         sender: EgressSender,
     ) -> Self {
         Self {
             peer,
             protocol_version,
             sender,
+            swimlane,
             created: Instant::now(),
         }
     }
 
-    #[cfg(any(test, feature = "test-util"))]
-    #[must_use]
-    pub fn new_closed(peer: GenerationalNodeId) -> Self {
-        Self {
-            peer,
-            protocol_version: Default::default(),
-            sender: EgressSender::new_closed(),
-            created: Instant::now(),
-        }
-    }
-
-    /// Starts a new connection to a destination
+    /// Starts a new _dedicated_ connection to a destination
+    #[allow(clippy::too_many_arguments)]
     pub async fn connect(
         destination: Destination,
+        swimlane: Swimlane,
         transport_connector: impl TransportConnect,
         direction: ConnectionDirection,
         task_kind: TaskKind,
         router: Arc<MessageRouter>,
         conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
-        peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
+        is_dedicated: bool,
     ) -> Result<(Self, TaskId), ConnectError> {
         ConnectThrottle::may_connect(&destination)?;
         Self::force_connect(
             destination.clone(),
+            swimlane,
             transport_connector,
             direction,
             task_kind,
             router,
             conn_tracker,
-            peer_router,
+            is_dedicated,
         )
         .await
     }
 
     /// Does not check for throttling before attempting a connection.
+    #[allow(clippy::too_many_arguments)]
     pub async fn force_connect(
         destination: Destination,
+        swimlane: Swimlane,
         transport_connector: impl TransportConnect,
         direction: ConnectionDirection,
         task_kind: TaskKind,
         router: Arc<MessageRouter>,
         conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
-        peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
+        is_dedicated: bool,
     ) -> Result<(Self, TaskId), ConnectError> {
         let result = Self::connect_inner(
             destination.clone(),
+            swimlane,
             transport_connector,
             direction,
             task_kind,
             router,
             conn_tracker,
-            peer_router,
+            is_dedicated,
         )
         .await;
 
         ConnectThrottle::note_connect_status(&destination, result.is_ok());
         match result {
             Err(ref e) => {
-                debug!(%direction, "Couldn't connect to {}: {}", destination, e);
+                debug!(%direction, %swimlane, "Couldn't connect to {}: {}", destination, e);
             }
             Ok((_, task_id)) => {
-                debug!(%direction, %task_id, "Connection established to {}", destination);
+                debug!(%direction, %swimlane, %task_id, "Connection established to {}", destination);
             }
         }
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn connect_inner(
         destination: Destination,
+        swimlane: Swimlane,
         transport_connector: impl TransportConnect,
         direction: ConnectionDirection,
         task_kind: TaskKind,
         router: Arc<MessageRouter>,
         conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
-        peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
+        is_dedicated: bool,
     ) -> Result<(Self, TaskId), ConnectError> {
         Self::connect_inner_with_node_id(
             None,
             destination,
+            swimlane,
             transport_connector,
             direction,
             task_kind,
             router,
             conn_tracker,
-            peer_router,
+            is_dedicated,
         )
         .await
     }
@@ -266,12 +267,13 @@ impl Connection {
     pub(super) async fn connect_inner_with_node_id(
         my_node_id: Option<GenerationalNodeId>,
         destination: Destination,
+        swimlane: Swimlane,
         transport_connector: impl TransportConnect,
         direction: ConnectionDirection,
         task_kind: TaskKind,
         router: Arc<MessageRouter>,
         conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
-        peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
+        is_dedicated: bool,
     ) -> Result<(Self, TaskId), ConnectError> {
         let metadata = Metadata::current();
         let my_node_id = my_node_id.or_else(|| metadata.my_node_id_opt());
@@ -289,7 +291,7 @@ impl Connection {
         shared
             .unbounded_send(EgressMessage::Message(
                 Header::default(),
-                Hello::new(my_node_id, cluster_name, direction).into(),
+                Hello::new(my_node_id, cluster_name, direction, swimlane).into(),
                 Some(Span::current()),
             ))
             .unwrap();
@@ -331,29 +333,23 @@ impl Connection {
             }
         }
 
-        let connection = Connection::new(peer_node_id, protocol_version, tx);
+        let connection = Connection::new(peer_node_id, protocol_version, swimlane, tx);
 
         // if peer cannot respect our hello intent of direction, we are okay with registering
-        let should_register = matches!(
+        let is_bidi = matches!(
             welcome.direction_ack(),
-            ConnectionDirection::Unknown
-                | ConnectionDirection::Bidirectional
-                | ConnectionDirection::Forward
+            ConnectionDirection::Unknown | ConnectionDirection::Bidirectional
         );
+        // a connection is not considered dedicated if it's bidirectional
+        let is_dedicated = is_dedicated && !is_bidi;
         let peer_metadata = PeerMetadataVersion::from(header);
 
         let reactor =
             ConnectionReactor::new(connection.clone(), shared, Some(peer_metadata), router);
 
-        let task_id = reactor.start(
-            task_kind,
-            conn_tracker,
-            peer_router,
-            incoming,
-            should_register,
-        )?;
+        let task_id = reactor.start(task_kind, conn_tracker, is_dedicated, incoming)?;
 
-        counter!(NETWORK_CONNECTION_CREATED, "direction" => "outgoing").increment(1);
+        counter!(NETWORK_CONNECTION_CREATED, "direction" => "outgoing", "swimlane" => swimlane.as_str_name()).increment(1);
         Ok((connection, task_id))
     }
 
