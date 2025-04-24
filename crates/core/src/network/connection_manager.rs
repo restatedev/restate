@@ -528,13 +528,23 @@ impl ConnectionManager {
                     let transport_connector = transport_connector.clone();
                     let conn_tracker = self.clone();
                     async move {
+                        // Gossip swimlane is always bidirectional. If a node A connects to node B
+                        // via the gossip swimlane, there is no need to establish a connection in
+                        // the other direction. If this is proving to be problematic, it's okay to
+                        // revert back to using Forward. Such a change will be backwards
+                        // compatible.
+                        let direction = if swimlane == Swimlane::Gossip {
+                            ConnectionDirection::Bidirectional
+                        } else {
+                            ConnectionDirection::Forward
+                        };
                         // Actually attempt/force to connect. We checked throttling before creating this
                         // future.
                         Connection::force_connect(
                             dest,
                             swimlane,
                             transport_connector,
-                            ConnectionDirection::Forward,
+                            direction,
                             TaskKind::ConnectionReactor,
                             router,
                             conn_tracker,
