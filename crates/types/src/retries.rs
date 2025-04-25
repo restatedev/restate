@@ -228,6 +228,71 @@ impl IntoIterator for RetryPolicy {
     }
 }
 
+/// Possible outcomes for calculating the duration of a retry policy
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitDuration {
+    Infinite,
+    Finite(Duration),
+    // No retries left, time left is ZERO.
+    None,
+}
+impl WaitDuration {
+    pub fn is_infinite(&self) -> bool {
+        matches!(self, WaitDuration::Infinite)
+    }
+
+    pub fn is_none(&self) -> bool {
+        matches!(self, WaitDuration::None)
+    }
+
+    /// Returns the duration if it is finite, otherwise panics.
+    pub fn unwrap(self) -> Duration {
+        match self {
+            WaitDuration::Finite(d) => d,
+            WaitDuration::Infinite => panic!("Infinite duration"),
+            WaitDuration::None => panic!("No duration left"),
+        }
+    }
+
+    pub fn unwrap_or(self, default: Duration) -> Duration {
+        match self {
+            WaitDuration::Finite(d) => d,
+            WaitDuration::Infinite => default,
+            WaitDuration::None => default,
+        }
+    }
+
+    /// Subtracts a duration from the current wait duration.
+    pub fn subtract(mut self, duration: Duration) -> Self {
+        match self {
+            WaitDuration::Finite(d) => {
+                if d > duration {
+                    self = WaitDuration::Finite(d - duration);
+                } else {
+                    self = WaitDuration::None;
+                }
+            }
+            WaitDuration::Infinite => {}
+            WaitDuration::None => {}
+        }
+        self
+    }
+
+    /// returns None if remaining time is zero
+    pub fn min(&self, other: Duration) -> Option<Duration> {
+        let remaining = match self {
+            WaitDuration::Finite(d) => (*d).min(other),
+            WaitDuration::Infinite => other,
+            WaitDuration::None => return None,
+        };
+        if remaining.is_zero() {
+            None
+        } else {
+            Some(remaining)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct RetryIter<'a> {
     policy: Cow<'a, RetryPolicy>,
@@ -254,8 +319,117 @@ impl RetryIter<'_> {
         self.max_attempts() - self.attempts()
     }
 
+    pub fn is_infinite(&self) -> bool {
+        match self.policy.as_ref() {
+            RetryPolicy::None => false,
+            RetryPolicy::FixedDelay { max_attempts, .. } => max_attempts.is_none(),
+            RetryPolicy::Exponential { max_attempts, .. } => max_attempts.is_none(),
+        }
+    }
+
+    /// Calculates the total remaining duration of all subsequent retries combined.
+    ///
+    /// This will return `WaitDuration::Infinite` if this retry policy does not have a maximum number of attempts
+    /// (infinite), or `WaitDuration::None` if no remaining retries are available.
+    pub fn remaining_cumulative_duration(&self) -> WaitDuration {
+        if self.is_infinite() {
+            return WaitDuration::Infinite;
+        }
+        let Some(next_delay) = self.peek_next() else {
+            return WaitDuration::None;
+        };
+
+        match self.policy.as_ref() {
+            RetryPolicy::None => WaitDuration::None,
+            RetryPolicy::FixedDelay { interval, .. } => {
+                WaitDuration::Finite(interval.mul_f64(self.remaining_attempts() as f64))
+            }
+            RetryPolicy::Exponential {
+                factor,
+                max_interval,
+                ..
+            } => {
+                let retries_left = self.remaining_attempts();
+
+                //-------------------------------------------------------------
+                // Put all arithmetic in f64 milliseconds for convenience
+                //-------------------------------------------------------------
+                let r = *factor as f64;
+                let d1_ms = next_delay.as_secs_f64() * 1_000.0; // d₁
+                let cap_ms = max_interval.map(|d| d.as_secs_f64() * 1_000.0); // M
+
+                //-------------------------------------------------------------
+                // How many future delays remain purely exponential (< cap)?
+                //-------------------------------------------------------------
+                let n_exp = match cap_ms {
+                    None => retries_left,       // no cap at all
+                    Some(m) if d1_ms >= m => 0, // already above / at the cap
+                    Some(m) => {
+                        // smallest j s.t. d₁·rʲ ≥ M  →  j = ceil(log_r(M/d₁))
+                        let ceil_j = ((m / d1_ms).ln() / r.ln()).ceil() as usize;
+                        retries_left.min(ceil_j)
+                    }
+                };
+
+                //-------------------------------------------------------------
+                // Geometric part (those still < cap)
+                //-------------------------------------------------------------
+                let geom_ms = if n_exp == 0 {
+                    0.0
+                } else {
+                    d1_ms * (r.powi(n_exp as i32) - 1.0) / (r - 1.0)
+                };
+
+                //-------------------------------------------------------------
+                // Flat tail at the cap, if any
+                //-------------------------------------------------------------
+                let cap_tail_ms = match cap_ms {
+                    Some(m) => (retries_left - n_exp) as f64 * m,
+                    None => 0.0,
+                };
+
+                WaitDuration::Finite(Duration::from_secs_f64((geom_ms + cap_tail_ms) / 1_000.0))
+            }
+        }
+    }
+
     pub fn last_retry(&self) -> Option<Duration> {
         self.last_retry
+    }
+
+    /// peeks the next delay without adding jitter
+    pub fn peek_next(&self) -> Option<Duration> {
+        match self.policy.as_ref() {
+            RetryPolicy::None => None,
+            RetryPolicy::FixedDelay {
+                interval,
+                max_attempts,
+            } => {
+                if max_attempts.is_some_and(|limit| (self.attempts + 1) > limit.into()) {
+                    None
+                } else {
+                    Some((*interval).into())
+                }
+            }
+            RetryPolicy::Exponential {
+                initial_interval,
+                factor,
+                max_attempts,
+                max_interval,
+            } => {
+                if max_attempts.is_some_and(|limit| (self.attempts + 1) > limit.into()) {
+                    None
+                } else if self.last_retry.is_some() {
+                    let new_retry = cmp::min(
+                        self.last_retry.unwrap().mul_f32(*factor),
+                        max_interval.map(Into::into).unwrap_or(Duration::MAX),
+                    );
+                    Some(new_retry)
+                } else {
+                    Some((*initial_interval).into())
+                }
+            }
+        }
     }
 }
 
@@ -423,6 +597,12 @@ mod tests {
         actual >= min_inc_jitter && actual <= max_inc_jitter
     }
 
+    fn within_rounding_error(expected: Duration, actual: Duration) -> bool {
+        let min_inc_jitter = expected - Duration::from_millis(1);
+        let max_inc_jitter = expected + Duration::from_millis(1);
+        actual >= min_inc_jitter && actual <= max_inc_jitter
+    }
+
     #[tokio::test(start_paused = true)]
     async fn conditional_retry() {
         let retry_policy = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(10));
@@ -440,5 +620,75 @@ mod tests {
             .await;
 
         assert_eq!(result, Err(5));
+    }
+
+    #[test]
+    fn remaining_duration() {
+        // no max attempts
+        let iter =
+            RetryPolicy::exponential(Duration::from_millis(100), 2.0, None, None).into_iter();
+        assert_eq!(iter.remaining_cumulative_duration(), WaitDuration::Infinite);
+
+        // 10 fixed attempts
+        let mut iter = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(10)).into_iter();
+        assert!(within_rounding_error(
+            Duration::from_millis(1000),
+            iter.remaining_cumulative_duration().unwrap()
+        ));
+        iter.next();
+        assert!(within_rounding_error(
+            iter.remaining_cumulative_duration().unwrap(),
+            Duration::from_millis(900)
+        ));
+
+        // exponential with max attempts, no max interval
+        let mut iter =
+            RetryPolicy::exponential(Duration::from_millis(100), 2.0, Some(5), None).into_iter();
+        // 100 + 200 + 400 + 800 + 1600 = 3100
+        assert!(within_rounding_error(
+            iter.remaining_cumulative_duration().unwrap(),
+            Duration::from_millis(3100)
+        ));
+        // skip first two
+        iter.next();
+        iter.next();
+        // _ + _ + 400 + 800 + 1600 = 2800
+        assert!(within_rounding_error(
+            iter.remaining_cumulative_duration().unwrap(),
+            Duration::from_millis(2800)
+        ));
+
+        // capped at 500ms
+        let mut iter = RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.0,
+            Some(5),
+            Some(Duration::from_millis(500)),
+        )
+        .into_iter();
+
+        // 100 + 200 + 400 + 500 + 500 = 1700
+        assert!(within_rounding_error(
+            iter.remaining_cumulative_duration().unwrap(),
+            Duration::from_millis(1700)
+        ));
+        // skip first two
+        iter.next();
+        iter.next();
+        // _ + _ + 400 + 500 + 500 = 1400
+        assert!(within_rounding_error(
+            iter.remaining_cumulative_duration().unwrap(),
+            Duration::from_millis(1400)
+        ));
+        iter.next();
+        iter.next();
+        assert!(within_rounding_error(
+            iter.remaining_cumulative_duration().unwrap(),
+            Duration::from_millis(500)
+        ));
+
+        iter.next();
+        // no more left
+        assert_eq!(iter.remaining_cumulative_duration(), WaitDuration::None);
     }
 }

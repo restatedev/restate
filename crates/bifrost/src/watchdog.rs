@@ -23,7 +23,6 @@ use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, cancellation_watch
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Logs, ProviderKind};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
 use crate::bifrost::BifrostInner;
 use crate::loglet::LogletProvider;
@@ -195,10 +194,10 @@ async fn trim_chain_if_needed(
 ) -> Result<(), ReadWriteError> {
     let new_logs = bifrost
         .metadata_writer
-        .raw_metadata_store_client()
-        .read_modify_write(BIFROST_CONFIG_KEY.clone(), |current: Option<Logs>| {
+        .global_metadata()
+        .read_modify_write(|current: Option<Arc<Logs>>| {
             let logs = current.expect("logs should be initialized by BifrostService");
-            let mut logs_builder = logs.into_builder();
+            let mut logs_builder = logs.as_ref().clone().into_builder();
             let mut chain_builder = logs_builder.chain(log_id).expect("log id exists");
 
             // trim_prefix's lsn is exclusive. Trim-point is inclusive of the last trimmed lsn,
@@ -212,8 +211,7 @@ async fn trim_chain_if_needed(
         })
         .await;
     match new_logs {
-        Ok(logs) => {
-            bifrost.metadata_writer.submit(Arc::new(logs));
+        Ok(_) => {
             debug!(
                 "Log {} chain has been trimmed to trim-point {} after requesting trim to {}",
                 log_id, actual_trim_point, requested_trim_point,

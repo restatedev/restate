@@ -14,6 +14,7 @@ mod update_task;
 
 use ahash::HashMap;
 pub use manager::{MetadataManager, TargetVersion};
+use restate_types::metadata::GlobalMetadata;
 pub use restate_types::net::metadata::MetadataKind;
 use tokio::time::Instant;
 
@@ -27,7 +28,7 @@ use tracing::instrument;
 
 use restate_types::live::{Live, Pinned};
 use restate_types::logs::metadata::Logs;
-use restate_types::net::metadata::MetadataContainer;
+use restate_types::net::metadata::{self, MetadataContainer};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
@@ -221,13 +222,9 @@ impl Metadata {
         metadata_kind: MetadataKind,
         min_version: Version,
     ) -> Result<Version, ShutdownError> {
-        let mut recv = self.inner.write_watches[metadata_kind].sender.subscribe();
-        // If we are already at the metadata version, avoid tokio's yielding to
-        // improve tail latencies when this is used in latency-sensitive operations.
-        let v = tokio::task::unconstrained(recv.wait_for(|v| *v >= min_version))
+        self.inner
+            .wait_for_version(metadata_kind, min_version)
             .await
-            .map_err(|_| ShutdownError)?;
-        Ok(*v)
     }
 
     /// Watch for version updates of this metadata kind.
@@ -264,6 +261,20 @@ struct MetadataInner {
 }
 
 impl MetadataInner {
+    async fn wait_for_version(
+        &self,
+        metadata_kind: MetadataKind,
+        min_version: Version,
+    ) -> Result<Version, ShutdownError> {
+        let mut recv = self.write_watches[metadata_kind].sender.subscribe();
+        // If we are already at the metadata version, avoid tokio's yielding to
+        // improve tail latencies when this is used in latency-sensitive operations.
+        let v = tokio::task::unconstrained(recv.wait_for(|v| *v >= min_version))
+            .await
+            .map_err(|_| ShutdownError)?;
+        Ok(*v)
+    }
+
     fn version(&self, metadata_kind: MetadataKind) -> Version {
         match metadata_kind {
             MetadataKind::NodesConfiguration => self.nodes_config.load().version(),
@@ -272,6 +283,22 @@ impl MetadataInner {
             MetadataKind::Logs => self.logs.load().version(),
         }
     }
+
+    /// return the metadata as global metadata
+    fn get<T>(&self, metadata_kind: MetadataKind) -> Arc<T>
+    where
+        T: GlobalMetadata + metadata::Extraction<Output = T>,
+    {
+        let container = match metadata_kind {
+            MetadataKind::NodesConfiguration => self.nodes_config.load_full().into_container(),
+            MetadataKind::Schema => self.schema.load_full().into_container(),
+            MetadataKind::PartitionTable => self.partition_table.load_full().into_container(),
+            MetadataKind::Logs => self.logs.load_full().into_container(),
+        };
+
+        container.extract().expect("metadata must match kind")
+    }
+
     /// Notifies the metadata manager about a newly observed metadata version for the given kind.
     /// If the metadata can be retrieved from a node, then a connection to this node can be included.
     fn notify_observed_version(
