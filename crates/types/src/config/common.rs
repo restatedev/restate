@@ -578,9 +578,10 @@ impl Default for MetadataClientOptions {
             connect_timeout: Duration::from_secs(3).into(),
             keep_alive_interval: Duration::from_secs(5).into(),
             keep_alive_timeout: Duration::from_secs(5).into(),
+            // default total time is ~5.3s
             backoff_policy: RetryPolicy::exponential(
-                Duration::from_millis(250),
-                1.5,
+                Duration::from_millis(100),
+                1.4,
                 Some(10),
                 Some(Duration::from_millis(1000)),
             ),
