@@ -75,10 +75,10 @@ impl<T: TransportConnect> NetworkSender for Networking<T> {
     async fn get_connection<N: Into<NodeId>>(
         &self,
         node_id: N,
-        _swimlane: Swimlane,
+        swimlane: Swimlane,
     ) -> Result<Connection, ConnectError> {
         self.connections
-            .get_or_connect(node_id, &self.connector)
+            .get_or_connect(node_id, swimlane, &self.connector)
             .await
     }
 
@@ -86,11 +86,11 @@ impl<T: TransportConnect> NetworkSender for Networking<T> {
     async fn reserve_owned<N: Into<NodeId>>(
         &self,
         node_id: N,
-        _swimlane: Swimlane,
+        swimlane: Swimlane,
     ) -> Option<OwnedSendPermit> {
         let connection = self
             .connections
-            .get_or_connect(node_id, &self.connector)
+            .get_or_connect(node_id, swimlane, &self.connector)
             .await
             .ok()?;
         connection.reserve_owned().await
@@ -100,7 +100,7 @@ impl<T: TransportConnect> NetworkSender for Networking<T> {
     async fn call_rpc<M, N>(
         &self,
         node_id: N,
-        _swimlane: Swimlane,
+        swimlane: Swimlane,
         msg: M,
         sort_code: Option<u64>,
         timeout: Option<Duration>,
@@ -113,7 +113,7 @@ impl<T: TransportConnect> NetworkSender for Networking<T> {
         let op = async {
             let connection = self
                 .connections
-                .get_or_connect(node_id, &self.connector)
+                .get_or_connect(node_id, swimlane, &self.connector)
                 .await?;
             let permit = match connection.reserve().await {
                 None => return Err(ConnectionClosed.into()),

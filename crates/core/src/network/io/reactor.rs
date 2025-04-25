@@ -40,7 +40,7 @@ use crate::network::metric_definitions::NETWORK_MESSAGE_RECEIVED_BYTES;
 use crate::network::protobuf::network::message::{BinaryMessage, Body, Signal};
 use crate::network::protobuf::network::{Datagram, RpcReply, datagram, rpc_reply};
 use crate::network::protobuf::network::{Header, Message};
-use crate::network::tracking::{ConnectionTracking, PeerRouting};
+use crate::network::tracking::ConnectionTracking;
 use crate::network::{
     Connection, Incoming, MessageRouter, PeerAddress, PeerMetadataVersion, ReplyEnvelope,
     RouterError, RpcReplyError, UnboundedConnectionRef, compat,
@@ -107,9 +107,8 @@ impl ConnectionReactor {
         self,
         task_kind: TaskKind,
         conn_tracker: impl ConnectionTracking + Send + Sync + 'static,
-        peer_router: impl PeerRouting + Clone + Send + Sync + 'static,
+        is_dedicated: bool,
         incoming: S,
-        should_register: bool,
     ) -> Result<TaskId, ShutdownError>
     where
         S: Stream<Item = Message> + Unpin + Send + 'static,
@@ -119,25 +118,12 @@ impl ConnectionReactor {
             peer = %self.connection.peer(),
         );
 
-        if should_register {
-            peer_router.register(&self.connection);
-        }
-        let connection = self.connection.clone();
-        let peer_router_cloned = peer_router.clone();
-
-        match TaskCenter::spawn(
+        TaskCenter::spawn(
             task_kind,
             "network-connection-reactor",
-            self.run_reactor(incoming, conn_tracker, peer_router)
+            self.run_reactor(incoming, conn_tracker, is_dedicated)
                 .instrument(span),
-        ) {
-            Ok(task) => Ok(task),
-            Err(e) => {
-                // make sure we deregister if we failed to spawn
-                peer_router_cloned.deregister(&connection);
-                Err(e)
-            }
-        }
+        )
     }
 
     fn send_drain_signal(&self, reason: DrainReason) {
@@ -152,21 +138,21 @@ impl ConnectionReactor {
         }
     }
 
-    fn switch_to_draining(&mut self, reason: DrainReason, peer_router: &impl PeerRouting) {
+    fn switch_to_draining(&mut self, reason: DrainReason, conn_track: &impl ConnectionTracking) {
         trace!("Connection is draining");
         self.send_drain_signal(reason);
         self.seen_versions = None;
         self.state = State::Draining {
             drain_timeout: Box::pin(tokio::time::sleep(Duration::from_secs(15))),
         };
-        peer_router.deregister(&self.connection);
+        conn_track.connection_draining(&self.connection);
     }
 
     pub async fn run_reactor<S>(
         mut self,
         mut incoming: S,
         conn_tracker: impl ConnectionTracking + Sync + Send + 'static,
-        peer_router: impl PeerRouting + Sync + Send + 'static,
+        is_dedicated: bool,
     ) -> anyhow::Result<()>
     where
         S: Stream<Item = Message> + Unpin + Send,
@@ -175,7 +161,7 @@ impl ConnectionReactor {
         Span::current().record("task_id", tracing::field::display(current_task.id()));
         let mut cancellation = std::pin::pin!(current_task.cancellation_token().cancelled());
 
-        conn_tracker.connection_created(&self.connection);
+        conn_tracker.connection_created(&self.connection, is_dedicated);
 
         loop {
             let decision = match self.state {
@@ -236,11 +222,11 @@ impl ConnectionReactor {
                 (_, Decision::Continue) => {}
                 (State::Active, Decision::Drain(reason)) => {
                     // send drain signal, and switch
-                    self.switch_to_draining(reason, &peer_router);
+                    self.switch_to_draining(reason, &conn_tracker);
                 }
                 (State::Active, Decision::NotifyPeerShutdown) => {
                     conn_tracker.notify_peer_shutdown(self.connection.peer());
-                    self.switch_to_draining(DrainReason::ConnectionDrain, &peer_router);
+                    self.switch_to_draining(DrainReason::ConnectionDrain, &conn_tracker);
                 }
                 (_, Decision::DrainEgress) => {
                     self.shared.tx.take();
@@ -260,9 +246,6 @@ impl ConnectionReactor {
             }
         }
 
-        // we also try to deregister here because we don't always transition to "Draining" before
-        // dropping
-        peer_router.deregister(&self.connection);
         conn_tracker.connection_dropped(&self.connection);
         Ok(())
     }

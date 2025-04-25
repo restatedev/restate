@@ -190,6 +190,7 @@ where
     let mut shutdown = std::pin::pin!(cancellation_watcher());
     let graceful_shutdown = GracefulShutdown::new();
     let task_name: Arc<str> = Arc::from(format!("{server_name}-socket"));
+
     loop {
         tokio::select! {
             biased;
@@ -208,6 +209,8 @@ where
                     .http2()
                     .timer(hyper_util::rt::TokioTimer::default())
                     .adaptive_window(network_options.http2_adaptive_window)
+                    .initial_connection_window_size(network_options.connection_window_size())
+                    .initial_stream_window_size(network_options.stream_window_size())
                     .keep_alive_interval(Some(network_options.http2_keep_alive_interval.into()))
                     .keep_alive_timeout(network_options.http2_keep_alive_timeout.into());
 

@@ -92,6 +92,8 @@ message Hello {
   // protocol
   optional restate.common.GenerationalNodeId my_node_id = 4;
   ConnectionDirection direction = 5;
+  // the purpose of this connection. Default is GENERAL.
+  Swimlane swimlane = 6;
 }
 
 message Welcome {
