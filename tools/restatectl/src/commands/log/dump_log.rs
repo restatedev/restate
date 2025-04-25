@@ -78,7 +78,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
         let metadata_store_client = metadata_store::start_metadata_server(config.clone()).await?;
         debug!("Metadata store client created");
 
-        let metadata_manager =
+        let mut metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
         let metadata_writer = metadata_manager.writer();
         let mut router_builder = MessageRouterBuilder::default();

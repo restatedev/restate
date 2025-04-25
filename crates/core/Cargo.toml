@@ -76,12 +76,11 @@ xxhash-rust = { workspace = true }
 tonic-build = { workspace = true }
 
 [dev-dependencies]
+restate-core = {path = ".", default-features = false, features = ["test-util"]}
 restate-test-util = { workspace = true }
-restate-types = { workspace = true, features = ["test-util"] }
 restate-core-derive = { workspace = true }
 
 googletest = { workspace = true }
 test-log = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }

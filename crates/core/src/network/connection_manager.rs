@@ -13,6 +13,7 @@ use std::sync::Arc;
 use ahash::HashMap;
 use futures::future::{BoxFuture, Shared};
 use futures::{FutureExt, Stream};
+use metrics::counter;
 use parking_lot::Mutex;
 use tracing::{debug, info, instrument, trace, warn};
 
@@ -21,10 +22,7 @@ use restate_types::nodes_config::{NodesConfigError, NodesConfiguration};
 use restate_types::{GenerationalNodeId, Merge, NodeId, PlainNodeId};
 
 use super::connection::Connection;
-use super::io::{
-    ConnectionReactor, DropEgressStream, EgressMessage, EgressStream, UnboundedEgressSender,
-};
-use super::metric_definitions::{self, CONNECTION_DROPPED, INCOMING_CONNECTION};
+use super::io::{ConnectionReactor, EgressMessage, EgressStream};
 use super::protobuf::network::ConnectionDirection;
 use super::protobuf::network::{Header, Message, Welcome};
 use super::tracking::{ConnectionTracking, PeerRouting};
@@ -35,7 +33,8 @@ use super::{
 use crate::network::PeerMetadataVersion;
 use crate::network::connection::ConnectThrottle;
 use crate::network::handshake::{negotiate_protocol_version, wait_for_hello};
-use crate::{Metadata, ShutdownError, TaskId, TaskKind, my_node_id};
+use crate::network::metric_definitions::{NETWORK_CONNECTION_CREATED, NETWORK_CONNECTION_DROPPED};
+use crate::{Metadata, ShutdownError, TaskCenter, TaskId, TaskKind, my_node_id};
 
 #[derive(Copy, Clone, PartialOrd, PartialEq, Default)]
 struct GenStatus {
@@ -102,7 +101,7 @@ impl ConnectionManagerInner {
 
 impl Default for ConnectionManagerInner {
     fn default() -> Self {
-        metric_definitions::describe_metrics();
+        super::metric_definitions::describe_metrics();
         Self {
             router: Arc::new(MessageRouter::default()),
             connection_by_gen_id: HashMap::default(),
@@ -171,9 +170,9 @@ impl ConnectionManager {
         // NodeId **must** be generational at this layer, we may support accepting connections from
         // anonymous nodes in the future. When this happens, this restate-server release will not
         // be compatible with it.
-        let peer_node_id = hello.my_node_id.ok_or(HandshakeError::Failed(
-            "GenerationalNodeId is not set in the Hello message".to_owned(),
-        ))?;
+        let peer_node_id = hello.my_node_id.ok_or_else(|| {
+            HandshakeError::Failed("GenerationalNodeId is not set in the Hello message".to_owned())
+        })?;
 
         // we don't allow node-id 0 in this version.
         if peer_node_id.id == 0 {
@@ -210,7 +209,7 @@ impl ConnectionManager {
             selected_protocol_version
         );
 
-        let (sender, unbounded_sender, egress, drop_egress) = EgressStream::create(
+        let (sender, egress, shared) = EgressStream::create(
             Configuration::pinned()
                 .networking
                 .outbound_queue_length
@@ -219,11 +218,11 @@ impl ConnectionManager {
 
         self.update_generation_or_preempt(&nodes_config, peer_node_id)?;
 
-        let peer_metadata = PeerMetadataVersion::from(header.clone());
+        let peer_metadata = PeerMetadataVersion::from(header);
 
         // Enqueue the welcome message
         let welcome = Welcome::new(my_node_id, selected_protocol_version, hello.direction());
-        unbounded_sender
+        shared
             .unbounded_send(EgressMessage::Message(
                 Header::default(),
                 welcome.into(),
@@ -243,9 +242,8 @@ impl ConnectionManager {
         let task_id = self.start_connection_reactor(
             TaskKind::ConnectionReactor,
             connection,
-            unbounded_sender,
+            shared,
             incoming,
-            drop_egress,
             should_register,
             Some(peer_metadata),
         )?;
@@ -257,10 +255,49 @@ impl ConnectionManager {
             "Incoming connection accepted from node {}", peer_node_id
         );
 
-        INCOMING_CONNECTION.increment(1);
+        counter!(NETWORK_CONNECTION_CREATED, "direction" => "incoming").increment(1);
 
         // Our output stream, i.e. responses.
         Ok(egress)
+    }
+
+    /// Create a fake connection simulating another node connecting to this server.
+    ///
+    /// The connection can be used to send and receive RPC messages to this server.
+    /// The message router passed here will be used to route messages going from this server to the
+    /// fake server on the other end of this connection.
+    #[cfg(feature = "test-util")]
+    pub async fn accept_fake_server_connection(
+        &self,
+        node_id: GenerationalNodeId,
+        swimlane: super::Swimlane,
+        direction: ConnectionDirection,
+        message_router: Option<Arc<MessageRouter>>,
+    ) -> Result<super::MockPeerConnection, ConnectError> {
+        use crate::network::tracking::{NoopRouter, NoopTracker};
+        use crate::network::{MockPeerConnection, PassthroughConnector};
+
+        let transport = PassthroughConnector(self.clone());
+        let (conn, task_id) = Connection::connect_inner_with_node_id(
+            Some(node_id),
+            Destination::Address(restate_types::net::AdvertisedAddress::Uds(
+                "/tmp/fake".into(),
+            )),
+            transport,
+            direction,
+            TaskKind::RemoteConnectionReactor,
+            message_router.unwrap_or_default(),
+            NoopTracker,
+            NoopRouter,
+        )
+        .await?;
+
+        Ok(MockPeerConnection {
+            my_node_id: node_id,
+            swimlane,
+            reactor_task_id: task_id,
+            conn,
+        })
     }
 
     /// Gets an existing connection or creates a new one if no active connection exists. If
@@ -388,8 +425,11 @@ impl ConnectionManager {
 
     #[instrument(skip_all)]
     fn connect_loopback(&self) -> Result<Connection, ConnectError> {
+        if TaskCenter::is_shutdown_requested() {
+            return Err(ConnectError::Shutdown(ShutdownError));
+        }
         debug!("Creating an express path connection to self");
-        let (tx, unbounded_sender, egress, drop_egress) = EgressStream::create(
+        let (tx, egress, shared) = EgressStream::create(
             Configuration::pinned()
                 .networking
                 .outbound_queue_length
@@ -404,9 +444,8 @@ impl ConnectionManager {
         self.start_connection_reactor(
             TaskKind::LocalReactor,
             connection.clone(),
-            unbounded_sender,
+            shared,
             egress,
-            drop_egress,
             // loopback is always registered
             true,
             None,
@@ -480,9 +519,8 @@ impl ConnectionManager {
         &self,
         task_kind: TaskKind,
         connection: Connection,
-        unbounded_sender: UnboundedEgressSender,
+        shared: super::io::Shared,
         incoming: S,
-        drop_egress: DropEgressStream,
         should_register: bool,
         peer_metadata: Option<PeerMetadataVersion>,
     ) -> Result<TaskId, ShutdownError>
@@ -491,12 +529,10 @@ impl ConnectionManager {
     {
         let router = self.inner.lock().router.clone();
 
-        let reactor =
-            ConnectionReactor::new(connection, unbounded_sender, drop_egress, peer_metadata);
+        let reactor = ConnectionReactor::new(connection, shared, peer_metadata, router);
 
         let task_id = reactor.start(
             task_kind,
-            router,
             self.clone(),
             self.clone(),
             incoming,
@@ -543,7 +579,7 @@ impl ConnectionTracking for ConnectionManager {
             "Connection terminated, connection lived for {:?}",
             conn.created.elapsed()
         );
-        CONNECTION_DROPPED.increment(1);
+        counter!(NETWORK_CONNECTION_DROPPED).increment(1);
     }
 
     fn notify_peer_shutdown(&self, node_id: GenerationalNodeId) {
@@ -577,19 +613,19 @@ mod tests {
     use super::*;
 
     use futures::stream;
-    use googletest::IntoTestResult;
     use googletest::prelude::*;
     use test_log::test;
     use tokio::sync::mpsc;
+    use tokio_stream::StreamExt;
     use tokio_stream::wrappers::ReceiverStream;
 
-    use restate_test_util::{assert_eq, let_assert};
+    use restate_test_util::assert_eq;
     use restate_types::Version;
     use restate_types::config::NetworkingOptions;
     use restate_types::locality::NodeLocation;
-    use restate_types::net::codec::WireDecode;
+    use restate_types::net::metadata::GetMetadataRequest;
     use restate_types::net::metadata::MetadataKind;
-    use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage};
+    use restate_types::net::metadata::MetadataManagerService;
     use restate_types::net::node::GetNodeState;
     use restate_types::net::{
         AdvertisedAddress, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
@@ -598,10 +634,10 @@ mod tests {
     use restate_types::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
     };
-    use tokio_stream::StreamExt;
 
-    use crate::network::MockPeerConnection;
-    use crate::network::protobuf::network::message::Body;
+    use crate::network::MessageRouterBuilder;
+    use crate::network::ServiceMessage;
+    use crate::network::Swimlane;
     use crate::network::protobuf::network::{Header, Hello};
     use crate::{self as restate_core, TestCoreEnv, TestCoreEnvBuilder};
 
@@ -609,18 +645,16 @@ mod tests {
     #[restate_core::test]
     async fn test_hello_welcome_handshake() -> Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
-        let metadata = Metadata::current();
         let connections = ConnectionManager::default();
 
-        let _mock_connection = MockPeerConnection::connect(
-            GenerationalNodeId::new(1, 1),
-            metadata.nodes_config_version(),
-            metadata.nodes_config_ref().cluster_name().to_owned(),
-            &connections,
-            10,
-        )
-        .await
-        .unwrap();
+        let _mock_connection = connections
+            .accept_fake_server_connection(
+                GenerationalNodeId::new(1, 1),
+                Swimlane::default(),
+                ConnectionDirection::Forward,
+                None,
+            )
+            .await?;
 
         Ok(())
     }
@@ -660,14 +694,7 @@ mod tests {
             direction: ConnectionDirection::Bidirectional.into(),
         };
         let hello = Message::new(
-            Header::new(
-                metadata.nodes_config_version(),
-                None,
-                None,
-                None,
-                crate::network::generate_msg_id(),
-                None,
-            ),
+            Header::new(metadata.nodes_config_version(), None, None, None, None),
             hello,
         );
         tx.send(hello).await.expect("Channel accept hello message");
@@ -694,14 +721,7 @@ mod tests {
             direction: ConnectionDirection::Bidirectional.into(),
         };
         let hello = Message::new(
-            Header::new(
-                metadata.nodes_config_version(),
-                None,
-                None,
-                None,
-                crate::network::generate_msg_id(),
-                None,
-            ),
+            Header::new(metadata.nodes_config_version(), None, None, None, None),
             hello,
         );
         tx.send(hello).await?;
@@ -738,14 +758,7 @@ mod tests {
             ConnectionDirection::Bidirectional,
         );
         let hello = Message::new(
-            Header::new(
-                metadata.nodes_config_version(),
-                None,
-                None,
-                None,
-                crate::network::generate_msg_id(),
-                None,
-            ),
+            Header::new(metadata.nodes_config_version(), None, None, None, None),
             hello,
         );
         tx.send(hello).await.expect("Channel accept hello message");
@@ -791,37 +804,44 @@ mod tests {
 
         let metadata = Metadata::current();
 
-        let mut connection = MockPeerConnection::connect(
-            node_id,
-            metadata.nodes_config_version(),
-            metadata.nodes_config_ref().cluster_name().to_string(),
-            test_env.networking.connection_manager(),
+        let mut incoming_router = MessageRouterBuilder::default();
+        let metadata_manager_rx = incoming_router.register_service::<MetadataManagerService>(
             10,
-        )
-        .await
-        .into_test_result()?;
+            crate::network::BackPressureMode::PushBack,
+        );
 
-        let request = GetNodeState {};
+        let mut metadata_manager_rx = metadata_manager_rx.start();
+
+        let connection = test_env
+            .networking
+            .connection_manager()
+            .accept_fake_server_connection(
+                node_id,
+                Swimlane::default(),
+                ConnectionDirection::Forward,
+                Some(Arc::new(incoming_router.build())),
+            )
+            .await?;
+
+        let request = GetNodeState::default();
         let partition_table_version = metadata.partition_table_version().next();
         let header = Header::new(
             metadata.nodes_config_version(),
             None,
             None,
             Some(partition_table_version),
-            crate::network::generate_msg_id(),
             None,
         );
 
-        connection
-            .send_raw(request, header)
-            .await
-            .into_test_result()?;
+        let permit = connection.conn.reserve().await.unwrap();
+
+        let rx = permit.send_rpc_with_header(request, None, header);
+        let _result = rx.await;
 
         // we expect the request to go through he existing open connection to my node
-        let message = connection.recv_stream.next().await.expect("some message");
+        let message = metadata_manager_rx.next().await.expect("some message");
         assert_get_metadata_request(
             message,
-            connection.protocol_version,
             MetadataKind::PartitionTable,
             partition_table_version,
         );
@@ -830,29 +850,22 @@ mod tests {
     }
 
     fn assert_get_metadata_request(
-        message: Message,
-        protocol_version: ProtocolVersion,
+        message: ServiceMessage<MetadataManagerService>,
         metadata_kind: MetadataKind,
         version: Version,
     ) {
-        let metadata_message = decode_metadata_message(message, protocol_version);
+        let ServiceMessage::Rpc(message) = message else {
+            panic!("Expected a RPC message");
+        };
+
+        let message = message.into_typed::<GetMetadataRequest>().into_body();
+
         assert_that!(
-            metadata_message,
-            pat!(MetadataMessage::GetMetadataRequest(pat!(
-                GetMetadataRequest {
-                    metadata_kind: eq(metadata_kind),
-                    min_version: eq(Some(version))
-                }
-            )))
+            message,
+            pat!(GetMetadataRequest {
+                metadata_kind: eq(metadata_kind),
+                min_version: eq(Some(version))
+            })
         );
-    }
-
-    fn decode_metadata_message(
-        message: Message,
-        protocol_version: ProtocolVersion,
-    ) -> MetadataMessage {
-        let_assert!(Some(Body::Encoded(mut binary_message)) = message.body);
-
-        MetadataMessage::decode(&mut binary_message.payload, protocol_version)
     }
 }

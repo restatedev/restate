@@ -17,7 +17,6 @@ mod provider;
 mod read_path;
 mod remote_sequencer;
 pub mod replication;
-mod rpc_routers;
 pub mod sequencer;
 mod tasks;
 #[cfg(any(test, feature = "test-util"))]

@@ -12,7 +12,7 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tracing::{Instrument, debug, error, info, warn};
 
-use restate_core::network::{Networking, TransportConnect};
+use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenterFutureExt};
 use restate_types::logs::{KeyFilter, LogletOffset, RecordCache, SequenceNumber};
 use restate_types::net::log_server::{GetDigest, LogServerRequestHeader};
@@ -20,7 +20,6 @@ use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::read_path::ReadStreamTask;
-use crate::providers::replicated_loglet::rpc_routers::LogServersRpc;
 
 use super::digests::Digests;
 
@@ -79,7 +78,6 @@ use super::digests::Digests;
 pub struct RepairTail<T> {
     my_params: ReplicatedLogletParams,
     networking: Networking<T>,
-    logservers_rpc: LogServersRpc,
     record_cache: RecordCache,
     known_global_tail: TailOffsetWatch,
     digests: Digests,
@@ -98,7 +96,6 @@ impl<T: TransportConnect> RepairTail<T> {
     pub fn new(
         my_params: ReplicatedLogletParams,
         networking: Networking<T>,
-        logservers_rpc: LogServersRpc,
         record_cache: RecordCache,
         known_global_tail: TailOffsetWatch,
         start_offset: LogletOffset,
@@ -108,7 +105,6 @@ impl<T: TransportConnect> RepairTail<T> {
         RepairTail {
             my_params,
             networking,
-            logservers_rpc,
             record_cache,
             known_global_tail,
             digests,
@@ -154,13 +150,18 @@ impl<T: TransportConnect> RepairTail<T> {
                 .name("get-digest")
                 .spawn({
                     let networking = self.networking.clone();
-                    let logservers_rpc = self.logservers_rpc.clone();
                     let peer = *node;
                     async move {
-                        logservers_rpc
-                            .get_digest
-                            .call(&networking, peer, msg.clone())
+                        networking
+                            .call_rpc(
+                                peer,
+                                Swimlane::default(),
+                                msg.clone(),
+                                Some(self.my_params.loglet_id.into()),
+                                None,
+                            )
                             .await
+                            .map(|reply| (peer, reply))
                     }
                     .in_current_tc()
                     .in_current_span()
@@ -169,17 +170,13 @@ impl<T: TransportConnect> RepairTail<T> {
         }
 
         // # Digest Phase
-        while let Some(Ok(digest_message)) = get_digest_requests.join_next().await {
-            let Ok(digest_message) = digest_message else {
+        while let Some(Ok(response)) = get_digest_requests.join_next().await {
+            let Ok((peer_node, digest_message)) = response else {
                 // ignore nodes that we can't get digest from
                 continue;
             };
-            let peer_node = digest_message.peer().as_plain();
-            self.digests.on_digest_message(
-                peer_node,
-                digest_message.into_body(),
-                &self.known_global_tail,
-            );
+            self.digests
+                .on_digest_message(peer_node, digest_message, &self.known_global_tail);
             debug!(loglet_id = %self.my_params.loglet_id, "Received digest from {}", peer_node);
             if self.digests.advance(&metadata.nodes_config_ref()) {
                 break;
@@ -260,7 +257,6 @@ impl<T: TransportConnect> RepairTail<T> {
         let Ok((mut rx, read_stream_task)) = ReadStreamTask::start(
             self.my_params.clone(),
             self.networking.clone(),
-            self.logservers_rpc.clone(),
             KeyFilter::Any,
             self.digests.start_offset(),
             Some(self.digests.target_tail().prev()),
@@ -286,17 +282,15 @@ impl<T: TransportConnect> RepairTail<T> {
                         entry,
                         self.my_params.sequencer,
                         &self.networking,
-                        &self.logservers_rpc.store,
                     ).await {
                         warn!(error=%e, "Failed to replicate record while repairing the tail");
                         break 'replication_phase;
                     }
                 }
-                Some(Ok(Ok(digest_message))) = get_digest_requests.join_next() => {
-                    let peer_node = digest_message.peer().as_plain();
+                Some(Ok(Ok((peer_node, digest_message)))) = get_digest_requests.join_next() => {
                     self.digests.on_digest_message(
                         peer_node,
-                        digest_message.into_body(),
+                        digest_message,
                         &self.known_global_tail,
                     );
                     self.digests.advance(&metadata.nodes_config_ref());

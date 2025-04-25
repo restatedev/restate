@@ -14,11 +14,11 @@ use tokio::time::Instant;
 use tracing::{instrument, trace};
 
 use restate_core::ShutdownError;
-use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{Incoming, NetworkError, Networking, TransportConnect};
+use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
-use restate_types::net::log_server::{LogServerRequest, LogServerResponse};
+use restate_types::net::RpcRequest;
+use restate_types::net::log_server::{LogServerMessage, LogServerResponse};
 use restate_types::retries::RetryPolicy;
 
 use crate::loglet::util::TailOffsetWatch;
@@ -40,45 +40,37 @@ pub enum Disposition<T> {
     Abort,
 }
 
-#[allow(dead_code)]
-pub fn passthrough<I>(msg: Incoming<I>) -> Disposition<I> {
-    Disposition::Return(msg.into_body())
-}
-
-pub struct RunOnSingleNode<'a, T: LogServerRequest> {
+pub struct RunOnSingleNode<'a, T: LogServerMessage> {
     node_id: PlainNodeId,
     request: T,
-    rpc_router: &'a RpcRouter<T>,
     known_global_tail: &'a TailOffsetWatch,
     retry_policy: RetryPolicy,
 }
 
-impl<'a, T: LogServerRequest> RunOnSingleNode<'a, T>
+impl<'a, T: LogServerMessage + RpcRequest> RunOnSingleNode<'a, T>
 where
-    T: LogServerRequest + Clone,
-    T::ResponseMessage: LogServerResponse,
+    T: LogServerMessage + Clone,
+    T::Response: LogServerResponse,
 {
     pub fn new(
         node_id: PlainNodeId,
         request: T,
-        rpc_router: &'a RpcRouter<T>,
         known_global_tail: &'a TailOffsetWatch,
         retry_policy: RetryPolicy,
     ) -> Self {
         Self {
             node_id,
             request,
-            rpc_router,
             known_global_tail,
             retry_policy,
         }
     }
 
     /// Send a message to a single node and handles network-related failures with retries.
-    #[instrument(skip_all, fields(node_id = %self.node_id, loglet_id = %self.request.header().loglet_id, message = self.request.kind()))]
+    #[instrument(skip_all, fields(node_id = %self.node_id, loglet_id = %self.request.header().loglet_id, message = T::TYPE))]
     pub async fn run<O, N: TransportConnect>(
         mut self,
-        on_response: impl Fn(Incoming<T::ResponseMessage>) -> Disposition<O>,
+        on_response: impl Fn(PlainNodeId, T::Response) -> Disposition<O>,
         networking: &'a Networking<N>,
     ) -> Result<O, TaskError> {
         let start = Instant::now();
@@ -97,15 +89,15 @@ where
                 .refresh_header(self.known_global_tail.latest_offset());
             let next_pause = retry_iter.next();
 
-            trace!(%loglet_id, "Sending {} message to node {}", self.request.kind(), self.node_id);
+            trace!(%loglet_id, "Sending {} message to node {}", T::TYPE, self.node_id);
             // loop and retry until this task is aborted.
-            let maybe_response = self
-                .rpc_router
-                .call_timeout(
-                    networking,
+            let maybe_response = networking
+                .call_rpc(
                     self.node_id,
+                    Swimlane::default(),
                     self.request.clone(),
-                    request_timeout,
+                    Some(loglet_id.into()),
+                    Some(request_timeout),
                 )
                 .await;
 
@@ -113,8 +105,8 @@ where
                 Ok(msg) => {
                     // update our view of global tail if we observed higher tail in response.
                     self.known_global_tail
-                        .notify_offset_update(msg.body().header().known_global_tail);
-                    match on_response(msg) {
+                        .notify_offset_update(msg.header().known_global_tail);
+                    match on_response(self.node_id, msg) {
                         Disposition::Return(v) => return Ok(v),
                         Disposition::Abort => return Err(TaskError::Aborted),
                         Disposition::Retry if next_pause.is_some() => {
@@ -131,10 +123,6 @@ where
                             return Err(TaskError::ExhaustedRetries(start.elapsed()));
                         }
                     }
-                }
-                Err(NetworkError::Shutdown(err)) => {
-                    // We are shutting down
-                    return Err(TaskError::Shutdown(err));
                 }
                 // We'll retry in every other case of networking error
                 Err(err) if next_pause.is_some() => {

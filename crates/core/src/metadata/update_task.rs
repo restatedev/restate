@@ -24,7 +24,7 @@ use tracing::{debug, error, trace};
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::metadata::GlobalMetadata;
-use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage};
+use restate_types::net::metadata::{Extraction, GetMetadataRequest};
 use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::{GenerationalNodeId, Version};
 
@@ -82,7 +82,10 @@ pub enum Command<T> {
     },
 }
 
-impl<T: GlobalMetadata> GlobalMetadataUpdateTask<T> {
+impl<T> GlobalMetadataUpdateTask<T>
+where
+    T: GlobalMetadata + Extraction<Output = T>,
+{
     pub fn start(
         metadata_store_client: MetadataStoreClient,
         item: Arc<ArcSwap<T>>,
@@ -210,8 +213,12 @@ impl<T: GlobalMetadata> GlobalMetadataUpdateTask<T> {
                     let version = latest_observed.version;
                     trace!(kind = %T::KIND, %node_id, %version, "Fetching metadata from peer");
                     let connection = connection.clone();
-                    self.in_flight_peer_requests
-                        .spawn(update_from_peer::<T>(connection, version));
+                    let version_watch = self.write_watch.subscribe();
+                    self.in_flight_peer_requests.spawn(update_from_peer(
+                        connection,
+                        version,
+                        version_watch,
+                    ));
                     // one at a time, in the next tick, we may ask another peer.
                     break;
                 }
@@ -378,18 +385,42 @@ async fn update_from_metadata_store<T: GlobalMetadata>(client: MetadataStoreClie
     }
 }
 
-// why is this async? because in future networking, we'll be able to wait for the response, so we
-// want to model this request as if it's a RPC.
-async fn update_from_peer<T: GlobalMetadata>(
+async fn update_from_peer<T: GlobalMetadata + Extraction<Output = T>>(
     connection: UnboundedConnectionRef,
-    version: Version,
+    min_version: Version,
+    mut version_watch: watch::Receiver<Version>,
 ) -> Option<Arc<T>> {
-    let _ = connection.encode_and_send(MetadataMessage::GetMetadataRequest(GetMetadataRequest {
-        metadata_kind: T::KIND,
-        min_version: Some(version),
-    }));
+    let peer = connection.peer();
+    let reply_rx = connection
+        .send_system_rpc(
+            GetMetadataRequest {
+                metadata_kind: T::KIND,
+                min_version: Some(min_version),
+            },
+            None,
+        )
+        .ok()?;
 
-    None
+    // we wait until we get a response, or until we have learned about this version from other
+    // sources.
+    tokio::select! {
+        Ok(_) = version_watch.wait_for(|v| *v >= min_version) => {
+            None
+        }
+        Ok(update) = reply_rx => {
+            debug!(
+                kind  = %update.container.kind(),
+                version = %update.container.version(),
+                %peer,
+                "Received metadata update from peer",
+            );
+            update.container.extract()
+        }
+        else => {
+            // on shutdown (watch's sender drop) or if we received an error for the rpc
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error)]

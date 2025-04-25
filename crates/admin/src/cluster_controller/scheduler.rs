@@ -17,7 +17,7 @@ use rand::seq::IteratorRandom;
 use tracing::{Level, debug, enabled, info, instrument, trace, warn};
 
 use restate_core::metadata_store::{ReadError, ReadWriteError, WriteError};
-use restate_core::network::{Networking, Outgoing, TransportConnect};
+use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::cluster::cluster_state::RunMode;
@@ -406,7 +406,10 @@ impl<T: TransportConnect> Scheduler<T> {
                         // doesn't retry, we don't want to keep bombarding a node that's
                         // potentially dead.
                         async move {
-                            let Ok(connection) = networking.node_connection(node_id).await else {
+                            let Ok(connection) = networking
+                                .get_connection(node_id, Swimlane::default())
+                                .await
+                            else {
                                 // ignore connection errors, no need to mark the task as failed
                                 // as it pollutes the log.
                                 return Ok(());
@@ -416,7 +419,7 @@ impl<T: TransportConnect> Scheduler<T> {
                                 // ditto
                                 return Ok(());
                             };
-                            permit.send(Outgoing::new(node_id, control_processors));
+                            permit.send_unary(control_processors, None);
                             Ok(())
                         }
                     },
@@ -536,22 +539,22 @@ impl Drop for TargetPartitionPlacementState<'_> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::convert::Infallible;
     use std::iter;
     use std::num::NonZero;
     use std::time::Duration;
 
     use futures::StreamExt;
-    use googletest::assert_that;
-    use googletest::matcher::{Matcher, MatcherResult};
+    use googletest::prelude::*;
     use itertools::Itertools;
     use rand::Rng;
     use rand::prelude::ThreadRng;
     use test_log::test;
     use tokio::sync::mpsc;
-    use tokio_stream::wrappers::ReceiverStream;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
 
-    use restate_core::network::{ForwardingHandler, Incoming, MessageCollectorMockConnector};
+    use restate_core::network::{
+        BackPressureMode, Incoming, MessageRouterBuilder, MockConnector, Unary,
+    };
     use restate_core::{Metadata, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
@@ -559,9 +562,10 @@ mod tests {
     use restate_types::identifiers::PartitionId;
     use restate_types::locality::NodeLocation;
     use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
-    use restate_types::net::codec::WireDecode;
-    use restate_types::net::partition_processor_manager::{ControlProcessors, ProcessorCommand};
-    use restate_types::net::{AdvertisedAddress, TargetName};
+    use restate_types::net::partition_processor_manager::{
+        ControlProcessors, PartitionManagerService, ProcessorCommand,
+    };
+    use restate_types::net::{AdvertisedAddress, UnaryMessage};
     use restate_types::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
@@ -670,33 +674,35 @@ mod tests {
         }
 
         // network messages going to other nodes are written to `tx`
-        let (tx, control_recv) = mpsc::channel(100);
-        let connector = MessageCollectorMockConnector::new(10, tx.clone());
+        let (tx, control_recv) = mpsc::unbounded_channel();
 
-        let mut builder = TestCoreEnvBuilder::with_transport_connector(connector);
-        builder.router_builder.add_raw_handler(
-            TargetName::ControlProcessors,
-            // network messages going to my node is also written to `tx`
-            Box::new(ForwardingHandler::new(GenerationalNodeId::new(1, 1), tx)),
-        );
+        let router_factory = move |peer_node_id: GenerationalNodeId,
+                                   router: &mut MessageRouterBuilder| {
+            let service_receiver =
+                router.register_service::<PartitionManagerService>(128, BackPressureMode::PushBack);
 
-        let mut control_recv = ReceiverStream::new(control_recv)
-            .filter_map(|(node_id, message)| async move {
-                if message.body().target() == TargetName::ControlProcessors {
-                    let message = message
-                        .try_map(|mut m| {
-                            Ok::<_, Infallible>(ControlProcessors::decode(
-                                &mut m.payload,
-                                restate_types::net::CURRENT_PROTOCOL_VERSION,
-                            ))
-                        })
-                        .unwrap();
-                    Some((node_id, message))
-                } else {
-                    None
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let mut stream = service_receiver.start();
+                while let Some(msg) = stream.next().await {
+                    match msg {
+                        restate_core::network::ServiceMessage::Unary(msg)
+                            if msg.msg_type() == ControlProcessors::TYPE =>
+                        {
+                            let _ = tx.send((peer_node_id, msg.into_typed::<ControlProcessors>()));
+                        }
+                        msg => {
+                            msg.fail(restate_core::network::Verdict::MessageUnrecognized);
+                        }
+                    }
                 }
-            })
-            .boxed();
+            });
+        };
+
+        let (connector, _new_connections) = MockConnector::new(router_factory.clone());
+        let mut builder = TestCoreEnvBuilder::with_transport_connector(connector);
+        // also pass my own control messages to the same service handler
+        router_factory(GenerationalNodeId::new(1, 1), &mut builder.router_builder);
 
         let mut partition_table_builder =
             PartitionTable::with_equally_sized_partitions(Version::MIN, num_partitions)
@@ -715,8 +721,10 @@ mod tests {
             .set_partition_table(partition_table.clone())
             .build()
             .await;
+
         let mut scheduler = Scheduler::new(metadata_writer, networking);
         let mut observed_cluster_state = ObservedClusterState::default();
+        let mut control_recv = std::pin::pin!(UnboundedReceiverStream::new(control_recv));
 
         for _ in 0..num_scheduling_rounds {
             let cluster_state = random_cluster_state(&node_ids, num_partitions);
@@ -744,10 +752,7 @@ mod tests {
                 .expect("the scheduler should have created a partition table");
 
             // assert that the effective scheduling plan aligns with the target scheduling plan
-            assert_that!(
-                observed_cluster_state,
-                matches_partition_table(&target_partition_table)
-            );
+            matches_partition_table(&target_partition_table, &observed_cluster_state)?;
 
             let alive_nodes: NodeSet = cluster_state
                 .alive_nodes()
@@ -885,70 +890,45 @@ mod tests {
         Ok(partition_table_builder.build())
     }
 
-    fn matches_partition_table(partition_table: &PartitionTable) -> PartitionTableMatcher<'_> {
-        PartitionTableMatcher { partition_table }
-    }
+    fn matches_partition_table(
+        partition_table: &PartitionTable,
+        observed_state: &ObservedClusterState,
+    ) -> googletest::Result<()> {
+        assert_that!(
+            observed_state.partitions.len(),
+            eq(partition_table.num_partitions() as usize)
+        );
 
-    struct PartitionTableMatcher<'a> {
-        partition_table: &'a PartitionTable,
-    }
+        for (partition_id, partition) in partition_table.partitions() {
+            let Some(observed_state) = observed_state.partitions.get(partition_id) else {
+                panic!("partition {partition_id} not found in observed state");
+            };
+            assert_that!(
+                observed_state.partition_processors.len(),
+                eq(partition.placement.len())
+            );
 
-    impl Matcher for PartitionTableMatcher<'_> {
-        type ActualT = ObservedClusterState;
-
-        fn matches(&self, actual: &Self::ActualT) -> MatcherResult {
-            if actual.partitions.len() != self.partition_table.num_partitions() as usize {
-                return MatcherResult::NoMatch;
-            }
-
-            for (partition_id, partition) in self.partition_table.partitions() {
-                if let Some(observed_state) = actual.partitions.get(partition_id) {
-                    if observed_state.partition_processors.len() != partition.placement.len() {
-                        return MatcherResult::NoMatch;
-                    }
-
-                    for (position, node_id) in partition.placement.iter().with_position() {
-                        let run_mode = if matches!(
-                            position,
-                            itertools::Position::First | itertools::Position::Only
-                        ) {
-                            RunMode::Leader
-                        } else {
-                            RunMode::Follower
-                        };
-                        if observed_state.partition_processors.get(node_id) != Some(&run_mode) {
-                            return MatcherResult::NoMatch;
-                        }
-                    }
+            for (position, node_id) in partition.placement.iter().with_position() {
+                let run_mode = if matches!(
+                    position,
+                    itertools::Position::First | itertools::Position::Only
+                ) {
+                    RunMode::Leader
                 } else {
-                    return MatcherResult::NoMatch;
-                }
-            }
-
-            MatcherResult::Match
-        }
-
-        fn describe(&self, matcher_result: MatcherResult) -> String {
-            match matcher_result {
-                MatcherResult::Match => {
-                    format!(
-                        "should reflect the partition table {:?}",
-                        self.partition_table
-                    )
-                }
-                MatcherResult::NoMatch => {
-                    format!(
-                        "does not reflect the partition table {:?}",
-                        self.partition_table
-                    )
-                }
+                    RunMode::Follower
+                };
+                assert_that!(
+                    observed_state.partition_processors.get(node_id),
+                    eq(Some(&run_mode))
+                );
             }
         }
+        Ok(())
     }
 
     fn derive_observed_cluster_state(
         cluster_state: &ClusterState,
-        control_messages: Vec<(GenerationalNodeId, Incoming<ControlProcessors>)>,
+        control_messages: Vec<(GenerationalNodeId, Incoming<Unary<ControlProcessors>>)>,
     ) -> ObservedClusterState {
         let mut observed_cluster_state = ObservedClusterState::default();
         observed_cluster_state.update(cluster_state);

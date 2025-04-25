@@ -13,21 +13,39 @@ package restate.network;
 
 import "restate/common.proto";
 
+// Describes the intent of use for the connection
+enum Swimlane {
+  // The default, if swimlane is not set or unknown.
+  //
+  // This is used for general communication and messaging between nodes.
+  GENERAL = 0;
+  // Dedicated swimlane for gossip and failure detection messages
+  GOSSIP = 1;
+  // Fat pipe for streaming bifrost records
+  BIFROST_DATA = 2;
+  // Fat pipe for ingress data communication with workers
+  INGRESS_DATA = 3;
+}
+
 //
 // # Wire Protocol Of Streaming Connections
 // -------------------------------------
 //
 message Header {
-  /// A unique monotonically increasing identifier of this message/request per
-  /// producer. The uniqueness domain is the generational node id. This is
-  /// always set for all messages (whether it's a request or a response)
+  // **DEPRECATED** fabric v2 uses in-message id instead.
+  // A unique monotonically increasing identifier of this message/request per
+  // producer. The uniqueness domain is the generational node id. This is
+  // always set for all messages (whether it's a request or a response)
   uint64 msg_id = 1;
-  /// The msg_id at which we are responding to. Unset if this not to be
-  /// considered a response. Note: If this is set, it's the responsibility of
-  /// the message producer to ensure that the response is sent to the original
-  /// producer (generational node id).
+
+  // **DEPRECATED** fabric v2 uses in-message id instead.
+  // The msg_id at which we are responding to. Unset if this not to be
+  // considered a response. Note: If this is set, it's the responsibility of
+  // the message producer to ensure that the response is sent to the original
+  // producer (generational node id).
   // Using raw value to be as compact as possible.
   optional uint64 in_response_to = 2;
+
   optional uint32 my_nodes_config_version = 3;
   optional uint32 my_logs_version = 4;
   optional uint32 my_schema_version = 5;
@@ -107,7 +125,7 @@ message Message {
   }
 
   message BinaryMessage {
-    restate.common.TargetName target = 1;
+    restate.common.ServiceTag target = 1;
     bytes payload = 2;
   }
 
@@ -118,7 +136,152 @@ message Message {
     Hello hello = 3;
     // Sent as first response
     Welcome welcome = 4;
+    // Available from protocol V2
+    Datagram datagram = 5;
+    // **DEPRECATED** Used for compatibility with protocol V1.
     // keep this as last, always
     BinaryMessage encoded = 1000;
   }
+}
+
+message Datagram {
+  oneof datagram {
+    RpcCall rpc_call = 1;
+    RpcReply rpc_reply = 2;
+    Watch watch = 3;
+    WatchUpdate watch_update = 4;
+    Ping ping = 5;
+    Pong pong = 6;
+
+    // one way message
+    Unary unary = 100;
+  }
+}
+
+message Watch {
+  // request identifier to map the reply back
+  uint64 id = 1;
+  // the service identifier, must be set. Message is silently ignored if 0.
+  restate.common.ServiceTag service = 2;
+  // the type-name of the rpc message (variant in the service)
+  string msg_type = 3;
+  // routing code of the target inbox if applicable, otherwise, defaults to 0.
+  optional uint64 sort_code = 4;
+  bytes payload = 100;
+}
+
+message WatchUpdate {
+  enum Start {
+    // Receiver will not respond to this request for unknown reason
+    // This is often returned when the receiver sent us a status that we don't recognize
+    // in this protocol version.
+    // The request *might* have been processed
+    Start_UNKNOWN = 0;
+    // Service identifier was not registered on this node
+    // Request has not been processed
+    SERVICE_NOT_FOUND = 1;
+    // Service has stopped processing requests
+    // Request has not been processed
+    SERVICE_STOPPED = 2;
+    // Service is known but it has not started yet
+    // Request has not been processed
+    SERVICE_NOT_READY = 3;
+    // Service is known but it didn't recognize the sort code
+    // Request has not been processed
+    SORT_CODE_NOT_FOUND = 4;
+    // The received dropped the response handle
+    // The request *might* have been processed
+    DROPPED = 5;
+    // Service did not process the request due to backpressure
+    // Request has not been processed
+    LOAD_SHEDDING = 6;
+    // Message type was unrecognized by the receiver
+    // Request has not been processed
+    MESSAGE_UNRECOGNIZED = 7;
+  }
+
+  enum End {
+    // Receiver will not respond to this request for unknown reason
+    // This is often returned when the receiver sent us a status that we don't recognize
+    // in this protocol version.
+    // The request *might* have been processed
+    End_UNKNOWN = 0;
+    // Watch was cleanly stopped
+    OK = 1;
+  }
+  uint64 id = 1;
+  oneof body {
+    Start start = 2;
+    End end = 3;
+    bytes update = 100;
+  }
+}
+
+message RpcCall {
+  // request identifier to map the reply back
+  uint64 id = 1;
+  // the service identifier, must be set. Message is silently ignored if 0.
+  restate.common.ServiceTag service = 2;
+  // the type-name of the rpc message (variant in the service)
+  string msg_type = 3;
+  // routing code of the target inbox if applicable, otherwise, defaults to 0.
+  optional uint64 sort_code = 4;
+  bytes payload = 100;
+}
+
+message RpcReply {
+  enum Status {
+    // Receiver will not respond to this request for unknown reason
+    // This is often returned when the receiver sent us a status that we don't recognize
+    // in this protocol version.
+    // The request *might* have been processed
+    Status_UNKNOWN = 0;
+    // Service identifier was not registered on this node
+    // Request has not been processed
+    SERVICE_NOT_FOUND = 1;
+    // Service has stopped processing requests
+    // Request has not been processed
+    SERVICE_STOPPED = 2;
+    // Service is known but it has not started yet
+    // Request has not been processed
+    SERVICE_NOT_READY = 3;
+    // Service is known but it didn't recognize the sort code
+    // Request has not been processed
+    SORT_CODE_NOT_FOUND = 4;
+    // The received dropped the response handle
+    // The request *might* have been processed
+    DROPPED = 5;
+    // Service did not process the request due to backpressure
+    // Request has not been processed
+    LOAD_SHEDDING = 6;
+    // Message type was unrecognized by the receiver
+    // Request has not been processed
+    MESSAGE_UNRECOGNIZED = 7;
+  }
+
+  // correlates the reply to the original request
+  uint64 id = 1;
+  oneof body {
+    // encoded message payload
+    Status status = 98;
+    bytes payload = 99;
+  }
+}
+
+// Replaces BinaryMessage
+message Unary {
+  restate.common.ServiceTag service = 1;
+  // routing code of the target inbox if applicable, otherwise, defaults to 0.
+  optional uint64 sort_code = 2;
+  // the type-name of the unary message (variant in the service)
+  string msg_type = 3;
+  bytes payload = 100;
+}
+
+message Ping {
+  uint64 timestamp = 1;
+}
+
+message Pong {
+  uint64 timestamp = 1;
 }

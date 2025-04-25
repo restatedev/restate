@@ -12,9 +12,9 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tracing::{Instrument, debug, info, instrument, trace, warn};
 
-use restate_core::network::rpc_router::RpcRouter;
-use restate_core::network::{Incoming, Networking, TransportConnect};
+use restate_core::network::{Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenterFutureExt};
+use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
@@ -46,7 +46,6 @@ impl SealTask {
     #[instrument(skip_all)]
     pub async fn run<T: TransportConnect>(
         my_params: &ReplicatedLogletParams,
-        seal_rpc_router: &RpcRouter<Seal>,
         known_global_tail: &TailOffsetWatch,
         networking: &Networking<T>,
     ) -> Result<LogletOffset, ReplicatedLogletError> {
@@ -99,14 +98,12 @@ impl SealTask {
                 .name("seal")
                 .spawn({
                     let networking = networking.clone();
-                    let rpc_router = seal_rpc_router.clone();
                     let known_global_tail = known_global_tail.clone();
                     let retry_policy = retry_policy.clone();
                     async move {
                         let task = RunOnSingleNode::new(
                             node_id,
                             request,
-                            &rpc_router,
                             &known_global_tail,
                             retry_policy,
                         );
@@ -163,14 +160,13 @@ impl SealTask {
     }
 }
 
-fn on_seal_response(msg: Incoming<Sealed>) -> Disposition<Sealed> {
-    if msg.body().header.status == Status::Ok || msg.body().sealed {
-        return Disposition::Return(msg.into_body());
+fn on_seal_response(peer: PlainNodeId, msg: Sealed) -> Disposition<Sealed> {
+    if msg.header.status == Status::Ok || msg.sealed {
+        return Disposition::Return(msg);
     }
     trace!(
         "Seal request failed on node {}, status is {:?}",
-        msg.peer(),
-        msg.body().header.status
+        peer, msg.header.status
     );
     Disposition::Abort
 }

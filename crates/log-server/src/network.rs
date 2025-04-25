@@ -12,15 +12,16 @@
 //!
 //! We maintain a stream per message type for fine-grain per-message-type control over the queue
 //! depth, head-of-line blocking issues, and priority of consumption.
-use std::collections::{HashMap, hash_map};
+use std::collections::hash_map;
 
+use ahash::{HashMap, HashMapExt};
 use anyhow::Context;
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt as TokioStreamExt;
-use tracing::{debug, trace};
+use tracing::trace;
 
 use restate_core::cancellation_watcher;
-use restate_core::network::{Incoming, MessageRouterBuilder, MessageStream};
+use restate_core::network::{BackPressureMode, MessageRouterBuilder, ServiceReceiver};
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
@@ -39,14 +40,8 @@ type LogletWorkerMap = HashMap<LogletId, LogletWorkerHandle>;
 
 pub struct RequestPump {
     _configuration: Live<Configuration>,
-    store_stream: MessageStream<Store>,
-    release_stream: MessageStream<Release>,
-    seal_stream: MessageStream<Seal>,
-    get_loglet_info_stream: MessageStream<GetLogletInfo>,
-    get_records_stream: MessageStream<GetRecords>,
-    trim_stream: MessageStream<Trim>,
-    wait_for_tail_stream: MessageStream<WaitForTail>,
-    get_digest_stream: MessageStream<GetDigest>,
+    data_svc_rx: ServiceReceiver<LogServerDataService>,
+    info_svc_rx: ServiceReceiver<LogServerMetaService>,
 }
 
 impl RequestPump {
@@ -60,24 +55,12 @@ impl RequestPump {
             .incoming_network_queue_length
             .into();
         // We divide requests into two priority categories.
-        let store_stream = router_builder.subscribe_to_stream(queue_length);
-        let release_stream = router_builder.subscribe_to_stream(queue_length);
-        let seal_stream = router_builder.subscribe_to_stream(queue_length);
-        let get_loglet_info_stream = router_builder.subscribe_to_stream(queue_length);
-        let get_records_stream = router_builder.subscribe_to_stream(queue_length);
-        let trim_stream = router_builder.subscribe_to_stream(queue_length);
-        let wait_for_tail_stream = router_builder.subscribe_to_stream(queue_length);
-        let get_digest_stream = router_builder.subscribe_to_stream(queue_length);
+        let data_svc_rx = router_builder.register_service(queue_length, BackPressureMode::PushBack);
+        let info_svc_rx = router_builder.register_service(queue_length, BackPressureMode::PushBack);
         Self {
             _configuration: configuration,
-            store_stream,
-            release_stream,
-            seal_stream,
-            get_loglet_info_stream,
-            get_records_stream,
-            trim_stream,
-            wait_for_tail_stream,
-            get_digest_stream,
+            data_svc_rx,
+            info_svc_rx,
         }
     }
 
@@ -93,14 +76,8 @@ impl RequestPump {
         S: LogStore + Clone + Sync + Send + 'static,
     {
         let RequestPump {
-            mut store_stream,
-            mut release_stream,
-            mut seal_stream,
-            mut get_loglet_info_stream,
-            mut get_records_stream,
-            mut trim_stream,
-            mut wait_for_tail_stream,
-            mut get_digest_stream,
+            data_svc_rx,
+            info_svc_rx,
             ..
         } = self;
 
@@ -108,6 +85,8 @@ impl RequestPump {
 
         let mut loglet_workers = HashMap::with_capacity(DEFAULT_WRITERS_CAPACITY);
 
+        let mut data_svc_rx = data_svc_rx.start();
+        let mut info_svc_rx = info_svc_rx.start();
         health_status.update(LogServerStatus::Ready);
 
         // We need to dispatch this work to the right loglet worker as quickly as possible
@@ -118,110 +97,52 @@ impl RequestPump {
         loop {
             // Ordered by priority of message types
             tokio::select! {
-                biased;
                 _ = &mut shutdown => {
                     health_status.update(LogServerStatus::Stopping);
                     // stop accepting messages
-                    drop(wait_for_tail_stream);
-                    drop(store_stream);
-                    drop(release_stream);
-                    drop(seal_stream);
-                    drop(get_loglet_info_stream);
-                    drop(get_records_stream);
-                    drop(trim_stream);
-                    drop(get_digest_stream);
+                    // todo: consider graceful drain
+                    drop(data_svc_rx);
+                    drop(info_svc_rx);
                     // shutdown all workers.
                     Self::shutdown(loglet_workers).await;
                     health_status.update(LogServerStatus::Unknown);
                     return Ok(());
                 }
-                Some(get_digest) = get_digest_stream.next() => {
+                Some(op) = info_svc_rx.next() => {
+                    // all requests are sorted by sort-code (V2 fabric)
+                    // messages without sort-code will be ignored.
+                    let Some(sort_code) = op.sort_code() else {
+                        trace!("Received log-server message {} without sort-code, ignoring", op.msg_type());
+                        continue;
+                    };
+                    let loglet_id = LogletId::from(sort_code);
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        get_digest.body().header.loglet_id,
+                        loglet_id,
                         &log_store,
                         &state_map,
                         &mut loglet_workers,
                     ).await?;
-                    Self::on_get_digest(worker, get_digest);
+                    worker.enqueue_info_msg(op);
                 }
-                Some(wait_for_tail) = wait_for_tail_stream.next() => {
+                Some(op) = data_svc_rx.next() => {
+                    // all requests are sorted by sort-code (V2 fabric)
+                    // messages without sort-code will be ignored.
+                    let Some(sort_code) = op.sort_code() else {
+                        trace!("Received log-server message {} without sort-code, ignoring", op.msg_type());
+                        continue;
+                    };
+                    let loglet_id = LogletId::from(sort_code);
                     // find the worker or create one.
                     // enqueue.
                     let worker = Self::find_or_create_worker(
-                        wait_for_tail.body().header.loglet_id,
+                        loglet_id,
                         &log_store,
                         &state_map,
                         &mut loglet_workers,
                     ).await?;
-                    Self::on_wait_for_tail(worker, wait_for_tail);
-                }
-                Some(release) = release_stream.next() => {
-                    // find the worker or create one.
-                    // enqueue.
-                    let worker = Self::find_or_create_worker(
-                        release.body().header.loglet_id,
-                        &log_store,
-                        &state_map,
-                        &mut loglet_workers,
-                    ).await?;
-                    Self::on_release(worker, release);
-                }
-                Some(seal) = seal_stream.next() => {
-                    // find the worker or create one.
-                    // enqueue.
-                    let worker = Self::find_or_create_worker(
-                        seal.body().header.loglet_id,
-                        &log_store,
-                        &state_map,
-                        &mut loglet_workers,
-                    ).await?;
-                    Self::on_seal(worker, seal);
-                }
-                Some(get_loglet_info) = get_loglet_info_stream.next() => {
-                    // find the worker or create one.
-                    // enqueue.
-                    let worker = Self::find_or_create_worker(
-                        get_loglet_info.body().header.loglet_id,
-                        &log_store,
-                        &state_map,
-                        &mut loglet_workers,
-                    ).await?;
-                    Self::on_get_loglet_info(worker, get_loglet_info);
-                }
-                Some(get_records) = get_records_stream.next() => {
-                    // find the worker or create one.
-                    // enqueue.
-                    let worker = Self::find_or_create_worker(
-                        get_records.body().header.loglet_id,
-                        &log_store,
-                        &state_map,
-                        &mut loglet_workers,
-                    ).await?;
-                    Self::on_get_records(worker, get_records);
-                }
-                Some(trim) = trim_stream.next() => {
-                    // find the worker or create one.
-                    // enqueue.
-                    let worker = Self::find_or_create_worker(
-                        trim.body().header.loglet_id,
-                        &log_store,
-                        &state_map,
-                        &mut loglet_workers,
-                    ).await?;
-                    Self::on_trim(worker, trim);
-                }
-                Some(store) = store_stream.next() => {
-                    // find the worker or create one.
-                    // enqueue.
-                    let worker = Self::find_or_create_worker(
-                        store.body().header.loglet_id,
-                        &log_store,
-                        &state_map,
-                        &mut loglet_workers,
-                    ).await?;
-                    Self::on_store(worker, store);
+                    worker.enqueue_data_msg(op);
                 }
             }
         }
@@ -236,87 +157,6 @@ impl RequestPump {
         // await all tasks to shutdown
         let _ = tasks.join_all().await;
         trace!("All loglet workers have terminated");
-    }
-
-    fn on_get_digest(worker: &LogletWorkerHandle, msg: Incoming<GetDigest>) {
-        if let Err(msg) = worker.enqueue_get_digest(msg) {
-            let peer = msg.peer();
-            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if !msg.to_rpc_response(Digest::empty()).try_send() {
-                debug!(%peer, "Failed to respond to GetDigest message with status Disabled");
-            }
-        }
-    }
-
-    fn on_wait_for_tail(worker: &LogletWorkerHandle, msg: Incoming<WaitForTail>) {
-        if let Err(msg) = worker.enqueue_wait_for_tail(msg) {
-            let peer = msg.peer();
-            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if !msg.to_rpc_response(TailUpdated::empty()).try_send() {
-                debug!(%peer, "Failed to respond to WaitForTail message with status Disabled");
-            }
-        }
-    }
-
-    fn on_store(worker: &LogletWorkerHandle, msg: Incoming<Store>) {
-        if let Err(msg) = worker.enqueue_store(msg) {
-            let peer = msg.peer();
-            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if !msg.to_rpc_response(Stored::empty()).try_send() {
-                debug!(%peer, "Failed to respond to Store message with status Disabled");
-            }
-        }
-    }
-
-    fn on_release(worker: &LogletWorkerHandle, msg: Incoming<Release>) {
-        if let Err(msg) = worker.enqueue_release(msg) {
-            let peer = msg.peer();
-            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if !msg.to_rpc_response(Released::empty()).try_send() {
-                debug!(%peer, "Failed to respond to Release message with status Disabled");
-            }
-        }
-    }
-
-    fn on_seal(worker: &LogletWorkerHandle, msg: Incoming<Seal>) {
-        if let Err(msg) = worker.enqueue_seal(msg) {
-            let peer = msg.peer();
-            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if !msg.to_rpc_response(Sealed::empty()).try_send() {
-                debug!(%peer, "Failed to respond to Seal message with status Disabled");
-            }
-        }
-    }
-
-    fn on_get_loglet_info(worker: &LogletWorkerHandle, msg: Incoming<GetLogletInfo>) {
-        if let Err(msg) = worker.enqueue_get_loglet_info(msg) {
-            let peer = msg.peer();
-            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if !msg.to_rpc_response(LogletInfo::empty()).try_send() {
-                debug!(%peer, "Failed to respond to GetLogletInfo message with status Disabled");
-            }
-        }
-    }
-
-    fn on_get_records(worker: &LogletWorkerHandle, msg: Incoming<GetRecords>) {
-        if let Err(msg) = worker.enqueue_get_records(msg) {
-            let next_offset = msg.body().from_offset;
-            let peer = msg.peer();
-            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if !msg.to_rpc_response(Records::empty(next_offset)).try_send() {
-                debug!(%peer, "Failed to respond to GetRecords message with status Disabled");
-            }
-        }
-    }
-
-    fn on_trim(worker: &LogletWorkerHandle, msg: Incoming<Trim>) {
-        if let Err(msg) = worker.enqueue_trim(msg) {
-            let peer = msg.peer();
-            // worker has crashed or shutdown in progress. Notify the sender and drop the message.
-            if !msg.to_rpc_response(Trimmed::empty()).try_send() {
-                debug!(%peer, "Failed to respond to Trim message with status Disabled");
-            }
-        }
     }
 
     async fn find_or_create_worker<'a, S: LogStore>(

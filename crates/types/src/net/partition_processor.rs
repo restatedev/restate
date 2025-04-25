@@ -14,18 +14,26 @@ use crate::identifiers::{
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget};
 use crate::journal_v2::Signal;
-use crate::net::TargetName;
-use crate::net::define_rpc;
+use crate::net::ServiceTag;
+use crate::net::{default_wire_codec, define_rpc, define_service};
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+pub struct PartitionLeaderService;
+
+define_service! {
+    @service = PartitionLeaderService,
+    @tag = ServiceTag::PartitionLeaderService,
+}
+
 define_rpc! {
     @request = PartitionProcessorRpcRequest,
     @response = Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
-    @request_target = TargetName::PartitionProcessorRpc,
-    @response_target = TargetName::PartitionProcessorRpcResponse,
+    @service = PartitionLeaderService,
 }
+default_wire_codec!(PartitionProcessorRpcRequest);
+default_wire_codec!(Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>);
 
 /// Requests to individual partition processors. We still need to route them through the PP manager.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,8 +86,6 @@ pub enum PartitionProcessorRpcError {
     NotLeader(PartitionId),
     #[error("not leader anymore for partition '{0}'")]
     LostLeadership(PartitionId),
-    #[error("rejecting rpc because too busy")]
-    Busy,
     #[error("internal error: {0}")]
     Internal(String),
     #[error("partition processor starting")]
@@ -93,10 +99,9 @@ impl PartitionProcessorRpcError {
         match self {
             PartitionProcessorRpcError::NotLeader(_) => true,
             PartitionProcessorRpcError::LostLeadership(_) => true,
-            PartitionProcessorRpcError::Busy => false,
+            PartitionProcessorRpcError::Stopping => true,
             PartitionProcessorRpcError::Internal(_) => false,
             PartitionProcessorRpcError::Starting => false,
-            PartitionProcessorRpcError::Stopping => false,
         }
     }
 }

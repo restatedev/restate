@@ -16,8 +16,7 @@ use dashmap::DashMap;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::network::{MessageRouterBuilder, Networking, TransportConnect};
+use restate_core::network::{Buffered, MessageRouterBuilder, Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenter, TaskCenterFutureExt, TaskKind, my_node_id};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
@@ -25,14 +24,14 @@ use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
 use restate_types::logs::{LogId, LogletId, RecordCache};
+use restate_types::net::replicated_loglet::{SequencerDataService, SequencerMetaService};
 use restate_types::nodes_config::{NodeConfig, Role, StorageState};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, NodeSetSelector, NodeSetSelectorOptions};
 
 use super::loglet::ReplicatedLoglet;
 use super::metric_definitions;
-use super::network::RequestPump;
-use super::rpc_routers::{LogServersRpc, SequencersRpc};
+use super::network::{SequencerDataRpcHandler, SequencerInfoRpcHandler};
 use crate::Error;
 use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
@@ -40,36 +39,29 @@ use crate::providers::replicated_loglet::loglet::FindTailFlags;
 use crate::providers::replicated_loglet::tasks::PeriodicTailChecker;
 
 pub struct Factory<T> {
-    metadata_store_client: MetadataStoreClient,
     networking: Networking<T>,
-    logserver_rpc_routers: LogServersRpc,
-    sequencer_rpc_routers: SequencersRpc,
-    request_pump: RequestPump,
+    data_request_pump: Buffered<SequencerDataService>,
+    info_request_pump: Buffered<SequencerMetaService>,
     record_cache: RecordCache,
 }
 
 impl<T: TransportConnect> Factory<T> {
     pub fn new(
-        metadata_store_client: MetadataStoreClient,
         networking: Networking<T>,
         record_cache: RecordCache,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
-        // Handling Sequencer(s) incoming requests
-        let request_pump = RequestPump::new(
-            &Configuration::pinned().bifrost.replicated_loglet,
-            router_builder,
-        );
+        // Handling Sequencer(s) incoming data requests
+        let data_request_pump = router_builder
+            .register_buffered_service(128, restate_core::network::BackPressureMode::PushBack);
 
-        let logserver_rpc_routers = LogServersRpc::new(router_builder);
-        let sequencer_rpc_routers = SequencersRpc::new(router_builder);
-        // todo(asoli): Create a handler to answer to control plane monitoring questions
+        let info_request_pump = router_builder
+            .register_buffered_service(128, restate_core::network::BackPressureMode::PushBack);
+
         Self {
-            metadata_store_client,
             networking,
-            logserver_rpc_routers,
-            sequencer_rpc_routers,
-            request_pump,
+            data_request_pump,
+            info_request_pump,
             record_cache,
         }
     }
@@ -84,19 +76,23 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
     async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
         metric_definitions::describe_metrics();
         let provider = Arc::new(ReplicatedLogletProvider::new(
-            self.metadata_store_client,
             self.networking,
-            self.logserver_rpc_routers,
-            self.sequencer_rpc_routers,
             self.record_cache,
         ));
+
         // run the request pump. The request pump handles/routes incoming messages to our
         // locally hosted sequencers.
-        TaskCenter::spawn(TaskKind::NetworkMessageHandler, "sequencers-ingress", {
-            let request_pump = self.request_pump;
-            let provider = provider.clone();
-            request_pump.run(provider)
-        })?;
+        self.data_request_pump.start(
+            TaskKind::NetworkMessageHandler,
+            "sequencer-data-ingress",
+            SequencerDataRpcHandler::new(provider.clone()),
+        )?;
+
+        self.info_request_pump.start(
+            TaskKind::NetworkMessageHandler,
+            "sequencer-info-ingress",
+            SequencerInfoRpcHandler::new(provider.clone()),
+        )?;
 
         Ok(provider)
     }
@@ -104,28 +100,16 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
 
 pub(super) struct ReplicatedLogletProvider<T> {
     active_loglets: DashMap<(LogId, SegmentIndex), Arc<ReplicatedLoglet<T>>>,
-    _metadata_store_client: MetadataStoreClient,
     networking: Networking<T>,
     record_cache: RecordCache,
-    logserver_rpc_routers: LogServersRpc,
-    sequencer_rpc_routers: SequencersRpc,
 }
 
 impl<T: TransportConnect> ReplicatedLogletProvider<T> {
-    fn new(
-        metadata_store_client: MetadataStoreClient,
-        networking: Networking<T>,
-        logserver_rpc_routers: LogServersRpc,
-        sequencer_rpc_routers: SequencersRpc,
-        record_cache: RecordCache,
-    ) -> Self {
+    fn new(networking: Networking<T>, record_cache: RecordCache) -> Self {
         Self {
             active_loglets: Default::default(),
-            _metadata_store_client: metadata_store_client,
             networking,
             record_cache,
-            logserver_rpc_routers,
-            sequencer_rpc_routers,
         }
     }
 
@@ -171,8 +155,6 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
                     segment_index,
                     params,
                     self.networking.clone(),
-                    self.logserver_rpc_routers.clone(),
-                    self.sequencer_rpc_routers.clone(),
                     self.record_cache.clone(),
                 );
                 let is_local_sequencer = loglet.is_sequencer_local();
