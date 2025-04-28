@@ -22,13 +22,12 @@ use restate_core::{
 use restate_types::net::node::{GetNodeState, GossipService, NodeStateResponse};
 use restate_types::protobuf::common::NodeStatus;
 
-// todo: rename -> merge with GossipHandler.
-pub struct BaseRole {
+pub struct FailureDetector {
     processor_manager_handle: Option<ProcessorsManagerHandle>,
     gossip_rx: Buffered<GossipService>,
 }
 
-impl BaseRole {
+impl FailureDetector {
     pub fn new(
         router_builder: &mut MessageRouterBuilder,
         processor_manager_handle: Option<ProcessorsManagerHandle>,
@@ -44,8 +43,8 @@ impl BaseRole {
     pub fn start(self) -> Result<(), ShutdownError> {
         // gossip service is running as unmanaged task to delay its termination until the very end
         TaskCenter::spawn_unmanaged(
-            TaskKind::RoleRunner,
-            "base-role-service",
+            TaskKind::SystemService,
+            "fd-network-service",
             self.gossip_rx.run(GossipHandler {
                 processor_manager_handle: self.processor_manager_handle,
             }),
