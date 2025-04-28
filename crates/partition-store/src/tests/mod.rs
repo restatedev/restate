@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use futures::Stream;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::pin;
-
-use futures::Stream;
+use std::time::Duration;
 use tokio_stream::StreamExt;
 
 use crate::{OpenMode, PartitionStore, PartitionStoreManager};
@@ -94,7 +94,8 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         span_context: Default::default(),
         headers: vec![],
         execution_time: None,
-        completion_retention_duration: None,
+        completion_retention_duration: Duration::ZERO,
+        journal_retention_duration: Duration::ZERO,
         idempotency_key: None,
         submit_notification_sink: None,
     }

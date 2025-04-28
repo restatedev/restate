@@ -18,7 +18,7 @@ use restate_core::{Metadata, my_node_id};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey, partitioner};
 use restate_types::invocation::{
-    InvocationTarget, InvocationTargetType, ServiceInvocation, SpanRelation,
+    InvocationRetention, InvocationTarget, InvocationTargetType, ServiceInvocation, SpanRelation,
     VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
@@ -132,9 +132,10 @@ impl KafkaIngressEvent {
                     invocation_target.service_name(),
                     invocation_target.handler_name(),
                 )
-                .and_then(|target| target.compute_retention(false))
+                .map(|target| target.compute_retention(false))
+                .unwrap_or_default()
         } else {
-            None
+            InvocationRetention::none()
         };
 
         // Time to generate invocation id
@@ -160,7 +161,7 @@ impl KafkaIngressEvent {
         service_invocation.with_related_span(SpanRelation::Parent(ingress_span_context));
         service_invocation.argument = payload;
         service_invocation.headers = headers;
-        service_invocation.completion_retention_duration = invocation_retention;
+        service_invocation.with_retention(invocation_retention);
 
         Ok(KafkaIngressEvent {
             service_invocation,

@@ -2587,7 +2587,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                         span_context: span_context.clone(),
                         headers: request.headers,
                         execution_time: None,
-                        completion_retention_duration: *completion_retention_time,
+                        completion_retention_duration: (*completion_retention_time)
+                            .unwrap_or_default(),
+                        journal_retention_duration: Default::default(),
                         idempotency_key: request.idempotency_key,
                         submit_notification_sink: None,
                     };
@@ -2652,7 +2654,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                     span_context: span_context.clone(),
                     headers: request.headers,
                     execution_time: delay,
-                    completion_retention_duration: *completion_retention_time,
+                    completion_retention_duration: (*completion_retention_time).unwrap_or_default(),
+                    journal_retention_duration: Default::default(),
                     idempotency_key: request.idempotency_key,
                     submit_notification_sink: None,
                 };
