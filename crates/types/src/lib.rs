@@ -23,6 +23,7 @@ pub mod health;
 pub mod config;
 pub mod config_loader;
 pub mod deployment;
+pub mod dto;
 pub mod endpoint_manifest;
 pub mod epoch;
 pub mod errors;

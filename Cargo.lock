@@ -1269,6 +1269,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "bilrost"
+version = "0.1012.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "815ed941f4e34d221bda5ac688ff1f80f579ca0c1b062d381347be6d53786e02"
+dependencies = [
+ "bilrost-derive",
+ "bytes",
+ "thin-vec",
+]
+
+[[package]]
+name = "bilrost-derive"
+version = "0.1012.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7460f57756524d00acaca4d8c1af4188667739d10b9a2911fd430f6b2857d2d6"
+dependencies = [
+ "eyre",
+ "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.98",
+]
+
+[[package]]
 name = "bincode"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3013,6 +3037,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "eyre"
+version = "0.6.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd915d99f24784cdc19fd37ef22b97e3ff0ae756c7e492e9fbfe897d61e2aec"
+dependencies = [
+ "indenter",
+ "once_cell",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3872,6 +3906,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "indenter"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce23b50ad8242c51a442f3ff322d56b02f08852c77e4c0b4d3fd684abc89c683"
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4411,7 +4451,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -7699,6 +7739,7 @@ dependencies = [
  "arc-swap",
  "base62",
  "base64 0.22.1",
+ "bilrost",
  "bincode",
  "bitflags 2.8.0",
  "bytes",
@@ -8936,6 +8977,12 @@ name = "test_bin"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e7a7de15468c6e65dd7db81cf3822c1ec94c71b2a3c1a976ea8e4696c91115c"
+
+[[package]]
+name = "thin-vec"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "144f754d318415ac792f9d69fc87abbbfc043ce2ef041c60f16ad828f638717d"
 
 [[package]]
 name = "thiserror"
@@ -10347,6 +10394,7 @@ dependencies = [
  "indexmap 1.9.3",
  "indexmap 2.7.1",
  "itertools 0.12.1",
+ "itertools 0.14.0",
  "libc",
  "libz-sys",
  "log",

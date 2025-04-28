@@ -63,7 +63,8 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
 indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
-itertools = { version = "0.12" }
+itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
+itertools-5ef9efb8ec2df382 = { package = "itertools", version = "0.12" }
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
@@ -178,7 +179,8 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
 indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
-itertools = { version = "0.12" }
+itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
+itertools-5ef9efb8ec2df382 = { package = "itertools", version = "0.12" }
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
