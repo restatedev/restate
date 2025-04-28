@@ -9,15 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use crate::cluster_marker::mark_cluster_as_provisioned;
-use futures::future::join;
 use restate_core::metadata_store::{MetadataStoreClient, ReadWriteError};
-use restate_core::{Metadata, MetadataWriter, ShutdownError, cancellation_token};
-use restate_futures_util::overdue::OverdueLoggingExt;
+use restate_core::{MetadataWriter, ShutdownError, cancellation_token};
 use restate_types::PlainNodeId;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration,
 };
@@ -63,7 +60,7 @@ impl<'a> NodeInit<'a> {
         }
     }
 
-    pub async fn init(self) -> anyhow::Result<()> {
+    pub async fn init(self) -> anyhow::Result<NodeConfig> {
         let config = Configuration::pinned().into_arc();
 
         let join_cluster = Self::join_cluster(
@@ -90,8 +87,7 @@ impl<'a> NodeInit<'a> {
             .expect("node config should have been upserted")
             .clone();
 
-        let nodes_config_version = self
-            .metadata_writer
+        self.metadata_writer
             .update(Arc::new(nodes_configuration))
             .await?;
 
@@ -100,43 +96,9 @@ impl<'a> NodeInit<'a> {
             .set_my_node_id(my_node_config.current_generation);
         restate_tracing_instrumentation::set_global_node_id(my_node_config.current_generation);
 
-        let initial_fetch_dur = Duration::from_secs(3);
-        let metadata = Metadata::current();
-        let (logs_version, partition_table_version) = match join(
-            metadata.wait_for_version(MetadataKind::Logs, restate_types::Version::MIN),
-            metadata.wait_for_version(MetadataKind::PartitionTable, restate_types::Version::MIN),
-        )
-        .log_slow_after(
-            initial_fetch_dur,
-            tracing::Level::INFO,
-            "Initial fetch of global metadata",
-        )
-        .with_overdue(initial_fetch_dur * 2, tracing::Level::WARN)
-        .await
-        {
-            (Ok(logs_version), Ok(partition_table_version)) => {
-                (logs_version, partition_table_version)
-            }
-            _ => {
-                anyhow::bail!(
-                    "Failed to fetch the latest metadata when initializing the node, maybe server is shutting down"
-                );
-            }
-        };
-
-        info!(
-            roles = %my_node_config.roles,
-            address = %my_node_config.address,
-            location = %my_node_config.location,
-            %nodes_config_version,
-            %partition_table_version,
-            %logs_version,
-            "My Node ID is {}", my_node_config.current_generation,
-        );
-
         trace!("Node initialization complete");
 
-        Ok(())
+        Ok(my_node_config)
     }
 
     async fn join_cluster(
