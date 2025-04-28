@@ -283,6 +283,11 @@ impl ConnectionManager {
         )
         .await?;
 
+        // temporary until we allow connections to be established before we acquire a node id.
+        let Some(my_node_id) = metadata.my_node_id_opt() else {
+            return Err(AcceptError::NotReady);
+        };
+
         let should_register = matches!(
             hello.direction(),
             ConnectionDirection::Unknown
@@ -294,7 +299,6 @@ impl ConnectionManager {
         let mut guard = self.inner.lock();
 
         let nodes_config = metadata.nodes_config_ref();
-        let my_node_id = metadata.my_node_id();
         // NodeId **must** be generational at this layer, we may support accepting connections from
         // anonymous nodes in the future. When this happens, this restate-server release will not
         // be compatible with it.
