@@ -1043,9 +1043,7 @@ fn resolve_call_request(
     } else {
         None
     };
-    let completion_retention_duration = meta
-        .compute_retention(idempotency_key.is_some())
-        .unwrap_or_default();
+    let invocation_retention = meta.compute_retention(idempotency_key.is_some());
     let invocation_id = InvocationId::generate(&invocation_target, idempotency_key);
 
     // Create the span context
@@ -1058,7 +1056,8 @@ fn resolve_call_request(
         parameter: request.parameter,
         headers: request.headers,
         idempotency_key: request.idempotency_key,
-        completion_retention_duration,
+        completion_retention_duration: invocation_retention.completion_retention,
+        journal_retention_duration: invocation_retention.journal_retention,
     })
 }
 
