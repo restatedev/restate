@@ -22,13 +22,12 @@ use restate_core::{
 use restate_types::net::node::{GetNodeState, GossipService, NodeStateResponse};
 use restate_types::protobuf::common::NodeStatus;
 
-// todo: rename -> merge with GossipHandler.
-pub struct BaseRole {
+pub struct FailureDetector {
     processor_manager_handle: Option<ProcessorsManagerHandle>,
     gossip_rx: Buffered<GossipService>,
 }
 
-impl BaseRole {
+impl FailureDetector {
     pub fn new(
         router_builder: &mut MessageRouterBuilder,
         processor_manager_handle: Option<ProcessorsManagerHandle>,
