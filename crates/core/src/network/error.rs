@@ -192,6 +192,8 @@ impl From<HandshakeError> for tonic::Status {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AcceptError {
+    #[error("this node has not acquired a node ID yet")]
+    NotReady,
     #[error(transparent)]
     Handshake(#[from] HandshakeError),
     #[error(transparent)]
@@ -207,6 +209,7 @@ pub enum AcceptError {
 impl From<AcceptError> for tonic::Status {
     fn from(value: AcceptError) -> Self {
         match value {
+            e @ AcceptError::NotReady => tonic::Status::unavailable(e.to_string()),
             AcceptError::Handshake(handshake) => handshake.into(),
             AcceptError::OldPeerGeneration(e) => tonic::Status::already_exists(e),
             AcceptError::PreviouslyShutdown => tonic::Status::already_exists(value.to_string()),
