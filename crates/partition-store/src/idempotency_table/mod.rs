@@ -17,6 +17,7 @@ use crate::{PartitionStoreTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
+use futures_util::future::Either;
 use futures_util::stream;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
@@ -115,6 +116,10 @@ impl ReadOnlyIdempotencyTable for PartitionStore {
         &mut self,
         idempotency_id: &IdempotencyId,
     ) -> Result<Option<IdempotencyMetadata>> {
+        if self.is_idempotency_table_disabled() {
+            return Ok(None);
+        }
+
         self.assert_partition_key(idempotency_id)?;
         get_idempotency_metadata(self, idempotency_id)
     }
@@ -123,7 +128,11 @@ impl ReadOnlyIdempotencyTable for PartitionStore {
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send> {
-        all_idempotency_metadata(self, range)
+        if self.is_idempotency_table_disabled() {
+            Ok(Either::Left(stream::empty()))
+        } else {
+            Ok(Either::Right(all_idempotency_metadata(self, range)?))
+        }
     }
 }
 
@@ -132,6 +141,10 @@ impl ReadOnlyIdempotencyTable for PartitionStoreTransaction<'_> {
         &mut self,
         idempotency_id: &IdempotencyId,
     ) -> Result<Option<IdempotencyMetadata>> {
+        if self.is_idempotency_table_disabled() {
+            return Ok(None);
+        }
+
         self.assert_partition_key(idempotency_id)?;
         get_idempotency_metadata(self, idempotency_id)
     }
@@ -140,7 +153,11 @@ impl ReadOnlyIdempotencyTable for PartitionStoreTransaction<'_> {
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send> {
-        all_idempotency_metadata(self, range)
+        if self.is_idempotency_table_disabled() {
+            Ok(Either::Left(stream::empty()))
+        } else {
+            Ok(Either::Right(all_idempotency_metadata(self, range)?))
+        }
     }
 }
 
@@ -150,11 +167,19 @@ impl IdempotencyTable for PartitionStoreTransaction<'_> {
         idempotency_id: &IdempotencyId,
         metadata: &IdempotencyMetadata,
     ) -> Result<()> {
+        if self.is_idempotency_table_disabled() {
+            return Ok(());
+        }
+
         self.assert_partition_key(idempotency_id)?;
         put_idempotency_metadata(self, idempotency_id, metadata)
     }
 
     async fn delete_idempotency_metadata(&mut self, idempotency_id: &IdempotencyId) -> Result<()> {
+        if self.is_idempotency_table_disabled() {
+            return Ok(());
+        }
+
         self.assert_partition_key(idempotency_id)?;
         delete_idempotency_metadata(self, idempotency_id)
     }

@@ -69,27 +69,21 @@ async fn test_idempotency_key() {
             .get_idempotency_metadata(&IDEMPOTENCY_ID_1)
             .await
             .unwrap(),
-        Some(IdempotencyMetadata {
-            invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_1),
-        })
+        None
     );
     assert_eq!(
         rocksdb
             .get_idempotency_metadata(&IDEMPOTENCY_ID_2)
             .await
             .unwrap(),
-        Some(IdempotencyMetadata {
-            invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_2),
-        })
+        None
     );
     assert_eq!(
         rocksdb
             .get_idempotency_metadata(&IDEMPOTENCY_ID_3)
             .await
             .unwrap(),
-        Some(IdempotencyMetadata {
-            invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_3),
-        })
+        None
     );
     assert_eq!(
         rocksdb
