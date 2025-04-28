@@ -10,12 +10,15 @@
 
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt, stream};
-use restate_invoker_api::{EagerState, JournalMetadata};
+use restate_invoker_api::JournalMetadata;
+use restate_invoker_api::invocation_reader::{
+    EagerState, InvocationReader, InvocationReaderTransaction,
+};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::state_table::ReadOnlyStateTable;
-use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
+use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};
 use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::ServiceId;
 use restate_types::service_protocol::ServiceProtocolVersion;
@@ -38,22 +41,44 @@ impl<Storage> InvokerStorageReader<Storage> {
     }
 }
 
-impl<Storage> restate_invoker_api::JournalReader for InvokerStorageReader<Storage>
+impl<Storage> InvocationReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: journal_table_v1::ReadOnlyJournalTable
-        + journal_table_v2::ReadOnlyJournalTable
-        + ReadOnlyInvocationStatusTable
-        + Send
-        + 'a,
+    Storage: restate_storage_api::Storage + 'static,
 {
-    type JournalStream = stream::Iter<IntoIter<restate_invoker_api::journal_reader::JournalEntry>>;
+    type Transaction<'a> = InvokerStorageReaderTransaction<'a, Storage>;
+
+    fn transaction(&mut self) -> Self::Transaction<'_> {
+        InvokerStorageReaderTransaction {
+            txn: self
+                .0
+                // we must use repeatable reads to avoid reading inconsistent values in the presence
+                // of concurrent writes
+                .transaction_with_isolation(IsolationLevel::RepeatableReads),
+        }
+    }
+}
+
+pub(crate) struct InvokerStorageReaderTransaction<'a, Storage>
+where
+    Storage: restate_storage_api::Storage + 'static,
+{
+    txn: Storage::TransactionType<'a>,
+}
+
+impl<Storage> InvocationReaderTransaction for InvokerStorageReaderTransaction<'_, Storage>
+where
+    Storage: restate_storage_api::Storage + 'static,
+{
+    type JournalStream =
+        stream::Iter<IntoIter<restate_invoker_api::invocation_reader::JournalEntry>>;
+    type StateIter = IntoIter<(Bytes, Bytes)>;
     type Error = InvokerStorageReaderError;
 
-    async fn read_journal<'a>(
-        &'a mut self,
-        invocation_id: &'a InvocationId,
+    async fn read_journal(
+        &mut self,
+        invocation_id: &InvocationId,
     ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
-        let invocation_status = self.0.get_invocation_status(invocation_id).await?;
+        let invocation_status = self.txn.get_invocation_status(invocation_id).await?;
 
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
             let journal_metadata = JournalMetadata::new(
@@ -70,7 +95,7 @@ where
             {
                 // If pinned service protocol version exists and >= V4, we need to read from Journal Table V2!
                 journal_table_v2::ReadOnlyJournalTable::get_journal(
-                    &mut self.0,
+                    &mut self.txn,
                     *invocation_id,
                     journal_metadata.length,
                 )?
@@ -78,7 +103,7 @@ where
                     entry
                         .map_err(InvokerStorageReaderError::Storage)
                         .map(|(_, entry)| {
-                            restate_invoker_api::journal_reader::JournalEntry::JournalV2(entry)
+                            restate_invoker_api::invocation_reader::JournalEntry::JournalV2(entry)
                         })
                 })
                 // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
@@ -87,7 +112,7 @@ where
                 .await?
             } else {
                 journal_table_v1::ReadOnlyJournalTable::get_journal(
-                    &mut self.0,
+                    &mut self.txn,
                     invocation_id,
                     journal_metadata.length,
                 )?
@@ -96,7 +121,7 @@ where
                         .map_err(InvokerStorageReaderError::Storage)
                         .map(|(_, journal_entry)| match journal_entry {
                             journal_table_v1::JournalEntry::Entry(entry) => {
-                                restate_invoker_api::journal_reader::JournalEntry::JournalV1(
+                                restate_invoker_api::invocation_reader::JournalEntry::JournalV1(
                                     entry.erase_enrichment(),
                                 )
                             }
@@ -116,21 +141,13 @@ where
             Err(InvokerStorageReaderError::NotInvoked)
         }
     }
-}
 
-impl<Storage> restate_invoker_api::StateReader for InvokerStorageReader<Storage>
-where
-    for<'a> Storage: ReadOnlyStateTable + Send + 'a,
-{
-    type StateIter = IntoIter<(Bytes, Bytes)>;
-    type Error = InvokerStorageReaderError;
-
-    async fn read_state<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
+    async fn read_state(
+        &mut self,
+        service_id: &ServiceId,
     ) -> Result<EagerState<Self::StateIter>, Self::Error> {
         let user_states = self
-            .0
+            .txn
             .get_all_user_states_for_service(service_id)?
             .try_collect::<Vec<_>>()
             .await?;

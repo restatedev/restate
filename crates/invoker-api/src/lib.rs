@@ -11,21 +11,21 @@
 mod effects;
 pub mod entry_enricher;
 mod handle;
-pub mod journal_reader;
-pub mod state_reader;
+pub mod invocation_reader;
 pub mod status_handle;
 
 pub use effects::*;
 pub use entry_enricher::EntryEnricher;
 pub use handle::*;
-pub use journal_reader::{JournalMetadata, JournalReader};
-pub use state_reader::{EagerState, StateReader};
+pub use invocation_reader::JournalMetadata;
 pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
     use super::*;
-    use crate::journal_reader::JournalEntry;
+    use crate::invocation_reader::{
+        EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
+    };
     use bytes::Bytes;
     use restate_errors::NotRunningError;
     use restate_types::identifiers::{
@@ -44,13 +44,24 @@ pub mod test_util {
     #[derive(Debug, Clone)]
     pub struct EmptyStorageReader;
 
-    impl JournalReader for EmptyStorageReader {
+    impl InvocationReader for EmptyStorageReader {
+        type Transaction<'a> = EmptyStorageReaderTransaction;
+
+        fn transaction(&mut self) -> Self::Transaction<'_> {
+            EmptyStorageReaderTransaction
+        }
+    }
+
+    pub struct EmptyStorageReaderTransaction;
+
+    impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
         type JournalStream = futures::stream::Empty<JournalEntry>;
+        type StateIter = std::iter::Empty<(Bytes, Bytes)>;
         type Error = Infallible;
 
-        async fn read_journal<'a>(
-            &'a mut self,
-            _sid: &'a InvocationId,
+        async fn read_journal(
+            &mut self,
+            _fid: &InvocationId,
         ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
             Ok((
                 JournalMetadata::new(
@@ -62,15 +73,10 @@ pub mod test_util {
                 futures::stream::empty(),
             ))
         }
-    }
 
-    impl StateReader for EmptyStorageReader {
-        type StateIter = std::iter::Empty<(Bytes, Bytes)>;
-        type Error = Infallible;
-
-        async fn read_state<'a>(
-            &'a mut self,
-            _service_id: &'a ServiceId,
+        async fn read_state(
+            &mut self,
+            _service_id: &ServiceId,
         ) -> Result<EagerState<Self::StateIter>, Self::Error> {
             Ok(EagerState::new_complete(empty()))
         }

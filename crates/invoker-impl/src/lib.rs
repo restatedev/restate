@@ -17,7 +17,6 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
-use futures::Stream;
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
@@ -28,7 +27,7 @@ use restate_core::cancellation_watcher;
 use restate_errors::warn_it;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
-    InvokeInputJournal, JournalReader, StateReader,
+    InvokeInputJournal,
 };
 use restate_queue::SegmentQueue;
 use restate_timer_queue::TimerQueue;
@@ -60,7 +59,7 @@ use crate::metric_definitions::{
 use error::InvokerError;
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
-use restate_invoker_api::journal_reader::JournalEntry;
+use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::invocation::InvocationTarget;
@@ -102,11 +101,9 @@ struct DefaultInvocationTaskRunner<EE, Schemas> {
     schemas: Live<Schemas>,
 }
 
-impl<SR, EE, Schemas> InvocationTaskRunner<SR> for DefaultInvocationTaskRunner<EE, Schemas>
+impl<IR, EE, Schemas> InvocationTaskRunner<IR> for DefaultInvocationTaskRunner<EE, Schemas>
 where
-    SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
-    <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
-    <SR as StateReader>::StateIter: Send,
+    IR: InvocationReader + Clone + Send + Sync + 'static,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
     Schemas: DeploymentResolver
         + ServiceMetadataResolver
@@ -123,7 +120,7 @@ where
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         retry_count_since_last_stored_entry: u32,
-        storage_reader: SR,
+        storage_reader: IR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         input_journal: InvokeInputJournal,
@@ -144,7 +141,6 @@ where
                     opts.message_size_warning.get(),
                     opts.message_size_limit(),
                     retry_count_since_last_stored_entry,
-                    storage_reader.clone(),
                     storage_reader,
                     self.entry_enricher.clone(),
                     self.schemas.clone(),
@@ -158,9 +154,9 @@ where
 }
 
 // -- Service implementation
-pub struct Service<SR, EntryEnricher, DeploymentRegistry> {
+pub struct Service<IR, EntryEnricher, DeploymentRegistry> {
     // Used for constructing the invoker sender and status reader
-    input_tx: mpsc::UnboundedSender<InputCommand<SR>>,
+    input_tx: mpsc::UnboundedSender<InputCommand<IR>>,
     status_tx: mpsc::UnboundedSender<
         restate_futures_util::command::Command<
             RangeInclusive<PartitionKey>,
@@ -171,20 +167,19 @@ pub struct Service<SR, EntryEnricher, DeploymentRegistry> {
     tmp_dir: PathBuf,
     // We have this level of indirection to hide the InvocationTaskRunner,
     // which is a rather internal thing we have only for mocking.
-    inner: ServiceInner<DefaultInvocationTaskRunner<EntryEnricher, DeploymentRegistry>, SR>,
+    inner: ServiceInner<DefaultInvocationTaskRunner<EntryEnricher, DeploymentRegistry>, IR>,
 }
 
-impl<SR, EE, Schemas> Service<SR, EE, Schemas> {
+impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new<JS>(
+    pub(crate) fn new(
         options: &InvokerOptions,
         deployment_metadata_resolver: Live<Schemas>,
         client: ServiceClient,
         entry_enricher: EE,
-    ) -> Service<SR, EE, Schemas>
+    ) -> Service<IR, EE, Schemas>
     where
-        SR: JournalReader<JournalStream = JS> + StateReader + Clone + Send + Sync + 'static,
-        JS: Stream<Item = JournalEntry> + Unpin + Send + 'static,
+        IR: InvocationReader + Clone + Send + Sync + 'static,
         EE: EntryEnricher,
         Schemas: DeploymentResolver + ServiceMetadataResolver,
     {
@@ -215,15 +210,14 @@ impl<SR, EE, Schemas> Service<SR, EE, Schemas> {
         }
     }
 
-    pub fn from_options<JS>(
+    pub fn from_options(
         service_client_options: &ServiceClientOptions,
         invoker_options: &InvokerOptions,
         entry_enricher: EE,
         schemas: Live<Schemas>,
-    ) -> Result<Service<SR, EE, Schemas>, BuildError>
+    ) -> Result<Service<IR, EE, Schemas>, BuildError>
     where
-        SR: JournalReader<JournalStream = JS> + StateReader + Clone + Send + Sync + 'static,
-        JS: Stream<Item = JournalEntry> + Unpin + Send + 'static,
+        IR: InvocationReader + Clone + Send + Sync + 'static,
         EE: EntryEnricher,
         Schemas: DeploymentResolver + ServiceMetadataResolver,
     {
@@ -246,11 +240,9 @@ pub enum BuildError {
     ServiceClient(#[from] restate_service_client::BuildError),
 }
 
-impl<SR, EE, Schemas> Service<SR, EE, Schemas>
+impl<IR, EE, Schemas> Service<IR, EE, Schemas>
 where
-    SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
-    <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
-    <SR as StateReader>::StateIter: Send,
+    IR: InvocationReader + Clone + Send + Sync + 'static,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
     Schemas: DeploymentResolver
         + ServiceMetadataResolver
@@ -260,7 +252,7 @@ where
         + Sync
         + 'static,
 {
-    pub fn handle(&self) -> InvokerHandle<SR> {
+    pub fn handle(&self) -> InvokerHandle<IR> {
         InvokerHandle {
             input: self.input_tx.clone(),
         }
@@ -333,12 +325,10 @@ struct ServiceInner<InvocationTaskRunner, SR> {
     invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager<SR>,
 }
 
-impl<ITR, SR> ServiceInner<ITR, SR>
+impl<ITR, IR> ServiceInner<ITR, IR>
 where
-    ITR: InvocationTaskRunner<SR>,
-    SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
-    <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
-    <SR as StateReader>::StateIter: Send,
+    ITR: InvocationTaskRunner<IR>,
+    IR: InvocationReader + Clone + Send + Sync + 'static,
 {
     // Returns true if we should execute another step, false if we should stop executing steps
     async fn step<F>(
@@ -498,7 +488,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
-        storage_reader: SR,
+        storage_reader: IR,
         sender: mpsc::Sender<Effect>,
     ) {
         self.invocation_state_machine_manager.register_partition(
@@ -1172,7 +1162,7 @@ where
         &mut self,
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
-        storage_reader: SR,
+        storage_reader: IR,
         invocation_id: InvocationId,
         journal: InvokeInputJournal,
         mut ism: InvocationStateMachine,
@@ -1291,18 +1281,16 @@ mod tests {
 
     const MOCK_PARTITION: PartitionLeaderEpoch = (PartitionId::MIN, LeaderEpoch::INITIAL);
 
-    impl<ITR, SR> ServiceInner<ITR, SR>
+    impl<ITR, IR> ServiceInner<ITR, IR>
     where
-        SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
-        <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
-        <SR as StateReader>::StateIter: Send,
+        IR: InvocationReader + Clone + Send + Sync + 'static,
     {
         #[allow(clippy::type_complexity)]
         fn mock(
             invocation_task_runner: ITR,
             concurrency_limit: Option<usize>,
         ) -> (
-            mpsc::UnboundedSender<InputCommand<SR>>,
+            mpsc::UnboundedSender<InputCommand<IR>>,
             mpsc::UnboundedSender<
                 restate_futures_util::command::Command<
                     RangeInclusive<PartitionKey>,
@@ -1330,9 +1318,9 @@ mod tests {
             (input_tx, status_tx, service_inner)
         }
 
-        fn register_mock_partition(&mut self, storage_reader: SR) -> mpsc::Receiver<Effect>
+        fn register_mock_partition(&mut self, storage_reader: IR) -> mpsc::Receiver<Effect>
         where
-            ITR: InvocationTaskRunner<SR>,
+            ITR: InvocationTaskRunner<IR>,
         {
             let (partition_tx, partition_rx) = mpsc::channel(1024);
             self.handle_register_partition(
@@ -1345,20 +1333,18 @@ mod tests {
         }
     }
 
-    impl<SR, F, Fut> InvocationTaskRunner<SR> for F
+    impl<IR, F, Fut> InvocationTaskRunner<IR> for F
     where
         F: Fn(
             PartitionLeaderEpoch,
             InvocationId,
             InvocationTarget,
-            SR,
+            IR,
             mpsc::UnboundedSender<InvocationTaskOutput>,
             mpsc::UnboundedReceiver<Notification>,
             InvokeInputJournal,
         ) -> Fut,
-        SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
-        <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
-        <SR as StateReader>::StateIter: Send,
+        IR: InvocationReader + Clone + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         fn start_invocation_task(
@@ -1368,7 +1354,7 @@ mod tests {
             invocation_id: InvocationId,
             invocation_target: InvocationTarget,
             _retry_count_since_last_stored_entry: u32,
-            storage_reader: SR,
+            storage_reader: IR,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Notification>,
             input_journal: InvokeInputJournal,

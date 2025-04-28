@@ -893,7 +893,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 MillisSinceEpoch::now(),
             ),
             vec![
-                restate_invoker_api::journal_reader::JournalEntry::JournalV1(
+                restate_invoker_api::invocation_reader::JournalEntry::JournalV1(
                     input_entry.erase_enrichment(),
                 ),
             ],

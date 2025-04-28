@@ -23,8 +23,8 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
 use restate_errors::warn_it;
-use restate_invoker_api::journal_reader::JournalEntry;
-use restate_invoker_api::{EagerState, EntryEnricher, JournalMetadata};
+use restate_invoker_api::invocation_reader::{EagerState, JournalEntry};
+use restate_invoker_api::{EntryEnricher, JournalMetadata};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
@@ -59,8 +59,8 @@ const GATEWAY_ERRORS_CODES: [http::StatusCode; 3] = [
 ];
 
 /// Runs the interaction between the server and the service endpoint.
-pub struct ServiceProtocolRunner<'a, SR, JR, EE, DMR> {
-    invocation_task: &'a mut InvocationTask<SR, JR, EE, DMR>,
+pub struct ServiceProtocolRunner<'a, IR, EE, DMR> {
+    invocation_task: &'a mut InvocationTask<IR, EE, DMR>,
 
     service_protocol_version: ServiceProtocolVersion,
 
@@ -72,12 +72,12 @@ pub struct ServiceProtocolRunner<'a, SR, JR, EE, DMR> {
     next_journal_index: EntryIndex,
 }
 
-impl<'a, SR, JR, EE, DMR> ServiceProtocolRunner<'a, SR, JR, EE, DMR>
+impl<'a, IR, EE, DMR> ServiceProtocolRunner<'a, IR, EE, DMR>
 where
     EE: EntryEnricher,
 {
     pub fn new(
-        invocation_task: &'a mut InvocationTask<SR, JR, EE, DMR>,
+        invocation_task: &'a mut InvocationTask<IR, EE, DMR>,
         service_protocol_version: ServiceProtocolVersion,
     ) -> Self {
         let encoder = Encoder::new(service_protocol_version);

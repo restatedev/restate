@@ -11,7 +11,7 @@
 use super::Effect;
 use super::JournalMetadata;
 
-use crate::journal_reader::JournalEntry;
+use crate::invocation_reader::JournalEntry;
 use restate_errors::NotRunningError;
 use restate_types::identifiers::PartitionKey;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};

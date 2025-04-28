@@ -26,8 +26,8 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
 use restate_errors::warn_it;
-use restate_invoker_api::journal_reader::JournalEntry;
-use restate_invoker_api::{EagerState, JournalMetadata};
+use restate_invoker_api::JournalMetadata;
+use restate_invoker_api::invocation_reader::{EagerState, JournalEntry};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -71,8 +71,8 @@ const GATEWAY_ERRORS_CODES: [StatusCode; 3] = [
 ];
 
 /// Runs the interaction between the server and the service endpoint.
-pub struct ServiceProtocolRunner<'a, SR, JR, EE, Schemas> {
-    invocation_task: &'a mut InvocationTask<SR, JR, EE, Schemas>,
+pub struct ServiceProtocolRunner<'a, IR, EE, Schemas> {
+    invocation_task: &'a mut InvocationTask<IR, EE, Schemas>,
 
     service_protocol_version: ServiceProtocolVersion,
 
@@ -84,12 +84,12 @@ pub struct ServiceProtocolRunner<'a, SR, JR, EE, Schemas> {
     command_index: CommandIndex,
 }
 
-impl<'a, SR, JR, EE, Schemas> ServiceProtocolRunner<'a, SR, JR, EE, Schemas>
+impl<'a, IR, EE, Schemas> ServiceProtocolRunner<'a, IR, EE, Schemas>
 where
     Schemas: InvocationTargetResolver,
 {
     pub fn new(
-        invocation_task: &'a mut InvocationTask<SR, JR, EE, Schemas>,
+        invocation_task: &'a mut InvocationTask<IR, EE, Schemas>,
         service_protocol_version: ServiceProtocolVersion,
     ) -> Self {
         let encoder = Encoder::new(service_protocol_version);

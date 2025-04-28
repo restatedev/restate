@@ -22,9 +22,10 @@ use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::histogram;
-use restate_invoker_api::{
-    EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
+use restate_invoker_api::invocation_reader::{
+    EagerState, InvocationReader, InvocationReaderTransaction,
 };
+use restate_invoker_api::{EntryEnricher, InvokeInputJournal};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
@@ -42,7 +43,7 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::future::Future;
-use std::iter;
+use std::iter::Empty;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
@@ -127,7 +128,7 @@ type InvokerBodyStream =
 type InvokerRequestStreamSender = mpsc::Sender<Result<Frame<Bytes>, Infallible>>;
 
 /// Represents an open invocation stream
-pub(super) struct InvocationTask<SR, JR, EE, DMR> {
+pub(super) struct InvocationTask<IR, EE, DMR> {
     // Shared client
     client: ServiceClient,
 
@@ -143,8 +144,7 @@ pub(super) struct InvocationTask<SR, JR, EE, DMR> {
     retry_count_since_last_stored_entry: u32,
 
     // Invoker tx/rx
-    state_reader: SR,
-    journal_reader: JR,
+    invocation_reader: IR,
     entry_enricher: EE,
     schemas: Live<DMR>,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -183,12 +183,9 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<SR, JR, EE, Schemas> InvocationTask<SR, JR, EE, Schemas>
+impl<IR, EE, Schemas> InvocationTask<IR, EE, Schemas>
 where
-    SR: StateReader + StateReader + Clone + Send + Sync + 'static,
-    JR: JournalReader + Clone + Send + Sync + 'static,
-    <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
-    <SR as StateReader>::StateIter: Send,
+    IR: InvocationReader + Clone + Send + Sync + 'static,
     EE: EntryEnricher,
     Schemas: DeploymentResolver + ServiceMetadataResolver + InvocationTargetResolver,
 {
@@ -204,8 +201,7 @@ where
         message_size_warning: usize,
         message_size_limit: Option<usize>,
         retry_count_since_last_stored_entry: u32,
-        state_reader: SR,
-        journal_reader: JR,
+        invocation_reader: IR,
         entry_enricher: EE,
         deployment_metadata_resolver: Live<Schemas>,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -219,8 +215,7 @@ where
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
             disable_eager_state,
-            state_reader,
-            journal_reader,
+            invocation_reader,
             entry_enricher,
             schemas: deployment_metadata_resolver,
             invoker_tx,
@@ -268,40 +263,38 @@ where
         &mut self,
         input_journal: InvokeInputJournal,
     ) -> TerminalLoopState<()> {
-        // Resolve journal and its metadata
-        let read_journal_future = async {
-            Ok(match input_journal {
+        let (journal_metadata, journal_stream, state_iter) = {
+            let mut txn = self.invocation_reader.transaction();
+            // Resolve journal and its metadata
+            let (journal_metadata, journal_stream) = match input_journal {
                 InvokeInputJournal::NoCachedJournal => {
-                    let (journal_meta, journal_stream) = self
-                        .journal_reader
-                        .read_journal(&self.invocation_id)
-                        .await
-                        .map_err(|e| InvokerError::JournalReader(e.into()))?;
+                    let (journal_meta, journal_stream) = shortcircuit!(
+                        txn.read_journal(&self.invocation_id)
+                            .await
+                            .map_err(|e| InvokerError::JournalReader(e.into()))
+                    );
                     (journal_meta, future::Either::Left(journal_stream))
                 }
                 InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
                     journal_meta,
                     future::Either::Right(stream::iter(journal_items)),
                 ),
-            })
-        };
-        // Read eager state
-        let read_state_future = async {
+            };
+            // Read eager state
             let keyed_service_id = self.invocation_target.as_keyed_service_id();
-            if self.disable_eager_state || keyed_service_id.is_none() {
-                Ok(EagerState::<iter::Empty<_>>::default().map(itertools::Either::Right))
+            let state_iter = if self.disable_eager_state || keyed_service_id.is_none() {
+                EagerState::<Empty<_>>::default().map(itertools::Either::Right)
             } else {
-                self.state_reader
-                    .read_state(&keyed_service_id.unwrap())
-                    .await
-                    .map_err(|e| InvokerError::StateReader(e.into()))
-                    .map(|r| r.map(itertools::Either::Left))
-            }
-        };
+                shortcircuit!(
+                    txn.read_state(&keyed_service_id.unwrap())
+                        .await
+                        .map_err(|e| InvokerError::StateReader(e.into()))
+                        .map(|r| r.map(itertools::Either::Left))
+                )
+            };
 
-        // We execute those concurrently
-        let ((journal_metadata, journal_stream), state_iter) =
-            shortcircuit!(tokio::try_join!(read_journal_future, read_state_future));
+            (journal_metadata, journal_stream, state_iter)
+        };
 
         // Resolve the deployment metadata
         let schemas = self.schemas.live_load();
@@ -398,7 +391,7 @@ where
     }
 }
 
-impl<SR, JR, EE, DMR> InvocationTask<SR, JR, EE, DMR> {
+impl<IR, EE, DMR> InvocationTask<IR, EE, DMR> {
     fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,

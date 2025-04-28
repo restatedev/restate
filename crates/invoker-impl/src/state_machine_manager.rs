@@ -12,6 +12,7 @@ use super::*;
 use std::ops::RangeInclusive;
 
 use restate_invoker_api::Effect;
+use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_types::identifiers::PartitionKey;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
@@ -29,18 +30,16 @@ impl<SR> Default for InvocationStateMachineManager<SR> {
 }
 
 #[derive(Debug)]
-struct PartitionInvocationStateMachineCoordinator<SR> {
+struct PartitionInvocationStateMachineCoordinator<IR> {
     output_tx: mpsc::Sender<Effect>,
     invocation_state_machines: HashMap<InvocationId, InvocationStateMachine>,
     partition_key_range: RangeInclusive<PartitionKey>,
-    storage_reader: SR,
+    storage_reader: IR,
 }
 
-impl<SR> InvocationStateMachineManager<SR>
+impl<IR> InvocationStateMachineManager<IR>
 where
-    SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
-    <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
-    <SR as StateReader>::StateIter: Send,
+    IR: InvocationReader + Clone + Send + Sync + 'static,
 {
     #[inline]
     pub(super) fn has_partition(&self, partition: PartitionLeaderEpoch) -> bool {
@@ -48,7 +47,7 @@ where
     }
 
     #[inline]
-    pub(super) fn partition_storage_reader(&self, partition: PartitionLeaderEpoch) -> Option<&SR> {
+    pub(super) fn partition_storage_reader(&self, partition: PartitionLeaderEpoch) -> Option<&IR> {
         self.partitions.get(&partition).map(|p| &p.storage_reader)
     }
 
@@ -78,7 +77,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
-    ) -> Option<(&mpsc::Sender<Effect>, &SR, InvocationStateMachine)> {
+    ) -> Option<(&mpsc::Sender<Effect>, &IR, InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
                 .remove(invocation_id)
@@ -101,7 +100,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
-        storage_reader: SR,
+        storage_reader: IR,
         sender: mpsc::Sender<Effect>,
     ) {
         self.partitions.insert(
@@ -155,7 +154,7 @@ where
     fn resolve_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-    ) -> Option<&mut PartitionInvocationStateMachineCoordinator<SR>> {
+    ) -> Option<&mut PartitionInvocationStateMachineCoordinator<IR>> {
         self.partitions.get_mut(&partition)
     }
 }
