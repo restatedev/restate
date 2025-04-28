@@ -436,8 +436,13 @@ pub struct PreFlightInvocationMetadata {
     pub headers: Vec<Header>,
     /// Time when the request should be executed
     pub execution_time: Option<MillisSinceEpoch>,
+
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_duration: Duration,
+
+    /// If zero, the journal will not be retained.
+    pub journal_retention_duration: Duration,
+
     pub idempotency_key: Option<ByteString>,
 }
 
@@ -465,9 +470,8 @@ impl PreFlightInvocationMetadata {
             span_context: service_invocation.span_context,
             headers: service_invocation.headers,
             execution_time: service_invocation.execution_time,
-            completion_retention_duration: service_invocation
-                .completion_retention_duration
-                .unwrap_or_default(),
+            completion_retention_duration: service_invocation.completion_retention_duration,
+            journal_retention_duration: service_invocation.journal_retention_duration,
             idempotency_key: service_invocation.idempotency_key,
         }
     }
@@ -578,8 +582,13 @@ pub struct InFlightInvocationMetadata {
     pub response_sinks: HashSet<ServiceInvocationResponseSink>,
     pub timestamps: StatusTimestamps,
     pub source: Source,
+
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_duration: Duration,
+
+    /// If zero, the journal will not be retained.
+    pub journal_retention_duration: Duration,
+
     pub idempotency_key: Option<ByteString>,
     // TODO remove this when we remove protocol <= v3
     pub hotfix_apply_cancellation_after_deployment_is_pinned: bool,
@@ -607,6 +616,8 @@ impl InFlightInvocationMetadata {
                 source: pre_flight_invocation_metadata.source,
                 completion_retention_duration: pre_flight_invocation_metadata
                     .completion_retention_duration,
+                journal_retention_duration: pre_flight_invocation_metadata
+                    .journal_retention_duration,
                 idempotency_key: pre_flight_invocation_metadata.idempotency_key,
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 current_invocation_epoch: 0,
@@ -642,7 +653,10 @@ pub struct CompletedInvocation {
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
     pub response_result: ResponseResult,
+
     pub completion_retention_duration: Duration,
+    pub journal_retention_duration: Duration,
+
     pub journal_metadata: JournalMetadata,
     pub pinned_deployment: Option<PinnedDeployment>,
 }
@@ -671,6 +685,7 @@ impl CompletedInvocation {
             response_result,
             completion_retention_duration: in_flight_invocation_metadata
                 .completion_retention_duration,
+            journal_retention_duration: in_flight_invocation_metadata.journal_retention_duration,
             journal_metadata: if journal_retention_policy == JournalRetentionPolicy::Retain {
                 in_flight_invocation_metadata.journal_metadata
             } else {
@@ -749,6 +764,7 @@ mod test_util {
                 timestamps: StatusTimestamps::now(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
                 idempotency_key: None,
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 current_invocation_epoch: 0,
@@ -775,6 +791,7 @@ mod test_util {
                 timestamps,
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
+                journal_retention_duration: Duration::ZERO,
                 journal_metadata: JournalMetadata::empty(),
                 pinned_deployment: None,
             }
@@ -794,6 +811,7 @@ mod test_util {
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_metadata: JournalMetadata::empty(),
+                journal_retention_duration: Duration::ZERO,
                 pinned_deployment: None,
             }
         }

@@ -129,15 +129,8 @@ pub async fn mock_start_invocation_with_invocation_target(
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
-            argument: Default::default(),
             source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
-            response_sink: None,
-            span_context: Default::default(),
-            headers: vec![],
-            execution_time: None,
-            completion_retention_duration: None,
-            idempotency_key: None,
-            submit_notification_sink: None,
+            ..ServiceInvocation::mock()
         }))
         .await;
 

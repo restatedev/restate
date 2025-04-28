@@ -227,6 +227,7 @@ impl SchemaUpdater {
                     } else {
                         None
                     },
+                    journal_retention: None,
                     inactivity_timeout: None,
                     abort_timeout: None,
                     service_openapi_cache: Default::default(),
@@ -399,6 +400,7 @@ impl SchemaUpdater {
                     } else {
                         None
                     },
+                    journal_retention: None,
                     inactivity_timeout: None,
                     abort_timeout: None,
                     service_openapi_cache: Default::default(),
@@ -629,8 +631,11 @@ impl SchemaUpdater {
                     }
                     ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
                         schemas.idempotency_retention = new_idempotency_retention;
-                        for h in schemas.handlers.values_mut() {
-                            h.target_meta.idempotency_retention = new_idempotency_retention;
+                        for h in schemas.handlers.values_mut().filter(|w| {
+                            w.target_meta.target_ty
+                                != InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                        }) {
+                            h.target_meta.completion_retention = new_idempotency_retention;
                         }
                     }
                     ModifyServiceChange::WorkflowCompletionRetention(
@@ -647,8 +652,7 @@ impl SchemaUpdater {
                             w.target_meta.target_ty
                                 == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
                         }) {
-                            h.target_meta.completion_retention =
-                                Some(new_workflow_completion_retention);
+                            h.target_meta.completion_retention = new_workflow_completion_retention;
                         }
                     }
                     ModifyServiceChange::InactivityTimeout(inactivity_timeout) => {
@@ -838,17 +842,11 @@ impl DiscoveredHandlerMetadata {
                     HandlerSchemas {
                         target_meta: InvocationTargetMetadata {
                             public,
-                            idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                            completion_retention: if handler.ty
-                                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-                            {
-                                Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
-                            } else {
-                                None
-                            },
-                            target_ty: handler.ty,
-                            input_rules: handler.input,
-                            output_rules: handler.output,
+                            ..InvocationTargetMetadata::new(
+                                handler.ty,
+                                handler.input,
+                                handler.output,
+                            )
                         },
                         documentation: handler.documentation,
                         metadata: handler.metadata,

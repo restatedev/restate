@@ -32,7 +32,7 @@ async fn start_workflow_method() {
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
-            completion_retention_duration: Some(Duration::from_secs(60)),
+            completion_retention_duration: Duration::from_secs(60),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),
@@ -185,7 +185,7 @@ async fn attach_by_workflow_key() {
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
-            completion_retention_duration: Some(Duration::from_secs(60)),
+            completion_retention_duration: Duration::from_secs(60),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),

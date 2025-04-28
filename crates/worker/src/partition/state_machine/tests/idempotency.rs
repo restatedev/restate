@@ -45,7 +45,7 @@ async fn start_and_complete_idempotent_invocation() {
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
             idempotency_key: Some(idempotency_key),
-            completion_retention_duration: Some(retention),
+            completion_retention_duration: retention,
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -136,7 +136,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
             idempotency_key: Some(idempotency_key),
-            completion_retention_duration: Some(retention),
+            completion_retention_duration: retention,
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -238,6 +238,7 @@ async fn complete_already_completed_invocation() {
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(response_bytes.clone()),
             completion_retention_duration: Default::default(),
+            journal_retention_duration: Default::default(),
             journal_metadata: JournalMetadata::empty(),
             pinned_deployment: None,
         }),
@@ -292,7 +293,7 @@ async fn attach_with_service_invocation_command_while_executing() {
                 request_id: request_id_1,
             }),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_duration: Some(retention),
+            completion_retention_duration: retention,
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -393,7 +394,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
                 request_id: request_id_1,
             }),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_duration: Some(retention),
+            completion_retention_duration: retention,
             source: Source::Ingress(request_id_1),
             ..ServiceInvocation::mock()
         }))
@@ -412,7 +413,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_duration: Some(retention),
+            completion_retention_duration: retention,
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 request_id: request_id_2,
             }),
@@ -517,7 +518,7 @@ async fn attach_inboxed_with_send_service_invocation() {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_duration: Some(Duration::from_secs(60) * 60 * 24),
+            completion_retention_duration: Duration::from_secs(60) * 60 * 24,
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 request_id: request_id_1,
             }),
@@ -560,7 +561,7 @@ async fn attach_inboxed_with_send_service_invocation() {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_duration: Some(Duration::from_secs(60) * 60 * 24),
+            completion_retention_duration: Duration::from_secs(60) * 60 * 24,
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 request_id: request_id_2,
             }),
@@ -605,7 +606,7 @@ async fn attach_command() {
                 request_id: request_id_1,
             }),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_duration: Some(completion_retention),
+            completion_retention_duration: completion_retention,
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -697,7 +698,7 @@ async fn attach_command_without_blocking_inflight() {
                 request_id: PartitionProcessorRpcRequestId::default(),
             }),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_duration: Some(completion_retention),
+            completion_retention_duration: completion_retention,
             ..ServiceInvocation::mock()
         }))
         .await;

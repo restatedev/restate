@@ -268,6 +268,7 @@ pub struct CallRequest {
     pub headers: Vec<Header>,
     pub idempotency_key: Option<ByteString>,
     pub completion_retention_duration: Duration,
+    pub journal_retention_duration: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -418,6 +419,7 @@ mod test_util {
                 headers: vec![],
                 idempotency_key: None,
                 completion_retention_duration: Default::default(),
+                journal_retention_duration: Default::default(),
             }
         }
     }

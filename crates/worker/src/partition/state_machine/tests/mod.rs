@@ -882,17 +882,11 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
-            argument: Default::default(),
             source: Source::Ingress(request_id_1),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),
-            span_context: Default::default(),
-            headers: vec![],
-            execution_time: None,
-            completion_retention_duration: None,
-            idempotency_key: None,
-            submit_notification_sink: None,
+            ..ServiceInvocation::mock()
         }))
         .await;
     assert_that!(
