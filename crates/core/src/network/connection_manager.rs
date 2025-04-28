@@ -713,10 +713,7 @@ mod tests {
             direction: ConnectionDirection::Bidirectional.into(),
             swimlane: Swimlane::default().into(),
         };
-        let hello = Message::new(
-            Header::new(metadata.nodes_config_version(), None, None, None, None),
-            hello,
-        );
+        let hello = Message::new(Header::default(), hello);
         tx.send(hello).await.expect("Channel accept hello message");
 
         let connections = ConnectionManager::default();
@@ -741,10 +738,7 @@ mod tests {
             direction: ConnectionDirection::Bidirectional.into(),
             swimlane: Swimlane::default().into(),
         };
-        let hello = Message::new(
-            Header::new(metadata.nodes_config_version(), None, None, None, None),
-            hello,
-        );
+        let hello = Message::new(Header::default(), hello);
         tx.send(hello).await?;
 
         let connections = ConnectionManager::default();
@@ -779,10 +773,7 @@ mod tests {
             ConnectionDirection::Bidirectional,
             Swimlane::default(),
         );
-        let hello = Message::new(
-            Header::new(metadata.nodes_config_version(), None, None, None, None),
-            hello,
-        );
+        let hello = Message::new(Header::default(), hello);
         tx.send(hello).await.expect("Channel accept hello message");
 
         let connections = ConnectionManager::default();
@@ -847,13 +838,11 @@ mod tests {
 
         let request = GetNodeState::default();
         let partition_table_version = metadata.partition_table_version().next();
-        let header = Header::new(
-            metadata.nodes_config_version(),
-            None,
-            None,
-            Some(partition_table_version),
-            None,
-        );
+        let header = Header {
+            my_nodes_config_version: metadata.nodes_config_version().into(),
+            my_partition_table_version: partition_table_version.into(),
+            ..Default::default()
+        };
 
         let permit = connection.conn.reserve().await.unwrap();
 

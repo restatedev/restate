@@ -19,6 +19,7 @@ use futures::{Stream, StreamExt};
 use metrics::counter;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
+use strum::IntoEnumIterator as _;
 use tokio::sync::oneshot;
 use tokio::time::Sleep;
 use tracing::{Instrument, Span, debug, info, trace, warn};
@@ -90,7 +91,7 @@ impl ConnectionReactor {
             shared.tx.as_ref().unwrap(),
         );
         if let Some(peer_metadata) = peer_metadata {
-            seen_versions.notify_peer_metadata(peer_metadata, &connection_ref);
+            seen_versions.notify(peer_metadata, &connection_ref);
         }
         Self {
             state: State::Active,
@@ -134,7 +135,10 @@ impl ConnectionReactor {
 
     fn notify_metadata_versions(&mut self, header: &Header) {
         if let Some(seen) = self.seen_versions.as_mut() {
-            seen.notify(header, &self.connection_ref);
+            seen.notify(
+                PeerMetadataVersion::from_header(header),
+                &self.connection_ref,
+            );
         }
     }
 
@@ -489,10 +493,12 @@ impl ConnectionReactor {
                 // negotiated protocol.
 
                 // A heuristic to determine if this is a RPC reply
-                if let Some(in_response_to) = header.in_response_to {
+                if header.in_response_to > 0 {
                     // This is a RPC reply
-                    if let Some(reply_sender) =
-                        self.shared.reply_tracker.pop_rpc_sender(&in_response_to)
+                    if let Some(reply_sender) = self
+                        .shared
+                        .reply_tracker
+                        .pop_rpc_sender(&header.in_response_to)
                     {
                         // V1 doesn't support RPC statuses.
                         // todo: handle routing errors
@@ -658,7 +664,7 @@ fn send_rpc_error(tx: &super::UnboundedEgressSender, err: RouterError, id: u64) 
     });
     let header = Header {
         // for compatibility with V1 protocol
-        in_response_to: Some(id),
+        in_response_to: id,
         ..Default::default()
     };
 
@@ -734,7 +740,7 @@ fn spawn_v1_rpc_responder(
                         let datagram = Body::Encoded(BinaryMessage {payload, target: v1_response_target.into() });
                         let header = Header {
                             // for compatibility with V1 protocol
-                            in_response_to: Some(id),
+                            in_response_to: id,
                             ..Default::default()
                         };
 
@@ -772,16 +778,16 @@ pub struct MetadataVersions {
 
 impl MetadataVersions {
     fn new(metadata: Metadata) -> Self {
-        let mut nodes_config = metadata.updateable_nodes_config();
-        let mut schema = metadata.updateable_schema();
-        let mut partition_table = metadata.updateable_partition_table();
-        let mut logs_metadata = metadata.updateable_logs_metadata();
+        let nodes_config = metadata.updateable_nodes_config();
+        let schema = metadata.updateable_schema();
+        let partition_table = metadata.updateable_partition_table();
+        let logs_metadata = metadata.updateable_logs_metadata();
 
         let versions = enum_map! {
-            MetadataKind::NodesConfiguration => nodes_config.live_load().version(),
-            MetadataKind::Schema => schema.live_load().version(),
-            MetadataKind::PartitionTable => partition_table.live_load().version(),
-            MetadataKind::Logs => logs_metadata.live_load().version(),
+            MetadataKind::NodesConfiguration => Version::INVALID,
+            MetadataKind::Schema => Version::INVALID,
+            MetadataKind::PartitionTable => Version::INVALID,
+            MetadataKind::Logs => Version::INVALID,
         };
 
         Self {
@@ -794,45 +800,10 @@ impl MetadataVersions {
         }
     }
 
-    pub fn notify_peer_metadata(
-        &mut self,
-        peer: PeerMetadataVersion,
-        connection: &UnboundedConnectionRef,
-    ) {
-        self.update(
-            peer.nodes_config,
-            peer.partition_table,
-            peer.schema,
-            peer.logs,
-        )
-        .into_iter()
-        .for_each(|(kind, version)| {
-            if let Some(version) = version {
-                if version > self.get_latest_version(kind) {
-                    self.metadata
-                        .notify_observed_version(kind, version, Some(connection.clone()));
-                }
-                // todo: store the latest if it's higher
-            }
-        });
-    }
-
-    pub fn notify(&mut self, header: &Header, connection: &UnboundedConnectionRef) {
-        self.update(
-            header.my_nodes_config_version.map(Into::into),
-            header.my_partition_table_version.map(Into::into),
-            header.my_schema_version.map(Into::into),
-            header.my_logs_version.map(Into::into),
-        )
-        .into_iter()
-        .for_each(|(kind, version)| {
-            if let Some(version) = version {
-                if version > self.get_latest_version(kind) {
-                    self.metadata
-                        .notify_observed_version(kind, version, Some(connection.clone()));
-                }
-            }
-        });
+    fn notify(&mut self, peer: PeerMetadataVersion, connection: &UnboundedConnectionRef) {
+        for kind in MetadataKind::iter() {
+            self.update(kind, peer.get(kind), connection);
+        }
     }
 
     fn get_latest_version(&mut self, kind: MetadataKind) -> Version {
@@ -846,33 +817,20 @@ impl MetadataVersions {
 
     fn update(
         &mut self,
-        nodes_config_version: Option<Version>,
-        partition_table_version: Option<Version>,
-        schema_version: Option<Version>,
-        logs_version: Option<Version>,
-    ) -> EnumMap<MetadataKind, Option<Version>> {
-        let mut result = EnumMap::default();
-        result[MetadataKind::NodesConfiguration] =
-            self.update_internal(MetadataKind::NodesConfiguration, nodes_config_version);
-        result[MetadataKind::PartitionTable] =
-            self.update_internal(MetadataKind::PartitionTable, partition_table_version);
-        result[MetadataKind::Schema] = self.update_internal(MetadataKind::Schema, schema_version);
-        result[MetadataKind::Logs] = self.update_internal(MetadataKind::Logs, logs_version);
-
-        result
-    }
-
-    fn update_internal(
-        &mut self,
         metadata_kind: MetadataKind,
-        version: Option<Version>,
-    ) -> Option<Version> {
-        if let Some(version) = version {
-            if version > self.versions[metadata_kind] {
-                self.versions[metadata_kind] = version;
-                return Some(version);
+        version: Version,
+        connection: &UnboundedConnectionRef,
+    ) {
+        let current_version = self.versions[metadata_kind];
+        if version > current_version {
+            self.versions[metadata_kind] = version;
+            if version > self.get_latest_version(metadata_kind) {
+                self.metadata.notify_observed_version(
+                    metadata_kind,
+                    version,
+                    Some(connection.clone()),
+                );
             }
         }
-        None
     }
 }

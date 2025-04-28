@@ -17,6 +17,7 @@ use bytes::Bytes;
 use futures::FutureExt;
 use tokio::sync::oneshot;
 
+use restate_types::net::metadata::MetadataKind;
 use restate_types::net::{AdvertisedAddress, ProtocolVersion, RpcResponse};
 use restate_types::{GenerationalNodeId, Version};
 
@@ -48,25 +49,66 @@ pub enum Destination {
     Node(GenerationalNodeId),
 }
 
-#[derive(Clone, Copy, Default, derive_more::Debug)]
+#[derive(Clone, Copy, derive_more::Debug)]
 pub struct PeerMetadataVersion {
-    #[debug("{}", logs.unwrap_or(Version::INVALID))]
-    pub logs: Option<Version>,
-    #[debug("{}", logs.unwrap_or(Version::INVALID))]
-    pub nodes_config: Option<Version>,
-    #[debug("{}", logs.unwrap_or(Version::INVALID))]
-    pub partition_table: Option<Version>,
-    #[debug("{}", logs.unwrap_or(Version::INVALID))]
-    pub schema: Option<Version>,
+    logs: Version,
+    nodes_config: Version,
+    partition_table: Version,
+    schema: Version,
+}
+
+impl PeerMetadataVersion {
+    pub fn new(
+        logs: Version,
+        nodes_config: Version,
+        partition_table: Version,
+        schema: Version,
+    ) -> Self {
+        Self {
+            logs,
+            nodes_config,
+            partition_table,
+            schema,
+        }
+    }
+
+    pub fn from_header(header: &Header) -> Self {
+        Self {
+            logs: header.my_logs_version.into(),
+            nodes_config: header.my_nodes_config_version.into(),
+            partition_table: header.my_partition_table_version.into(),
+            schema: header.my_schema_version.into(),
+        }
+    }
+    /// Get the metadata version for a given kind
+    pub fn get(&self, kind: MetadataKind) -> Version {
+        match kind {
+            MetadataKind::Logs => self.logs,
+            MetadataKind::NodesConfiguration => self.nodes_config,
+            MetadataKind::PartitionTable => self.partition_table,
+            MetadataKind::Schema => self.schema,
+        }
+    }
 }
 
 impl From<Header> for PeerMetadataVersion {
     fn from(value: Header) -> Self {
         Self {
-            logs: value.my_logs_version.map(Version::from),
-            nodes_config: value.my_nodes_config_version.map(Version::from),
-            partition_table: value.my_partition_table_version.map(Version::from),
-            schema: value.my_schema_version.map(Version::from),
+            logs: Version::from(value.my_logs_version),
+            nodes_config: Version::from(value.my_nodes_config_version),
+            partition_table: Version::from(value.my_partition_table_version),
+            schema: Version::from(value.my_schema_version),
+        }
+    }
+}
+
+impl Default for PeerMetadataVersion {
+    fn default() -> Self {
+        Self {
+            logs: Version::INVALID,
+            nodes_config: Version::INVALID,
+            partition_table: Version::INVALID,
+            schema: Version::INVALID,
         }
     }
 }

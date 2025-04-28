@@ -21,6 +21,7 @@ pub mod network {
     use opentelemetry::propagation::{Extractor, Injector};
 
     use restate_types::GenerationalNodeId;
+    use restate_types::net::metadata::MetadataKind;
 
     use restate_types::net::{
         CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, ProtocolVersion,
@@ -74,23 +75,16 @@ pub mod network {
             self.fields.keys().map(String::as_str).collect()
         }
     }
+
     impl Header {
-        #[cfg(feature = "test-util")]
-        pub fn new(
-            nodes_config_version: restate_types::Version,
-            logs_version: Option<restate_types::Version>,
-            schema_version: Option<restate_types::Version>,
-            partition_table_version: Option<restate_types::Version>,
-            in_response_to: Option<u64>,
-        ) -> Self {
-            Self {
-                my_nodes_config_version: Some(nodes_config_version.into()),
-                my_logs_version: logs_version.map(Into::into),
-                my_schema_version: schema_version.map(Into::into),
-                my_partition_table_version: partition_table_version.map(Into::into),
-                msg_id: 0,
-                in_response_to,
-                span_context: None,
+        /// Returns the version of the metadata for the given kind.
+        #[must_use]
+        pub fn metadata_version(&self, kind: MetadataKind) -> restate_types::Version {
+            match kind {
+                MetadataKind::NodesConfiguration => self.my_nodes_config_version.into(),
+                MetadataKind::Schema => self.my_schema_version.into(),
+                MetadataKind::PartitionTable => self.my_partition_table_version.into(),
+                MetadataKind::Logs => self.my_logs_version.into(),
             }
         }
     }
