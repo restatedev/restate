@@ -18,12 +18,12 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use codederror::CodedError;
 use enum_map::Enum;
-use rocksdb::DBCompressionType;
 use rocksdb::DBPinnableSlice;
 use rocksdb::DBRawIteratorWithThreadMode;
 use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::{BoundColumnFamily, SliceTransform};
+use rocksdb::{DBCompressionType, SnapshotWithThreadMode};
 use static_assertions::const_assert_eq;
 use tracing::trace;
 
@@ -34,7 +34,7 @@ use restate_rocksdb::IoMode;
 use restate_rocksdb::Priority;
 use restate_rocksdb::{RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_storage_api::{Storage, StorageError, Transaction};
+use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::config::Configuration;
 use restate_types::identifiers::SnapshotId;
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
@@ -399,8 +399,14 @@ impl PartitionStore {
         }
     }
 
-    #[allow(clippy::needless_lifetimes)]
     pub fn transaction(&mut self) -> PartitionStoreTransaction {
+        self.transaction_with_isolation(IsolationLevel::Committed)
+    }
+
+    pub fn transaction_with_isolation(
+        &mut self,
+        isolation_level: IsolationLevel,
+    ) -> PartitionStoreTransaction {
         let rocksdb = self.rocksdb.clone();
         // An optimization to avoid looking up the cf handle everytime, if we split into more
         // column families, we will need to cache those cfs here as well.
@@ -415,6 +421,11 @@ impl PartitionStore {
                 )
             });
 
+        let snapshot = match isolation_level {
+            IsolationLevel::Committed => None,
+            IsolationLevel::RepeatableReads => Some(self.rocksdb.inner().as_raw_db().snapshot()),
+        };
+
         PartitionStoreTransaction {
             write_batch_with_index: rocksdb::WriteBatchWithIndex::new(0, true),
             data_cf_handle,
@@ -423,6 +434,7 @@ impl PartitionStore {
             value_buffer: &mut self.value_buffer,
             partition_id: self.partition_id,
             partition_key_range: &self.key_range,
+            snapshot,
         }
     }
 
@@ -514,8 +526,11 @@ fn find_cf_handle<'a>(
 impl Storage for PartitionStore {
     type TransactionType<'a> = PartitionStoreTransaction<'a>;
 
-    fn transaction(&mut self) -> Self::TransactionType<'_> {
-        PartitionStore::transaction(self)
+    fn transaction_with_isolation(
+        &mut self,
+        read_isolation: IsolationLevel,
+    ) -> Self::TransactionType<'_> {
+        PartitionStore::transaction_with_isolation(self, read_isolation)
     }
 }
 
@@ -600,9 +615,20 @@ pub struct PartitionStoreTransaction<'a> {
     data_cf_handle: Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
+    snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
 }
 
 impl PartitionStoreTransaction<'_> {
+    fn read_options(&self) -> ReadOptions {
+        let mut opts = ReadOptions::default();
+
+        if let Some(snapshot) = self.snapshot.as_ref() {
+            opts.set_snapshot(snapshot);
+        }
+
+        opts
+    }
+
     pub(crate) fn prefix_iterator(
         &self,
         table: TableKind,
@@ -610,7 +636,7 @@ impl PartitionStoreTransaction<'_> {
         prefix: Bytes,
     ) -> Result<DBIterator> {
         let table = self.table_handle(table);
-        let mut opts = rocksdb::ReadOptions::default();
+        let mut opts = self.read_options();
         opts.set_iterate_range(PrefixRange(prefix.clone()));
         opts.set_prefix_same_as_start(true);
         opts.set_total_order_seek(false);
@@ -634,7 +660,7 @@ impl PartitionStoreTransaction<'_> {
         to: Bytes,
     ) -> Result<DBIterator> {
         let table = self.table_handle(table);
-        let mut opts = rocksdb::ReadOptions::default();
+        let mut opts = self.read_options();
         // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
         // binding.
         opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
@@ -781,7 +807,7 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
                 self.rocksdb.inner().as_raw_db(),
                 table,
                 key,
-                &rocksdb::ReadOptions::default(),
+                &self.read_options(),
             )
             .map_err(|error| StorageError::Generic(error.into()))
     }
@@ -960,5 +986,104 @@ pub(crate) trait StorageAccess {
         }
 
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::keys::{KeyKind, TableKey};
+    use crate::partition_store::StorageAccess;
+    use crate::{OpenMode, PartitionStoreManager, TableKind};
+    use bytes::{Buf, BufMut};
+    use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::{IsolationLevel, StorageError, Transaction};
+    use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
+    use restate_types::identifiers::{PartitionId, PartitionKey};
+    use restate_types::live::Constant;
+
+    impl TableKey for String {
+        const TABLE: TableKind = TableKind::State;
+        const KEY_KIND: KeyKind = KeyKind::State;
+
+        fn is_complete(&self) -> bool {
+            true
+        }
+
+        fn serialize_key_kind<B: BufMut>(bytes: &mut B) {
+            Self::KEY_KIND.serialize(bytes);
+        }
+
+        fn serialize_to<B: BufMut>(&self, bytes: &mut B) {
+            Self::serialize_key_kind(bytes);
+            bytes.put_u32(self.len() as u32);
+            bytes.put_slice(self.as_bytes());
+        }
+
+        fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::partition_store::Result<Self> {
+            let key_kind = KeyKind::deserialize(bytes)?;
+            assert_eq!(key_kind, Self::KEY_KIND);
+
+            let len = bytes.get_u32() as usize;
+            let mut string_bytes = Vec::with_capacity(len);
+            bytes.copy_to_slice(&mut string_bytes);
+            Ok(String::from_utf8(string_bytes).expect("valid key"))
+        }
+
+        fn serialized_length(&self) -> usize {
+            KeyKind::SERIALIZED_LENGTH + self.len()
+        }
+    }
+
+    #[restate_core::test]
+    async fn concurrent_writes_and_reads() -> googletest::Result<()> {
+        let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let partition_store_manager =
+            PartitionStoreManager::create(Constant::new(StorageOptions::default()), &[]).await?;
+        let mut partition_store = partition_store_manager
+            .open_partition_store(
+                PartitionId::MIN,
+                PartitionKey::MIN..=PartitionKey::MAX,
+                OpenMode::CreateIfMissing,
+                &RocksDbOptions::default(),
+            )
+            .await?;
+        let key_a = "a".to_owned();
+        let key_b = "b".to_owned();
+
+        // put the initial values
+        partition_store.put_kv_raw(key_a.clone(), 0_u32.to_be_bytes())?;
+        partition_store.put_kv_raw(key_b.clone(), 0_u32.to_be_bytes())?;
+
+        let mut partition_store_clone = partition_store.clone();
+        // repeatable reads shouldn't see writes of concurrently finishing transactions
+        let mut read_txn =
+            partition_store.transaction_with_isolation(IsolationLevel::RepeatableReads);
+
+        let value_a = read_txn.get_kv_raw(key_a.clone(), decode_u32)?;
+
+        // concurrent write which should not be visible by read_txn
+        let mut write_txn = partition_store_clone.transaction();
+        write_txn.put_kv_raw(key_a.clone(), 42_u32.to_be_bytes())?;
+        write_txn.put_kv_raw(key_b.clone(), 42_u32.to_be_bytes())?;
+        write_txn.commit().await?;
+
+        let value_b = read_txn.get_kv_raw(key_b.clone(), decode_u32)?;
+
+        assert_eq!(value_a, value_b);
+
+        rocksdb.shutdown().await;
+        Ok(())
+    }
+
+    fn decode_u32(_key: &[u8], bytes: Option<&[u8]>) -> Result<Option<u32>, StorageError> {
+        if let Some(bytes) = bytes {
+            bytes
+                .try_into()
+                .map(u32::from_be_bytes)
+                .map(Some)
+                .map_err(|err| StorageError::Conversion(err.into()))
+        } else {
+            Ok(None)
+        }
     }
 }

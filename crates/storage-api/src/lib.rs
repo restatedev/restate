@@ -38,12 +38,38 @@ pub mod service_status_table;
 pub mod state_table;
 pub mod timer_table;
 
+/// Isolation level of a storage transaction
+#[derive(Debug, Default)]
+pub enum IsolationLevel {
+    /// Read committed writes during the execution of the transaction. Note, that this level does
+    /// not ensure repeatable reads since you might see committed writes from multiple transactions.
+    /// Use this level, if you know that you are the only writer.
+    #[default]
+    Committed,
+    /// Ensure repeatable reads during the execution of the transaction. Use this level,
+    /// if you need to do multiple reads and tolerate concurrent write operations.
+    ///
+    /// Note that using this level might be more costly than [`IsolationLevel::Committed`].
+    RepeatableReads,
+}
+
 pub trait Storage {
     type TransactionType<'a>: Transaction
     where
         Self: 'a;
 
-    fn transaction(&mut self) -> Self::TransactionType<'_>;
+    /// Create a transaction with no read isolation level. This method should only be used if you
+    /// are the only writer to the [`Storage`] implementation. Otherwise, use
+    /// [`Storage::transaction_with_isolation`] and specify a proper [`IsolationLevel`] level.
+    fn transaction(&mut self) -> Self::TransactionType<'_> {
+        self.transaction_with_isolation(IsolationLevel::Committed)
+    }
+
+    /// Create a transaction with the given read isolation level.
+    fn transaction_with_isolation(
+        &mut self,
+        read_isolation: IsolationLevel,
+    ) -> Self::TransactionType<'_>;
 }
 
 pub trait Transaction:
