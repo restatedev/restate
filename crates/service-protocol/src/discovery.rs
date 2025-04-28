@@ -256,13 +256,23 @@ impl ServiceDiscovery {
 
         let (address, headers) = endpoint.into_inner();
 
-        Self::create_discovered_metadata_from_endpoint_response(
+        let discovery_response = Self::create_discovered_metadata_from_endpoint_response(
             address,
             headers,
             parts.version,
             response,
             x_restate_server,
-        )
+        )?;
+
+        if discovery_response.supported_protocol_versions.end() < &4i32 {
+            warn!(
+                "The registered endpoint is using a service protocol version that will be removed in the future releases. \
+                Please update the SDK to the latest release and re-register the deployment. \
+                For more info, check https://docs.restate.dev/operate/versioning#deploying-new-service-versions",
+            );
+        }
+
+        Ok(discovery_response)
     }
 
     fn retrieve_service_discovery_protocol_version(
