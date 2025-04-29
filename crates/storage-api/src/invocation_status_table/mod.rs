@@ -484,7 +484,7 @@ impl Default for CompletionRangeEpochMap {
 }
 
 impl CompletionRangeEpochMap {
-    /// This must use the vec returned by [Self::into_trim_points].
+    /// This must use the vec returned by [Self::into_trim_points_iter].
     pub fn from_trim_points(
         serialized_completion_range_epoch_map: impl IntoIterator<Item = (CompletionId, InvocationEpoch)>,
     ) -> Self {
@@ -500,7 +500,7 @@ impl CompletionRangeEpochMap {
     }
 
     /// Returns a serializable representation of the map
-    pub fn into_trim_points(self) -> impl Iterator<Item = (CompletionId, InvocationEpoch)> {
+    pub fn into_trim_points_iter(self) -> impl Iterator<Item = (CompletionId, InvocationEpoch)> {
         debug_assert!(
             !self.0.is_empty(),
             "CompletionRangeEpochMap constraint not respected, it must contain at least one range 0..=MAX"
@@ -766,7 +766,7 @@ mod tests {
 
             let expected_trim_points = vec![];
             assert_eq!(
-                map.clone().into_trim_points().collect::<Vec<_>>(),
+                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
                 expected_trim_points
             );
             assert_eq!(
@@ -788,7 +788,7 @@ mod tests {
 
             let expected_trim_points = vec![(1, 1)];
             assert_eq!(
-                map.clone().into_trim_points().collect::<Vec<_>>(),
+                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
                 expected_trim_points
             );
             assert_eq!(
@@ -835,7 +835,7 @@ mod tests {
 
             let expected_trim_points = vec![(2, 2), (5, 3)];
             assert_eq!(
-                map.clone().into_trim_points().collect::<Vec<_>>(),
+                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
                 expected_trim_points
             );
             assert_eq!(
@@ -868,7 +868,7 @@ mod tests {
 
             let expected_trim_points = vec![(2, 2)];
             assert_eq!(
-                map.clone().into_trim_points().collect::<Vec<_>>(),
+                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
                 expected_trim_points
             );
             assert_eq!(

@@ -779,7 +779,7 @@ pub mod v1 {
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             current_invocation_epoch,
-                            trim_points: completion_range_epoch_map.into_trim_points().into_iter().map(|(completion_id, invocation_epoch)| JournalTrimPoint {
+                            trim_points: completion_range_epoch_map.into_trim_points_iter().into_iter().map(|(completion_id, invocation_epoch)| JournalTrimPoint {
                                 completion_id,
                                 invocation_epoch,
                             }).collect(),
@@ -870,7 +870,7 @@ pub mod v1 {
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             current_invocation_epoch,
-                            trim_points: completion_range_epoch_map.into_trim_points().into_iter().map(|(completion_id, invocation_epoch)| JournalTrimPoint {
+                            trim_points: completion_range_epoch_map.into_trim_points_iter().into_iter().map(|(completion_id, invocation_epoch)| JournalTrimPoint {
                                 completion_id,
                                 invocation_epoch,
                             }).collect(),
