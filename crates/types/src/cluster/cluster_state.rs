@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 use prost_dto::IntoProst;
 use serde::{Deserialize, Serialize};
 
+use restate_encoding::NetSerde;
+
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::Lsn;
 use crate::time::MillisSinceEpoch;
@@ -121,39 +123,74 @@ pub struct SuspectNode {
     pub last_attempt: MillisSinceEpoch,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, IntoProst, strum::Display)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    Eq,
+    PartialEq,
+    IntoProst,
+    strum::Display,
+    bilrost::Enumeration,
+    NetSerde,
+)]
 #[prost(target = "crate::protobuf::cluster::RunMode")]
 #[strum(serialize_all = "snake_case")]
 pub enum RunMode {
-    Leader,
-    Follower,
+    Follower = 0,
+    Leader = 1,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoProst, strum::Display)]
+#[derive(
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    IntoProst,
+    strum::Display,
+    bilrost::Enumeration,
+    NetSerde,
+)]
 #[prost(target = "crate::protobuf::cluster::ReplayStatus")]
 #[strum(serialize_all = "snake_case")]
 pub enum ReplayStatus {
-    Starting,
-    Active,
-    CatchingUp,
+    Starting = 0,
+    Active = 1,
+    CatchingUp = 2,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProst)]
+#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, bilrost::Message, NetSerde)]
 #[prost(target = "crate::protobuf::cluster::PartitionProcessorStatus")]
 pub struct PartitionProcessorStatus {
     #[prost(required)]
+    #[bilrost(1)]
     pub updated_at: MillisSinceEpoch,
+    #[bilrost(2)]
     pub planned_mode: RunMode,
+    #[bilrost(3)]
     pub effective_mode: RunMode,
+    #[bilrost(4)]
     pub last_observed_leader_epoch: Option<LeaderEpoch>,
+    #[bilrost(5)]
     pub last_observed_leader_node: Option<GenerationalNodeId>,
+    #[bilrost(6)]
     pub last_applied_log_lsn: Option<Lsn>,
+    #[bilrost(7)]
     pub last_record_applied_at: Option<MillisSinceEpoch>,
+    #[bilrost(8)]
     pub num_skipped_records: u64,
+    #[bilrost(9)]
     pub replay_status: ReplayStatus,
+    #[bilrost(10)]
     pub last_persisted_log_lsn: Option<Lsn>,
+    #[bilrost(11)]
     pub last_archived_log_lsn: Option<Lsn>,
     // Set if replay_status is CatchingUp
+    #[bilrost(12)]
     pub target_tail_lsn: Option<Lsn>,
 }
 
