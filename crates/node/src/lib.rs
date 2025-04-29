@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod cluster_marker;
+mod failure_detector;
 mod init;
 mod network_server;
 mod roles;
@@ -52,10 +53,11 @@ use restate_types::protobuf::common::{
 };
 use restate_types::{GenerationalNodeId, Version, Versioned};
 
+use self::failure_detector::FailureDetector;
 use crate::cluster_marker::ClusterValidationError;
 use crate::init::NodeInit;
 use crate::network_server::NetworkServer;
-use crate::roles::{AdminRole, BaseRole, IngressRole, WorkerRole};
+use crate::roles::{AdminRole, IngressRole, WorkerRole};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -125,7 +127,7 @@ pub struct Node {
     partition_routing_refresher: PartitionRoutingRefresher,
     bifrost: BifrostService,
     metadata_server_role: Option<BoxedMetadataServer>,
-    base_role: BaseRole,
+    failure_detector: FailureDetector,
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole>,
     ingress_role: Option<IngressRole<GrpcConnector>>,
@@ -320,7 +322,7 @@ impl Node {
             None
         };
 
-        let base_role = BaseRole::new(
+        let failure_detector = FailureDetector::new(
             &mut router_builder,
             worker_role
                 .as_ref()
@@ -340,7 +342,7 @@ impl Node {
             partition_routing_refresher,
             bifrost: bifrost_svc,
             metadata_server_role: metadata_store_role,
-            base_role,
+            failure_detector,
             admin_role,
             ingress_role,
             worker_role,
@@ -449,7 +451,7 @@ impl Node {
             .context("Giving up trying to initialize the node. Make sure that it can reach the metadata store and don't forget to provision the cluster on a fresh start")?
             .context("Failed initializing the node")?;
 
-        self.base_role.start()?;
+        self.failure_detector.start()?;
 
         // wait for initial metadata sync.
         //
