@@ -91,8 +91,9 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
-tempfile = { workspace = true }
 
+criterion = { workspace = true, features = ["async_tokio"] }
+tempfile = { workspace = true }
 googletest = { workspace = true }
 rand = { workspace = true }
 test-log = { workspace = true }
@@ -106,3 +107,8 @@ serde_json = { workspace = true }
 syn = "2.0"
 typify = { version = "0.1.0" }
 jsonptr = "0.4.7"
+
+
+[[bench]]
+name = "network_serialization"
+harness = false

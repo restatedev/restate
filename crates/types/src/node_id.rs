@@ -11,6 +11,7 @@
 use std::str::FromStr;
 
 use bytes::{Buf, BufMut, BytesMut};
+use restate_encoding::{BilrostNewType, NetSerde};
 
 /// A generational node identifier. Nodes with the same ID but different generations
 /// represent the same node across different instances (restarts) of its lifetime.
@@ -50,6 +51,8 @@ pub enum NodeId {
     derive_more::Debug,
     serde::Serialize,
     serde::Deserialize,
+    bilrost::Message,
+    NetSerde,
 )]
 #[display("{}:{}", _0, _1)]
 #[debug("{}:{}", _0, _1)]
@@ -146,6 +149,8 @@ impl From<u64> for GenerationalNodeId {
     derive_more::Debug,
     serde::Serialize,
     serde::Deserialize,
+    BilrostNewType,
+    NetSerde,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(transparent))]

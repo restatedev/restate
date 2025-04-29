@@ -22,6 +22,8 @@ use std::mem::size_of;
 use std::str::FromStr;
 use ulid::Ulid;
 
+use restate_encoding::{BilrostNewType, NetSerde};
+
 use crate::base62_util::base62_encode_fixed_width;
 use crate::base62_util::base62_max_length_for_type;
 use crate::errors::IdDecodeError;
@@ -47,6 +49,8 @@ use crate::time::MillisSinceEpoch;
     derive_more::Debug,
     serde::Serialize,
     serde::Deserialize,
+    BilrostNewType,
+    NetSerde,
 )]
 #[display("e{}", _0)]
 #[debug("e{}", _0)]
@@ -96,6 +100,8 @@ impl From<LeaderEpoch> for crate::protobuf::common::LeaderEpoch {
     derive_more::FromStr,
     serde::Serialize,
     serde::Deserialize,
+    BilrostNewType,
+    NetSerde,
 )]
 #[repr(transparent)]
 #[serde(transparent)]

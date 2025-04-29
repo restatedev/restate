@@ -13,6 +13,8 @@ use std::fmt::Display;
 use std::ops::Add;
 use std::time::{Duration, SystemTime};
 
+use restate_encoding::{BilrostNewType, NetSerde};
+
 /// Milliseconds since the unix epoch
 #[derive(
     Debug,
@@ -26,6 +28,8 @@ use std::time::{Duration, SystemTime};
     serde::Serialize,
     serde::Deserialize,
     derive_more::Into,
+    BilrostNewType,
+    NetSerde,
 )]
 #[serde(transparent)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
