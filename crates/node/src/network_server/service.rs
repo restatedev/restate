@@ -13,12 +13,10 @@ use axum::routing::{MethodFilter, get, on};
 
 use restate_core::TaskCenter;
 use restate_core::network::grpc::CoreNodeSvcHandler;
-use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{ConnectionManager, NetworkServerBuilder};
 use restate_core::{Identification, MetadataWriter};
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::CommonOptions;
-use restate_types::protobuf::common::NodeStatus;
 
 use super::grpc_svc_handler::{MetadataProxySvcHandler, NodeCtlSvcHandler};
 use super::pprof;
@@ -62,9 +60,7 @@ impl NetworkServer {
 
         server_builder.register_axum_routes(axum_router);
 
-        let (node_health, node_rpc_health) = TaskCenter::with_current(|tc| {
-            (tc.health().node_status(), tc.health().node_rpc_status())
-        });
+        let node_rpc_health = TaskCenter::with_current(|tc| tc.health().node_rpc_status());
 
         server_builder.register_grpc_service(
             MetadataProxySvcHandler::new(metadata_writer.raw_metadata_store_client().clone())
@@ -78,10 +74,7 @@ impl NetworkServer {
         );
 
         server_builder.register_grpc_service(
-            TonicServiceFilter::new(
-                CoreNodeSvcHandler::new(connection_manager).into_server(),
-                WaitForReady::new(node_health, NodeStatus::Alive),
-            ),
+            CoreNodeSvcHandler::new(connection_manager).into_server(),
             restate_core::network::protobuf::core_node_svc::FILE_DESCRIPTOR_SET,
         );
 
