@@ -23,6 +23,7 @@
     derive_more::AddAssign,
     serde::Serialize,
     serde::Deserialize,
+    restate_encoding::BilrostNewType,
 )]
 #[display("v{}", _0)]
 #[debug("v{}", _0)]
