@@ -22,7 +22,7 @@ use googletest::prelude::*;
 
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
+    CompletionRangeEpochMap, InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
     InvokedInvocationStatusLite, JournalMetadata, ReadOnlyInvocationStatusTable, StatusTimestamps,
 };
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
@@ -87,6 +87,8 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         completion_retention_duration: Duration::ZERO,
         idempotency_key: None,
         hotfix_apply_cancellation_after_deployment_is_pinned: false,
+        current_invocation_epoch: 1,
+        completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points([(5, 1)]),
     })
 }
 
@@ -102,6 +104,8 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             completion_retention_duration: Duration::ZERO,
             idempotency_key: None,
             hotfix_apply_cancellation_after_deployment_is_pinned: false,
+            current_invocation_epoch: 1,
+            completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points([(5, 1)]),
         },
         waiting_for_notifications: HashSet::default(),
     }
@@ -159,10 +163,12 @@ async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut 
             eq(InvokedInvocationStatusLite {
                 invocation_id: *INVOCATION_ID_1,
                 invocation_target: INVOCATION_TARGET_1.clone(),
+                current_invocation_epoch: 1,
             }),
             eq(InvokedInvocationStatusLite {
                 invocation_id: *INVOCATION_ID_2,
                 invocation_target: INVOCATION_TARGET_2.clone(),
+                current_invocation_epoch: 1,
             })
         ]
     );

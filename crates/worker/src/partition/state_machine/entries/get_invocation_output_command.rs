@@ -31,6 +31,10 @@ where
             response_sink: ServiceInvocationResponseSink::partition_processor(
                 self.invocation_id,
                 self.entry.completion_id,
+                self.invocation_status
+                    .get_invocation_metadata()
+                    .expect("Should be present when handling new command")
+                    .current_invocation_epoch,
             ),
         }))
         .await?;
@@ -50,8 +54,8 @@ mod tests {
     use restate_types::errors::NOT_READY_INVOCATION_ERROR;
     use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId};
     use restate_types::invocation::{
-        GetInvocationOutputResponse, InvocationQuery, InvocationResponse, ResponseResult,
-        ServiceInvocationResponseSink,
+        GetInvocationOutputResponse, InvocationQuery, InvocationResponse, JournalCompletionTarget,
+        ResponseResult, ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::{
         AttachInvocationTarget, CommandType, Entry, EntryMetadata, EntryType,
@@ -91,14 +95,12 @@ mod tests {
         };
         let response_command = if complete_using_notify_get_invocation_output {
             Command::NotifyGetInvocationOutputResponse(GetInvocationOutputResponse {
-                caller_id: invocation_id,
-                completion_id,
+                target: JournalCompletionTarget::from_parts(invocation_id, completion_id, 0),
                 result: expected_get_invocation_result.clone(),
             })
         } else {
             Command::InvocationResponse(InvocationResponse {
-                id: invocation_id,
-                entry_index: completion_id,
+                target: JournalCompletionTarget::from_parts(invocation_id, completion_id, 0),
                 result: if complete_with_not_ready {
                     ResponseResult::Failure(NOT_READY_INVOCATION_ERROR)
                 } else {
@@ -130,7 +132,8 @@ mod tests {
                                 response_sink: eq(
                                     ServiceInvocationResponseSink::partition_processor(
                                         invocation_id,
-                                        completion_id
+                                        completion_id,
+                                        0
                                     )
                                 )
                             }

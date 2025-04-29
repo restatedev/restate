@@ -12,13 +12,14 @@ use crate::Result;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::Stream;
+use rangemap::RangeInclusiveMap;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::invocation::{
-    Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
+    Header, InvocationEpoch, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
-use restate_types::journal_v2::{EntryIndex, NotificationId};
+use restate_types::journal_v2::{CompletionId, EntryIndex, NotificationId};
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 use std::future::Future;
@@ -467,6 +468,71 @@ impl InboxedInvocation {
     }
 }
 
+/// This map is used to record trim points and determine whether a completion from an old epoch should be accepted or rejected.
+///
+/// For more details, see the unit tests below and InvocationStatusExt in the restate-worker module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionRangeEpochMap(RangeInclusiveMap<CompletionId, InvocationEpoch>);
+
+impl Default for CompletionRangeEpochMap {
+    fn default() -> Self {
+        Self(RangeInclusiveMap::from([(
+            CompletionId::MIN..=CompletionId::MAX,
+            InvocationEpoch::MIN,
+        )]))
+    }
+}
+
+impl CompletionRangeEpochMap {
+    /// This must use the vec returned by [Self::into_trim_points_iter].
+    pub fn from_trim_points(
+        serialized_completion_range_epoch_map: impl IntoIterator<Item = (CompletionId, InvocationEpoch)>,
+    ) -> Self {
+        let mut this = Self::default();
+
+        for (first_inclusive_completion_id_of_new_epoch, new_epoch) in
+            serialized_completion_range_epoch_map
+        {
+            this.add_trim_point(first_inclusive_completion_id_of_new_epoch, new_epoch);
+        }
+
+        this
+    }
+
+    /// Returns a serializable representation of the map
+    pub fn into_trim_points_iter(self) -> impl Iterator<Item = (CompletionId, InvocationEpoch)> {
+        debug_assert!(
+            !self.0.is_empty(),
+            "CompletionRangeEpochMap constraint not respected, it must contain at least one range 0..=MAX"
+        );
+        self.0
+            .into_iter()
+            .skip_while(
+                // No need to serialize the default range
+                |r| r.1 == 0,
+            )
+            .map(|(range, epoch)| (*range.start(), epoch))
+    }
+
+    pub fn add_trim_point(
+        &mut self,
+        first_inclusive_completion_id_of_new_epoch: CompletionId,
+        new_epoch: InvocationEpoch,
+    ) {
+        self.0.insert(
+            first_inclusive_completion_id_of_new_epoch..=CompletionId::MAX,
+            new_epoch,
+        );
+    }
+
+    pub fn maximum_epoch_for(&self, completion_id: CompletionId) -> InvocationEpoch {
+        *self
+            .0
+            .get(&completion_id)
+            .expect("This range map MUST not have gaps!")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct InFlightInvocationMetadata {
     pub invocation_target: InvocationTarget,
@@ -480,6 +546,8 @@ pub struct InFlightInvocationMetadata {
     pub idempotency_key: Option<ByteString>,
     // TODO remove this when we remove protocol <= v3
     pub hotfix_apply_cancellation_after_deployment_is_pinned: bool,
+    pub current_invocation_epoch: InvocationEpoch,
+    pub completion_range_epoch_map: CompletionRangeEpochMap,
 }
 
 impl InFlightInvocationMetadata {
@@ -504,6 +572,8 @@ impl InFlightInvocationMetadata {
                     .completion_retention_duration,
                 idempotency_key: pre_flight_invocation_metadata.idempotency_key,
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                current_invocation_epoch: 0,
+                completion_range_epoch_map: Default::default(),
             },
             InvocationInput {
                 argument: pre_flight_invocation_metadata.argument,
@@ -575,6 +645,7 @@ impl CompletedInvocation {
 pub struct InvokedInvocationStatusLite {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
+    pub current_invocation_epoch: InvocationEpoch,
 }
 
 pub trait ReadOnlyInvocationStatusTable {
@@ -630,6 +701,8 @@ mod test_util {
                 completion_retention_duration: Duration::ZERO,
                 idempotency_key: None,
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                current_invocation_epoch: 0,
+                completion_range_epoch_map: Default::default(),
             }
         }
     }
@@ -671,6 +744,137 @@ mod test_util {
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod completion_range_epoch_map {
+        use super::*;
+
+        #[test]
+        fn default() {
+            let map = CompletionRangeEpochMap::default();
+
+            // The default should be fine with any completion
+            assert_eq!(map.maximum_epoch_for(CompletionId::MIN), 0);
+            assert_eq!(map.maximum_epoch_for(CompletionId::MAX / 2), 0);
+            assert_eq!(map.maximum_epoch_for(CompletionId::MAX), 0);
+
+            let expected_trim_points = vec![];
+            assert_eq!(
+                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
+                expected_trim_points
+            );
+            assert_eq!(
+                CompletionRangeEpochMap::from_trim_points(expected_trim_points),
+                map
+            );
+        }
+
+        #[test]
+        fn trim_at_1() {
+            let mut map = CompletionRangeEpochMap::default();
+
+            map.add_trim_point(1, 1);
+
+            // Before 1 is epoch 0, After including 1 is epoch 1
+            assert_eq!(map.maximum_epoch_for(0), 0);
+            assert_eq!(map.maximum_epoch_for(1), 1);
+            assert_eq!(map.maximum_epoch_for(CompletionId::MAX), 1);
+
+            let expected_trim_points = vec![(1, 1)];
+            assert_eq!(
+                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
+                expected_trim_points
+            );
+            assert_eq!(
+                CompletionRangeEpochMap::from_trim_points(expected_trim_points),
+                map
+            );
+        }
+
+        #[test]
+        fn multiple_trims() {
+            let mut map = CompletionRangeEpochMap::default();
+
+            map.add_trim_point(5, 1);
+
+            // 0..=4 -> 0
+            // 5..=MAX -> 1
+            assert_eq!(map.maximum_epoch_for(0), 0);
+            assert_eq!(map.maximum_epoch_for(4), 0);
+            assert_eq!(map.maximum_epoch_for(5), 1);
+            assert_eq!(map.maximum_epoch_for(CompletionId::MAX), 1);
+
+            map.add_trim_point(2, 2);
+
+            // 0..=1 -> 0
+            // 2..=MAX -> 2
+            assert_eq!(map.maximum_epoch_for(0), 0);
+            assert_eq!(map.maximum_epoch_for(1), 0);
+            assert_eq!(map.maximum_epoch_for(2), 2);
+            assert_eq!(map.maximum_epoch_for(3), 2);
+            assert_eq!(map.maximum_epoch_for(CompletionId::MAX), 2);
+
+            map.add_trim_point(5, 3);
+
+            // 0..=1 -> 0
+            // 2..=4 -> 2
+            // 5..=MAX -> 3
+            assert_eq!(map.maximum_epoch_for(0), 0);
+            assert_eq!(map.maximum_epoch_for(1), 0);
+            assert_eq!(map.maximum_epoch_for(2), 2);
+            assert_eq!(map.maximum_epoch_for(3), 2);
+            assert_eq!(map.maximum_epoch_for(4), 2);
+            assert_eq!(map.maximum_epoch_for(5), 3);
+            assert_eq!(map.maximum_epoch_for(CompletionId::MAX), 3);
+
+            let expected_trim_points = vec![(2, 2), (5, 3)];
+            assert_eq!(
+                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
+                expected_trim_points
+            );
+            assert_eq!(
+                CompletionRangeEpochMap::from_trim_points(expected_trim_points),
+                map
+            );
+        }
+
+        #[test]
+        fn trim_same_point_twice() {
+            let mut map = CompletionRangeEpochMap::default();
+
+            map.add_trim_point(2, 1);
+
+            // 0..=2 -> 0
+            // 2..=MAX -> 1
+            assert_eq!(map.maximum_epoch_for(0), 0);
+            assert_eq!(map.maximum_epoch_for(1), 0);
+            assert_eq!(map.maximum_epoch_for(2), 1);
+            assert_eq!(map.maximum_epoch_for(CompletionId::MAX), 1);
+
+            map.add_trim_point(2, 2);
+
+            // 0..=2 -> 0
+            // 2..=MAX -> 2
+            assert_eq!(map.maximum_epoch_for(0), 0);
+            assert_eq!(map.maximum_epoch_for(1), 0);
+            assert_eq!(map.maximum_epoch_for(2), 2);
+            assert_eq!(map.maximum_epoch_for(CompletionId::MAX), 2);
+
+            let expected_trim_points = vec![(2, 2)];
+            assert_eq!(
+                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
+                expected_trim_points
+            );
+            assert_eq!(
+                CompletionRangeEpochMap::from_trim_points(expected_trim_points),
+                map
+            );
         }
     }
 }

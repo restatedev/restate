@@ -58,14 +58,13 @@ use restate_types::identifiers::{
     AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, PartitionKey,
     PartitionProcessorRpcRequestId, ServiceId,
 };
-use restate_types::identifiers::{
-    IdempotencyId, JournalEntryId, WithInvocationId, WithPartitionKey,
-};
+use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
-    InvocationTargetType, InvocationTermination, NotifySignalRequest, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
-    SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
+    AttachInvocationRequest, InvocationEpoch, InvocationQuery, InvocationResponse,
+    InvocationTarget, InvocationTargetType, InvocationTermination, JournalCompletionTarget,
+    NotifySignalRequest, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext, Source, SubmitNotificationSink, TerminationFlavor,
+    VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
 use restate_types::journal::Completion;
@@ -81,9 +80,7 @@ use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{
-    AttachInvocationCompletion, AttachInvocationResult, CallCompletion, CallResult, CommandType,
-    CompletionId, EntryMetadata, GetInvocationOutputCompletion, GetInvocationOutputResult,
-    GetPromiseCompletion, GetPromiseResult, NotificationId, Signal, SignalResult, SleepCompletion,
+    CommandType, CompletionId, EntryMetadata, NotificationId, Signal, SignalResult,
 };
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::IngressResponseResult;
@@ -277,6 +274,9 @@ impl<S> StateMachineApplyContext<'_, S> {
         if let Some(invocation_target) = status.invocation_target() {
             Span::current().record_invocation_target(invocation_target);
         }
+        if let Some(invocation_metadata) = status.get_invocation_metadata() {
+            Span::current().record_invocation_epoch(&invocation_metadata.current_invocation_epoch);
+        }
         Ok(status)
     }
 
@@ -289,7 +289,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: TimerTable,
     {
         match timer_value.value() {
-            Timer::CompleteJournalEntry(_, entry_index) => {
+            Timer::CompleteJournalEntry(_, entry_index, _) => {
                 info_span_if_leader!(
                     self.is_leader,
                     span_context.is_sampled(),
@@ -354,7 +354,12 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    fn forward_notification(&mut self, invocation_id: InvocationId, notification: RawNotification) {
+    fn forward_notification(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+        notification: RawNotification,
+    ) {
         debug_if_leader!(
             self.is_leader,
             restate.notification.id = %notification.id(),
@@ -363,19 +368,26 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.action_collector.push(Action::ForwardNotification {
             invocation_id,
+            invocation_epoch,
             notification,
         });
     }
 
-    fn send_abort_invocation_to_invoker(&mut self, invocation_id: InvocationId) {
+    fn send_abort_invocation_to_invoker(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) {
         debug_if_leader!(
             self.is_leader,
             restate.invocation.id = %invocation_id,
             "Send abort command to invoker"
         );
 
-        self.action_collector
-            .push(Action::AbortInvocation { invocation_id });
+        self.action_collector.push(Action::AbortInvocation {
+            invocation_id,
+            invocation_epoch,
+        });
     }
 
     async fn on_apply(&mut self, command: Command) -> Result<(), Error>
@@ -396,24 +408,27 @@ impl<S> StateMachineApplyContext<'_, S> {
             Command::Invoke(service_invocation) => {
                 self.on_service_invocation(service_invocation).await
             }
-            Command::InvocationResponse(InvocationResponse {
-                id,
-                entry_index,
-                result,
-            }) => {
+            Command::InvocationResponse(InvocationResponse { target, result }) => {
                 let completion = Completion {
-                    entry_index,
+                    entry_index: target.caller_completion_id,
                     result: result.into(),
                 };
-                let status = self.get_invocation_status(&id).await?;
+                let status = self.get_invocation_status(&target.caller_id).await?;
 
                 if should_use_journal_table_v2(&status) {
-                    self.handle_invocation_response_for_journal_v2(id, status, completion)
-                        .await?;
+                    lifecycle::OnNotifyInvocationResponse {
+                        invocation_id: target.caller_id,
+                        invocation_epoch: target.caller_invocation_epoch,
+                        status,
+                        completion,
+                    }
+                    .apply(self)
+                    .await?;
                     return Ok(());
                 }
 
-                self.handle_completion(id, status, completion).await
+                self.handle_completion(target.caller_id, status, completion)
+                    .await
             }
             Command::ProxyThrough(service_invocation) => {
                 self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
@@ -464,18 +479,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                 Ok(())
             }
             Command::NotifyGetInvocationOutputResponse(get_invocation_output_response) => {
-                entries::OnJournalEntryCommand::from_entry(
-                    get_invocation_output_response.caller_id,
-                    self.get_invocation_status(&get_invocation_output_response.caller_id)
-                        .await?,
-                    GetInvocationOutputCompletion {
-                        completion_id: get_invocation_output_response.completion_id,
-                        result: get_invocation_output_response.result,
-                    }
-                    .into(),
-                )
-                .apply(self)
-                .await?;
+                lifecycle::OnNotifyGetInvocationOutputResponse(get_invocation_output_response)
+                    .apply(self)
+                    .await?;
                 Ok(())
             }
         }
@@ -913,6 +919,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.action_collector.push(Action::Invoke {
             invocation_id,
+            invocation_epoch: in_flight_invocation_metadata.current_invocation_epoch,
             invocation_target: in_flight_invocation_metadata.invocation_target.clone(),
             invoke_input_journal,
         });
@@ -1048,7 +1055,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                self.do_send_abort_invocation_to_invoker(invocation_id);
+                self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
             }
         };
 
@@ -1176,7 +1183,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                self.do_send_abort_invocation_to_invoker(invocation_id);
+                self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
             }
         };
 
@@ -1322,7 +1329,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
-        self.do_send_abort_invocation_to_invoker(invocation_id);
+        self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
         Ok(())
     }
 
@@ -1351,7 +1358,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
-        self.do_send_abort_invocation_to_invoker(invocation_id);
+        self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
         Ok(())
     }
 
@@ -1482,8 +1489,13 @@ impl<S> StateMachineApplyContext<'_, S> {
                             ProtobufRawEntryCodec::deserialize(EntryType::Sleep, entry)?
                     );
 
-                    let (timer_key, _) =
-                        Timer::complete_journal_entry(wake_up_time, invocation_id, journal_index);
+                    let (timer_key, _) = Timer::complete_journal_entry(
+                        wake_up_time,
+                        invocation_id,
+                        journal_index,
+                        // Journal v3 doesn't support invocation epoch
+                        0,
+                    );
 
                     self.do_delete_timer(timer_key).await?;
                 }
@@ -1608,18 +1620,16 @@ impl<S> StateMachineApplyContext<'_, S> {
         self.do_delete_timer(key).await?;
 
         match value {
-            Timer::CompleteJournalEntry(invocation_id, entry_index) => {
+            Timer::CompleteJournalEntry(invocation_id, entry_index, invocation_epoch) => {
                 let status = self.get_invocation_status(&invocation_id).await?;
                 if should_use_journal_table_v2(&status) {
                     // We just apply the journal entry
-                    entries::OnJournalEntryCommand::from_entry(
+                    lifecycle::OnNotifySleepCompletionCommand {
                         invocation_id,
+                        invocation_epoch,
                         status,
-                        SleepCompletion {
-                            completion_id: entry_index,
-                        }
-                        .into(),
-                    )
+                        completion_id: entry_index,
+                    }
                     .apply(self)
                     .await?;
                     return Ok(());
@@ -1728,6 +1738,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         InvokerEffect {
             invocation_id,
+            invocation_epoch: effect_invocation_epoch,
             kind,
         }: InvokerEffect,
         invocation_status: InvocationStatus,
@@ -1750,7 +1761,20 @@ impl<S> StateMachineApplyContext<'_, S> {
             trace!(
                 "Received invoker effect for invocation not in invoked status. Ignoring the effect."
             );
-            self.do_send_abort_invocation_to_invoker(invocation_id);
+            self.do_send_abort_invocation_to_invoker(invocation_id, effect_invocation_epoch);
+            return Ok(());
+        }
+
+        let current_invocation_epoch = invocation_status
+            .get_invocation_metadata()
+            .expect("Should be present because it's invoked")
+            .current_invocation_epoch;
+        if current_invocation_epoch != effect_invocation_epoch {
+            trace!(
+                "Received invoker effect for invocation with different epoch. Current epoch {} != Invoker effect epoch {}. Ignoring the effect.",
+                current_invocation_epoch, effect_invocation_epoch
+            );
+            self.do_send_abort_invocation_to_invoker(invocation_id, effect_invocation_epoch);
             return Ok(());
         }
 
@@ -1789,6 +1813,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 if let Some(command_index_to_ack) = command_index_to_ack {
                     self.action_collector.push(Action::AckStoredCommand {
                         invocation_id,
+                        invocation_epoch: effect_invocation_epoch,
                         command_index: command_index_to_ack,
                     });
                 }
@@ -2000,14 +2025,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         let result = res.into();
         for response_sink in response_sinks {
             match response_sink {
-                ServiceInvocationResponseSink::PartitionProcessor {
-                    entry_index,
-                    caller,
-                } => {
+                ServiceInvocationResponseSink::PartitionProcessor(target) => {
                     self.handle_outgoing_message(OutboxMessage::ServiceResponse(
                         InvocationResponse {
-                            id: caller,
-                            entry_index,
+                            target,
                             result: result.clone(),
                         },
                     ))
@@ -2329,7 +2350,11 @@ impl<S> StateMachineApplyContext<'_, S> {
                             Some(Promise {
                                 state: PromiseState::NotCompleted(mut v),
                             }) => {
-                                v.push(JournalEntryId::from_parts(invocation_id, entry_index));
+                                v.push(JournalCompletionTarget::from_parts(
+                                    invocation_id,
+                                    entry_index,
+                                    invocation_metadata.current_invocation_epoch,
+                                ));
                                 self.do_put_promise(
                                     service_id,
                                     key,
@@ -2345,7 +2370,11 @@ impl<S> StateMachineApplyContext<'_, S> {
                                     key,
                                     Promise {
                                         state: PromiseState::NotCompleted(vec![
-                                            JournalEntryId::from_parts(invocation_id, entry_index),
+                                            JournalCompletionTarget::from_parts(
+                                                invocation_id,
+                                                entry_index,
+                                                invocation_metadata.current_invocation_epoch,
+                                            ),
                                         ]),
                                     },
                                 )
@@ -2442,8 +2471,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 for listener in listeners {
                                     self.handle_outgoing_message(OutboxMessage::ServiceResponse(
                                         InvocationResponse {
-                                            id: listener.invocation_id(),
-                                            entry_index: listener.journal_index(),
+                                            target: listener,
                                             result: completion.clone().into(),
                                         },
                                     ))
@@ -2515,6 +2543,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                         MillisSinceEpoch::new(wake_up_time),
                         invocation_id,
                         entry_index,
+                        // Journal v3 doesn't support invocation_epoch
+                        0,
                     ),
                     invocation_metadata.journal_metadata.span_context.clone(),
                 )
@@ -2546,6 +2576,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                         response_sink: Some(ServiceInvocationResponseSink::partition_processor(
                             invocation_id,
                             entry_index,
+                            // Journal v3 doesn't support invocation_epoch
+                            0,
                         )),
                         span_context: span_context.clone(),
                         headers: request.headers,
@@ -2782,6 +2814,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 response_sink: ServiceInvocationResponseSink::partition_processor(
                                     invocation_id,
                                     entry_index,
+                                    // Journal v3 doesn't support invocation_epoch
+                                    0,
                                 ),
                             },
                         ))
@@ -2810,6 +2844,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 response_sink: ServiceInvocationResponseSink::partition_processor(
                                     invocation_id,
                                     entry_index,
+                                    // Journal v3 doesn't support invocation_epoch
+                                    0,
                                 ),
                             },
                         ))
@@ -2829,6 +2865,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         // In the old journal world, command_index == entry_index
         self.action_collector.push(Action::AckStoredCommand {
             invocation_id,
+            // Journal v3 doesn't support invocation_epoch
+            invocation_epoch: 0,
             command_index: entry_index,
         });
 
@@ -2961,138 +2999,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         )
     }
 
-    async fn handle_invocation_response_for_journal_v2(
-        &mut self,
-        invocation_id: InvocationId,
-        status: InvocationStatus,
-        completion: Completion,
-    ) -> Result<(), Error>
-    where
-        S: JournalTable
-            + journal_table_v2::JournalTable
-            + InvocationStatusTable
-            + TimerTable
-            + FsmTable
-            + OutboxTable
-            + PromiseTable
-            + StateTable,
-    {
-        // We need this code until we remove Service Protocol <= V3, because of the InvocationResponse WAL command.
-        // When we get rid of this WAL command, this code should handle just Call and AttachInvocation commands.
-
-        let command = self
-            .storage
-            .get_command_by_completion_id(invocation_id, completion.entry_index)
-            .await?;
-
-        if let Some(cmd) = command {
-            let entry: journal_v2::Entry = match cmd.command_type() {
-                CommandType::GetPromise => GetPromiseCompletion {
-                    completion_id: completion.entry_index,
-                    result: match completion.result {
-                        CompletionResult::Success(s) => GetPromiseResult::Success(s),
-                        CompletionResult::Failure(code, message) => {
-                            GetPromiseResult::Failure(journal_v2::Failure { code, message })
-                        }
-                        CompletionResult::Empty => {
-                            return Err(Error::BadCompletionVariantForInvocationResponse(
-                                CommandType::GetPromise,
-                                completion.entry_index,
-                                "Empty",
-                            ));
-                        }
-                    },
-                }
-                .into(),
-                CommandType::Sleep => SleepCompletion {
-                    completion_id: completion.entry_index,
-                }
-                .into(),
-                CommandType::Call => CallCompletion {
-                    completion_id: completion.entry_index,
-                    result: match completion.result {
-                        CompletionResult::Success(s) => CallResult::Success(s),
-                        CompletionResult::Failure(code, message) => {
-                            CallResult::Failure(journal_v2::Failure { code, message })
-                        }
-                        CompletionResult::Empty => {
-                            return Err(Error::BadCompletionVariantForInvocationResponse(
-                                CommandType::Call,
-                                completion.entry_index,
-                                "Empty",
-                            ));
-                        }
-                    },
-                }
-                .into(),
-                CommandType::AttachInvocation => AttachInvocationCompletion {
-                    completion_id: completion.entry_index,
-                    result: match completion.result {
-                        CompletionResult::Success(s) => AttachInvocationResult::Success(s),
-                        CompletionResult::Failure(code, message) => {
-                            AttachInvocationResult::Failure(journal_v2::Failure { code, message })
-                        }
-                        CompletionResult::Empty => {
-                            return Err(Error::BadCompletionVariantForInvocationResponse(
-                                CommandType::AttachInvocation,
-                                completion.entry_index,
-                                "Empty",
-                            ));
-                        }
-                    },
-                }
-                .into(),
-                CommandType::GetInvocationOutput => {
-                    GetInvocationOutputCompletion {
-                        completion_id: completion.entry_index,
-                        result: match completion.result {
-                            CompletionResult::Success(s) => GetInvocationOutputResult::Success(s),
-                            failure @ CompletionResult::Failure(_, _)
-                                if failure
-                                    == CompletionResult::from(&NOT_READY_INVOCATION_ERROR) =>
-                            {
-                                // Corner case with old journal/state machine
-                                GetInvocationOutputResult::Void
-                            }
-                            CompletionResult::Failure(code, message) => {
-                                GetInvocationOutputResult::Failure(journal_v2::Failure {
-                                    code,
-                                    message,
-                                })
-                            }
-                            CompletionResult::Empty => GetInvocationOutputResult::Void,
-                        },
-                    }
-                    .into()
-                }
-                cmd_ty => {
-                    error!(
-                        "Got an invocation response, the command type {cmd_ty} is unexpected for completion index {}. This indicates storage corruption.",
-                        completion.entry_index
-                    );
-                    return Err(Error::BadCommandTypeForInvocationResponse(
-                        cmd_ty,
-                        completion.entry_index,
-                    ));
-                }
-            };
-
-            entries::OnJournalEntryCommand::from_entry(invocation_id, status, entry)
-                .apply(self)
-                .await?;
-        } else {
-            error!(
-                "Got an invocation response, but there is no corresponding command in the journal for completion index {}. This indicates storage corruption.",
-                completion.entry_index
-            );
-            return Err(Error::MissingCommandForInvocationResponse(
-                completion.entry_index,
-            ));
-        }
-
-        Ok(())
-    }
-
     async fn handle_completion(
         &mut self,
         invocation_id: InvocationId,
@@ -3100,12 +3006,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         completion: Completion,
     ) -> Result<(), Error>
     where
-        S: JournalTable
-            + journal_table_v2::JournalTable
-            + InvocationStatusTable
-            + TimerTable
-            + FsmTable
-            + OutboxTable,
+        S: JournalTable + InvocationStatusTable + TimerTable + FsmTable + OutboxTable,
     {
         match status {
             InvocationStatus::Invoked(_) => {
@@ -3462,6 +3363,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             "Effect: Resume service"
         );
 
+        let current_invocation_epoch = metadata.current_invocation_epoch;
+
         metadata.timestamps.update();
         let invocation_target = metadata.invocation_target.clone();
         self.storage
@@ -3471,6 +3374,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.action_collector.push(Action::Invoke {
             invocation_id,
+            invocation_epoch: current_invocation_epoch,
             invocation_target,
             invoke_input_journal: InvokeInputJournal::NoCachedJournal,
         });
@@ -3603,15 +3507,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             OutboxMessage::ServiceResponse(InvocationResponse {
                 result: ResponseResult::Success(_),
-                entry_index,
-                id,
+                target,
             }) => {
                 debug_if_leader!(
                     self.is_leader,
-                    restate.invocation.id = %id,
+                    restate.invocation.id = %target.caller_id,
                     restate.outbox.seq = seq_number,
-                    "Effect: Send success response to another invocation, completing entry index {}",
-                    entry_index
+                    "Effect: Send success response to another invocation for completion id {}",
+                    target.caller_completion_id
                 )
             }
             OutboxMessage::InvocationTermination(invocation_termination) => {
@@ -3625,16 +3528,15 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             OutboxMessage::ServiceResponse(InvocationResponse {
                 result: ResponseResult::Failure(e),
-                entry_index,
-                id,
+                target,
             }) => {
                 debug_if_leader!(
                     self.is_leader,
-                    restate.invocation.id = %id,
+                    restate.invocation.id = %target.caller_id,
                     restate.outbox.seq = seq_number,
-                    "Effect: Send failure '{}' response to another invocation, completing entry index {}",
+                    "Effect: Send failure '{}' response to another invocation for completion id {}",
                     e,
-                    entry_index
+                    target.caller_completion_id
                 )
             }
             OutboxMessage::AttachInvocation(AttachInvocationRequest {
@@ -4051,11 +3953,17 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    fn do_send_abort_invocation_to_invoker(&mut self, invocation_id: InvocationId) {
+    fn do_send_abort_invocation_to_invoker(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) {
         debug_if_leader!(self.is_leader, restate.invocation.id = %invocation_id, "Send abort command to invoker");
 
-        self.action_collector
-            .push(Action::AbortInvocation { invocation_id });
+        self.action_collector.push(Action::AbortInvocation {
+            invocation_id,
+            invocation_epoch,
+        });
     }
 
     async fn do_mutate_state(&mut self, state_mutation: ExternalStateMutation) -> Result<(), Error>
@@ -4180,5 +4088,6 @@ fn should_use_journal_table_v2(status: &InvocationStatus) -> bool {
         })
 }
 
+mod invocation_status_ext;
 #[cfg(test)]
 mod tests;

@@ -12,7 +12,7 @@ use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
-use restate_types::invocation::InvocationTarget;
+use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal::Completion;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawNotification;
@@ -28,6 +28,7 @@ pub type ActionCollector = Vec<Action>;
 pub enum Action {
     Invoke {
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         invocation_target: InvocationTarget,
         invoke_input_journal: InvokeInputJournal,
     },
@@ -43,6 +44,7 @@ pub enum Action {
     },
     AckStoredCommand {
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         command_index: CommandIndex,
     },
     ForwardCompletion {
@@ -51,10 +53,12 @@ pub enum Action {
     },
     ForwardNotification {
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         notification: RawNotification,
     },
     AbortInvocation {
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
     },
     IngressResponse {
         request_id: PartitionProcessorRpcRequestId,

@@ -73,15 +73,57 @@ where
     }
 
     #[inline]
-    pub(super) fn remove_invocation(
+    pub(super) fn handle_for_invocation<R>(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
-    ) -> Option<(&mpsc::Sender<Effect>, &IR, InvocationStateMachine)> {
+        invocation_epoch: InvocationEpoch,
+        f: impl FnOnce(&mpsc::Sender<Effect>, &mut InvocationStateMachine) -> R,
+    ) -> Option<R> {
+        if let Some((tx, ism)) =
+            self.resolve_invocation_with_epoch(partition, invocation_id, invocation_epoch)
+        {
+            Some(f(tx, ism))
+        } else {
+            // If no state machine
+            trace!("No state machine found for selected server header");
+            None
+        }
+    }
+
+    #[inline]
+    pub(super) fn resolve_invocation_with_epoch(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> Option<(&mpsc::Sender<Effect>, &mut InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
-                .remove(invocation_id)
-                .map(|ism| (&p.output_tx, &p.storage_reader, ism))
+                .get_mut(invocation_id)
+                .filter(|f| f.invocation_epoch == invocation_epoch)
+                .map(|ism| (&p.output_tx, ism))
+        })
+    }
+
+    #[inline]
+    pub(super) fn remove_invocation_with_epoch(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> Option<(&mpsc::Sender<Effect>, &IR, InvocationStateMachine)> {
+        self.resolve_partition(partition).and_then(|p| {
+            if let Some(ism) = p.invocation_state_machines.get(invocation_id) {
+                if ism.invocation_epoch == invocation_epoch {
+                    return Some((
+                        &p.output_tx,
+                        &p.storage_reader,
+                        p.invocation_state_machines.remove(invocation_id).unwrap(),
+                    ));
+                }
+            }
+            None
         })
     }
 

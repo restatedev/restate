@@ -32,7 +32,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             },
             timestamp: 0,
         },
-        &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 0),
+        &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 0, 0),
     )
     .await
     .unwrap();
@@ -45,7 +45,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             },
             timestamp: 0,
         },
-        &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 1),
+        &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 1, 0),
     )
     .await
     .unwrap();
@@ -76,7 +76,11 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             },
             timestamp: 0,
         },
-        &Timer::CompleteJournalEntry(InvocationId::from_parts(1336, FIXTURE_INVOCATION_UUID), 0),
+        &Timer::CompleteJournalEntry(
+            InvocationId::from_parts(1336, FIXTURE_INVOCATION_UUID),
+            0,
+            1,
+        ),
     )
     .await
     .unwrap();

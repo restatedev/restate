@@ -49,10 +49,9 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: inboxed_id,
             invocation_target: inboxed_target,
-            response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
-                caller: caller_id,
-                entry_index: 0,
-            }),
+            response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor(
+                JournalCompletionTarget::from_parts(caller_id, 0, 0),
+            )),
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -303,6 +302,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
             }),
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: Default::default(),
                     service_protocol_version: ServiceProtocolVersion::V3,
@@ -349,7 +349,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
                 journal_index: (sleep_entry_idx + 1) as u32,
             },
         },
-        &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
+        &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32, 0),
     )
     .await?;
     tx.commit().await?;
@@ -426,6 +426,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
             }),
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: Default::default(),
                     service_protocol_version: ServiceProtocolVersion::V3,
@@ -486,7 +487,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
                 journal_index: (sleep_entry_idx + 1) as u32,
             },
         },
-        &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
+        &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32, 0),
     )
     .await?;
     tx.commit().await?;
@@ -587,6 +588,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
         .apply_multiple(vec![
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 3,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::cancel_invocation(
@@ -596,6 +598,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
             }),
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
+                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 4,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::cancel_invocation(

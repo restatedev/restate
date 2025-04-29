@@ -31,6 +31,10 @@ where
             response_sink: ServiceInvocationResponseSink::partition_processor(
                 self.invocation_id,
                 self.entry.completion_id,
+                self.invocation_status
+                    .get_invocation_metadata()
+                    .expect("Should be present when handling new command")
+                    .current_invocation_epoch,
             ),
         }))
         .await?;
@@ -49,7 +53,8 @@ mod tests {
     use googletest::{elements_are, property};
     use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId};
     use restate_types::invocation::{
-        InvocationQuery, InvocationResponse, ResponseResult, ServiceInvocationResponseSink,
+        InvocationQuery, InvocationResponse, JournalCompletionTarget, ResponseResult,
+        ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::{
         AttachInvocationCommand, AttachInvocationCompletion, AttachInvocationResult,
@@ -84,8 +89,7 @@ mod tests {
             .apply_multiple([
                 invoker_entry_effect(invocation_id, attach_invocation_command.clone()),
                 Command::InvocationResponse(InvocationResponse {
-                    id: invocation_id,
-                    entry_index: completion_id,
+                    target: JournalCompletionTarget::from_parts(invocation_id, completion_id, 0),
                     result: ResponseResult::Success(success_result.clone()),
                 }),
             ])
@@ -107,7 +111,8 @@ mod tests {
                                 response_sink: eq(
                                     ServiceInvocationResponseSink::partition_processor(
                                         invocation_id,
-                                        completion_id
+                                        completion_id,
+                                        0
                                     )
                                 )
                             }
