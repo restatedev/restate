@@ -21,6 +21,7 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 restate-base64-util = { workspace = true }
 restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
+restate-encoding = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-utoipa = { workspace = true }
 
@@ -32,6 +33,7 @@ base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+bilrost = { workspace = true }
 bincode = { workspace = true, default-features = false, features = ["std", "serde"] }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "env"], optional = true }

@@ -3,6 +3,7 @@ members = [
     "cli",
     "crates/*",
     "crates/core/derive",
+    "crates/encoding/derive",
     "crates/codederror/derive",
     "server",
     "benchmarks",
@@ -44,6 +45,7 @@ restate-bifrost = { path = "crates/bifrost" }
 restate-cli-util = { path = "crates/cli-util" }
 restate-core = { path = "crates/core" }
 restate-core-derive = { path = "crates/core/derive" }
+restate-encoding = { path = "crates/encoding" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
 restate-futures-util = { path = "crates/futures-util" }
@@ -91,6 +93,7 @@ aws-smithy-async = {version = "1.2.5", default-features = false}
 aws-smithy-runtime-api = "1.7.4"
 aws-smithy-types = "1.3.0"
 base64 = "0.22"
+bilrost = { version = "0.1012" }
 bincode = { version = "2.0.1", default-features = false }
 bitflags = { version = "2.6.0" }
 bytes = { version = "1.7", features = ["serde"] }
