@@ -91,7 +91,7 @@ impl<T: TransportConnect> SequencerDataRpcHandler<T> {
         )
     )]
     async fn handle_append(&mut self, incoming: Incoming<Rpc<Append>>) {
-        let peer_logs_version = incoming.metadata_version().logs;
+        let peer_logs_version = incoming.metadata_version().get(MetadataKind::Logs);
         let (reciprocal, append) = incoming.split();
 
         let loglet = match get_loglet(&self.provider, peer_logs_version, &append.header).await {
@@ -148,7 +148,7 @@ impl<T: TransportConnect> Handler for SequencerInfoRpcHandler<T> {
 impl<T: TransportConnect> SequencerInfoRpcHandler<T> {
     #[instrument(level = "debug", skip_all)]
     async fn handle_get_sequencer_state(&mut self, incoming: Incoming<Rpc<GetSequencerState>>) {
-        let peer_logs_version = incoming.metadata_version().logs;
+        let peer_logs_version = incoming.metadata_version().get(MetadataKind::Logs);
         let (reciprocal, msg) = incoming.split();
 
         let loglet = match get_loglet(&self.provider, peer_logs_version, &msg.header).await {
@@ -246,12 +246,11 @@ fn create_loglet<T: TransportConnect>(
 
 async fn get_loglet<T: TransportConnect>(
     provider: &ReplicatedLogletProvider<T>,
-    peer_logs_version: Option<Version>,
+    request_logs_version: Version,
     header: &CommonRequestHeader,
 ) -> Result<Arc<ReplicatedLoglet<T>>, SequencerStatus> {
     let metadata = Metadata::current();
     let mut current_logs_version = metadata.logs_version();
-    let request_logs_version = peer_logs_version.unwrap_or(current_logs_version);
 
     loop {
         if let Some(loglet) = provider.get_active_loglet(header.log_id, header.segment_index) {

@@ -150,13 +150,9 @@ fn serialize_store_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> {
 
     let message = Message {
         header: Some(restate_core::network::protobuf::network::Header {
-            my_nodes_config_version: Some(5),
-            my_logs_version: None,
-            my_schema_version: None,
-            my_partition_table_version: None,
+            my_nodes_config_version: 5,
             msg_id: random(),
-            in_response_to: None,
-            span_context: None,
+            ..Default::default()
         }),
         body: Some(body),
     };
@@ -188,13 +184,9 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
 
     let message = Message {
         header: Some(restate_core::network::protobuf::network::Header {
-            my_nodes_config_version: Some(5),
-            my_logs_version: None,
-            my_schema_version: None,
-            my_partition_table_version: None,
+            my_nodes_config_version: 5,
             msg_id: random(),
-            in_response_to: None,
-            span_context: None,
+            ..Default::default()
         }),
         body: Some(body),
     };

@@ -308,28 +308,25 @@ impl EgressStream {
     }
 
     fn fill_header(&mut self, header: &mut Header, span: Option<Span>) {
-        header.my_nodes_config_version = Some(
-            self.metadata_cache
-                .nodes_config
-                .live_load()
-                .version()
-                .into(),
-        );
-        header.my_schema_version = Some(self.metadata_cache.schema.live_load().version().into());
-        header.my_partition_table_version = Some(
-            self.metadata_cache
-                .partition_table
-                .live_load()
-                .version()
-                .into(),
-        );
-        header.my_logs_version = Some(
-            self.metadata_cache
-                .logs_metadata
-                .live_load()
-                .version()
-                .into(),
-        );
+        header.my_nodes_config_version = self
+            .metadata_cache
+            .nodes_config
+            .live_load()
+            .version()
+            .into();
+        header.my_schema_version = self.metadata_cache.schema.live_load().version().into();
+        header.my_partition_table_version = self
+            .metadata_cache
+            .partition_table
+            .live_load()
+            .version()
+            .into();
+        header.my_logs_version = self
+            .metadata_cache
+            .logs_metadata
+            .live_load()
+            .version()
+            .into();
         if let Some(span) = span {
             let context = span.context();
             let mut span_context = SpanContext::default();
