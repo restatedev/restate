@@ -68,7 +68,10 @@ where
             );
             return Ok(());
         };
-        if !matches!(trim_point_entry.ty(), EntryType::Command(_) | EntryType::Notification(NotificationType::Signal)) {
+        if !matches!(
+            trim_point_entry.ty(),
+            EntryType::Command(_) | EntryType::Notification(NotificationType::Signal)
+        ) {
             info_if_leader!(
                 ctx.is_leader,
                 "Ignoring trim command because the given entry index doesn't correspond to a command entry, nor to a signal notification"
@@ -94,6 +97,7 @@ where
         let mut minimum_completion_id_of_removed_commands = CompletionId::MAX;
         let mut notifications_to_retain = vec![];
         let mut notification_ids_to_forget = vec![];
+        let mut commands_removed = 0;
         for trim_pointer in
             trim_point_command_entry_index..in_flight_invocation_metadata.journal_metadata.length
         {
@@ -125,6 +129,7 @@ where
                             .into_iter()
                             .map(NotificationId::CompletionId),
                     );
+                    commands_removed += 1;
 
                     // We remove the command
                     trace!("Removing {} at index {}", entry.ty(), trim_pointer);
@@ -188,18 +193,17 @@ where
 
         // Update the epoch, and add the trim point to invocation status
         in_flight_invocation_metadata.current_invocation_epoch += 1;
-        if minimum_completion_id_of_removed_commands != CompletionId::MAX {
-            in_flight_invocation_metadata
-                .completion_range_epoch_map
-                .add_trim_point(
-                    minimum_completion_id_of_removed_commands,
-                    in_flight_invocation_metadata.current_invocation_epoch,
-                );
-        }
+        in_flight_invocation_metadata
+            .completion_range_epoch_map
+            .add_trim_point(
+                minimum_completion_id_of_removed_commands,
+                in_flight_invocation_metadata.current_invocation_epoch,
+            );
 
-        // Update journal length with the new length
+        // Update journal length with the new length and the commands.
         in_flight_invocation_metadata.journal_metadata.length =
             trim_point_command_entry_index + (notifications_to_retain.len() as u32);
+        in_flight_invocation_metadata.journal_metadata.commands -= commands_removed;
 
         // Trim procedure done! We're now back in the game
         debug_if_leader!(
@@ -243,7 +247,10 @@ mod tests {
     use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
     use restate_types::invocation::{NotifySignalRequest, TrimBy, TrimInvocationRequest};
     use restate_types::journal_v2::raw::RawCommand;
-    use restate_types::journal_v2::{ClearAllStateCommand, CommandType, CompletionType, Entry, Signal, SignalId, SignalResult, SleepCommand};
+    use restate_types::journal_v2::{
+        ClearAllStateCommand, CommandType, CompletionType, Entry, Signal, SignalId, SignalResult,
+        SleepCommand,
+    };
     use restate_types::time::MillisSinceEpoch;
     use restate_wal_protocol::timer::TimerKeyValue;
 
@@ -266,12 +273,7 @@ mod tests {
                 .await;
             assert_that!(actions, empty());
             test_env
-                .verify_journal_components(
-                    invocation_id,
-                    [
-                        CommandType::Input.into()
-                    ],
-                )
+                .verify_journal_components(invocation_id, [CommandType::Input.into()])
                 .await;
         }
 
@@ -304,7 +306,10 @@ mod tests {
         assert_that!(
             test_env.storage.get_invocation_status(&invocation_id).await,
             // [Input, ClearAllState, ClearAllState]
-            ok(matchers::storage::has_journal_length(3))
+            ok(all!(
+                matchers::storage::has_journal_length(3),
+                matchers::storage::has_commands(3)
+            ))
         );
 
         let actions = test_env
@@ -324,7 +329,6 @@ mod tests {
             // Only Input entry and first clear state
             ok(all!(
                 matchers::storage::status(InvocationStatusDiscriminants::Invoked),
-                matchers::storage::has_journal_length(2),
                 matchers::storage::in_flight_meta(pat!(InFlightInvocationMetadata {
                     current_invocation_epoch: eq(1),
                     // There were no completable entries among the trimmed ones, so this map should be unchanged.
@@ -332,20 +336,12 @@ mod tests {
                 }))
             ))
         );
-        assert_that!(
-            test_env.read_journal_to_vec(invocation_id, 2).await,
-            elements_are![
-                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
-                property!(
-                    Entry.ty(),
-                    eq(EntryType::Command(CommandType::ClearAllState))
-                ),
-            ]
-        );
-        assert_that!(
-            test_env.storage.get_journal_entry(invocation_id, 2).await,
-            ok(none())
-        );
+        test_env
+            .verify_journal_components(
+                invocation_id,
+                [CommandType::Input.into(), CommandType::ClearAllState.into()],
+            )
+            .await;
 
         test_env.shutdown().await;
     }
@@ -441,10 +437,6 @@ mod tests {
                 ],
             )
             .await;
-        assert_that!(
-            test_env.storage.get_journal_entry(invocation_id, 3).await,
-            ok(none())
-        );
         assert_that!(
             test_env
                 .storage
@@ -578,10 +570,6 @@ mod tests {
                 ],
             )
             .await;
-        assert_that!(
-            test_env.storage.get_journal_entry(invocation_id, 3).await,
-            ok(none())
-        );
         assert_that!(
             test_env
                 .storage

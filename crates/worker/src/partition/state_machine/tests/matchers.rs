@@ -61,13 +61,11 @@ pub mod storage {
     }
 
     pub fn has_commands(commands: EntryIndex) -> impl Matcher<ActualT = InvocationStatus> {
-        predicate(move |is: &InvocationStatus| {
-            is.get_journal_metadata()
-                .is_some_and(|jm| jm.commands == commands)
-        })
-        .with_description(
-            format!("has commands {}", commands),
-            format!("hasn't commands {}", commands),
+        // Guilty!
+        property_matcher::internal::property_matcher(
+            |o: &InvocationStatus| o.get_journal_metadata().cloned(),
+            "get_journal_metadata()",
+            some(field!(JournalMetadata.commands, eq(commands))),
         )
     }
 

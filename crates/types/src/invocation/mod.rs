@@ -12,7 +12,7 @@
 
 pub mod client;
 
-use crate::{ GenerationalNodeId};
+use crate::GenerationalNodeId;
 use crate::errors::InvocationError;
 use crate::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, PartitionKey, PartitionProcessorRpcRequestId,
