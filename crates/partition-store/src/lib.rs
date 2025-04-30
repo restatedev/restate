@@ -20,6 +20,7 @@ pub mod outbox_table;
 mod owned_iter;
 mod partition_store;
 mod partition_store_manager;
+mod persisted_lsn_tracking;
 pub mod promise_table;
 mod protobuf_types;
 pub mod scan;
