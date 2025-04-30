@@ -105,7 +105,6 @@ pub fn confirm_or_exit(prompt: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn choose<T: ToString>(prompt: &str, choices: &[T]) -> anyhow::Result<usize> {
     let theme = dialoguer::theme::ColorfulTheme::default();
     Ok(dialoguer::Select::with_theme(&theme)
