@@ -254,18 +254,18 @@ macro_rules! default_wire_codec {
 ///
 /// Example:
 /// ```ignore
-///   bilrost_wire_codec!(IngressMessage);
+///   bilrost_wire_codec_with_v1_fallback!(IngressMessage);
 /// ```
 ///
 /// Example:
 /// ```ignore
-///   bilrost_wire_codec!(IngressMessage as IngressMessageDTO);
+///   bilrost_wire_codec_with_v1_fallback!(IngressMessage as IngressMessageDTO);
 /// ```
 ///
 /// This codec will fallback automatically to flexbuffer
 /// if remote beer is on V1.
 #[allow(unused_macros)]
-macro_rules! bilrost_wire_codec {
+macro_rules! bilrost_wire_codec_with_v1_fallback {
     (
         $message:ty $(as $as_type:ty)?
     ) => {
@@ -305,6 +305,67 @@ macro_rules! bilrost_wire_codec {
                     }
                     _ => $crate::net::codec::decode_as_bilrost(buf, protocol_version),
                 }
+            }
+        }
+
+        $(
+            impl $crate::net::IntoBilrostDto for $message {
+                type Target = $as_type;
+
+                fn into_dto(self) -> $as_type {
+                    self.into()
+                }
+            }
+
+            impl $crate::net::FromBilrostDto for $message {
+                type Target = $as_type;
+                type Error = <$message as TryFrom<$as_type>>::Error;
+
+                fn from_dto(value: Self::Target) -> Result<Self, Self::Error> {
+                    value.try_into()
+                }
+            }
+        )?
+    };
+}
+
+/// Implements bilrost wire codec for a type
+/// - Message type
+///
+/// Example:
+/// ```ignore
+///   bilrost_wire_codec!(IngressMessage);
+/// ```
+///
+/// Example:
+/// ```ignore
+///   bilrost_wire_codec!(IngressMessage as IngressMessageDTO);
+/// ```
+#[allow(unused_macros)]
+macro_rules! bilrost_wire_codec {
+    (
+        $message:ty $(as $as_type:ty)?
+    ) => {
+        impl $crate::net::codec::WireEncode for $message {
+            fn encode_to_bytes(
+                self,
+                protocol_version: $crate::net::ProtocolVersion,
+            ) -> ::bytes::Bytes {
+                $crate::net::codec::encode_as_bilrost(self, protocol_version)
+            }
+        }
+
+        impl $crate::net::codec::WireDecode for $message {
+            type Error = anyhow::Error;
+
+            fn try_decode(
+                buf: impl bytes::Buf,
+                protocol_version: $crate::net::ProtocolVersion,
+            ) -> Result<Self, anyhow::Error>
+            where
+                Self: Sized,
+            {
+                $crate::net::codec::decode_as_bilrost(buf, protocol_version)
             }
         }
 
@@ -406,7 +467,10 @@ macro_rules! define_rpc {
 }
 
 #[allow(unused_imports)]
-use {bilrost_wire_codec, default_wire_codec, define_rpc, define_service, define_unary_message};
+use {
+    bilrost_wire_codec, bilrost_wire_codec_with_v1_fallback, default_wire_codec, define_rpc,
+    define_service, define_unary_message,
+};
 
 #[cfg(test)]
 mod tests {

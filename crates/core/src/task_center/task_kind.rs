@@ -79,8 +79,12 @@ pub enum TaskKind {
     RpcServer,
     #[strum(props(runtime = "default"))]
     SocketHandler,
+    /// An http2 stream handler created by the server-side of the connection.
     #[strum(props(OnError = "log", runtime = "default"))]
-    H2Stream,
+    H2ServerStream,
+    /// An http2 stream handler created by the client-side of the connection.
+    #[strum(props(OnError = "log", runtime = "default"))]
+    H2ClientStream,
     /// A type for ingress until we start enforcing timeouts for inflight requests. This enables us
     /// to shut down cleanly without waiting indefinitely.
     #[strum(props(OnCancel = "abort", runtime = "ingress"))]
