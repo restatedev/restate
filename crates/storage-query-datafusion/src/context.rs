@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::max;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -324,13 +323,7 @@ impl QueryContext {
         // build the session
         //
         let mut session_config = SessionConfig::new();
-
-        // TODO: this value affects the number of partitions created by datafusion while
-        // executing a query. Setting this to 1 causes the SymmetricHashJoin to fail
-        // which we use for some of the queries.
-        // Resolving this issue is tracked at https://github.com/restatedev/restate/issues/1585
-        let parallelism = default_parallelism.unwrap_or(2);
-        session_config = session_config.with_target_partitions(max(2, parallelism));
+        session_config = session_config.with_target_partitions(default_parallelism.unwrap_or(2));
 
         session_config = session_config
             .with_allow_symmetric_joins_without_pruning(true)
