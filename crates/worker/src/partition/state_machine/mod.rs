@@ -907,6 +907,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .span_context
                     .clone(),
                 None,
+                in_flight_invocation_metadata.current_invocation_epoch,
                 // This is safe to do as only the leader will execute the invoker command
                 MillisSinceEpoch::now(),
             ),
