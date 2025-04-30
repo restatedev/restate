@@ -13,7 +13,7 @@ use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use bytes::Bytes;
 use restate_storage_api::promise_table::{Promise, PromiseState, PromiseTable};
-use restate_types::identifiers::JournalEntryId;
+use restate_types::invocation::JournalCompletionTarget;
 use restate_types::journal_v2::{
     EntryMetadata, GetPromiseCommand, GetPromiseCompletion, GetPromiseResult,
 };
@@ -53,15 +53,17 @@ where
                 Some(Promise {
                     state: PromiseState::NotCompleted(mut v),
                 }) => {
-                    v.push(JournalEntryId::from_parts(
+                    v.push(JournalCompletionTarget::from_parts(
                         self.invocation_id,
                         self.entry.completion_id,
+                        invocation_metadata.current_invocation_epoch,
                     ));
                     PromiseState::NotCompleted(v)
                 }
-                None => PromiseState::NotCompleted(vec![JournalEntryId::from_parts(
+                None => PromiseState::NotCompleted(vec![JournalCompletionTarget::from_parts(
                     self.invocation_id,
                     self.entry.completion_id,
+                    invocation_metadata.current_invocation_epoch,
                 )]),
             };
 

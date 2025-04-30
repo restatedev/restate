@@ -161,6 +161,8 @@ pub enum Command {
     ///
     /// KINDA DEPRECATED: When Journal Table V1 is removed, this command should be used only to reply to invocations.
     /// Now it's abused for a bunch of other scenarios, like replying to get promise and get invocation output.
+    ///
+    /// For more details see `OnNotifyInvocationResponse`.
     InvocationResponse(InvocationResponse),
 
     // -- New PP <-> PP commands using Journal V2

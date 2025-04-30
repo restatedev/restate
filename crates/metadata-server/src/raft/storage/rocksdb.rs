@@ -645,6 +645,11 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
+    pub fn delete_raft_server_state(&mut self) -> Result<(), Error> {
+        self.delete_metadata_cf(RAFT_SERVER_STATE_KEY);
+        Ok(())
+    }
+
     pub fn store_snapshot(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
         self.put_value_ref_metadata_cf(SNAPSHOT_KEY, snapshot)
     }
@@ -720,6 +725,12 @@ impl<'a> Transaction<'a> {
     fn put_bytes_metadata_cf(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
         let mut write_batch = mem::take(&mut self.write_batch);
         write_batch.put_cf(&self.storage.metadata_cf(), key.as_ref(), value.as_ref());
+        self.write_batch = write_batch;
+    }
+
+    fn delete_metadata_cf(&mut self, key: impl AsRef<[u8]>) {
+        let mut write_batch = mem::take(&mut self.write_batch);
+        write_batch.delete_cf(&self.storage.metadata_cf(), key);
         self.write_batch = write_batch;
     }
 }

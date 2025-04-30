@@ -23,9 +23,9 @@ use network::NetworkMessage;
 use protobuf::Message as ProtobufMessage;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util::CommonClientConnectionOptions;
-use restate_types::PlainNodeId;
 use restate_types::net::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
+use restate_types::{PlainNodeId, Version};
 pub use server::RaftMetadataServer;
 use std::sync::Arc;
 
@@ -53,6 +53,8 @@ impl NetworkMessage for raft::prelude::Message {
 enum RaftServerState {
     Member {
         my_member_id: MemberId,
+        // field is introduced with 1.3.1 and therefore needs to be optional
+        min_expected_nodes_config_version: Option<Version>,
     },
     #[default]
     Standby,

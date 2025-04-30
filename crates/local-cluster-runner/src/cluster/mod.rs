@@ -15,14 +15,16 @@ use std::{
     time::Duration,
 };
 
+use crate::node::{HealthCheck, HealthError, Node, NodeStartError, StartedNode};
+use futures::StreamExt;
 use futures::future::{self};
+use futures::stream::FuturesUnordered;
+use restate_metadata_server::MetadataServerConfiguration;
+use restate_types::PlainNodeId;
+use restate_types::errors::GenericError;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use typed_builder::TypedBuilder;
-
-use restate_types::errors::GenericError;
-
-use crate::node::{HealthCheck, HealthError, Node, NodeStartError, StartedNode};
 
 #[derive(Debug, Serialize, Deserialize, TypedBuilder)]
 pub struct Cluster {
@@ -186,6 +188,53 @@ impl StartedCluster {
                 .await?,
         );
         Ok(())
+    }
+
+    pub async fn get_metadata_cluster_status(&self) -> Option<MetadataClusterStatus> {
+        let mut server_statuses: FuturesUnordered<_> = self
+            .nodes
+            .iter()
+            .map(|node| node.get_metadata_server_status())
+            .collect();
+
+        let mut max_status = None;
+
+        // pick the server status with the highest configuration version
+        while let Some(server_status) = server_statuses.next().await {
+            if let Ok(server_status) = server_status {
+                let metadata_server_configuration = server_status
+                    .configuration
+                    .map(MetadataServerConfiguration::from);
+
+                if metadata_server_configuration
+                    .as_ref()
+                    .map(|config| config.version())
+                    > max_status.as_ref().map(|status: &MetadataClusterStatus| {
+                        status.metadata_server_configuration.version()
+                    })
+                {
+                    max_status = Some(MetadataClusterStatus {
+                        leader: server_status.leader.map(PlainNodeId::from),
+                        metadata_server_configuration: metadata_server_configuration.unwrap(),
+                    })
+                }
+            }
+        }
+
+        max_status
+    }
+}
+
+pub struct MetadataClusterStatus {
+    // leader if one is known
+    leader: Option<PlainNodeId>,
+    // latest known metadata server configuration
+    metadata_server_configuration: MetadataServerConfiguration,
+}
+
+impl MetadataClusterStatus {
+    pub fn into_inner(self) -> (Option<PlainNodeId>, MetadataServerConfiguration) {
+        (self.leader, self.metadata_server_configuration)
     }
 }
 

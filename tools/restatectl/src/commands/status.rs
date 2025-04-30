@@ -31,14 +31,14 @@ use restate_types::protobuf::cluster::{AliveNode, RunMode};
 use restate_types::{GenerationalNodeId, NodeId};
 
 use crate::commands::log::list_logs::{ListLogsOpts, list_logs};
-use crate::commands::metadata_server::status::list_metadata_servers;
+use crate::commands::metadata_server::list_servers::{ListMetadataServers, list_metadata_servers};
 use crate::commands::node::list_nodes::{ListNodesOpts, list_nodes, list_nodes_lite};
 use crate::commands::partition::list::{ListPartitionsOpts, list_partitions};
 use crate::connection::{ConnectionInfo, ConnectionInfoError};
 use crate::util::grpc_channel;
 
 use super::log::deserialize_replicated_log_params;
-use super::metadata_server::status::render_metadata_server_status;
+use super::metadata_server::list_servers::render_metadata_server_status;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "cluster_status")]
@@ -84,7 +84,7 @@ async fn cluster_status(
     list_partitions(connection, &ListPartitionsOpts::default()).await?;
     c_println!();
 
-    list_metadata_servers(connection).await?;
+    list_metadata_servers(connection, &ListMetadataServers {}).await?;
 
     Ok(())
 }

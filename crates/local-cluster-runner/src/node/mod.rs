@@ -15,13 +15,17 @@ use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt, stream};
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
+use restate_core::metadata_store::ReadError;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::{
     ProvisionClusterRequest as ProtoProvisionClusterRequest, new_node_ctl_client,
 };
-use restate_metadata_server::grpc::new_metadata_server_client;
+use restate_metadata_server::grpc::{
+    RemoveNodeRequest, StatusResponse, new_metadata_server_client,
+};
 use restate_types::config::{InvalidConfigurationError, MetadataServerKind};
 use restate_types::logs::metadata::ProviderConfiguration;
+use restate_types::nodes_config::MetadataServerState;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::replication::ReplicationProperty;
 use restate_types::retries::RetryPolicy;
@@ -767,14 +771,7 @@ impl StartedNode {
 
     /// Check to see if the logserver is provisioned.
     pub async fn logserver_provisioned(&self) -> bool {
-        let metadata_client = self
-            .metadata_client()
-            .await
-            .expect("to get metadata client");
-
-        let nodes_config = metadata_client
-            .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
-            .await;
+        let nodes_config = self.get_nodes_configuration().await;
 
         let Ok(Some(nodes_config)) = nodes_config else {
             return false;
@@ -792,8 +789,36 @@ impl StartedNode {
             .is_provisioning()
     }
 
-    /// Check to see if the metadata server has joined the metadata cluster.
+    async fn get_nodes_configuration(&self) -> Result<Option<NodesConfiguration>, ReadError> {
+        let metadata_client = self
+            .metadata_client()
+            .await
+            .expect("to get metadata client");
+
+        metadata_client
+            .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
+            .await
+    }
+
+    /// Check to see if the metadata server has joined the metadata cluster if its
+    /// metadata server state is [`MetadataServerState::Member`].
     pub async fn metadata_server_joined_cluster(&self) -> bool {
+        let nodes_configuration = self.get_nodes_configuration().await;
+
+        // if we can't obtain the `NodesConfiguration`, then our cluster has not been provisioned yet
+        let Ok(Some(nodes_config)) = nodes_configuration else {
+            return false;
+        };
+
+        let Some(node_config) = nodes_config.find_node_by_name(self.node_name()) else {
+            return false;
+        };
+
+        if node_config.metadata_server_config.metadata_server_state == MetadataServerState::Standby
+        {
+            return true;
+        }
+
         let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
             self.config().common.advertised_address.clone(),
             &self.config().networking,
@@ -875,6 +900,42 @@ impl StartedNode {
                 }
             }
         }
+    }
+
+    pub async fn add_as_metadata_member(&self) -> anyhow::Result<()> {
+        let mut client = new_metadata_server_client(create_tonic_channel(
+            self.node_address().clone(),
+            &self.config().networking,
+        ));
+
+        client.add_node(()).await?;
+
+        Ok(())
+    }
+
+    pub async fn remove_metadata_member(&self, node_to_remove: PlainNodeId) -> anyhow::Result<()> {
+        let mut client = new_metadata_server_client(create_tonic_channel(
+            self.node_address().clone(),
+            &self.config().networking,
+        ));
+
+        client
+            .remove_node(RemoveNodeRequest {
+                plain_node_id: u32::from(node_to_remove),
+                created_at_millis: None,
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_metadata_server_status(&self) -> anyhow::Result<StatusResponse> {
+        let mut client = new_metadata_server_client(create_tonic_channel(
+            self.node_address().clone(),
+            &self.config().networking,
+        ));
+        let response = client.status(()).await?.into_inner();
+        Ok(response)
     }
 }
 

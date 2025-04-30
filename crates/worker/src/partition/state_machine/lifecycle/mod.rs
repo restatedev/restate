@@ -10,14 +10,20 @@
 
 mod cancel;
 mod migrate_journal_table;
+mod notify_get_invocation_output_response;
+mod notify_invocation_response;
 mod notify_signal;
+mod notify_sleep_completion;
 mod pinned_deployment;
 mod resume;
 mod suspend;
 
 pub(super) use cancel::OnCancelCommand;
 pub(super) use migrate_journal_table::VerifyOrMigrateJournalTableToV2Command;
+pub(super) use notify_get_invocation_output_response::OnNotifyGetInvocationOutputResponse;
+pub(super) use notify_invocation_response::OnNotifyInvocationResponse;
 pub(super) use notify_signal::OnNotifySignalCommand;
+pub(super) use notify_sleep_completion::OnNotifySleepCompletionCommand;
 pub(super) use pinned_deployment::OnPinnedDeploymentCommand;
 pub(super) use resume::ResumeInvocationCommand;
 pub(super) use suspend::OnSuspendCommand;

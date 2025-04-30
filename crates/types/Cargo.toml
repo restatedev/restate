@@ -21,6 +21,7 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 restate-base64-util = { workspace = true }
 restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
+restate-encoding = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-utoipa = { workspace = true }
 
@@ -32,6 +33,7 @@ base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+bilrost = { workspace = true }
 bincode = { workspace = true, default-features = false, features = ["std", "serde"] }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
@@ -55,7 +57,7 @@ metrics = { workspace = true }
 moka = { workspace = true, features = ["sync", "logging"] }
 notify = { version = "7.0.0" }
 notify-debouncer-full = { version = "0.4" }
-num-traits = { version = "0.2.17" }
+num-traits = { workspace = true }
 opentelemetry = { workspace = true }
 parking_lot = { workspace = true }
 paste = { workspace = true }
@@ -89,8 +91,9 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
-tempfile = { workspace = true }
 
+criterion = { workspace = true, features = ["async_tokio"] }
+tempfile = { workspace = true }
 googletest = { workspace = true }
 rand = { workspace = true }
 test-log = { workspace = true }
@@ -104,3 +107,8 @@ serde_json = { workspace = true }
 syn = "2.0"
 typify = { version = "0.1.0" }
 jsonptr = "0.4.7"
+
+
+[[bench]]
+name = "network_serialization"
+harness = false

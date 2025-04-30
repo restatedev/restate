@@ -15,7 +15,7 @@ use crate::invocation_reader::JournalEntry;
 use restate_errors::NotRunningError;
 use restate_types::identifiers::PartitionKey;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
-use restate_types::invocation::InvocationTarget;
+use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal::Completion;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawNotification;
@@ -35,6 +35,7 @@ pub trait InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
@@ -50,6 +51,7 @@ pub trait InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         entry: RawNotification,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
@@ -57,6 +59,7 @@ pub trait InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         command_index: CommandIndex,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
@@ -65,10 +68,12 @@ pub trait InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
+    /// *Note*: When aborting an invocation, and restarting it, the `invocation_epoch` MUST be bumped.
     fn abort_invocation(
         &mut self,
         partition_leader_epoch: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
     fn register_partition(

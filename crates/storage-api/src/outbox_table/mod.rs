@@ -39,10 +39,10 @@ pub enum OutboxMessage {
 impl WithPartitionKey for OutboxMessage {
     fn partition_key(&self) -> PartitionKey {
         match self {
-            OutboxMessage::ServiceInvocation(si) => si.invocation_id.partition_key(),
-            OutboxMessage::ServiceResponse(sr) => sr.id.partition_key(),
+            OutboxMessage::ServiceInvocation(si) => si.partition_key(),
+            OutboxMessage::ServiceResponse(sr) => sr.partition_key(),
             OutboxMessage::InvocationTermination(it) => it.invocation_id.partition_key(),
-            OutboxMessage::AttachInvocation(ai) => ai.invocation_query.partition_key(),
+            OutboxMessage::AttachInvocation(ai) => ai.partition_key(),
             OutboxMessage::NotifySignal(sig) => sig.partition_key(),
         }
     }

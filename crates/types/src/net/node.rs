@@ -13,8 +13,10 @@ use std::{collections::BTreeMap, time::Duration};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+use restate_encoding::NetSerde;
+
 use super::ServiceTag;
-use crate::net::{default_wire_codec, define_rpc, define_service};
+use crate::net::{bilrost_wire_codec, define_rpc, define_service};
 use crate::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
 
 pub struct GossipService;
@@ -30,22 +32,24 @@ define_rpc! {
     @service = GossipService,
 }
 
-default_wire_codec!(GetNodeState);
-default_wire_codec!(NodeStateResponse);
+bilrost_wire_codec!(GetNodeState);
+bilrost_wire_codec!(NodeStateResponse);
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct GetNodeState {}
 
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct NodeStateResponse {
     /// Partition processor status per partition. Is set to None if this node is not a `Worker` node
     #[serde_as(as = "Option<serde_with::Seq<(_, _)>>")]
+    #[bilrost(1)]
     pub partition_processor_state: Option<BTreeMap<PartitionId, PartitionProcessorStatus>>,
 
     /// node uptime.
     // serde(default) is required for backward compatibility when updating the cluster,
     // ensuring that older nodes can still interact with newer nodes that recognize this attribute.
     #[serde(default)]
+    #[bilrost(2)]
     pub uptime: Duration,
 }

@@ -66,13 +66,13 @@ impl WireEncode for GetMetadataRequest {
     fn encode_to_bytes(self, protocol_version: ProtocolVersion) -> Bytes {
         if let ProtocolVersion::V1 = protocol_version {
             // V1 protocol sends `GetMetadataRequest` as a `MetadataMessage`
-            return Bytes::from(crate::net::codec::encode_default(
+            return Bytes::from(crate::net::codec::encode_as_flexbuffers(
                 MetadataMessage::GetMetadataRequest(self),
                 protocol_version,
             ));
         }
 
-        Bytes::from(codec::encode_default(self, protocol_version))
+        Bytes::from(codec::encode_as_flexbuffers(self, protocol_version))
     }
 }
 impl WireDecode for GetMetadataRequest {
@@ -87,13 +87,13 @@ impl WireDecode for GetMetadataRequest {
         if let ProtocolVersion::V1 = protocol_version {
             // V1 protocol sends `GetMetadataRequest` as a `MetadataMessage`
             let message =
-                crate::net::codec::decode_default::<MetadataMessage>(buf, protocol_version)?;
+                crate::net::codec::decode_as_flexbuffers::<MetadataMessage>(buf, protocol_version)?;
             if let MetadataMessage::GetMetadataRequest(request) = message {
                 return Ok(request);
             }
             bail!("Invalid message type");
         }
-        codec::decode_default(buf, protocol_version)
+        codec::decode_as_flexbuffers(buf, protocol_version)
     }
 }
 
@@ -101,12 +101,12 @@ impl WireEncode for MetadataUpdate {
     fn encode_to_bytes(self, protocol_version: ProtocolVersion) -> Bytes {
         if let ProtocolVersion::V1 = protocol_version {
             // V1 protocol sends `MetadataUpdate` as a `MetadataMessage`
-            return Bytes::from(codec::encode_default(
+            return Bytes::from(codec::encode_as_flexbuffers(
                 MetadataMessage::MetadataUpdate(self),
                 protocol_version,
             ));
         }
-        Bytes::from(codec::encode_default(self, protocol_version))
+        Bytes::from(codec::encode_as_flexbuffers(self, protocol_version))
     }
 }
 impl WireDecode for MetadataUpdate {
@@ -121,13 +121,13 @@ impl WireDecode for MetadataUpdate {
         if let ProtocolVersion::V1 = protocol_version {
             // V1 protocol sends `MetadataUpdate` as a `MetadataMessage`
             let message =
-                crate::net::codec::decode_default::<MetadataMessage>(buf, protocol_version)?;
+                crate::net::codec::decode_as_flexbuffers::<MetadataMessage>(buf, protocol_version)?;
             if let MetadataMessage::MetadataUpdate(update) = message {
                 return Ok(update);
             }
             bail!("Invalid message type");
         }
-        codec::decode_default(buf, protocol_version)
+        codec::decode_as_flexbuffers(buf, protocol_version)
     }
 }
 

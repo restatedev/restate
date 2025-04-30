@@ -11,6 +11,8 @@
 use std::collections::BTreeMap;
 
 use bytesize::ByteSize;
+use clap::Parser;
+use cling::{Collect, Run};
 use futures::future::join_all;
 use itertools::Itertools;
 use tonic::{IntoRequest, Status};
@@ -26,7 +28,15 @@ use restate_types::{PlainNodeId, Version};
 
 use crate::connection::ConnectionInfo;
 
-pub async fn list_metadata_servers(connection: &ConnectionInfo) -> anyhow::Result<()> {
+#[derive(Run, Parser, Collect, Clone, Debug)]
+#[cling(run = "list_metadata_servers")]
+#[clap(visible_alias = "ls")]
+pub struct ListMetadataServers {}
+
+pub async fn list_metadata_servers(
+    connection: &ConnectionInfo,
+    _list_metadata_servers: &ListMetadataServers,
+) -> anyhow::Result<()> {
     debug!("Gathering metadata server status information");
 
     let nodes_configuration = connection.get_nodes_configuration().await?;
