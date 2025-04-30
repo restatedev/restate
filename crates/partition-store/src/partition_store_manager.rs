@@ -14,21 +14,27 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rocksdb::ExportImportFilesMetaData;
+use rocksdb::event_listener::EventListenerExt;
 use tokio::sync::Mutex;
+use tokio::sync::MutexGuard;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::PartitionStore;
-use crate::cf_options;
-use crate::snapshots::LocalPartitionSnapshot;
 use restate_core::worker_api::SnapshotError;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
+use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_types::config::{RocksDbOptions, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::LiveLoad;
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Lsn;
+
+use crate::PartitionStore;
+use crate::cf_options;
+use crate::persisted_lsn_tracking::PersistedLsnEventListener;
+use crate::snapshots::LocalPartitionSnapshot;
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -44,6 +50,7 @@ pub enum OpenMode {
 pub struct PartitionStoreManager {
     lookup: Arc<Mutex<PartitionLookup>>,
     rocksdb: Arc<RocksDb>,
+    persisted_lsn_tx: Option<mpsc::Sender<(PartitionId, Lsn)>>,
 }
 
 #[derive(Default, Debug)]
@@ -55,13 +62,20 @@ impl PartitionStoreManager {
     pub async fn create(
         mut storage_opts: impl LiveLoad<Live = StorageOptions> + 'static,
         initial_partition_set: &[(PartitionId, RangeInclusive<PartitionKey>)],
+        persisted_lsn_tx: Option<mpsc::Sender<(PartitionId, Lsn)>>,
     ) -> Result<Self, RocksError> {
         let options = storage_opts.live_load();
 
         let per_partition_memory_budget = options.rocksdb_memory_budget()
             / options.num_partitions_to_share_memory_budget() as usize;
 
-        let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), options.data_dir(), db_options())
+        let mut db_opts = db_options();
+
+        if let Some(persisted_lsn_tx) = persisted_lsn_tx.as_ref().cloned() {
+            db_opts.add_event_listener(PersistedLsnEventListener { persisted_lsn_tx });
+        }
+
+        let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), options.data_dir(), db_opts)
             .add_cf_pattern(
                 CfPrefixPattern::new(PARTITION_CF_PREFIX),
                 cf_options(per_partition_memory_budget),
@@ -81,6 +95,7 @@ impl PartitionStoreManager {
         Ok(Self {
             rocksdb,
             lookup: Arc::default(),
+            persisted_lsn_tx,
         })
     }
 
@@ -107,7 +122,7 @@ impl PartitionStoreManager {
         open_mode: OpenMode,
         opts: &RocksDbOptions,
     ) -> Result<PartitionStore, RocksError> {
-        let mut guard = self.lookup.lock().await;
+        let guard = self.lookup.lock().await;
         if let Some(store) = guard.live.get(&partition_id) {
             return Ok(store.clone());
         }
@@ -123,15 +138,8 @@ impl PartitionStoreManager {
             }
         }
 
-        let partition_store = PartitionStore::new(
-            self.rocksdb.clone(),
-            cf_name,
-            partition_id,
-            partition_key_range,
-        );
-        guard.live.insert(partition_id, partition_store.clone());
-
-        Ok(partition_store)
+        self.create_partition_store(guard, partition_id, partition_key_range, cf_name)
+            .await
     }
 
     /// Imports a partition snapshot and opens it as a partition store.
@@ -144,7 +152,7 @@ impl PartitionStoreManager {
         snapshot: LocalPartitionSnapshot,
         opts: &RocksDbOptions,
     ) -> Result<PartitionStore, RocksError> {
-        let mut guard = self.lookup.lock().await;
+        let guard = self.lookup.lock().await;
         if guard.live.contains_key(&partition_id) {
             warn!(
                 %partition_id,
@@ -192,13 +200,41 @@ impl PartitionStoreManager {
             .await?;
 
         assert!(self.rocksdb.inner().cf_handle(&cf_name).is_some());
-        let partition_store = PartitionStore::new(
+        self.create_partition_store(guard, partition_id, partition_key_range, cf_name)
+            .await
+    }
+
+    async fn create_partition_store(
+        &self,
+        mut guard: MutexGuard<'_, PartitionLookup>,
+        partition_id: PartitionId,
+        partition_key_range: RangeInclusive<PartitionKey>,
+        cf_name: CfName,
+    ) -> Result<PartitionStore, RocksError> {
+        let mut partition_store = PartitionStore::new(
             self.rocksdb.clone(),
             cf_name,
             partition_id,
             partition_key_range,
         );
         guard.live.insert(partition_id, partition_store.clone());
+
+        if let Some(persisted_lsn_tx) = self.persisted_lsn_tx.as_ref() {
+            let applied_lsn = partition_store.get_applied_lsn().await;
+            match applied_lsn {
+                Ok(None) => {}
+                Ok(Some(applied_lsn)) => {
+                    // ignore shutdown errors
+                    let _ = persisted_lsn_tx.send((partition_id, applied_lsn)).await;
+                }
+                Err(err) => {
+                    warn!(
+                        %partition_id,
+                        "Failed reading the applied LSN for partition store: {}", err
+                    )
+                }
+            }
+        }
 
         Ok(partition_store)
     }
@@ -230,6 +266,12 @@ impl PartitionStoreManager {
             .drop_cf(&cf_for_partition(partition_id))
             .unwrap();
 
+        guard.live.remove(&partition_id);
+    }
+
+    #[cfg(test)]
+    pub async fn close_partition_store(&self, partition_id: PartitionId) {
+        let mut guard = self.lookup.lock().await;
         guard.live.remove(&partition_id);
     }
 }

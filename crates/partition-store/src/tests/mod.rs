@@ -39,6 +39,8 @@ mod state_table_test;
 mod timer_table_test;
 mod virtual_object_status_table_test;
 
+mod persisted_lsn_tracking_test;
+
 async fn storage_test_environment() -> PartitionStore {
     storage_test_environment_with_manager().await.1
 }
@@ -49,7 +51,7 @@ async fn storage_test_environment_with_manager() -> (PartitionStoreManager, Part
     //
     RocksDbManager::init(Constant::new(CommonOptions::default()));
     let storage_options = StorageOptions::default();
-    let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()), &[])
+    let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()), &[], None)
         .await
         .expect("DB storage creation succeeds");
     // A single partition store that spans all keys.

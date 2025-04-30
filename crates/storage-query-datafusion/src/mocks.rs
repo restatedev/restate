@@ -168,6 +168,7 @@ impl MockQueryEngine {
         let manager = PartitionStoreManager::create(
             Constant::new(storage_options.clone()),
             &[(PartitionId::MIN, RangeInclusive::new(0, PartitionKey::MAX))],
+            None,
         )
         .await
         .expect("DB creation succeeds");

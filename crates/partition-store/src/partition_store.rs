@@ -22,6 +22,7 @@ use rocksdb::DBPinnableSlice;
 use rocksdb::DBRawIteratorWithThreadMode;
 use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
+use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{BoundColumnFamily, SliceTransform};
 use rocksdb::{DBCompressionType, SnapshotWithThreadMode};
 use static_assertions::const_assert_eq;
@@ -44,6 +45,7 @@ use restate_types::storage::StorageCodec;
 
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
+use crate::persisted_lsn_tracking::LatestAppliedLsnCollectorFactory;
 use crate::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -252,6 +254,10 @@ pub(crate) fn cf_options(
             DBCompressionType::Zstd,
             DBCompressionType::Zstd,
         ]);
+
+        // Always collect applied LSN table properties in partition store CFs
+        cf_options
+            .add_table_properties_collector_factory(LatestAppliedLsnCollectorFactory::default());
 
         cf_options
     }
@@ -1038,7 +1044,8 @@ mod tests {
     async fn concurrent_writes_and_reads() -> googletest::Result<()> {
         let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
         let partition_store_manager =
-            PartitionStoreManager::create(Constant::new(StorageOptions::default()), &[]).await?;
+            PartitionStoreManager::create(Constant::new(StorageOptions::default()), &[], None)
+                .await?;
         let mut partition_store = partition_store_manager
             .open_partition_store(
                 PartitionId::MIN,

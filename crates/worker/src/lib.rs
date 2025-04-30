@@ -19,11 +19,13 @@ mod partition_processor_manager;
 mod subscription_controller;
 mod subscription_integration;
 
-use codederror::CodedError;
-use restate_core::TaskCenter;
 use std::time::Duration;
 
+use tokio::sync::mpsc;
+
+use codederror::CodedError;
 use restate_bifrost::Bifrost;
+use restate_core::TaskCenter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
@@ -122,9 +124,15 @@ impl Worker {
         metric_definitions::describe_metrics();
         health_status.update(WorkerStatus::StartingUp);
 
-        let partition_store_manager =
-            PartitionStoreManager::create(live_config.clone().map(|c| &c.worker.storage), &[])
-                .await?;
+        let (persisted_lsn_tx, persisted_lsn_rx) =
+            mpsc::channel(live_config.live_load().common.default_num_partitions as usize);
+
+        let partition_store_manager = PartitionStoreManager::create(
+            live_config.clone().map(|c| &c.worker.storage),
+            &[],
+            Some(persisted_lsn_tx),
+        )
+        .await?;
 
         let live_config_clone = live_config.clone();
         let config = live_config.live_load();
@@ -161,6 +169,7 @@ impl Worker {
             )
             .await
             .map_err(BuildError::SnapshotRepository)?,
+            persisted_lsn_rx,
         );
 
         let remote_scanner_manager = RemoteScannerManager::new(
