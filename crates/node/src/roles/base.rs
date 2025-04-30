@@ -63,8 +63,6 @@ impl Handler for GossipHandler {
     type Service = GossipService;
     async fn on_start(&mut self) {
         debug!("Gossip handler started");
-        let node_status = TaskCenter::with_current(|tc| tc.health().node_status());
-        node_status.update(NodeStatus::Alive);
     }
 
     async fn on_drain(&mut self) -> Drain {
