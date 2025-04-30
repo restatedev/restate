@@ -636,6 +636,7 @@ struct Member {
     pending_remove_requests: HashMap<MemberId, RemoveNodeResponseSender>,
     read_index_to_request_id: VecDeque<(u64, Ulid)>,
     snapshot_summary: Option<SnapshotSummary>,
+    is_leaving: bool,
 
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
     metadata_writer: Option<MetadataWriter>,
@@ -747,6 +748,7 @@ impl Member {
             pending_remove_requests: HashMap::default(),
             read_index_to_request_id: VecDeque::default(),
             snapshot_summary,
+            is_leaving: false,
         };
 
         member.validate_metadata_server_configuration();
@@ -764,13 +766,9 @@ impl Member {
 
         loop {
             tokio::select! {
-                biased;
-                // It is important to always check for nodes config changes because that's our
-                // mechanism to remove ourselves from the cluster if we are supposed to leave.
-                // Otherwise, we might process a Raft response message which causes Raft to panic,
-                // because we removed ourselves from it.
                 Ok(()) = nodes_config_watch.changed() => {
-                    if self.should_leave() {
+                    let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+                    if self.should_leave(nodes_config.as_ref()) {
                         break;
                     }
 
@@ -808,6 +806,10 @@ impl Member {
 
             self.on_ready().await?;
             self.update_leadership();
+
+            if self.is_leaving {
+                break;
+            }
         }
 
         self.fail_pending_requests();
@@ -831,9 +833,7 @@ impl Member {
         ))
     }
 
-    fn should_leave(&self) -> bool {
-        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
-
+    fn should_leave(&self, nodes_config: &NodesConfiguration) -> bool {
         if self.min_expected_nodes_config_version > nodes_config.version() {
             // we haven't reached the min expected nodes_config version to act on yet
             return false;
@@ -1357,6 +1357,11 @@ impl Member {
             self.update_leadership();
             self.update_node_addresses();
             self.update_status();
+
+            // check whether we removed ourselves, and we should leave
+            if self.should_leave(self.kv_storage.last_seen_nodes_configuration()) {
+                self.is_leaving = true;
+            }
         } else {
             info!(
                 "Rejected configuration change because: {}",
