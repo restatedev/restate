@@ -248,7 +248,7 @@ mod tests {
     use restate_types::invocation::{NotifySignalRequest, TrimBy, TrimInvocationRequest};
     use restate_types::journal_v2::raw::RawCommand;
     use restate_types::journal_v2::{
-        ClearAllStateCommand, CommandType, CompletionType, Entry, Signal, SignalId, SignalResult,
+        ClearAllStateCommand, CommandType, CompletionType, Signal, SignalId, SignalResult,
         SleepCommand,
     };
     use restate_types::time::MillisSinceEpoch;
