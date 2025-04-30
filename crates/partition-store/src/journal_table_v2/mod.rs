@@ -26,7 +26,7 @@ use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryInner};
-use restate_types::journal_v2::{CompletionId, EntryMetadata, EntryType, NotificationId};
+use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
@@ -244,36 +244,39 @@ fn delete_journal<S: StorageAccess>(
     Ok(())
 }
 
-fn compact_journal<S: StorageAccess>(
+fn rewrite_journal<S: StorageAccess>(
     storage: &mut S,
     invocation_id: InvocationId,
-    compaction_starting_point: EntryIndex,
-    notifications_to_retain: &[EntryIndex],
+    truncation_starting_point: EntryIndex,
+    entries_to_retain_after_trim_point: &[EntryIndex],
     notification_ids_to_cleanup: &[NotificationId],
     journal_length: EntryIndex,
 ) -> Result<()> {
     let _x = RocksDbPerfGuard::new("compact-journal");
 
     // This algorithm works as follows:
-    // * Copy the entries in entries_to_retain in order starting at compaction_starting_point
+    // * Copy the entries in entries_to_retain_after_trim_point in order starting at truncation_starting_point
     // * Trim the remaining entries up to journal_length
     // * Cleanup the notification and completion indexes
-    for (i, old_entry_index) in notifications_to_retain.iter().enumerate() {
-        let new_entry_index = compaction_starting_point + (i as u32);
+    for (i, old_entry_index) in entries_to_retain_after_trim_point.iter().enumerate() {
+        debug_assert!(
+            *old_entry_index >= truncation_starting_point,
+            "Entry index in 'entries_to_retain_after_trim_point' does not respect the invariant: old_entry_index >= truncation_starting_point"
+        );
+
+        let new_entry_index = truncation_starting_point + (i as u32);
         let entry = get_journal_entry(storage, &invocation_id, *old_entry_index)?.ok_or_else(|| anyhow!("Expected entry at index {old_entry_index}, but wasn't there. This indicates a bug in the journal trim/compaction procedure"))?;
 
-        debug_assert!(matches!(entry.ty(), EntryType::Notification(_)));
-        // put_journal_entry also takes care of the notification index
+        // put_journal_entry also takes care of the eventual notification index
         put_journal_entry(storage, &invocation_id, new_entry_index, &entry, &[])?;
     }
 
     let mut key = write_journal_entry_key(&invocation_id, 0);
-    let k = &mut key;
     let deletion_starting_point =
-        compaction_starting_point + (notifications_to_retain.len() as u32);
+        truncation_starting_point + (entries_to_retain_after_trim_point.len() as u32);
     for i in deletion_starting_point..journal_length {
-        k.journal_index = Some(i);
-        storage.delete_key(k)?;
+        key.journal_index = Some(i);
+        storage.delete_key(&key)?;
     }
 
     if !notification_ids_to_cleanup.is_empty() {
@@ -473,20 +476,20 @@ impl JournalTable for PartitionStoreTransaction<'_> {
         delete_journal(self, &invocation_id, journal_length)
     }
 
-    async fn compact_journal(
+    async fn rewrite_journal(
         &mut self,
         invocation_id: InvocationId,
-        compaction_starting_point: EntryIndex,
-        notifications_to_retain: &[EntryIndex],
+        truncation_starting_point: EntryIndex,
+        entries_to_retain_after_trim_point: &[EntryIndex],
         notification_ids_to_cleanup: &[NotificationId],
         journal_length: EntryIndex,
     ) -> Result<()> {
         self.assert_partition_key(&invocation_id)?;
-        compact_journal(
+        rewrite_journal(
             self,
             invocation_id,
-            compaction_starting_point,
-            notifications_to_retain,
+            truncation_starting_point,
+            entries_to_retain_after_trim_point,
             notification_ids_to_cleanup,
             journal_length,
         )

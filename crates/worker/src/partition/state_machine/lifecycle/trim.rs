@@ -177,7 +177,7 @@ where
 
         // Now let's clean indexes, compact journal and remove remaining entries
         ctx.storage
-            .compact_journal(
+            .rewrite_journal(
                 invocation_id,
                 trim_point_command_entry_index,
                 &notifications_to_retain,
