@@ -118,10 +118,15 @@ where
     F::Output: Send + 'static,
 {
     fn execute(&self, fut: F) {
-        let _ = TaskCenter::spawn_child(TaskKind::H2Stream, "h2stream", async move {
+        // This is unmanaged task because we don't want to bind the connection lifetime to the task
+        // that created it, the connection reactor is already a managed task and will react to
+        // global system shutdown and other graceful shutdown signals (i.e. dropping the owning
+        // sender, or via egress_drop)
+        //
+        // Making this task managed will result in occasional lockups on shutdown.
+        let _ = TaskCenter::spawn_unmanaged(TaskKind::H2ClientStream, "h2stream", async move {
             // ignore the future output
             let _ = fut.await;
-            Ok(())
         });
     }
 }

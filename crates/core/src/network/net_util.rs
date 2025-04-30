@@ -261,7 +261,7 @@ where
     F::Output: Send + 'static,
 {
     fn execute(&self, fut: F) {
-        let _ = TaskCenter::spawn_child(TaskKind::H2Stream, "h2stream", async move {
+        let _ = TaskCenter::spawn_child(TaskKind::H2ServerStream, "h2stream", async move {
             // ignore the future output
             let _ = fut.await;
             Ok(())
