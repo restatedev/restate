@@ -11,21 +11,23 @@
 mod handler;
 mod layers;
 mod metric_definitions;
-pub mod partition_processor_rpc_client;
-pub mod rpc_request_dispatcher;
+mod rpc_request_dispatcher;
 mod server;
 
+pub use rpc_request_dispatcher::InvocationClientRequestDispatcher;
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 
-use partition_processor_rpc_client::{AttachInvocationResponse, GetInvocationOutputResponse};
 use restate_types::identifiers::InvocationId;
+use restate_types::invocation::client::{
+    AttachInvocationResponse, GetInvocationOutputResponse, InvocationOutput,
+    SubmittedInvocationNotification,
+};
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
-use restate_types::net::partition_processor::{InvocationOutput, SubmittedInvocationNotification};
 
 /// Client connection information for a given RPC request
 #[derive(Clone, Copy, Debug)]
@@ -101,7 +103,6 @@ mod mocks {
     use restate_types::invocation::{
         InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
     };
-    use restate_types::net::partition_processor::InvocationOutput;
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_types::schema::invocation_target::{
         DEFAULT_IDEMPOTENCY_RETENTION, InvocationTargetMetadata, InvocationTargetResolver,

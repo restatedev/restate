@@ -146,10 +146,12 @@ async fn terminate_scheduled_invocation(
         contains(pat!(Action::IngressResponse {
             request_id: eq(rpc_id),
             invocation_id: some(eq(invocation_id)),
-            response: eq(IngressResponseResult::Failure(match termination_flavor {
-                TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
-                TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
-            }))
+            response: eq(InvocationOutputResponse::Failure(
+                match termination_flavor {
+                    TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
+                    TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
+                }
+            ))
         }))
     );
 

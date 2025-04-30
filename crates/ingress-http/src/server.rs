@@ -253,7 +253,7 @@ mod tests {
     use restate_types::health::Health;
     use restate_types::identifiers::WithInvocationId;
     use restate_types::invocation::InvocationTarget;
-    use restate_types::net::partition_processor::IngressResponseResult;
+    use restate_types::invocation::client::InvocationOutputResponse;
     use serde::{Deserialize, Serialize};
     use std::future::ready;
     use std::net::SocketAddr;
@@ -293,7 +293,7 @@ mod tests {
                     request_id: Default::default(),
                     invocation_id: Some(invocation_request.invocation_id()),
                     completion_expiry_time: None,
-                    response: IngressResponseResult::Success(
+                    response: InvocationOutputResponse::Success(
                         InvocationTarget::service("greeter.Greeter", "greet"),
                         serde_json::to_vec(&GreetingResponse {
                             greeting: "Igal".to_string(),

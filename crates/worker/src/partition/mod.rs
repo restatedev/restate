@@ -47,6 +47,7 @@ use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
 use restate_types::invocation;
+use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
     NotifySignalRequest, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
@@ -56,9 +57,9 @@ use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::net::RpcRequest;
 use restate_types::net::partition_processor::{
-    AppendInvocationReplyOn, GetInvocationOutputResponseMode, IngressResponseResult,
-    InvocationOutput, PartitionLeaderService, PartitionProcessorRpcError,
-    PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
+    AppendInvocationReplyOn, GetInvocationOutputResponseMode, PartitionLeaderService,
+    PartitionProcessorRpcError, PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner,
+    PartitionProcessorRpcResponse,
 };
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::MillisSinceEpoch;
@@ -749,9 +750,9 @@ where
                     request_id,
                     response: match completed.response_result.clone() {
                         ResponseResult::Success(res) => {
-                            IngressResponseResult::Success(completed.invocation_target, res)
+                            InvocationOutputResponse::Success(completed.invocation_target, res)
                         }
-                        ResponseResult::Failure(err) => IngressResponseResult::Failure(err),
+                        ResponseResult::Failure(err) => InvocationOutputResponse::Failure(err),
                     },
                     invocation_id: Some(invocation_id),
                     completion_expiry_time,

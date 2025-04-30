@@ -21,12 +21,10 @@ restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
-assert2 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 chrono = { workspace = true }
 codederror = { workspace = true }
-derive_builder = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }

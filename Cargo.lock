@@ -6998,12 +6998,10 @@ name = "restate-ingress-http"
 version = "1.3.3-dev"
 dependencies = [
  "anyhow",
- "assert2",
  "bytes",
  "bytestring",
  "chrono",
  "codederror",
- "derive_builder",
  "futures",
  "googletest",
  "http 1.2.0",

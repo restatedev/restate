@@ -8,21 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
-use http::{Method, Request, Response};
-use http_body_util::Full;
-use tracing::warn;
-
 use super::Handler;
 use super::HandlerError;
 use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
+
 use crate::RequestDispatcher;
-use crate::partition_processor_rpc_client::{
-    AttachInvocationResponse, GetInvocationOutputResponse,
-};
+use bytes::Bytes;
+use http::{Method, Request, Response};
+use http_body_util::Full;
 use restate_types::identifiers::IdempotencyId;
 use restate_types::invocation::InvocationQuery;
+use restate_types::invocation::client::{AttachInvocationResponse, GetInvocationOutputResponse};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
+use tracing::warn;
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where

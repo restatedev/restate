@@ -24,14 +24,15 @@ use tracing_test::traced_test;
 use restate_core::TestCoreEnv;
 use restate_test_util::{assert, assert_eq};
 use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId, WithInvocationId};
+use restate_types::invocation::client::{
+    AttachInvocationResponse, GetInvocationOutputResponse, InvocationOutput,
+    InvocationOutputResponse, SubmittedInvocationNotification,
+};
 use restate_types::invocation::{
     InvocationQuery, InvocationTarget, InvocationTargetType, VirtualObjectHandlerType,
     WorkflowHandlerType,
 };
 use restate_types::live::Live;
-use restate_types::net::partition_processor::{
-    IngressResponseResult, InvocationOutput, SubmittedInvocationNotification,
-};
 use restate_types::schema::invocation_target::{
     InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
     OutputContentTypeRule, OutputRules,
@@ -44,9 +45,6 @@ use super::mocks::*;
 use super::service_handler::*;
 use crate::MockRequestDispatcher;
 use crate::handler::responses::X_RESTATE_ID;
-use crate::partition_processor_rpc_client::{
-    AttachInvocationResponse, GetInvocationOutputResponse,
-};
 
 #[restate_core::test]
 #[traced_test]
@@ -84,7 +82,7 @@ async fn call_service() {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_request.invocation_id()),
                 completion_expiry_time: None,
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     InvocationTarget::service("greeter.Greeter", "greet"),
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
@@ -130,7 +128,7 @@ async fn call_service_with_get() {
                 request_id: Default::default(),
                 invocation_id: Some(InvocationId::mock_random()),
                 completion_expiry_time: None,
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     invocation_request.header.target,
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
@@ -200,7 +198,7 @@ async fn call_virtual_object() {
                 request_id: Default::default(),
                 invocation_id: Some(InvocationId::mock_random()),
                 completion_expiry_time: None,
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     invocation_request.header.target,
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
@@ -405,7 +403,7 @@ async fn idempotency_key_parsing() {
                 request_id: Default::default(),
                 invocation_id: Some(InvocationId::mock_random()),
                 completion_expiry_time: None,
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     invocation_request.header.target,
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
@@ -577,7 +575,7 @@ async fn attach_with_invocation_id() {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_id),
                 completion_expiry_time: None,
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     InvocationTarget::service("greeter.Greeter", "greet"),
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
@@ -633,7 +631,7 @@ async fn attach_with_idempotency_id_to_unkeyed_service() {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_id),
                 completion_expiry_time: None,
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     InvocationTarget::service("greeter.Greeter", "greet"),
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
@@ -691,7 +689,7 @@ async fn attach_with_idempotency_id_to_keyed_service() {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_id),
                 completion_expiry_time: None,
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     InvocationTarget::virtual_object(
                         "greeter.Greeter",
                         "mygreet",
@@ -750,7 +748,7 @@ async fn get_output_with_invocation_id() {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_id),
                 completion_expiry_time: None,
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     InvocationTarget::service("greeter.Greeter", "greet"),
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
@@ -807,7 +805,7 @@ async fn get_output_with_workflow_key() {
                 request_id: Default::default(),
                 invocation_id: None,
                 completion_expiry_time: None,
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     InvocationTarget::workflow(
                         service_id.service_name,
                         service_id.key,
@@ -1098,7 +1096,7 @@ fn expect_invocation_and_reply_with_empty() -> MockRequestDispatcher {
                 request_id: Default::default(),
                 completion_expiry_time: None,
                 invocation_id: Some(invocation_request.invocation_id()),
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     invocation_request.header.target,
                     Bytes::new(),
                 ),
@@ -1118,7 +1116,7 @@ fn expect_invocation_and_reply_with_non_empty() -> MockRequestDispatcher {
                 request_id: Default::default(),
                 invocation_id: Some(invocation_request.invocation_id()),
                 completion_expiry_time: None,
-                response: IngressResponseResult::Success(
+                response: InvocationOutputResponse::Success(
                     invocation_request.header.target,
                     Bytes::from_static(b"123"),
                 ),

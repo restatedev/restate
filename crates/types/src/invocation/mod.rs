@@ -10,6 +10,8 @@
 
 //! This module contains all the core types representing a service invocation.
 
+pub mod client;
+
 use crate::GenerationalNodeId;
 use crate::errors::InvocationError;
 use crate::identifiers::{

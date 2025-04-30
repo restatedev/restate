@@ -8,16 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::errors::InvocationError;
 use crate::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
-use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget};
+use crate::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
+use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
 use crate::net::ServiceTag;
 use crate::net::{default_wire_codec, define_rpc, define_service};
-use crate::time::MillisSinceEpoch;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 pub struct PartitionLeaderService;
@@ -114,27 +112,4 @@ pub enum PartitionProcessorRpcResponse {
     NotSupported,
     Submitted(SubmittedInvocationNotification),
     Output(InvocationOutput),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SubmittedInvocationNotification {
-    pub request_id: PartitionProcessorRpcRequestId,
-    pub execution_time: Option<MillisSinceEpoch>,
-    /// If true, this request_id created a "fresh invocation",
-    /// otherwise the invocation was previously submitted.
-    pub is_new_invocation: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct InvocationOutput {
-    pub request_id: PartitionProcessorRpcRequestId,
-    pub invocation_id: Option<InvocationId>,
-    pub completion_expiry_time: Option<MillisSinceEpoch>,
-    pub response: IngressResponseResult,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum IngressResponseResult {
-    Success(InvocationTarget, Bytes),
-    Failure(InvocationError),
 }

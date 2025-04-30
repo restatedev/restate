@@ -9,5 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod partition_processor_manager;
+mod partition_processor_rpc_client;
 
 pub use partition_processor_manager::*;
+pub use partition_processor_rpc_client::*;
