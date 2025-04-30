@@ -85,8 +85,8 @@ where
             delete(openapi_handler!(invocations::delete_invocation)),
         )
         .route(
-            "/invocations/:invocation_id/time_travel/:trim_index",
-            patch(openapi_handler!(invocations::time_travel_invocation)),
+            "/invocations/:invocation_id/reset",
+            patch(openapi_handler!(invocations::reset_invocation)),
         )
         .route(
             "/subscriptions",
