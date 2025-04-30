@@ -39,17 +39,17 @@ message Header {
   uint64 msg_id = 1;
 
   // **DEPRECATED** fabric v2 uses in-message id instead.
-  // The msg_id at which we are responding to. Unset if this not to be
-  // considered a response. Note: If this is set, it's the responsibility of
+  // The msg_id at which we are responding to. Unset(0) if this not to be
+  // considered a response. Note: If this is non-zero, it's the responsibility of
   // the message producer to ensure that the response is sent to the original
   // producer (generational node id).
   // Using raw value to be as compact as possible.
-  optional uint64 in_response_to = 2;
+  uint64 in_response_to = 2;
 
-  optional uint32 my_nodes_config_version = 3;
-  optional uint32 my_logs_version = 4;
-  optional uint32 my_schema_version = 5;
-  optional uint32 my_partition_table_version = 6;
+  uint32 my_nodes_config_version = 3;
+  uint32 my_logs_version = 4;
+  uint32 my_schema_version = 5;
+  uint32 my_partition_table_version = 6;
   optional SpanContext span_context = 7;
 }
 
