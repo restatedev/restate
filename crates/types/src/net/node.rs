@@ -16,7 +16,7 @@ use serde_with::serde_as;
 use restate_encoding::NetSerde;
 
 use super::ServiceTag;
-use crate::net::{bilrost_wire_codec, define_rpc, define_service};
+use crate::net::{bilrost_wire_codec_with_v1_fallback, define_rpc, define_service};
 use crate::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
 
 pub struct GossipService;
@@ -32,8 +32,8 @@ define_rpc! {
     @service = GossipService,
 }
 
-bilrost_wire_codec!(GetNodeState);
-bilrost_wire_codec!(NodeStateResponse);
+bilrost_wire_codec_with_v1_fallback!(GetNodeState);
+bilrost_wire_codec_with_v1_fallback!(NodeStateResponse);
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct GetNodeState {}
