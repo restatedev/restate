@@ -16,8 +16,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use cling::prelude::*;
 use convert_case::{Case, Casing};
-use dialoguer::Select;
-use dialoguer::theme::ColorfulTheme;
 use futures::StreamExt;
 use octocrab::models::repos::Asset;
 use octocrab::repos::RepoHandler;
@@ -26,7 +24,7 @@ use tokio::io::AsyncWriteExt;
 
 use restate_cli_util::ui::stylesheet::Style;
 
-use crate::console::{Styled, c_println};
+use crate::console::{Styled, c_println, choose};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_examples")]
@@ -61,16 +59,11 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
     } else {
         // Ask the example to download among the available examples
         let mut languages = parse_available_examples(latest_release.assets);
-        let language_selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt("Choose the programming language")
-            .items(&languages)
-            .interact()
-            .unwrap();
-        let example_selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt("Choose the example")
-            .items(&languages[language_selection].examples)
-            .interact()
-            .unwrap();
+        let language_selection = choose("Choose the programming language", &languages)?;
+        let example_selection = choose(
+            "Choose the example",
+            &languages[language_selection].examples,
+        )?;
 
         languages
             .remove(language_selection)
