@@ -12,7 +12,7 @@
 
 pub mod client;
 
-use crate::GenerationalNodeId;
+use crate::{ GenerationalNodeId};
 use crate::errors::InvocationError;
 use crate::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, PartitionKey, PartitionProcessorRpcRequestId,
@@ -838,7 +838,8 @@ pub enum TrimBy {
     CommandEntryIndex {
         /// Entry index **inclusive**.
         ///
-        /// Note: the index MUST correspond to a [`journal_v2::Command`], otherwise the command will be ignored.
+        /// Note: the index MUST correspond to a [`journal_v2::Command`] or a [`journal_v2::Signal`],
+        /// otherwise the command will be ignored.
         entry_index: EntryIndex,
     },
 }

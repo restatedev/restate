@@ -68,18 +68,18 @@ where
             );
             return Ok(());
         };
-        let Ok(trim_point_command) = trim_point_entry.decode::<ServiceProtocolV4Codec, Command>()
-        else {
+        if !matches!(trim_point_entry.ty(), EntryType::Command(_) | EntryType::Notification(NotificationType::Signal)) {
             info_if_leader!(
                 ctx.is_leader,
-                "Ignoring trim command because the given entry index doesn't correspond to a command entry"
+                "Ignoring trim command because the given entry index doesn't correspond to a command entry, nor to a signal notification"
             );
             return Ok(());
-        };
+        }
         debug_if_leader!(
             ctx.is_leader,
-            "Trimming journal starting from {}",
-            trim_point_command.ty()
+            "Trimming journal starting from {}, index {}",
+            trim_point_entry.ty(),
+            trim_point_command_entry_index
         );
 
         // We need to send an abort signal to the invoker if the invocation was previously invoked
@@ -241,11 +241,9 @@ mod tests {
         ReadOnlyInvocationStatusTable,
     };
     use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
-    use restate_types::invocation::{TrimBy, TrimInvocationRequest};
+    use restate_types::invocation::{NotifySignalRequest, TrimBy, TrimInvocationRequest};
     use restate_types::journal_v2::raw::RawCommand;
-    use restate_types::journal_v2::{
-        ClearAllStateCommand, CommandType, CompletionType, Entry, SleepCommand,
-    };
+    use restate_types::journal_v2::{ClearAllStateCommand, CommandType, CompletionType, Entry, Signal, SignalId, SignalResult, SleepCommand};
     use restate_types::time::MillisSinceEpoch;
     use restate_wal_protocol::timer::TimerKeyValue;
 
@@ -267,6 +265,14 @@ mod tests {
                 ))
                 .await;
             assert_that!(actions, empty());
+            test_env
+                .verify_journal_components(
+                    invocation_id,
+                    [
+                        CommandType::Input.into()
+                    ],
+                )
+                .await;
         }
 
         test_env.shutdown().await;
@@ -393,6 +399,143 @@ mod tests {
                 [
                     CommandType::Input.into(),
                     CommandType::Sleep.into(),
+                    CommandType::Sleep.into(),
+                    CompletionType::Sleep.into(),
+                ],
+            )
+            .await;
+
+        let actions = test_env
+            .apply(restate_wal_protocol::Command::TrimInvocation(
+                TrimInvocationRequest {
+                    invocation_id,
+                    trim_by: TrimBy::CommandEntryIndex { entry_index: 2 },
+                },
+            ))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::invoke_for_id_and_epoch(invocation_id, 1))
+        );
+        assert_that!(
+            test_env.storage.get_invocation_status(&invocation_id).await,
+            // Only Input entry and first clear state
+            ok(all!(
+                matchers::storage::status(InvocationStatusDiscriminants::Invoked),
+                matchers::storage::in_flight_meta(pat!(InFlightInvocationMetadata {
+                    current_invocation_epoch: eq(1),
+                    // This should contain the trim point!
+                    completion_range_epoch_map: eq(CompletionRangeEpochMap::from_trim_points([(
+                        2, 1
+                    )]))
+                }))
+            ))
+        );
+        test_env
+            .verify_journal_components(
+                invocation_id,
+                [
+                    CommandType::Input.into(),
+                    CommandType::Sleep.into(),
+                    CompletionType::Sleep.into(),
+                ],
+            )
+            .await;
+        assert_that!(
+            test_env.storage.get_journal_entry(invocation_id, 3).await,
+            ok(none())
+        );
+        assert_that!(
+            test_env
+                .storage
+                .get_command_by_completion_id(invocation_id, 2)
+                .await,
+            // This was the second Sleep
+            ok(none())
+        );
+        assert_that!(
+            test_env
+                .storage
+                .get_command_by_completion_id(invocation_id, 1)
+                .await,
+            // This was the first
+            ok(some(property!(
+                RawCommand.ty(),
+                eq(EntryType::Command(CommandType::Sleep))
+            )))
+        );
+        assert_that!(
+            test_env
+                .storage
+                .get_notifications_index(invocation_id)
+                .await,
+            // First notification is there
+            ok(eq(HashMap::from([(NotificationId::CompletionId(1), 2u32)])))
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn trim_from_signal_notification() {
+        let mut test_env = TestEnv::create().await;
+
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+        let wake_up_time = MillisSinceEpoch::now();
+
+        let _ = test_env
+            .apply_multiple([
+                fixtures::invoker_entry_effect_for_epoch(
+                    invocation_id,
+                    0,
+                    SleepCommand {
+                        wake_up_time,
+                        completion_id: 1,
+                        name: Default::default(),
+                    },
+                ),
+                restate_wal_protocol::Command::NotifySignal(NotifySignalRequest {
+                    invocation_id,
+                    signal: Signal::new(SignalId::for_index(17), SignalResult::Void),
+                }),
+                fixtures::invoker_entry_effect_for_epoch(
+                    invocation_id,
+                    0,
+                    SleepCommand {
+                        wake_up_time: wake_up_time + Duration::from_secs(60),
+                        completion_id: 2,
+                        name: Default::default(),
+                    },
+                ),
+            ])
+            .await;
+        test_env
+            .verify_journal_components(
+                invocation_id,
+                [
+                    CommandType::Input.into(),
+                    CommandType::Sleep.into(),
+                    NotificationType::Signal.into(),
+                    CommandType::Sleep.into(),
+                ],
+            )
+            .await;
+
+        // Let's complete one of the sleeps
+        let _ = test_env
+            .apply(restate_wal_protocol::Command::Timer(
+                TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, 1, 0),
+            ))
+            .await;
+        test_env
+            .verify_journal_components(
+                invocation_id,
+                [
+                    CommandType::Input.into(),
+                    CommandType::Sleep.into(),
+                    NotificationType::Signal.into(),
                     CommandType::Sleep.into(),
                     CompletionType::Sleep.into(),
                 ],

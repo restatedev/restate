@@ -219,7 +219,6 @@ impl TestEnv {
         let expected_entry_types = entry_types.into_iter().collect::<Vec<_>>();
         assert_that!(
             self.storage.get_invocation_status(&invocation_id).await,
-            // [Input, SleepCommand, SleepCommand, SleepCompletion]
             ok(matchers::storage::has_journal_length(
                 expected_entry_types.len() as u32
             ))
