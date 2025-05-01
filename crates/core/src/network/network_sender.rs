@@ -15,17 +15,30 @@ use restate_types::net::RpcRequest;
 
 // re-export Swimlane from protobuf
 use super::connection::OwnedSendPermit;
-use super::{ConnectError, Connection, RpcError};
+use super::{ConnectError, Connection, DiscoveryError, LazyConnection, RpcError};
 pub use crate::network::protobuf::network::Swimlane;
 
 /// Send NetworkMessage to nodes
-pub trait NetworkSender: Send + Sync {
+pub trait NetworkSender: Clone + Send + Sync + 'static {
     /// Get a connection to a peer node
     fn get_connection<N>(
         &self,
         node_id: N,
         swimlane: Swimlane,
     ) -> impl std::future::Future<Output = Result<Connection, ConnectError>> + Send
+    where
+        N: Into<NodeId> + Send;
+
+    /// Gets a connection to a peer node, but does not block if the connection is not ready.
+    ///
+    /// The connection is established in the background
+    fn lazy_connect<N>(
+        &self,
+        node_id: N,
+        swimlane: Swimlane,
+        buffer_size: usize,
+        auto_reconnect: bool,
+    ) -> Result<LazyConnection, DiscoveryError>
     where
         N: Into<NodeId> + Send;
 
