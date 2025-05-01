@@ -302,7 +302,7 @@ impl<S: Service> ServiceMessage<S> {
         use crate::network::protobuf::network::rpc_reply;
         use crate::network::{RawRpcReply, ReplyRx, RpcReplyError, RpcReplyPort};
 
-        let (reply_sender, reply_token) = ReplyRx::new(protocol_version);
+        let (reply_sender, reply_token) = ReplyRx::new();
         let payload = msg.encode_to_bytes(protocol_version);
 
         let (reply_port, reply_rx) = RpcReplyPort::new();
@@ -326,7 +326,7 @@ impl<S: Service> ServiceMessage<S> {
             match reply_rx.await {
                 Ok(envelope) => match envelope.body {
                     rpc_reply::Body::Payload(payload) => {
-                        reply_sender.send(RawRpcReply::Success(payload))
+                        reply_sender.send(RawRpcReply::Success((protocol_version, payload)))
                     }
                     rpc_reply::Body::Status(status) => {
                         reply_sender.send(RawRpcReply::Error(RpcReplyError::from(status)))
