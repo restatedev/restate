@@ -46,6 +46,7 @@ use super::TransportConnect;
 use super::handshake::wait_for_welcome;
 use super::io::ConnectionReactor;
 use super::io::EgressStream;
+use super::io::SendToken;
 use super::io::UnboundedEgressSender;
 use super::io::WeakUnboundedEgressSender;
 use super::io::{DrainReason, EgressMessage, EgressSender};
@@ -82,15 +83,15 @@ impl SendPermit<'_> {
     // -- Helpers --
 
     /// Sends a unary message over this permit.
-    pub fn send_unary<M: UnaryMessage>(self, message: M, sort_code: Option<u64>) {
-        self.permit.send(EgressMessage::make_unary_message(
-            message,
-            sort_code,
-            self.protocol_version,
-        ));
+    pub fn send_unary<M: UnaryMessage>(self, message: M, sort_code: Option<u64>) -> SendToken {
+        let (msg, token) =
+            EgressMessage::make_unary_message(message, sort_code, self.protocol_version);
+        self.permit.send(msg);
+        token
     }
 
     /// Sends an rpc call over this permit.
+    #[must_use]
     pub fn send_rpc<M: RpcRequest>(
         self,
         message: M,
@@ -104,6 +105,7 @@ impl SendPermit<'_> {
     }
 
     #[cfg(feature = "test-util")]
+    #[must_use]
     pub fn send_rpc_with_header<M: RpcRequest>(
         self,
         message: M,
@@ -124,12 +126,11 @@ impl SendPermit<'_> {
 
 impl OwnedSendPermit {
     /// Sends a unary message over this permit.
-    pub fn send_unary<M: UnaryMessage>(self, message: M, sort_code: Option<u64>) {
-        self.permit.send(EgressMessage::make_unary_message(
-            message,
-            sort_code,
-            self.protocol_version,
-        ));
+    pub fn send_unary<M: UnaryMessage>(self, message: M, sort_code: Option<u64>) -> SendToken {
+        let (msg, token) =
+            EgressMessage::make_unary_message(message, sort_code, self.protocol_version);
+        self.permit.send(msg);
+        token
     }
 
     /// Sends an rpc call over this permit.
@@ -452,18 +453,16 @@ impl UnboundedConnectionRef {
         self,
         message: M,
         sort_code: Option<u64>,
-    ) -> Result<(), ConnectionClosed> {
+    ) -> Result<SendToken, ConnectionClosed> {
         // no need to serialize if the connection is already closed
         let Some(sender) = self.sender.upgrade() else {
             return Err(ConnectionClosed);
         };
 
-        sender.unbounded_send(EgressMessage::make_unary_message(
-            message,
-            sort_code,
-            self.protocol_version,
-        ))?;
-        Ok(())
+        let (msg, token) =
+            EgressMessage::make_unary_message(message, sort_code, self.protocol_version);
+        sender.unbounded_send(msg)?;
+        Ok(token)
     }
 
     /// Sends a system-controlled RPC message on the unbounded channel to peer
