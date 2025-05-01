@@ -10,16 +10,16 @@
 
 use std::time::Duration;
 
-use restate_types::NodeId;
 use restate_types::net::RpcRequest;
+use restate_types::{GenerationalNodeId, NodeId};
 
 // re-export Swimlane from protobuf
 use super::connection::OwnedSendPermit;
-use super::{ConnectError, Connection, RpcError};
+use super::{ConnectError, Connection, LazyConnection, RpcError};
 pub use crate::network::protobuf::network::Swimlane;
 
 /// Send NetworkMessage to nodes
-pub trait NetworkSender: Send + Sync {
+pub trait NetworkSender: Clone + Send + Sync + 'static {
     /// Get a connection to a peer node
     fn get_connection<N>(
         &self,
@@ -28,6 +28,17 @@ pub trait NetworkSender: Send + Sync {
     ) -> impl std::future::Future<Output = Result<Connection, ConnectError>> + Send
     where
         N: Into<NodeId> + Send;
+
+    /// Gets a connection to a generational peer node, but does not block if the connection is not ready.
+    ///
+    /// The connection is established in the background
+    fn lazy_connect(
+        &self,
+        node_id: GenerationalNodeId,
+        swimlane: Swimlane,
+        buffer_size: usize,
+        auto_reconnect: bool,
+    ) -> LazyConnection;
 
     /// Acquire an owned send permit for a node
     fn reserve_owned<N>(
