@@ -42,7 +42,7 @@ impl Future for SendToken {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match ready!(self.0.poll_unpin(cx)) {
-            Ok(_) => Poll::Ready(Ok(())),
+            Ok(()) => Poll::Ready(Ok(())),
             Err(_) => Poll::Ready(Err(ConnectionClosed)),
         }
     }

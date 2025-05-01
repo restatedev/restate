@@ -114,7 +114,7 @@ impl Default for PeerMetadataVersion {
 }
 
 pub enum RawRpcReply {
-    Success(Bytes),
+    Success((ProtocolVersion, Bytes)),
     Error(RpcReplyError),
 }
 
@@ -128,19 +128,17 @@ pub enum RawRpcReply {
 /// If this is not the behaviour you want, then perhaps the message should also
 /// be defined as unary.
 pub struct ReplyRx<O: RpcResponse> {
-    protocol_version: ProtocolVersion,
     inner: oneshot::Receiver<RawRpcReply>,
     _marker: PhantomData<O>,
 }
 
 impl<O: RpcResponse> ReplyRx<O> {
     #[must_use]
-    pub fn new(protocol_version: ProtocolVersion) -> (RpcReplyTx, Self) {
+    pub fn new() -> (RpcReplyTx, Self) {
         let (reply_sender, inner) = oneshot::channel();
         (
             reply_sender,
             Self {
-                protocol_version,
                 inner,
                 _marker: PhantomData,
             },
@@ -153,8 +151,8 @@ impl<O: RpcResponse + Unpin> Future for ReplyRx<O> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         match ready!(self.inner.poll_unpin(cx)) {
-            Ok(RawRpcReply::Success(payload)) => {
-                Poll::Ready(Ok(O::decode(payload, self.protocol_version)))
+            Ok(RawRpcReply::Success((protocol_version, payload))) => {
+                Poll::Ready(Ok(O::decode(payload, protocol_version)))
             }
             Ok(RawRpcReply::Error(err)) => Poll::Ready(Err(err)),
             // the send end has been dropped. This means that the connection was closed.

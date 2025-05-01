@@ -29,9 +29,9 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
 
-use super::EgressSender;
 use super::egress_sender::{Sent, UnboundedEgressSender};
 use super::rpc_tracker::ReplyTracker;
+use super::{EgressSender, SendToken};
 use crate::Metadata;
 use crate::network::compat::V1Compat;
 use crate::network::protobuf::network::message::BinaryMessage;
@@ -77,24 +77,24 @@ impl From<DrainReason> for Body {
 }
 
 pub enum EgressMessage {
-    #[cfg(feature = "test-util")]
     /// An egress message to send to peer. Used only in tests, header must be populated correctly
     /// by sender
+    #[cfg(feature = "test-util")]
     RawMessage(Message),
     UnaryMessage(Body, Option<Span>),
     Unary {
         service_tag: ServiceTag,
-        msg_type: String,
+        msg_type: &'static str,
         payload: Bytes,
         sort_code: Option<u64>,
-        span: Option<Span>,
         version: ProtocolVersion,
+        notifier: Sent,
         #[cfg(feature = "test-util")]
         header: Option<Header>,
     },
     RpcCall {
         service_tag: ServiceTag,
-        msg_type: String,
+        msg_type: &'static str,
         payload: Bytes,
         reply_sender: RpcReplyTx,
         sort_code: Option<u64>,
@@ -106,8 +106,6 @@ pub enum EgressMessage {
     /// An egress body to send to peer, header is populated by egress stream
     /// todo: remove Header once msg-id/in-response-to are removed (est. v1.4)
     Message(Header, Body, Option<Span>),
-    /// The message that requires an ack that it was sent
-    WithNotifer(Body, Option<Span>, Sent),
     /// A signal to close the bounded stream. The inner stream cannot receive further messages but
     /// we'll continue to drain all buffered messages before dropping.
     Close(DrainReason),
@@ -119,7 +117,7 @@ impl EgressMessage {
         sort_code: Option<u64>,
         protocol_version: ProtocolVersion,
     ) -> (EgressMessage, ReplyRx<M::Response>) {
-        let (reply_sender, reply_token) = ReplyRx::new(protocol_version);
+        let (reply_sender, reply_token) = ReplyRx::new();
         let payload = message.encode_to_bytes(protocol_version);
         (
             EgressMessage::RpcCall {
@@ -128,7 +126,7 @@ impl EgressMessage {
                 span: Some(Span::current()),
                 sort_code,
                 service_tag: M::Service::TAG,
-                msg_type: M::TYPE.into(),
+                msg_type: M::TYPE,
                 version: protocol_version,
                 #[cfg(feature = "test-util")]
                 header: None,
@@ -144,7 +142,7 @@ impl EgressMessage {
         protocol_version: ProtocolVersion,
         header: Header,
     ) -> (EgressMessage, ReplyRx<M::Response>) {
-        let (reply_sender, reply_token) = ReplyRx::new(protocol_version);
+        let (reply_sender, reply_token) = ReplyRx::new();
         let payload = message.encode_to_bytes(protocol_version);
         (
             EgressMessage::RpcCall {
@@ -153,7 +151,7 @@ impl EgressMessage {
                 span: Some(Span::current()),
                 sort_code,
                 service_tag: M::Service::TAG,
-                msg_type: M::TYPE.into(),
+                msg_type: M::TYPE,
                 version: protocol_version,
                 header: Some(header),
             },
@@ -165,19 +163,23 @@ impl EgressMessage {
         message: M,
         sort_code: Option<u64>,
         protocol_version: ProtocolVersion,
-    ) -> EgressMessage {
+    ) -> (EgressMessage, SendToken) {
+        let (notifier, token) = Sent::create();
         let payload = message.encode_to_bytes(protocol_version);
 
-        EgressMessage::Unary {
-            service_tag: M::Service::TAG,
-            msg_type: M::TYPE.into(),
-            sort_code,
-            span: Some(Span::current()),
-            payload,
-            version: protocol_version,
-            #[cfg(feature = "test-util")]
-            header: None,
-        }
+        (
+            EgressMessage::Unary {
+                service_tag: M::Service::TAG,
+                msg_type: M::TYPE,
+                sort_code,
+                payload,
+                version: protocol_version,
+                notifier,
+                #[cfg(feature = "test-util")]
+                header: None,
+            },
+            token,
+        )
     }
 }
 
@@ -380,20 +382,20 @@ impl EgressStream {
                 msg_type,
                 sort_code,
                 service_tag,
-                span,
                 version,
+                notifier,
                 #[cfg(feature = "test-util")]
                     header: custom_header,
             })) => {
                 let mut header = Header::default();
-                self.fill_header(&mut header, span);
+                self.fill_header(&mut header, None);
                 #[cfg(feature = "test-util")]
                 let mut header = custom_header.unwrap_or(header);
                 let msg_id = self.next_msg_id();
                 if let ProtocolVersion::V1 = version {
                     // compatibility mode for v1.
                     let Some(v1_target) =
-                        V1Compat::translate_v2_tag_to_v1_target(service_tag, &msg_type)
+                        V1Compat::translate_v2_tag_to_v1_target(service_tag, msg_type)
                     else {
                         // You are trying to send a V2 only message to V1 node.
                         // dropping the message.
@@ -408,6 +410,7 @@ impl EgressStream {
                         header: Some(header),
                         body: Some(body.into()),
                     };
+                    notifier.notify();
                     Decision::Ready(msg)
                 } else {
                     let body = Datagram {
@@ -415,7 +418,7 @@ impl EgressStream {
                             network::Unary {
                                 payload,
                                 service: service_tag as i32,
-                                msg_type,
+                                msg_type: msg_type.to_owned(),
                                 sort_code,
                             }
                             .into(),
@@ -425,6 +428,7 @@ impl EgressStream {
                         header: Some(header),
                         body: Some(body.into()),
                     };
+                    notifier.notify();
                     Decision::Ready(msg)
                 }
             }
@@ -455,7 +459,7 @@ impl EgressStream {
                 if let ProtocolVersion::V1 = version {
                     // compatibility mode for v1.
                     let Some(v1_target) =
-                        V1Compat::translate_v2_tag_to_v1_target(service_tag, &msg_type)
+                        V1Compat::translate_v2_tag_to_v1_target(service_tag, msg_type)
                     else {
                         // You are trying to send a V2 only message to V1 node.
                         // dropping the message.
@@ -481,7 +485,7 @@ impl EgressStream {
                                 payload,
                                 id: msg_id,
                                 service: service_tag as i32,
-                                msg_type,
+                                msg_type: msg_type.to_owned(),
                                 sort_code,
                             }
                             .into(),
@@ -493,16 +497,6 @@ impl EgressStream {
                     };
                     Decision::Ready(msg)
                 }
-            }
-            Poll::Ready(Some(EgressMessage::WithNotifer(body, span, notifier))) => {
-                let mut header = Header::default();
-                self.fill_header(&mut header, span);
-                let msg = Message {
-                    header: Some(header),
-                    body: Some(body),
-                };
-                notifier.notify();
-                Decision::Ready(msg)
             }
             Poll::Ready(Some(EgressMessage::Close(reason)))
                 if matches!(self.state, State::Open) =>
