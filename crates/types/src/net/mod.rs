@@ -223,7 +223,7 @@ macro_rules! default_wire_codec {
     ) => {
         impl $crate::net::codec::WireEncode for $message {
             fn encode_to_bytes(
-                self,
+                &self,
                 protocol_version: $crate::net::ProtocolVersion,
             ) -> ::bytes::Bytes {
                 ::bytes::Bytes::from($crate::net::codec::encode_as_flexbuffers(
@@ -271,7 +271,7 @@ macro_rules! bilrost_wire_codec_with_v1_fallback {
     ) => {
         impl $crate::net::codec::WireEncode for $message {
             fn encode_to_bytes(
-                self,
+                &self,
                 protocol_version: $crate::net::ProtocolVersion,
             ) -> ::bytes::Bytes {
                 match protocol_version {
@@ -348,7 +348,7 @@ macro_rules! bilrost_wire_codec {
     ) => {
         impl $crate::net::codec::WireEncode for $message {
             fn encode_to_bytes(
-                self,
+                &self,
                 protocol_version: $crate::net::ProtocolVersion,
             ) -> ::bytes::Bytes {
                 $crate::net::codec::encode_as_bilrost(self, protocol_version)
