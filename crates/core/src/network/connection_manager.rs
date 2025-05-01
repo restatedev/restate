@@ -446,6 +446,32 @@ impl ConnectionManager {
         })
     }
 
+    pub fn find_route(
+        &self,
+        node_id: impl Into<NodeId>,
+    ) -> Result<GenerationalNodeId, DiscoveryError> {
+        let my_node_id_opt = Metadata::with_current(|m| m.my_node_id_opt());
+        let node_id = node_id.into();
+        // find latest generation if this is not generational node id
+        let node_id = match node_id.as_generational() {
+            Some(id) => id,
+            None => {
+                find_node(
+                    &Metadata::with_current(|metadata| metadata.nodes_config_ref()),
+                    node_id,
+                )?
+                .current_generation
+            }
+        };
+
+        // fail fast if we are connecting to our previous self
+        if my_node_id_opt.is_some_and(|m| m.is_same_but_different(&node_id)) {
+            return Err(DiscoveryError::NodeIsGone(node_id.into()));
+        }
+        self.inner.lock().can_discover(node_id)?;
+        Ok(node_id)
+    }
+
     /// Gets an existing connection or creates a new one if no active connection exists. If
     /// multiple connections already exist, it returns a random one.
     pub async fn get_or_connect<C>(

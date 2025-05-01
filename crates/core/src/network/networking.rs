@@ -17,8 +17,8 @@ use tokio::time::Instant;
 
 use super::connection::OwnedSendPermit;
 use super::{
-    ConnectError, Connection, ConnectionClosed, ConnectionManager, NetworkSender, RpcError,
-    Swimlane,
+    ConnectError, Connection, ConnectionClosed, ConnectionManager, DiscoveryError, LazyConnection,
+    NetworkSender, RpcError, Swimlane,
 };
 use super::{GrpcConnector, TransportConnect};
 
@@ -80,6 +80,26 @@ impl<T: TransportConnect> NetworkSender for Networking<T> {
         self.connections
             .get_or_connect(node_id, swimlane, &self.connector)
             .await
+    }
+
+    fn lazy_connect<N>(
+        &self,
+        node_id: N,
+        swimlane: Swimlane,
+        buffer_size: usize,
+        auto_reconnect: bool,
+    ) -> Result<LazyConnection, DiscoveryError>
+    where
+        N: Into<NodeId> + Send,
+    {
+        let generational_node_id = self.connections.find_route(node_id)?;
+        Ok(LazyConnection::create(
+            generational_node_id,
+            self.clone(),
+            swimlane,
+            buffer_size,
+            auto_reconnect,
+        ))
     }
 
     /// Acquire an owned send permit for a node
