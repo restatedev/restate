@@ -16,11 +16,11 @@ use bytes::Bytes;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{FromBilrostDto, IntoBilrostDto};
+use super::FromBilrostDto;
 use crate::protobuf::common::ProtocolVersion;
 
 pub trait WireEncode {
-    fn encode_to_bytes(self, protocol_version: ProtocolVersion) -> Bytes;
+    fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Bytes;
 }
 
 pub trait WireDecode {
@@ -42,8 +42,8 @@ impl<T> WireEncode for Box<T>
 where
     T: WireEncode,
 {
-    fn encode_to_bytes(self, protocol_version: ProtocolVersion) -> Bytes {
-        (*self).encode_to_bytes(protocol_version)
+    fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Bytes {
+        (**self).encode_to_bytes(protocol_version)
     }
 }
 
@@ -100,17 +100,34 @@ pub fn decode_as_flexbuffers<T: DeserializeOwned>(
     flexbuffers::from_slice(buf.chunk()).context("failed decoding V1 (flexbuffers) network message")
 }
 
-pub fn encode_as_bilrost<T: IntoBilrostDto>(value: T, protocol_version: ProtocolVersion) -> Bytes {
-    use bilrost::Message;
-
+pub fn encode_as_bilrost<T: bilrost::Message>(
+    value: &T,
+    protocol_version: ProtocolVersion,
+) -> Bytes {
     assert!(
         protocol_version >= ProtocolVersion::V2,
         "bilrost encoding is supported from protocol version v2"
     );
 
-    let inner = value.into_dto();
-    inner.encode_to_bytes()
+    // commented intentionally, see the comment below.
+    // let inner = value.into_dto();
+    value.encode_to_bytes()
 }
+
+// Disabled IntoBilrostDto in favor of requiring top-level types to implement bilrost::Message
+// if this is needed, we'll need to allow into_dto to be used with references instead of owned
+// values.
+// pub fn encode_as_bilrost<T: super::IntoBilrostDto>(value: &T, protocol_version: ProtocolVersion) -> Bytes {
+//     use bilrost::Message;
+//
+//     assert!(
+//         protocol_version >= ProtocolVersion::V2,
+//         "bilrost encoding is supported from protocol version v2"
+//     );
+//
+//     // let inner = value.into_dto();
+//     value.encode_to_bytes()
+// }
 
 pub fn decode_as_bilrost<T: FromBilrostDto>(
     buf: impl Buf,
