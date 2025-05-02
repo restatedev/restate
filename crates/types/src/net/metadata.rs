@@ -63,11 +63,11 @@ define_rpc! {
 // -- Custom encoding logic to handle compatibility with V1 protocol
 //
 impl WireEncode for GetMetadataRequest {
-    fn encode_to_bytes(self, protocol_version: ProtocolVersion) -> Bytes {
+    fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Bytes {
         if let ProtocolVersion::V1 = protocol_version {
             // V1 protocol sends `GetMetadataRequest` as a `MetadataMessage`
             return Bytes::from(crate::net::codec::encode_as_flexbuffers(
-                MetadataMessage::GetMetadataRequest(self),
+                MetadataMessage::GetMetadataRequest(self.clone()),
                 protocol_version,
             ));
         }
@@ -98,11 +98,11 @@ impl WireDecode for GetMetadataRequest {
 }
 
 impl WireEncode for MetadataUpdate {
-    fn encode_to_bytes(self, protocol_version: ProtocolVersion) -> Bytes {
+    fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Bytes {
         if let ProtocolVersion::V1 = protocol_version {
             // V1 protocol sends `MetadataUpdate` as a `MetadataMessage`
             return Bytes::from(codec::encode_as_flexbuffers(
-                MetadataMessage::MetadataUpdate(self),
+                MetadataMessage::MetadataUpdate(self.clone()),
                 protocol_version,
             ));
         }

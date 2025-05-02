@@ -620,7 +620,7 @@ impl<O: RpcResponse + WireEncode> Reciprocal<Oneshot<O>> {
 
     /// Fails if connection was already dropped
     pub fn try_send(self, msg: O) -> Result<(), ConnectionClosed> {
-        let reply = O::encode_to_bytes(msg, self.protocol_version);
+        let reply = O::encode_to_bytes(&msg, self.protocol_version);
         self.reply_port
             .inner
             .0
@@ -658,7 +658,7 @@ impl<O: WatchResponse + WireEncode> Reciprocal<Updates<O>> {
 
     /// Fails if connection was already dropped
     pub fn try_send(&self, msg: O) -> Result<(), ConnectionClosed> {
-        let reply = O::encode_to_bytes(msg, self.protocol_version);
+        let reply = O::encode_to_bytes(&msg, self.protocol_version);
         self.reply_port
             .inner
             .0
