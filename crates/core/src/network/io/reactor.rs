@@ -417,7 +417,10 @@ impl ConnectionReactor {
                         }
                         Some(rpc_reply::Body::Payload(payload)) => {
                             trace!("Received RPC response with payload!");
-                            reply_sender.send(crate::network::RawRpcReply::Success(payload))
+                            reply_sender.send(crate::network::RawRpcReply::Success((
+                                self.connection.protocol_version,
+                                payload,
+                            )))
                         }
                         None => {
                             warn!(
@@ -503,8 +506,10 @@ impl ConnectionReactor {
                         // V1 doesn't support RPC statuses.
                         // todo: handle routing errors
                         trace!("Received LEGACY RPC response with payload!");
-                        let _ =
-                            reply_sender.send(crate::network::RawRpcReply::Success(msg.payload));
+                        let _ = reply_sender.send(crate::network::RawRpcReply::Success((
+                            self.connection.protocol_version,
+                            msg.payload,
+                        )));
                     }
                     // if we didn't find the original RPC, it's okay, we'll simply ignore this
                     // response. This matches the behaviour of V2.

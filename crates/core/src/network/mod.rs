@@ -34,6 +34,7 @@ pub use connection_manager::ConnectionManager;
 pub use error::*;
 pub use grpc::GrpcConnector;
 pub use incoming::*;
+pub use io::SendToken;
 pub use message_router::*;
 pub use network_sender::*;
 pub use networking::Networking;
