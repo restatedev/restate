@@ -8,12 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod bilrost_as;
+
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
 
-pub use restate_encoding_derive::BilrostNewType;
-pub use restate_encoding_derive::NetSerde;
+pub use bilrost_as::{BilrostAsAdaptor, BilrostDisplayFromStr};
+pub use restate_encoding_derive::{BilrostAs, BilrostNewType, NetSerde};
 
 /// A marker trait for types that can be serialized and sent over the network.
 ///
@@ -90,6 +94,10 @@ where
 }
 
 impl<V> NetSerde for HashSet<V> where V: NetSerde {}
+impl<Idx> NetSerde for RangeInclusive<Idx> where Idx: NetSerde {}
+impl<T> NetSerde for Arc<T> where T: NetSerde {}
+impl<T> NetSerde for Arc<[T]> where T: NetSerde {}
+impl<T> NetSerde for Box<T> where T: NetSerde {}
 
 /// A Bilrost compatible U128 type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BilrostNewType)]
