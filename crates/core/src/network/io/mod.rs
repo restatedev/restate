@@ -16,7 +16,7 @@ mod rpc_tracker;
 use std::sync::Arc;
 
 pub use egress_sender::SendToken;
-pub(crate) use egress_sender::WeakUnboundedEgressSender;
+pub(crate) use egress_sender::{Sent, WeakUnboundedEgressSender};
 pub(super) use egress_stream::EgressMessage;
 pub(super) use egress_stream::EgressStream;
 
