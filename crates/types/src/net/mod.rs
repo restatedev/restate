@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 pub mod codec;
-pub mod dto;
 pub mod log_server;
 pub mod metadata;
 pub mod node;
@@ -28,7 +27,6 @@ use http::Uri;
 use crate::config::InvalidConfigurationError;
 pub use crate::protobuf::common::ProtocolVersion;
 pub use crate::protobuf::common::ServiceTag;
-pub use dto::{FromBilrostDto, IntoBilrostDto};
 
 pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
 pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V2;
@@ -256,18 +254,12 @@ macro_rules! default_wire_codec {
 /// ```ignore
 ///   bilrost_wire_codec_with_v1_fallback!(IngressMessage);
 /// ```
-///
-/// Example:
-/// ```ignore
-///   bilrost_wire_codec_with_v1_fallback!(IngressMessage as IngressMessageDTO);
-/// ```
-///
 /// This codec will fallback automatically to flexbuffer
 /// if remote beer is on V1.
 #[allow(unused_macros)]
 macro_rules! bilrost_wire_codec_with_v1_fallback {
     (
-        $message:ty $(as $as_type:ty)?
+        $message:ty
     ) => {
         impl $crate::net::codec::WireEncode for $message {
             fn encode_to_bytes(
@@ -307,25 +299,6 @@ macro_rules! bilrost_wire_codec_with_v1_fallback {
                 }
             }
         }
-
-        $(
-            impl $crate::net::IntoBilrostDto for $message {
-                type Target = $as_type;
-
-                fn into_dto(self) -> $as_type {
-                    self.into()
-                }
-            }
-
-            impl $crate::net::FromBilrostDto for $message {
-                type Target = $as_type;
-                type Error = <$message as TryFrom<$as_type>>::Error;
-
-                fn from_dto(value: Self::Target) -> Result<Self, Self::Error> {
-                    value.try_into()
-                }
-            }
-        )?
     };
 }
 
@@ -336,15 +309,10 @@ macro_rules! bilrost_wire_codec_with_v1_fallback {
 /// ```ignore
 ///   bilrost_wire_codec!(IngressMessage);
 /// ```
-///
-/// Example:
-/// ```ignore
-///   bilrost_wire_codec!(IngressMessage as IngressMessageDTO);
-/// ```
 #[allow(unused_macros)]
 macro_rules! bilrost_wire_codec {
     (
-        $message:ty $(as $as_type:ty)?
+        $message:ty
     ) => {
         impl $crate::net::codec::WireEncode for $message {
             fn encode_to_bytes(
@@ -368,25 +336,6 @@ macro_rules! bilrost_wire_codec {
                 $crate::net::codec::decode_as_bilrost(buf, protocol_version)
             }
         }
-
-        $(
-            impl $crate::net::IntoBilrostDto for $message {
-                type Target = $as_type;
-
-                fn into_dto(self) -> $as_type {
-                    self.into()
-                }
-            }
-
-            impl $crate::net::FromBilrostDto for $message {
-                type Target = $as_type;
-                type Error = <$message as TryFrom<$as_type>>::Error;
-
-                fn from_dto(value: Self::Target) -> Result<Self, Self::Error> {
-                    value.try_into()
-                }
-            }
-        )?
     };
 }
 

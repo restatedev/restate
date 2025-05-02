@@ -11,12 +11,12 @@
 use std::sync::Arc;
 
 use anyhow::Context;
+use bilrost::OwnedMessage;
 use bytes::Buf;
 use bytes::Bytes;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::FromBilrostDto;
 use crate::protobuf::common::ProtocolVersion;
 
 pub trait WireEncode {
@@ -109,27 +109,10 @@ pub fn encode_as_bilrost<T: bilrost::Message>(
         "bilrost encoding is supported from protocol version v2"
     );
 
-    // commented intentionally, see the comment below.
-    // let inner = value.into_dto();
     value.encode_to_bytes()
 }
 
-// Disabled IntoBilrostDto in favor of requiring top-level types to implement bilrost::Message
-// if this is needed, we'll need to allow into_dto to be used with references instead of owned
-// values.
-// pub fn encode_as_bilrost<T: super::IntoBilrostDto>(value: &T, protocol_version: ProtocolVersion) -> Bytes {
-//     use bilrost::Message;
-//
-//     assert!(
-//         protocol_version >= ProtocolVersion::V2,
-//         "bilrost encoding is supported from protocol version v2"
-//     );
-//
-//     // let inner = value.into_dto();
-//     value.encode_to_bytes()
-// }
-
-pub fn decode_as_bilrost<T: FromBilrostDto>(
+pub fn decode_as_bilrost<T: OwnedMessage>(
     buf: impl Buf,
     protocol_version: ProtocolVersion,
 ) -> Result<T, anyhow::Error> {
@@ -138,8 +121,5 @@ pub fn decode_as_bilrost<T: FromBilrostDto>(
         "bilrost encoding is supported from protocol version v2"
     );
 
-    let inner = <T::Target as bilrost::OwnedMessage>::decode(buf)
-        .context("failed decoding V2 (bilrost) network message")?;
-
-    T::from_dto(inner).context("failed to convert V2 (bilrost) value to inner type")
+    T::decode(buf).context("failed decoding V2 (bilrost) network message")
 }
