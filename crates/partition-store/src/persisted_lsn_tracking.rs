@@ -9,6 +9,7 @@ use rocksdb::table_properties::{
 use tokio::sync::mpsc;
 use tracing::warn;
 
+use crate::PARTITION_CF_PREFIX;
 use crate::fsm_table::{PartitionStateMachineKey, SequenceNumber, fsm_variable};
 use crate::keys::{KeyKind, TableKey};
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -100,7 +101,7 @@ pub struct PersistedLsnEventListener {
 
 impl EventListener for PersistedLsnEventListener {
     fn on_flush_completed(&self, flush_job_info: FlushJobInfo) {
-        if let Some(id_str) = flush_job_info.cf_name.strip_prefix("data-") {
+        if let Some(id_str) = flush_job_info.cf_name.strip_prefix(PARTITION_CF_PREFIX) {
             let Ok(id) = id_str.parse::<u16>() else {
                 warn!(
                     "Failed to parse partition id from cf_name: {}",
