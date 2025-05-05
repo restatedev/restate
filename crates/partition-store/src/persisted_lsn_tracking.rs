@@ -6,7 +6,7 @@ use rocksdb::event_listener::{EventListener, FlushJobInfo};
 use rocksdb::table_properties::{
     EntryType, TablePropertiesCollector, TablePropertiesCollectorFactory,
 };
-use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing::warn;
 
 use crate::PARTITION_CF_PREFIX;
@@ -96,7 +96,7 @@ impl TablePropertiesCollectorFactory for LatestAppliedLsnCollectorFactory {
 }
 
 pub struct PersistedLsnEventListener {
-    pub(crate) persisted_lsn_tx: mpsc::Sender<(PartitionId, Lsn)>,
+    pub(crate) persisted_lsn_tx: watch::Sender<(PartitionId, Lsn)>,
 }
 
 impl EventListener for PersistedLsnEventListener {
@@ -115,12 +115,8 @@ impl EventListener for PersistedLsnEventListener {
             if let Some(applied_lsn) = flush_job_info.get_user_collected_property(&key) {
                 match applied_lsn.to_str().expect("valid string").parse::<u64>() {
                     Ok(persisted_lsn) => {
-                        if let Err(e) = self
-                            .persisted_lsn_tx
-                            .try_send((partition_id, persisted_lsn.into()))
-                        {
-                            warn!("Failed to send persisted LSN update: {}", e);
-                        }
+                        self.persisted_lsn_tx
+                            .send_replace((partition_id, persisted_lsn.into()));
                     }
                     Err(err) => warn!(
                         key,

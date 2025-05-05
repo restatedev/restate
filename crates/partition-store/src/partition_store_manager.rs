@@ -17,7 +17,7 @@ use rocksdb::ExportImportFilesMetaData;
 use rocksdb::event_listener::EventListenerExt;
 use tokio::sync::Mutex;
 use tokio::sync::MutexGuard;
-use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use restate_core::worker_api::SnapshotError;
@@ -50,7 +50,7 @@ pub enum OpenMode {
 pub struct PartitionStoreManager {
     lookup: Arc<Mutex<PartitionLookup>>,
     rocksdb: Arc<RocksDb>,
-    persisted_lsn_tx: Option<mpsc::Sender<(PartitionId, Lsn)>>,
+    persisted_lsn_tx: Option<watch::Sender<(PartitionId, Lsn)>>,
 }
 
 #[derive(Default, Debug)]
@@ -62,7 +62,7 @@ impl PartitionStoreManager {
     pub async fn create(
         mut storage_opts: impl LiveLoad<Live = StorageOptions> + 'static,
         initial_partition_set: &[(PartitionId, RangeInclusive<PartitionKey>)],
-        persisted_lsn_tx: Option<mpsc::Sender<(PartitionId, Lsn)>>,
+        persisted_lsn_tx: Option<watch::Sender<(PartitionId, Lsn)>>,
     ) -> Result<Self, RocksError> {
         let options = storage_opts.live_load();
 
@@ -235,8 +235,7 @@ impl PartitionStoreManager {
             match applied_lsn {
                 Ok(None) => {}
                 Ok(Some(applied_lsn)) => {
-                    // ignore shutdown errors
-                    let _ = persisted_lsn_tx.send((partition_id, applied_lsn)).await;
+                    persisted_lsn_tx.send_replace((partition_id, applied_lsn));
                 }
                 Err(err) => {
                     warn!(

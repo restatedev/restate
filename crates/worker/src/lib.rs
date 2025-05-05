@@ -21,7 +21,10 @@ mod subscription_integration;
 
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use restate_types::identifiers::PartitionId;
+use restate_types::logs::Lsn;
+use restate_types::logs::SequenceNumber;
+use tokio::sync::watch;
 
 use codederror::CodedError;
 use restate_bifrost::Bifrost;
@@ -124,8 +127,7 @@ impl Worker {
         metric_definitions::describe_metrics();
         health_status.update(WorkerStatus::StartingUp);
 
-        let (persisted_lsn_tx, persisted_lsn_rx) =
-            mpsc::channel(live_config.live_load().common.default_num_partitions as usize);
+        let (persisted_lsn_tx, persisted_lsn_rx) = watch::channel((PartitionId::MIN, Lsn::INVALID));
 
         let partition_store_manager = PartitionStoreManager::create(
             live_config.clone().map(|c| &c.worker.storage),
