@@ -64,8 +64,8 @@ pub mod test_util {
         async fn read_journal(
             &mut self,
             _fid: &InvocationId,
-        ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
-            Ok((
+        ) -> Result<Option<(JournalMetadata, Self::JournalStream)>, Self::Error> {
+            Ok(Some((
                 JournalMetadata::new(
                     0,
                     ServiceInvocationSpanContext::empty(),
@@ -73,7 +73,7 @@ pub mod test_util {
                     MillisSinceEpoch::UNIX_EPOCH,
                 ),
                 futures::stream::empty(),
-            ))
+            )))
         }
 
         async fn read_state(

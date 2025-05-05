@@ -73,10 +73,12 @@ pub trait InvocationReaderTransaction {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Read the journal and the journal metadata for the given invocation id.
+    ///
+    /// When Option is none, no journal was found for the given invocation id.
     fn read_journal<'a>(
         &'a mut self,
         fid: &'a InvocationId,
-    ) -> impl Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<(JournalMetadata, Self::JournalStream)>, Self::Error>> + Send;
 
     /// Read the state for the given service id.
     fn read_state<'a>(

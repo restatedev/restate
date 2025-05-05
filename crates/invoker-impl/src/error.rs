@@ -99,6 +99,9 @@ pub(crate) enum InvokerError {
     #[error("error when trying to read the journal: {0}")]
     #[code(restate_errors::RT0006)]
     JournalReader(anyhow::Error),
+    #[error("error when trying to read the journal: no journal present")]
+    #[code(unknown)]
+    NoJournalPresent,
     #[error("error when trying to read the service instance state: {0}")]
     #[code(restate_errors::RT0006)]
     StateReader(anyhow::Error),
@@ -173,13 +176,14 @@ impl InvokerError {
     }
 
     pub(crate) fn is_transient(&self) -> bool {
-        true
+        !matches!(self, InvokerError::NoJournalPresent)
     }
 
     pub(crate) fn should_bump_start_message_retry_count_since_last_stored_entry(&self) -> bool {
         !matches!(
             self,
-            InvokerError::JournalReader(_)
+            InvokerError::NoJournalPresent
+                | InvokerError::JournalReader(_)
                 | InvokerError::StateReader(_)
                 | InvokerError::NoDeploymentForService
                 | InvokerError::BadNegotiatedServiceProtocolVersion(_)
