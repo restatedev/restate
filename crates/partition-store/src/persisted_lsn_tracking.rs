@@ -9,11 +9,13 @@ use rocksdb::table_properties::{
 use tokio::sync::watch;
 use tracing::warn;
 
+use restate_storage_api::StorageError;
+use restate_types::{identifiers::PartitionId, logs::Lsn};
+
 use crate::PARTITION_CF_PREFIX;
 use crate::fsm_table::{PartitionStateMachineKey, SequenceNumber, fsm_variable};
 use crate::keys::{KeyKind, TableKey};
 use crate::protobuf_types::PartitionStoreProtobufValue;
-use restate_types::{identifiers::PartitionId, logs::Lsn};
 
 pub(crate) struct LatestAppliedLsnCollector {
     applied_lsns: HashMap<PartitionId, Lsn>,
@@ -36,8 +38,13 @@ impl TablePropertiesCollector for LatestAppliedLsnCollector {
         _seq: u64,
         _file_size: u64,
     ) -> bool {
-        if matches!(entry_type, EntryType::EntryPut) {
-            if let Some((partition_id, lsn)) = extract_partition_applied_lsn(key, value) {
+        if !matches!(entry_type, EntryType::EntryPut) {
+            return true;
+        }
+
+        match extract_partition_applied_lsn(key, value) {
+            Ok(None) => true,
+            Ok(Some((partition_id, lsn))) => {
                 self.applied_lsns
                     .entry(partition_id)
                     .and_modify(|existing| {
@@ -46,9 +53,13 @@ impl TablePropertiesCollector for LatestAppliedLsnCollector {
                         }
                     })
                     .or_insert(lsn);
+                true
+            }
+            Err(err) => {
+                warn!("Failed to decode partition LSN from raw key-value: {}", err);
+                false
             }
         }
-        true
     }
 
     fn finish(&mut self, properties: &mut HashMap<CString, CString>) -> bool {
@@ -135,31 +146,30 @@ fn applied_lsn_property_name(partition_id: PartitionId) -> String {
 }
 
 /// Given a raw key-value pair, extract the partition id and its applied LSN, if the key is an Applied LSN FSM variable
-#[inline(always)]
-fn extract_partition_applied_lsn(key: &[u8], value: &[u8]) -> Option<(PartitionId, Lsn)> {
+#[inline]
+fn extract_partition_applied_lsn(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<(PartitionId, Lsn)>, StorageError> {
     if !key.starts_with(KeyKind::Fsm.as_bytes()) {
-        return None;
+        return Ok(None);
     }
 
-    if let Ok(fsm_key) = PartitionStateMachineKey::deserialize_from(&mut Cursor::new(key)) {
-        if fsm_key.state_id == Some(fsm_variable::APPLIED_LSN) {
-            if let Some(padded_partition_id) = fsm_key.partition_id {
-                let partition_id = PartitionId::from(padded_partition_id);
-                if let Some(applied_lsn) = decode_as_lsn(&mut Cursor::new(value)) {
-                    return Some((partition_id, applied_lsn));
-                }
-            }
+    let fsm_key = PartitionStateMachineKey::deserialize_from(&mut Cursor::new(key))?;
+    if fsm_key.state_id == Some(fsm_variable::APPLIED_LSN) {
+        if let Some(padded_partition_id) = fsm_key.partition_id {
+            let partition_id = PartitionId::from(padded_partition_id);
+            let applied_lsn = decode_lsn(value)?;
+            return Ok(Some((partition_id, applied_lsn)));
         }
     }
-    None
+
+    Ok(None)
 }
 
-#[inline(always)]
-fn decode_as_lsn<B: bytes::Buf>(value: &mut B) -> Option<Lsn> {
-    match SequenceNumber::decode(value) {
-        Ok(seq_number) => Some(Lsn::from(u64::from(seq_number))),
-        Err(_) => None,
-    }
+#[inline]
+fn decode_lsn(value: &[u8]) -> Result<Lsn, StorageError> {
+    SequenceNumber::decode(&mut Cursor::new(value)).map(|sn| Lsn::from(u64::from(sn)))
 }
 
 #[cfg(test)]
@@ -173,7 +183,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_partition_applied_lsn() {
+    fn test_extract_partition_applied_lsn() -> googletest::Result<()> {
         let partition_id = PartitionId::from(42);
         let lsn = Lsn::from(12345);
 
@@ -195,21 +205,25 @@ mod tests {
             .unwrap();
         let value = value_buf.as_ref();
 
-        let result = extract_partition_applied_lsn(key, value);
+        let result = extract_partition_applied_lsn(key, value)?;
         assert_eq!(result, Some((partition_id, lsn)));
+
+        Ok(())
     }
 
     #[test]
-    fn test_extract_partition_applied_lsn_invalid_key() {
+    fn test_extract_partition_applied_lsn_invalid_key() -> googletest::Result<()> {
         let key = b"invalid_key";
         let value = b"some_value";
 
-        let result = extract_partition_applied_lsn(key, value);
+        let result = extract_partition_applied_lsn(key, value)?;
         assert!(result.is_none());
+
+        Ok(())
     }
 
     #[test]
-    fn test_extract_partition_applied_lsn_incorrect_key() {
+    fn test_extract_partition_applied_lsn_incorrect_key() -> googletest::Result<()> {
         let partition_id = PartitionId::from(42);
         let lsn = Lsn::from(12345);
 
@@ -231,7 +245,9 @@ mod tests {
             .unwrap();
         let value = value_buf.as_ref();
 
-        let result = extract_partition_applied_lsn(key, value);
+        let result = extract_partition_applied_lsn(key, value)?;
         assert!(result.is_none());
+
+        Ok(())
     }
 }
