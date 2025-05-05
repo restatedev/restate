@@ -22,7 +22,7 @@ use std::time::SystemTime;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(from = "DeploymentShadow")]
+#[serde(from = "serde_hacks::DeploymentShadow")]
 #[serde(untagged)]
 pub enum Deployment {
     Http {
@@ -41,6 +41,9 @@ pub enum Deployment {
         created_at: humantime::Timestamp,
         min_protocol_version: i32,
         max_protocol_version: i32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        sdk_version: Option<String>,
     },
     Lambda {
         arn: LambdaARN,
@@ -55,107 +58,10 @@ pub enum Deployment {
         created_at: humantime::Timestamp,
         min_protocol_version: i32,
         max_protocol_version: i32,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum DeploymentShadow {
-    Http {
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        uri: Uri,
-        protocol_type: ProtocolType,
-        #[serde(with = "http_serde::option::version")]
-        #[serde(default)]
-        // this field did not used to be provided; to provide backwards compatibility with old restate, we must consider it optional when deserialising
-        http_version: Option<Version>,
-        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
-        #[serde(default)]
-        additional_headers: SerdeableHeaderHashMap,
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        created_at: humantime::Timestamp,
-        min_protocol_version: i32,
-        max_protocol_version: i32,
-    },
-    Lambda {
-        arn: LambdaARN,
         #[serde(skip_serializing_if = "Option::is_none")]
         #[serde(default)]
-        assume_role_arn: Option<String>,
-        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
-        #[serde(default)]
-        additional_headers: SerdeableHeaderHashMap,
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        created_at: humantime::Timestamp,
-        min_protocol_version: i32,
-        max_protocol_version: i32,
+        sdk_version: Option<String>,
     },
-}
-
-impl From<DeploymentShadow> for Deployment {
-    fn from(value: DeploymentShadow) -> Self {
-        match value {
-            DeploymentShadow::Http {
-                uri,
-                protocol_type,
-                http_version,
-                additional_headers,
-                created_at,
-                min_protocol_version,
-                max_protocol_version,
-            } => Self::Http {
-                uri,
-                protocol_type,
-                http_version: http_version
-                    .unwrap_or_else(|| DeploymentType::backfill_http_version(protocol_type)),
-                additional_headers,
-                created_at,
-                min_protocol_version,
-                max_protocol_version,
-            },
-            DeploymentShadow::Lambda {
-                arn,
-                assume_role_arn,
-                additional_headers,
-                created_at,
-                min_protocol_version,
-                max_protocol_version,
-            } => Self::Lambda {
-                arn,
-                assume_role_arn,
-                additional_headers,
-                created_at,
-                min_protocol_version,
-                max_protocol_version,
-            },
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn can_deserialise_without_http_version() {
-        let dt: super::Deployment = serde_json::from_str(
-            r#"{"uri":"google.com","protocol_type":"BidiStream","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
-        )
-        .unwrap();
-        let serialised = serde_json::to_string(&dt).unwrap();
-        assert_eq!(
-            r#"{"uri":"google.com","protocol_type":"BidiStream","http_version":"HTTP/2.0","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
-            serialised
-        );
-
-        let dt: super::Deployment = serde_json::from_str(
-            r#"{"uri":"google.com","protocol_type":"RequestResponse","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
-        )
-        .unwrap();
-        let serialised = serde_json::to_string(&dt).unwrap();
-        assert_eq!(
-            r#"{"uri":"google.com","protocol_type":"RequestResponse","http_version":"HTTP/1.1","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
-            serialised
-        );
-    }
 }
 
 impl From<DeploymentMetadata> for Deployment {
@@ -173,6 +79,7 @@ impl From<DeploymentMetadata> for Deployment {
                 created_at: SystemTime::from(value.created_at).into(),
                 min_protocol_version: *value.supported_protocol_versions.start(),
                 max_protocol_version: *value.supported_protocol_versions.end(),
+                sdk_version: value.sdk_version,
             },
             DeploymentType::Lambda {
                 arn,
@@ -184,6 +91,7 @@ impl From<DeploymentMetadata> for Deployment {
                 created_at: SystemTime::from(value.created_at).into(),
                 min_protocol_version: *value.supported_protocol_versions.start(),
                 max_protocol_version: *value.supported_protocol_versions.end(),
+                sdk_version: value.sdk_version,
             },
         }
     }
@@ -299,6 +207,25 @@ pub struct ServiceNameRevPair {
 pub struct RegisterDeploymentResponse {
     pub id: DeploymentId,
     pub services: Vec<ServiceMetadata>,
+
+    /// # Minimum Service Protocol version
+    ///
+    /// During registration, the SDKs declare a range from minimum (included) to maximum (included) Service Protocol supported version.
+    #[serde(default)] // To make sure CLI won't complain when interacting with old runtimes
+    pub min_protocol_version: i32,
+
+    /// # Maximum Service Protocol version
+    ///
+    /// During registration, the SDKs declare a range from minimum (included) to maximum (included) Service Protocol supported version.
+    #[serde(default)] // To make sure CLI won't complain when interacting with old runtimes
+    pub max_protocol_version: i32,
+
+    /// # SDK version
+    ///
+    /// SDK library and version declared during registration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub sdk_version: Option<String>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -352,8 +279,22 @@ pub enum DeploymentResponse {
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
 
+        /// # Minimum Service Protocol version
+        ///
+        /// During registration, the SDKs declare a range from minimum (included) to maximum (included) Service Protocol supported version.
         min_protocol_version: i32,
+
+        /// # Maximum Service Protocol version
+        ///
+        /// During registration, the SDKs declare a range from minimum (included) to maximum (included) Service Protocol supported version.
         max_protocol_version: i32,
+
+        /// # SDK version
+        ///
+        /// SDK library and version declared during registration.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        sdk_version: Option<String>,
 
         /// # Services
         ///
@@ -394,8 +335,22 @@ pub enum DeploymentResponse {
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
 
+        /// # Minimum Service Protocol version
+        ///
+        /// During registration, the SDKs declare a range from minimum (included) to maximum (included) Service Protocol supported version.
         min_protocol_version: i32,
+
+        /// # Maximum Service Protocol version
+        ///
+        /// During registration, the SDKs declare a range from minimum (included) to maximum (included) Service Protocol supported version.
         max_protocol_version: i32,
+
+        /// # SDK version
+        ///
+        /// SDK library and version declared during registration.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        sdk_version: Option<String>,
 
         /// # Services
         ///
@@ -419,6 +374,7 @@ impl DeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
             } => Self::Http {
                 id,
                 uri,
@@ -428,6 +384,7 @@ impl DeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
                 services,
             },
             Deployment::Lambda {
@@ -437,6 +394,7 @@ impl DeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
             } => Self::Lambda {
                 id,
                 arn,
@@ -445,6 +403,7 @@ impl DeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
                 services,
             },
         }
@@ -468,6 +427,7 @@ impl DeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
                 services,
             } => (
                 id,
@@ -479,6 +439,7 @@ impl DeploymentResponse {
                     created_at,
                     min_protocol_version,
                     max_protocol_version,
+                    sdk_version,
                 },
                 services,
             ),
@@ -490,6 +451,7 @@ impl DeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
                 services,
             } => (
                 id,
@@ -500,6 +462,7 @@ impl DeploymentResponse {
                     created_at,
                     min_protocol_version,
                     max_protocol_version,
+                    sdk_version,
                 },
                 services,
             ),
@@ -552,8 +515,22 @@ pub enum DetailedDeploymentResponse {
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
 
+        /// # Minimum Service Protocol version
+        ///
+        /// During registration, the SDKs declare a range from minimum (included) to maximum (included) Service Protocol supported version.
         min_protocol_version: i32,
+
+        /// # Maximum Service Protocol version
+        ///
+        /// During registration, the SDKs declare a range from minimum (included) to maximum (included) Service Protocol supported version.
         max_protocol_version: i32,
+
+        /// # SDK version
+        ///
+        /// SDK library and version declared during registration.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        sdk_version: Option<String>,
 
         /// # Services
         ///
@@ -594,8 +571,22 @@ pub enum DetailedDeploymentResponse {
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
 
+        /// # Minimum Service Protocol version
+        ///
+        /// During registration, the SDKs declare a range from minimum (included) to maximum (included) Service Protocol supported version.
         min_protocol_version: i32,
+
+        /// # Maximum Service Protocol version
+        ///
+        /// During registration, the SDKs declare a range from minimum (included) to maximum (included) Service Protocol supported version.
         max_protocol_version: i32,
+
+        /// # SDK version
+        ///
+        /// SDK library and version declared during registration.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        sdk_version: Option<String>,
 
         /// # Services
         ///
@@ -615,6 +606,7 @@ impl DetailedDeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
             } => Self::Http {
                 id,
                 uri,
@@ -624,6 +616,7 @@ impl DetailedDeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
                 services,
             },
             Deployment::Lambda {
@@ -633,6 +626,7 @@ impl DetailedDeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
             } => Self::Lambda {
                 id,
                 arn,
@@ -641,6 +635,7 @@ impl DetailedDeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
                 services,
             },
         }
@@ -664,6 +659,7 @@ impl DetailedDeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
                 services,
             } => (
                 id,
@@ -675,6 +671,7 @@ impl DetailedDeploymentResponse {
                     created_at,
                     min_protocol_version,
                     max_protocol_version,
+                    sdk_version,
                 },
                 services,
             ),
@@ -686,6 +683,7 @@ impl DetailedDeploymentResponse {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                sdk_version,
                 services,
             } => (
                 id,
@@ -696,6 +694,7 @@ impl DetailedDeploymentResponse {
                     created_at,
                     min_protocol_version,
                     max_protocol_version,
+                    sdk_version,
                 },
                 services,
             ),
@@ -764,4 +763,118 @@ pub enum UpdateDeploymentRequest {
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },
+}
+
+mod serde_hacks {
+    use super::*;
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    pub(super) enum DeploymentShadow {
+        Http {
+            #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+            uri: Uri,
+            protocol_type: ProtocolType,
+            #[serde(with = "http_serde::option::version")]
+            #[serde(default)]
+            // this field did not used to be provided; to provide backwards compatibility with old restate, we must consider it optional when deserialising
+            http_version: Option<Version>,
+            #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+            #[serde(default)]
+            additional_headers: SerdeableHeaderHashMap,
+            #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+            created_at: humantime::Timestamp,
+            min_protocol_version: i32,
+            max_protocol_version: i32,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            #[serde(default)]
+            sdk_version: Option<String>,
+        },
+        Lambda {
+            arn: LambdaARN,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            #[serde(default)]
+            assume_role_arn: Option<String>,
+            #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+            #[serde(default)]
+            additional_headers: SerdeableHeaderHashMap,
+            #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+            created_at: humantime::Timestamp,
+            min_protocol_version: i32,
+            max_protocol_version: i32,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            #[serde(default)]
+            sdk_version: Option<String>,
+        },
+    }
+
+    impl From<DeploymentShadow> for Deployment {
+        fn from(value: DeploymentShadow) -> Self {
+            match value {
+                DeploymentShadow::Http {
+                    uri,
+                    protocol_type,
+                    http_version,
+                    additional_headers,
+                    created_at,
+                    min_protocol_version,
+                    max_protocol_version,
+                    sdk_version,
+                } => Self::Http {
+                    uri,
+                    protocol_type,
+                    http_version: http_version
+                        .unwrap_or_else(|| DeploymentType::backfill_http_version(protocol_type)),
+                    additional_headers,
+                    created_at,
+                    min_protocol_version,
+                    max_protocol_version,
+                    sdk_version,
+                },
+                DeploymentShadow::Lambda {
+                    arn,
+                    assume_role_arn,
+                    additional_headers,
+                    created_at,
+                    min_protocol_version,
+                    max_protocol_version,
+                    sdk_version,
+                } => Self::Lambda {
+                    arn,
+                    assume_role_arn,
+                    additional_headers,
+                    created_at,
+                    min_protocol_version,
+                    max_protocol_version,
+                    sdk_version,
+                },
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn can_deserialise_without_http_version() {
+            let dt: super::Deployment = serde_json::from_str(
+                r#"{"uri":"google.com","protocol_type":"BidiStream","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+            )
+                .unwrap();
+            let serialised = serde_json::to_string(&dt).unwrap();
+            assert_eq!(
+                r#"{"uri":"google.com","protocol_type":"BidiStream","http_version":"HTTP/2.0","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+                serialised
+            );
+
+            let dt: super::Deployment = serde_json::from_str(
+                r#"{"uri":"google.com","protocol_type":"RequestResponse","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+            )
+                .unwrap();
+            let serialised = serde_json::to_string(&dt).unwrap();
+            assert_eq!(
+                r#"{"uri":"google.com","protocol_type":"RequestResponse","http_version":"HTTP/1.1","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+                serialised
+            );
+        }
+    }
 }

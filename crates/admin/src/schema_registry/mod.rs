@@ -98,7 +98,7 @@ impl<V> SchemaRegistry<V> {
         discover_endpoint: DiscoverEndpoint,
         force: Force,
         apply_mode: ApplyMode,
-    ) -> Result<(DeploymentId, Vec<ServiceMetadata>), SchemaRegistryError> {
+    ) -> Result<(Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
         // The number of concurrent discovery calls is bound by the number of concurrent
         // {register,update}_deployment calls. If it should become a problem that a user tries to register
         // the same endpoint too often, then we need to add a synchronization mechanism which
@@ -112,12 +112,14 @@ impl<V> SchemaRegistry<V> {
                 http_version,
                 DeliveryOptions::new(discovered_metadata.headers),
                 discovered_metadata.supported_protocol_versions,
+                discovered_metadata.sdk_version,
             ),
             DiscoveredEndpoint::Lambda(arn, assume_role_arn) => DeploymentMetadata::new_lambda(
                 arn,
                 assume_role_arn,
                 DeliveryOptions::new(discovered_metadata.headers),
                 discovered_metadata.supported_protocol_versions,
+                discovered_metadata.sdk_version,
             ),
         };
 
@@ -135,11 +137,11 @@ impl<V> SchemaRegistry<V> {
             })?;
 
             let schema_information = updater.into_inner();
-            let (_, services) = schema_information
+            let (deployment, services) = schema_information
                 .get_deployment_and_services(&id)
                 .expect("deployment was just added");
 
-            (id, services)
+            (deployment, services)
         } else {
             let mut new_deployment_id = None;
             let schema_information = self
@@ -162,11 +164,11 @@ impl<V> SchemaRegistry<V> {
                 .await?;
 
             let new_deployment_id = new_deployment_id.expect("deployment was just added");
-            let (_, services) = schema_information
+            let (deployment, services) = schema_information
                 .get_deployment_and_services(&new_deployment_id)
                 .expect("deployment was just added");
 
-            (new_deployment_id, services)
+            (deployment, services)
         };
 
         Ok((id, services))
@@ -191,12 +193,14 @@ impl<V> SchemaRegistry<V> {
                 http_version,
                 DeliveryOptions::new(discovered_metadata.headers),
                 discovered_metadata.supported_protocol_versions,
+                discovered_metadata.sdk_version,
             ),
             DiscoveredEndpoint::Lambda(arn, assume_role_arn) => DeploymentMetadata::new_lambda(
                 arn,
                 assume_role_arn,
                 DeliveryOptions::new(discovered_metadata.headers),
                 discovered_metadata.supported_protocol_versions,
+                discovered_metadata.sdk_version,
             ),
         };
 
