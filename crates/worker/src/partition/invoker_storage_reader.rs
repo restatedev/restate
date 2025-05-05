@@ -26,8 +26,6 @@ use std::vec::IntoIter;
 
 #[derive(Debug, thiserror::Error)]
 pub enum InvokerStorageReaderError {
-    #[error("not invoked")]
-    NotInvoked,
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
 }
@@ -77,7 +75,7 @@ where
     async fn read_journal(
         &mut self,
         invocation_id: &InvocationId,
-    ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
+    ) -> Result<Option<(JournalMetadata, Self::JournalStream)>, Self::Error> {
         let invocation_status = self.txn.get_invocation_status(invocation_id).await?;
 
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
@@ -136,9 +134,9 @@ where
                 .await?
             };
 
-            Ok((journal_metadata, stream::iter(journal_stream)))
+            Ok(Some((journal_metadata, stream::iter(journal_stream))))
         } else {
-            Err(InvokerStorageReaderError::NotInvoked)
+            Ok(None)
         }
     }
 

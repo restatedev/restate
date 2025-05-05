@@ -276,6 +276,7 @@ where
                         txn.read_journal(&self.invocation_id)
                             .await
                             .map_err(|e| InvokerError::JournalReader(e.into()))
+                            .and_then(|opt| opt.ok_or_else(|| InvokerError::NotInvoked))
                     );
                     (journal_meta, future::Either::Left(journal_stream))
                 }
