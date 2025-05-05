@@ -59,6 +59,7 @@ use restate_types::identifiers::{
     PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
+use restate_types::invocation::client::InvocationOutputResponse;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationEpoch, InvocationQuery, InvocationResponse,
     InvocationTarget, InvocationTargetType, InvocationTermination, JournalCompletionTarget,
@@ -83,7 +84,6 @@ use restate_types::journal_v2::{
     CommandType, CompletionId, EntryMetadata, NotificationId, Signal, SignalResult,
 };
 use restate_types::message::MessageIndex;
-use restate_types::net::partition_processor::IngressResponseResult;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
@@ -2040,7 +2040,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id,
                     completion_expiry_time,
                     match result.clone() {
-                        ResponseResult::Success(res) => IngressResponseResult::Success(
+                        ResponseResult::Success(res) => InvocationOutputResponse::Success(
                             invocation_target
                                 .expect(
                                     "For success responses, there must be an invocation target!",
@@ -2048,7 +2048,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 .clone(),
                             res,
                         ),
-                        ResponseResult::Failure(err) => IngressResponseResult::Failure(err),
+                        ResponseResult::Failure(err) => InvocationOutputResponse::Failure(err),
                     },
                 ),
             }
@@ -3297,17 +3297,17 @@ impl<S> StateMachineApplyContext<'_, S> {
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: Option<InvocationId>,
         completion_expiry_time: Option<MillisSinceEpoch>,
-        response: IngressResponseResult,
+        response: InvocationOutputResponse,
     ) {
         match &response {
-            IngressResponseResult::Success(_, _) => {
+            InvocationOutputResponse::Success(_, _) => {
                 debug_if_leader!(
                     self.is_leader,
                     "Send response to ingress with request id '{:?}': Success",
                     request_id
                 )
             }
-            IngressResponseResult::Failure(e) => {
+            InvocationOutputResponse::Failure(e) => {
                 debug_if_leader!(
                     self.is_leader,
                     "Send response to ingress with request id '{:?}': Failure({})",

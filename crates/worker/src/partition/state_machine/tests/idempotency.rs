@@ -93,7 +93,7 @@ async fn start_and_complete_idempotent_invocation() {
         contains(pat!(Action::IngressResponse {
             request_id: eq(request_id),
             invocation_id: some(eq(invocation_id)),
-            response: eq(IngressResponseResult::Success(
+            response: eq(InvocationOutputResponse::Success(
                 invocation_target.clone(),
                 response_bytes.clone()
             ))
@@ -184,7 +184,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
         contains(pat!(Action::IngressResponse {
             request_id: eq(request_id),
             invocation_id: some(eq(invocation_id)),
-            response: eq(IngressResponseResult::Success(
+            response: eq(InvocationOutputResponse::Success(
                 invocation_target.clone(),
                 response_bytes.clone()
             ))
@@ -259,7 +259,7 @@ async fn complete_already_completed_invocation() {
         contains(pat!(Action::IngressResponse {
             request_id: eq(request_id),
             invocation_id: some(eq(invocation_id)),
-            response: eq(IngressResponseResult::Success(
+            response: eq(InvocationOutputResponse::Success(
                 invocation_target.clone(),
                 response_bytes.clone()
             ))
@@ -344,7 +344,7 @@ async fn attach_with_service_invocation_command_while_executing() {
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_1),
                 invocation_id: some(eq(invocation_id)),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
@@ -352,7 +352,7 @@ async fn attach_with_service_invocation_command_while_executing() {
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_1),
                 invocation_id: some(eq(invocation_id)),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
@@ -458,7 +458,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_1),
                 invocation_id: some(eq(invocation_id)),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
@@ -471,7 +471,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
                 contains(pat!(Action::IngressResponse {
                     request_id: eq(request_id_1),
                     invocation_id: some(eq(invocation_id)),
-                    response: eq(IngressResponseResult::Success(
+                    response: eq(InvocationOutputResponse::Success(
                         invocation_target.clone(),
                         response_bytes.clone()
                     ))
@@ -658,7 +658,7 @@ async fn attach_command() {
             contains(pat!(Action::IngressResponse {
                 invocation_id: some(eq(invocation_id)),
                 request_id: eq(request_id_1),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
@@ -666,7 +666,7 @@ async fn attach_command() {
             contains(pat!(Action::IngressResponse {
                 invocation_id: some(eq(invocation_id)),
                 request_id: eq(request_id_2),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))

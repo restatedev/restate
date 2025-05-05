@@ -107,12 +107,12 @@ mod tests {
     use restate_types::deployment::PinnedDeployment;
     use restate_types::errors::CANCELED_INVOCATION_ERROR;
     use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
+    use restate_types::invocation::client::InvocationOutputResponse;
     use restate_types::invocation::{
         InvocationTarget, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
         ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::CANCEL_SIGNAL;
-    use restate_types::net::partition_processor::IngressResponseResult;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
     use restate_wal_protocol::Command;
@@ -240,7 +240,7 @@ mod tests {
             contains(pat!(Action::IngressResponse {
                 request_id: eq(rpc_id),
                 invocation_id: some(eq(invocation_id)),
-                response: eq(IngressResponseResult::Failure(CANCELED_INVOCATION_ERROR))
+                response: eq(InvocationOutputResponse::Failure(CANCELED_INVOCATION_ERROR))
             }))
         );
 

@@ -27,9 +27,9 @@ use restate_types::identifiers::{
     InvocationId, LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
     WithPartitionKey,
 };
+use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::net::partition_processor::{
-    InvocationOutput, PartitionProcessorRpcError, PartitionProcessorRpcResponse,
-    SubmittedInvocationNotification,
+    PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::Command;

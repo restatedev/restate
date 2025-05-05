@@ -10,9 +10,8 @@
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
-use restate_ingress_http::HyperServerIngress;
-use restate_ingress_http::partition_processor_rpc_client::PartitionProcessorRpcClient;
-use restate_ingress_http::rpc_request_dispatcher::RpcRequestDispatcher;
+use restate_core::worker_api::PartitionProcessorInvocationClient;
+use restate_ingress_http::{HyperServerIngress, InvocationClientRequestDispatcher};
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxLiveLoad, Live};
@@ -20,7 +19,10 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::Schema;
 
-type IngressHttp<T> = HyperServerIngress<Schema, RpcRequestDispatcher<T>>;
+type IngressHttp<T> = HyperServerIngress<
+    Schema,
+    InvocationClientRequestDispatcher<PartitionProcessorInvocationClient<T>>,
+>;
 
 pub struct IngressRole<T> {
     ingress_http: IngressHttp<T>,
@@ -35,11 +37,9 @@ impl<T: TransportConnect> IngressRole<T> {
         partition_table: Live<PartitionTable>,
         partition_routing: PartitionRouting,
     ) -> Self {
-        let dispatcher = RpcRequestDispatcher::new(PartitionProcessorRpcClient::new(
-            networking,
-            partition_table,
-            partition_routing,
-        ));
+        let dispatcher = InvocationClientRequestDispatcher::new(
+            PartitionProcessorInvocationClient::new(networking, partition_table, partition_routing),
+        );
         let ingress_http = HyperServerIngress::from_options(
             ingress_options.live_load(),
             dispatcher,

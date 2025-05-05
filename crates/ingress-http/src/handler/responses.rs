@@ -8,17 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::handler::Handler;
+use crate::handler::error::HandlerError;
 use bytes::Bytes;
 use chrono::DateTime;
 use http::{HeaderName, Response, header};
 use http_body_util::Full;
-use tracing::{info, trace};
-
-use crate::handler::Handler;
-use crate::handler::error::HandlerError;
 use restate_types::invocation::InvocationTarget;
-use restate_types::net::partition_processor::{IngressResponseResult, InvocationOutput};
+use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::schema::invocation_target::InvocationTargetMetadata;
+use tracing::{info, trace};
 
 pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 /// Contains the string representation of the invocation id
@@ -58,7 +57,7 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
         }
 
         match response {
-            IngressResponseResult::Success(invocation_target, response_payload) => {
+            InvocationOutputResponse::Success(invocation_target, response_payload) => {
                 trace!(rpc.response = ?response_payload, "Complete external HTTP request successfully");
 
                 // Resolve invocation target metadata.
@@ -77,7 +76,7 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
 
                 Ok(response_builder.body(Full::new(response_payload)).unwrap())
             }
-            IngressResponseResult::Failure(error) => {
+            InvocationOutputResponse::Failure(error) => {
                 info!(rpc.response = ?error, "Complete external HTTP request with a failure");
                 Ok(HandlerError::Invocation(error).fill_builder(response_builder))
             }

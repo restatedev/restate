@@ -53,6 +53,7 @@ use restate_types::identifiers::{
     AwakeableIdentifier, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
     ServiceId,
 };
+use restate_types::invocation::client::InvocationOutputResponse;
 use restate_types::invocation::{
     Header, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
     ServiceInvocation, ServiceInvocationResponseSink, Source, VirtualObjectHandlerType,
@@ -950,21 +951,21 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         all!(
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_1),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
             })),
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_2),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
             })),
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_3),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))

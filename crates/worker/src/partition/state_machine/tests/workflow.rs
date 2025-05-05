@@ -79,7 +79,7 @@ async fn start_workflow_method() {
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_2),
                 invocation_id: some(eq(invocation_id)),
-                response: eq(IngressResponseResult::Failure(
+                response: eq(InvocationOutputResponse::Failure(
                     WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
                 ))
             }))
@@ -115,7 +115,7 @@ async fn start_workflow_method() {
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_1),
                 invocation_id: some(eq(invocation_id)),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
@@ -124,7 +124,7 @@ async fn start_workflow_method() {
             not(contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_2),
                 invocation_id: some(eq(invocation_id)),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
@@ -162,7 +162,7 @@ async fn start_workflow_method() {
         contains(pat!(Action::IngressResponse {
             request_id: eq(request_id_3),
             invocation_id: some(eq(invocation_id)),
-            response: eq(IngressResponseResult::Failure(
+            response: eq(InvocationOutputResponse::Failure(
                 WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
             ))
         }))
@@ -252,7 +252,7 @@ async fn attach_by_workflow_key() {
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_1),
                 invocation_id: some(eq(invocation_id)),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
@@ -260,7 +260,7 @@ async fn attach_by_workflow_key() {
             contains(pat!(Action::IngressResponse {
                 request_id: eq(request_id_2),
                 invocation_id: some(eq(invocation_id)),
-                response: eq(IngressResponseResult::Success(
+                response: eq(InvocationOutputResponse::Success(
                     invocation_target.clone(),
                     response_bytes.clone()
                 ))
@@ -298,7 +298,7 @@ async fn attach_by_workflow_key() {
         contains(pat!(Action::IngressResponse {
             request_id: eq(request_id_3),
             invocation_id: some(eq(invocation_id)),
-            response: eq(IngressResponseResult::Success(
+            response: eq(InvocationOutputResponse::Success(
                 invocation_target.clone(),
                 response_bytes.clone()
             ))

@@ -12,12 +12,12 @@ use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+use restate_types::invocation::client::InvocationOutputResponse;
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal::Completion;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::message::MessageIndex;
-use restate_types::net::partition_processor::IngressResponseResult;
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
@@ -64,7 +64,7 @@ pub enum Action {
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: Option<InvocationId>,
         completion_expiry_time: Option<MillisSinceEpoch>,
-        response: IngressResponseResult,
+        response: InvocationOutputResponse,
     },
     IngressSubmitNotification {
         request_id: PartitionProcessorRpcRequestId,
