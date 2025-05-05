@@ -236,7 +236,7 @@ impl TestEnv {
             .collect::<Vec<_>>();
         assert_eq!(actual_entry_types, expected_entry_types);
 
-        // Verify we don't go out of bound
+        // Verify we don't go out of bounds
         assert_that!(
             self.storage
                 .get_journal_entry(&invocation_id, expected_entry_types.len() as u32)

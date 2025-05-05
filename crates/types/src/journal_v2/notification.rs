@@ -54,7 +54,7 @@ impl fmt::Display for NotificationId {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::From)]
 pub enum NotificationType {
     Completion(CompletionType),
     Signal,
@@ -66,12 +66,6 @@ impl fmt::Display for NotificationType {
             NotificationType::Completion(cmp) => fmt::Display::fmt(cmp, f),
             e => fmt::Debug::fmt(e, f),
         }
-    }
-}
-
-impl From<CompletionType> for NotificationType {
-    fn from(value: CompletionType) -> Self {
-        NotificationType::Completion(value)
     }
 }
 

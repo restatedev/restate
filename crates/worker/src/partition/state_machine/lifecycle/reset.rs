@@ -22,21 +22,21 @@ use restate_types::journal_v2::{
 use std::cmp;
 use tracing::{trace, warn};
 
-pub struct OnTrimCommand {
+pub struct OnResetCommand {
     pub invocation_id: InvocationId,
     pub invocation_status: InvocationStatus,
-    pub trim_point_command_entry_index: EntryIndex,
+    pub truncation_point_entry_index: EntryIndex,
 }
 
-impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for OnTrimCommand
+impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for OnResetCommand
 where
     S: JournalTable + InvocationStatusTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        let OnTrimCommand {
+        let OnResetCommand {
             invocation_id,
             invocation_status,
-            trim_point_command_entry_index,
+            truncation_point_entry_index,
         } = self;
 
         let is_invoked = matches!(invocation_status, InvocationStatus::Invoked(_));
@@ -44,45 +44,45 @@ where
         else {
             info_if_leader!(
                 ctx.is_leader,
-                "Ignoring trim command because the invocation is not invoked nor suspended"
+                "Ignoring reset command because the invocation is not invoked nor suspended"
             );
             return Ok(());
         };
 
-        // Validate the command first. The entry index must correspond to a command index.
-        if trim_point_command_entry_index == 0 {
+        // Validate the command first. The entry index must correspond to a command or signal index.
+        if truncation_point_entry_index == 0 {
             info_if_leader!(
                 ctx.is_leader,
-                "Ignoring trim command because index is 0. You can't remove the input entry."
+                "Ignoring reset command because truncation index is 0. You can't remove the input entry."
             );
             return Ok(());
         }
-        let Some(trim_point_entry) = ctx
+        let Some(truncation_point_entry) = ctx
             .storage
-            .get_journal_entry(invocation_id, trim_point_command_entry_index)
+            .get_journal_entry(invocation_id, truncation_point_entry_index)
             .await?
         else {
             info_if_leader!(
                 ctx.is_leader,
-                "Ignoring trim command because the given entry index doesn't exist"
+                "Ignoring reset command because the given entry index doesn't exist"
             );
             return Ok(());
         };
         if !matches!(
-            trim_point_entry.ty(),
+            truncation_point_entry.ty(),
             EntryType::Command(_) | EntryType::Notification(NotificationType::Signal)
         ) {
             info_if_leader!(
                 ctx.is_leader,
-                "Ignoring trim command because the given entry index doesn't correspond to a command entry, nor to a signal notification"
+                "Ignoring reset command because the given entry index doesn't correspond to a command entry, nor to a signal notification"
             );
             return Ok(());
         }
         debug_if_leader!(
             ctx.is_leader,
-            "Trimming journal starting from {}, index {}",
-            trim_point_entry.ty(),
-            trim_point_command_entry_index
+            "Rewriting journal starting from {}, index {}",
+            truncation_point_entry.ty(),
+            truncation_point_entry_index
         );
 
         // We need to send an abort signal to the invoker if the invocation was previously invoked
@@ -98,15 +98,15 @@ where
         let mut notifications_to_retain = vec![];
         let mut notification_ids_to_forget = vec![];
         let mut commands_removed = 0;
-        for trim_pointer in
-            trim_point_command_entry_index..in_flight_invocation_metadata.journal_metadata.length
+        for truncation_pointer in
+            truncation_point_entry_index..in_flight_invocation_metadata.journal_metadata.length
         {
             let Some(entry) = ctx
                 .storage
-                .get_journal_entry(invocation_id, trim_pointer)
+                .get_journal_entry(invocation_id, truncation_pointer)
                 .await?
             else {
-                warn!("Missing entry at index {trim_pointer}, this is unexpected");
+                warn!("Missing entry at index {truncation_pointer}, this is unexpected");
                 return Ok(());
             };
 
@@ -132,7 +132,7 @@ where
                     commands_removed += 1;
 
                     // We remove the command
-                    trace!("Removing {} at index {}", entry.ty(), trim_pointer);
+                    trace!("Removing {} at index {}", entry.ty(), truncation_pointer);
                 }
                 EntryType::Notification(NotificationType::Completion(completion_ty)) => {
                     let completion_id = entry
@@ -145,10 +145,10 @@ where
 
                     if completion_id < minimum_completion_id_of_removed_commands {
                         // We copy this completion because it belongs to a command before the trim point.
-                        notifications_to_retain.push(trim_pointer);
+                        notifications_to_retain.push(truncation_pointer);
                         trace!(
                             "Retaining Completion {} with id {} at index {}",
-                            completion_ty, completion_id, trim_pointer
+                            completion_ty, completion_id, truncation_pointer
                         );
                     } else {
                         // We remove this completion as it belongs to a command after (including) the trim point.
@@ -156,7 +156,7 @@ where
                             .push(NotificationId::CompletionId(completion_id));
                         trace!(
                             "Removing Completion {} with id {} at index {}",
-                            completion_ty, completion_id, trim_pointer
+                            completion_ty, completion_id, truncation_pointer
                         );
                     }
                 }
@@ -169,13 +169,13 @@ where
                         .id();
                     trace!(
                         "Removing Notification Signal with id {} at index {}",
-                        notification_id, trim_pointer
+                        notification_id, truncation_pointer
                     );
                     notification_ids_to_forget.push(notification_id);
                 }
                 EntryType::Event => {
-                    // We don't copy signals and events after the trim point!
-                    trace!("Removing Event at index {}", trim_pointer);
+                    // We just remove events
+                    trace!("Removing Event at index {}", truncation_pointer);
                 }
             }
         }
@@ -184,7 +184,7 @@ where
         ctx.storage
             .rewrite_journal(
                 invocation_id,
-                trim_point_command_entry_index,
+                truncation_point_entry_index,
                 &notifications_to_retain,
                 &notification_ids_to_forget,
                 in_flight_invocation_metadata.journal_metadata.length,
@@ -195,21 +195,21 @@ where
         in_flight_invocation_metadata.current_invocation_epoch += 1;
         in_flight_invocation_metadata
             .completion_range_epoch_map
-            .add_trim_point(
+            .add_truncation_point(
                 minimum_completion_id_of_removed_commands,
                 in_flight_invocation_metadata.current_invocation_epoch,
             );
 
         // Update journal length with the new length and the commands.
         in_flight_invocation_metadata.journal_metadata.length =
-            trim_point_command_entry_index + (notifications_to_retain.len() as u32);
+            truncation_point_entry_index + (notifications_to_retain.len() as u32);
         in_flight_invocation_metadata.journal_metadata.commands -= commands_removed;
 
-        // Trim procedure done! We're now back in the game
+        // Rewrite procedure done! We're now back in the game
         debug_if_leader!(
             ctx.is_leader,
             restate.journal.length = in_flight_invocation_metadata.journal_metadata.length,
-            "Trim completed, resuming"
+            "Journal rewriting completed, resuming the invocation now"
         );
 
         in_flight_invocation_metadata.timestamps.update();
@@ -245,7 +245,7 @@ mod tests {
         ReadOnlyInvocationStatusTable,
     };
     use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
-    use restate_types::invocation::{NotifySignalRequest, TrimBy, TrimInvocationRequest};
+    use restate_types::invocation::{NotifySignalRequest, ResetInvocationRequest, TruncateFrom};
     use restate_types::journal_v2::raw::RawCommand;
     use restate_types::journal_v2::{
         ClearAllStateCommand, CommandType, CompletionType, Signal, SignalId, SignalResult,
@@ -255,7 +255,7 @@ mod tests {
     use restate_wal_protocol::timer::TimerKeyValue;
 
     #[restate_core::test]
-    async fn trim_empty_journal() {
+    async fn reset_with_empty_journal() {
         let mut test_env = TestEnv::create().await;
 
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -264,10 +264,10 @@ mod tests {
         for entry_index in 0..=2 {
             // None of these should cause any trim to happen, because either is journal out of bound, or tries to trim input entry, which is special cased.
             let actions = test_env
-                .apply(restate_wal_protocol::Command::TrimInvocation(
-                    TrimInvocationRequest {
+                .apply(restate_wal_protocol::Command::ResetInvocation(
+                    ResetInvocationRequest {
                         invocation_id,
-                        trim_by: TrimBy::CommandEntryIndex { entry_index },
+                        truncate_from: TruncateFrom::EntryIndex { entry_index },
                     },
                 ))
                 .await;
@@ -281,7 +281,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn trim_with_non_completable_entries() {
+    async fn reset_with_non_completable_entries() {
         let mut test_env = TestEnv::create().await;
 
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -313,10 +313,10 @@ mod tests {
         );
 
         let actions = test_env
-            .apply(restate_wal_protocol::Command::TrimInvocation(
-                TrimInvocationRequest {
+            .apply(restate_wal_protocol::Command::ResetInvocation(
+                ResetInvocationRequest {
                     invocation_id,
-                    trim_by: TrimBy::CommandEntryIndex { entry_index: 2 },
+                    truncate_from: TruncateFrom::EntryIndex { entry_index: 2 },
                 },
             ))
             .await;
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn trim_with_completable_entries() {
+    async fn reset_with_completable_entries() {
         let mut test_env = TestEnv::create().await;
 
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -402,10 +402,10 @@ mod tests {
             .await;
 
         let actions = test_env
-            .apply(restate_wal_protocol::Command::TrimInvocation(
-                TrimInvocationRequest {
+            .apply(restate_wal_protocol::Command::ResetInvocation(
+                ResetInvocationRequest {
                     invocation_id,
-                    trim_by: TrimBy::CommandEntryIndex { entry_index: 2 },
+                    truncate_from: TruncateFrom::EntryIndex { entry_index: 2 },
                 },
             ))
             .await;
@@ -421,9 +421,9 @@ mod tests {
                 matchers::storage::in_flight_meta(pat!(InFlightInvocationMetadata {
                     current_invocation_epoch: eq(1),
                     // This should contain the trim point!
-                    completion_range_epoch_map: eq(CompletionRangeEpochMap::from_trim_points([(
-                        2, 1
-                    )]))
+                    completion_range_epoch_map: eq(
+                        CompletionRangeEpochMap::from_truncation_points([(2, 1)])
+                    )
                 }))
             ))
         );
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn trim_from_signal_notification() {
+    async fn reset_from_signal_notification() {
         let mut test_env = TestEnv::create().await;
 
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
@@ -535,10 +535,10 @@ mod tests {
             .await;
 
         let actions = test_env
-            .apply(restate_wal_protocol::Command::TrimInvocation(
-                TrimInvocationRequest {
+            .apply(restate_wal_protocol::Command::ResetInvocation(
+                ResetInvocationRequest {
                     invocation_id,
-                    trim_by: TrimBy::CommandEntryIndex { entry_index: 2 },
+                    truncate_from: TruncateFrom::EntryIndex { entry_index: 2 },
                 },
             ))
             .await;
@@ -548,15 +548,14 @@ mod tests {
         );
         assert_that!(
             test_env.storage.get_invocation_status(&invocation_id).await,
-            // Only Input entry and first clear state
             ok(all!(
                 matchers::storage::status(InvocationStatusDiscriminants::Invoked),
                 matchers::storage::in_flight_meta(pat!(InFlightInvocationMetadata {
                     current_invocation_epoch: eq(1),
                     // This should contain the trim point!
-                    completion_range_epoch_map: eq(CompletionRangeEpochMap::from_trim_points([(
-                        2, 1
-                    )]))
+                    completion_range_epoch_map: eq(
+                        CompletionRangeEpochMap::from_truncation_points([(2, 1)])
+                    )
                 }))
             ))
         );

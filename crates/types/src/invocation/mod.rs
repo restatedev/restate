@@ -832,10 +832,10 @@ impl SpanRelation {
     }
 }
 
-/// Flavor of the [`TrimInvocationRequest`].
+/// Flavor of the [`ResetInvocationRequest`].
 #[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum TrimBy {
-    CommandEntryIndex {
+pub enum TruncateFrom {
+    EntryIndex {
         /// Entry index **inclusive**.
         ///
         /// Note: the index MUST correspond to a [`journal_v2::Command`] or a [`journal_v2::Signal`],
@@ -844,26 +844,23 @@ pub enum TrimBy {
     },
 }
 
-/// Trim an invocation and restart.
+/// Reset an invocation.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TrimInvocationRequest {
+pub struct ResetInvocationRequest {
     pub invocation_id: InvocationId,
-    pub trim_by: TrimBy,
+    pub truncate_from: TruncateFrom,
 }
 
-impl TrimInvocationRequest {
-    pub const fn by_command_entry_index(
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-    ) -> Self {
+impl ResetInvocationRequest {
+    pub const fn by_entry_index(invocation_id: InvocationId, entry_index: EntryIndex) -> Self {
         Self {
             invocation_id,
-            trim_by: TrimBy::CommandEntryIndex { entry_index },
+            truncate_from: TruncateFrom::EntryIndex { entry_index },
         }
     }
 }
 
-impl WithInvocationId for TrimInvocationRequest {
+impl WithInvocationId for ResetInvocationRequest {
     fn invocation_id(&self) -> InvocationId {
         self.invocation_id
     }

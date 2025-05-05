@@ -54,23 +54,11 @@ pub type SignalName = ByteString;
 
 // -- Entry metadata
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumIs)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumIs, derive_more::From)]
 pub enum EntryType {
     Command(CommandType),
     Notification(NotificationType),
     Event,
-}
-
-impl From<CommandType> for EntryType {
-    fn from(value: CommandType) -> Self {
-        Self::Command(value)
-    }
-}
-
-impl From<NotificationType> for EntryType {
-    fn from(value: NotificationType) -> Self {
-        Self::Notification(value)
-    }
 }
 
 impl From<CompletionType> for EntryType {

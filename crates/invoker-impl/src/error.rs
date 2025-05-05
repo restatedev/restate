@@ -107,7 +107,7 @@ pub(crate) enum InvokerError {
     #[code(restate_errors::RT0006)]
     StateReader(anyhow::Error),
     #[error(
-        "error when reading the journal: actual epoch {actual} != expected epoch {expected}. This is expected to happen while a trim and restart is being processed."
+        "error when reading the journal: actual epoch {actual} != expected epoch {expected}. This is expected to happen while a reset invocation command is being processed."
     )]
     #[code(restate_errors::RT0006)]
     StaleJournalRead {

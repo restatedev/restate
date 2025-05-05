@@ -18,7 +18,7 @@ use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{
-    InvocationTermination, PurgeInvocationRequest, TrimBy, TrimInvocationRequest,
+    InvocationTermination, PurgeInvocationRequest, ResetInvocationRequest, TruncateFrom,
 };
 use restate_wal_protocol::{Command, Envelope};
 use serde::Deserialize;
@@ -69,9 +69,9 @@ pub async fn reset_invocation<V>(
         .parse::<InvocationId>()
         .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
 
-    let cmd = Command::TrimInvocation(TrimInvocationRequest {
+    let cmd = Command::ResetInvocation(ResetInvocationRequest {
         invocation_id,
-        trim_by: TrimBy::CommandEntryIndex {
+        truncate_from: TruncateFrom::EntryIndex {
             entry_index: truncate_from.unwrap_or(1),
         },
     });

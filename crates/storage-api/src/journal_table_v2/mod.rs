@@ -70,8 +70,7 @@ pub trait JournalTable: ReadOnlyJournalTable {
     ///
     /// * `truncation_starting_point`: Starting point of the truncation, included. Everything before will be left untouched.
     /// * `entries_to_retain_after_trim_point`: Entries to retain. Invariant: Each entry index in this slice MUST be >= truncation_starting_point
-    /// * `notification_ids_to_cleanup`: Hint of notification ids to cleanup, including both notifications ids of notifications existing in the journal,
-    ///   and completion ids of completions not in the journal, for which we're cleaning the related command.
+    /// * `notification_ids_to_cleanup`: Hint of notification ids to cleanup. This should include notification ids of notifications trimmed after the truncation point.
     ///   This is **required** to cleanup the internal notification indexes.
     /// * `journal_length`: Total journal length when this operation is fired up.
     ///

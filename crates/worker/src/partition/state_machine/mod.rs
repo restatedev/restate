@@ -64,7 +64,7 @@ use restate_types::invocation::{
     AttachInvocationRequest, InvocationEpoch, InvocationQuery, InvocationResponse,
     InvocationTarget, InvocationTargetType, InvocationTermination, JournalCompletionTarget,
     NotifySignalRequest, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, Source, SubmitNotificationSink, TerminationFlavor, TrimBy,
+    ServiceInvocationSpanContext, Source, SubmitNotificationSink, TerminationFlavor, TruncateFrom,
     VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
@@ -479,7 +479,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .await?;
                 Ok(())
             }
-            Command::TrimInvocation(trim_invocation_request) => {
+            Command::ResetInvocation(trim_invocation_request) => {
                 let status = self
                     .get_invocation_status(&trim_invocation_request.invocation_id)
                     .await?;
@@ -492,11 +492,12 @@ impl<S> StateMachineApplyContext<'_, S> {
                     return Ok(());
                 }
 
-                let TrimBy::CommandEntryIndex { entry_index } = trim_invocation_request.trim_by;
-                lifecycle::OnTrimCommand {
+                let TruncateFrom::EntryIndex { entry_index } =
+                    trim_invocation_request.truncate_from;
+                lifecycle::OnResetCommand {
                     invocation_id: trim_invocation_request.invocation_id,
                     invocation_status: status,
-                    trim_point_command_entry_index: entry_index,
+                    truncation_point_entry_index: entry_index,
                 }
                 .apply(self)
                 .await?;

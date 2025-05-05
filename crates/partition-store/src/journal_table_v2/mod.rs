@@ -252,7 +252,7 @@ fn rewrite_journal<S: StorageAccess>(
     notification_ids_to_cleanup: &[NotificationId],
     journal_length: EntryIndex,
 ) -> Result<()> {
-    let _x = RocksDbPerfGuard::new("compact-journal");
+    let _x = RocksDbPerfGuard::new("rewrite-journal");
 
     // This algorithm works as follows:
     // * Copy the entries in entries_to_retain_after_trim_point in order starting at truncation_starting_point

@@ -37,9 +37,9 @@ pub mod storage {
     ) -> impl Matcher<ActualT = InvocationStatus> {
         // Guilty!
         property_matcher::internal::property_matcher(
-            |o: &InvocationStatus| o.get_journal_metadata().cloned(),
+            |o: &InvocationStatus| o.get_journal_metadata().map(|jm| jm.length),
             "get_journal_metadata()",
-            some(field!(JournalMetadata.length, eq(journal_length))),
+            some(eq(journal_length)),
         )
     }
 
