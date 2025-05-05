@@ -204,6 +204,7 @@ impl PartitionStoreManager {
             .await
     }
 
+    /// Creates and registers a new partition store
     async fn create_partition_store(
         &self,
         mut guard: MutexGuard<'_, PartitionLookup>,
@@ -217,7 +218,17 @@ impl PartitionStoreManager {
             partition_id,
             partition_key_range,
         );
-        guard.live.insert(partition_id, partition_store.clone());
+
+        // This method assumes that it is the only path to construct a partition store, and there
+        // are no unflushed writes to the underlying column family on open. This holds as long as
+        // all writes to the underlying CF happen through a partition store tracked in the lookup
+        // map, and one partition store handles all writes to the underlying CF. If this changes,
+        // the persisted LSN determination logic below must be updated appropriately.
+        let live_store = guard.live.insert(partition_id, partition_store.clone());
+        assert!(
+            live_store.is_none(),
+            "create_partition_store found an open partition"
+        );
 
         if let Some(persisted_lsn_tx) = self.persisted_lsn_tx.as_ref() {
             let applied_lsn = partition_store.get_applied_lsn().await;
@@ -270,9 +281,18 @@ impl PartitionStoreManager {
     }
 
     #[cfg(test)]
-    pub async fn close_partition_store(&self, partition_id: PartitionId) {
+    pub async fn close_partition_store(
+        &self,
+        partition_id: PartitionId,
+    ) -> Result<(), restate_storage_api::StorageError> {
         let mut guard = self.lookup.lock().await;
-        guard.live.remove(&partition_id);
+        let live_store = guard.live.remove(&partition_id);
+        // It's critical that we flush the CF, as we assume that all written
+        // data are fully persisted if we reopen this partition store.
+        if let Some(partition_store) = live_store {
+            partition_store.flush_memtables(true).await?;
+        }
+        Ok(())
     }
 }
 

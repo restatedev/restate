@@ -48,7 +48,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     drop(partition_store);
     partition_store_manager
         .close_partition_store(partition_id)
-        .await;
+        .await?;
 
     let mut partition_store = partition_store_manager
         .open_partition_store(
