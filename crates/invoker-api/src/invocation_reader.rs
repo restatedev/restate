@@ -72,9 +72,9 @@ pub trait InvocationReaderTransaction {
     type StateIter: Iterator<Item = (Bytes, Bytes)> + Send + 'static;
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Read the journal and the journal metadata for the given invocation id.
+    /// Read the journal for the given invocation id.
     ///
-    /// When Option is none, no journal was found for the given invocation id.
+    /// Returns `None` when either the invocation was not found, or the invocation is not in `Invoked` state.
     fn read_journal<'a>(
         &'a mut self,
         fid: &'a InvocationId,
