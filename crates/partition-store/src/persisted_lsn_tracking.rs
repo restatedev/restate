@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::io::Cursor;
 
 use rocksdb::event_listener::{EventListener, FlushJobInfo};
 use rocksdb::table_properties::{
@@ -84,7 +83,7 @@ impl TablePropertiesCollector for LatestAppliedLsnCollector {
     }
 
     fn name(&self) -> &CStr {
-        c"LsnTrackingCollector"
+        c"LatestAppliedLsnCollector"
     }
 }
 
@@ -148,14 +147,14 @@ fn applied_lsn_property_name(partition_id: PartitionId) -> String {
 /// Given a raw key-value pair, extract the partition id and its applied LSN, if the key is an Applied LSN FSM variable
 #[inline]
 fn extract_partition_applied_lsn(
-    key: &[u8],
+    mut key: &[u8],
     value: &[u8],
 ) -> Result<Option<(PartitionId, Lsn)>, StorageError> {
     if !key.starts_with(KeyKind::Fsm.as_bytes()) {
         return Ok(None);
     }
 
-    let fsm_key = PartitionStateMachineKey::deserialize_from(&mut Cursor::new(key))?;
+    let fsm_key = PartitionStateMachineKey::deserialize_from(&mut key)?;
     if fsm_key.state_id == Some(fsm_variable::APPLIED_LSN) {
         if let Some(padded_partition_id) = fsm_key.partition_id {
             let partition_id = PartitionId::from(padded_partition_id);
@@ -168,8 +167,8 @@ fn extract_partition_applied_lsn(
 }
 
 #[inline]
-fn decode_lsn(value: &[u8]) -> Result<Lsn, StorageError> {
-    SequenceNumber::decode(&mut Cursor::new(value)).map(|sn| Lsn::from(u64::from(sn)))
+fn decode_lsn(mut value: &[u8]) -> Result<Lsn, StorageError> {
+    SequenceNumber::decode(&mut value).map(|sn| Lsn::from(u64::from(sn)))
 }
 
 #[cfg(test)]
@@ -192,8 +191,8 @@ mod tests {
             state_id: Some(fsm_variable::APPLIED_LSN),
         };
 
-        let mut key_buf = applied_lsn_key.serialize();
-        KeyKind::Fsm.serialize(&mut key_buf);
+        let mut key_buf = BytesMut::new();
+        applied_lsn_key.serialize_to(&mut key_buf);
         let key = key_buf.as_ref();
 
         let mut value_buf = BytesMut::new();
@@ -232,8 +231,8 @@ mod tests {
             state_id: Some(fsm_variable::INBOX_SEQ_NUMBER),
         };
 
-        let mut key_buf = other_fsm_key.serialize();
-        KeyKind::Fsm.serialize(&mut key_buf);
+        let mut key_buf = BytesMut::new();
+        other_fsm_key.serialize_to(&mut key_buf);
         let key = key_buf.as_ref();
 
         let mut value_buf = BytesMut::new();

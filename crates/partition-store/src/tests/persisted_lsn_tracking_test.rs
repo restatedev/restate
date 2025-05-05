@@ -20,7 +20,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     let partition_store_manager = PartitionStoreManager::create(
         Constant::new(StorageOptions::default()),
         &[],
-        Some(persisted_lsn_tx),
+        Some(persisted_lsn_tx.clone()),
     )
     .await?;
 
@@ -51,6 +51,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     partition_store_manager
         .close_partition_store(partition_id)
         .await?;
+    persisted_lsn_tx.send_replace((PartitionId::MIN, Lsn::INVALID));
 
     let mut partition_store = partition_store_manager
         .open_partition_store(
