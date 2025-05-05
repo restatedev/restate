@@ -117,13 +117,19 @@ pub async fn create_deployment<V>(
         ApplyMode::Apply
     };
 
-    let (id, services) = state
+    let (deployment, services) = state
         .schema_registry
         .register_deployment(discover_endpoint, force, apply_mode)
         .await
         .inspect_err(|e| warn_it!(e))?;
 
-    let response_body = RegisterDeploymentResponse { id, services };
+    let response_body = RegisterDeploymentResponse {
+        id: deployment.id,
+        services,
+        min_protocol_version: *deployment.metadata.supported_protocol_versions.start(),
+        max_protocol_version: *deployment.metadata.supported_protocol_versions.end(),
+        sdk_version: deployment.metadata.sdk_version,
+    };
 
     Ok((
         StatusCode::CREATED,

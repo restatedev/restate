@@ -60,6 +60,8 @@ pub struct DeploymentMetadata {
     pub ty: DeploymentType,
     pub delivery_options: DeliveryOptions,
     pub supported_protocol_versions: RangeInclusive<i32>,
+    /// Declared SDK during discovery
+    pub sdk_version: Option<String>,
     pub created_at: MillisSinceEpoch,
 }
 
@@ -232,6 +234,7 @@ impl DeploymentMetadata {
         http_version: http::Version,
         delivery_options: DeliveryOptions,
         supported_protocol_versions: RangeInclusive<i32>,
+        sdk_version: Option<String>,
     ) -> Self {
         Self {
             ty: DeploymentType::Http {
@@ -242,6 +245,7 @@ impl DeploymentMetadata {
             delivery_options,
             created_at: MillisSinceEpoch::now(),
             supported_protocol_versions,
+            sdk_version,
         }
     }
 
@@ -250,6 +254,7 @@ impl DeploymentMetadata {
         assume_role_arn: Option<ByteString>,
         delivery_options: DeliveryOptions,
         supported_protocol_versions: RangeInclusive<i32>,
+        sdk_version: Option<String>,
     ) -> Self {
         Self {
             ty: DeploymentType::Lambda {
@@ -259,6 +264,7 @@ impl DeploymentMetadata {
             delivery_options,
             created_at: MillisSinceEpoch::now(),
             supported_protocol_versions,
+            sdk_version,
         }
     }
 
@@ -316,6 +322,7 @@ pub mod test_util {
                 http::Version::HTTP_2,
                 Default::default(),
                 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
+                None,
             );
 
             Deployment { id, metadata }
@@ -329,6 +336,7 @@ pub mod test_util {
                 http::Version::HTTP_2,
                 Default::default(),
                 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
+                None,
             );
             Deployment { id, metadata }
         }

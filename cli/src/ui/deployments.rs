@@ -103,6 +103,7 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                ..
             } => {
                 let protocol_type = match protocol_type {
                     ProtocolType::RequestResponse => "Request/Response",
@@ -126,6 +127,7 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                ..
             } => {
                 table.add_kv_row("Protocol Style:", "Request/Response");
                 table.add_kv_row_if(

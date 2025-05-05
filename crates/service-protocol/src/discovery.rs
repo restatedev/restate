@@ -133,6 +133,7 @@ pub struct DiscoveredMetadata {
     // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
     // and we need to represent unknown later versions
     pub supported_protocol_versions: RangeInclusive<i32>,
+    pub sdk_version: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -376,6 +377,7 @@ impl ServiceDiscovery {
 
         let min_version = endpoint_response.min_protocol_version as i32;
         let mut max_version = endpoint_response.max_protocol_version as i32;
+        let mut sdk_version = None;
 
         // Fix for the SDK-Typescript bad protocol version,
         //  see https://github.com/restatedev/sdk-typescript/pull/418
@@ -390,6 +392,7 @@ impl ServiceDiscovery {
                     );
                     max_version = 1;
                 }
+                sdk_version = Some(x_restate_server.to_owned());
             }
         }
 
@@ -413,6 +416,7 @@ impl ServiceDiscovery {
             // we need to store the raw representation since the runtime might not know the latest
             // version yet.
             supported_protocol_versions: min_version..=max_version,
+            sdk_version,
         })
     }
 
