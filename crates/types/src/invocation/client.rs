@@ -14,11 +14,12 @@ use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse, 
 use crate::journal_v2::Signal;
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
-use std::error::Error;
-use std::fmt;
 
+#[derive(Debug, thiserror::Error)]
+#[error("{inner}")]
 pub struct InvocationClientError {
     is_safe_to_retry: bool,
+    #[source]
     inner: anyhow::Error,
 }
 
@@ -36,34 +37,6 @@ impl InvocationClientError {
 
     pub fn into_inner(self) -> anyhow::Error {
         self.inner
-    }
-}
-
-impl fmt::Debug for InvocationClientError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.inner, f)
-    }
-}
-
-impl fmt::Display for InvocationClientError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.inner, f)
-    }
-}
-
-impl Error for InvocationClientError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.inner.source()
-    }
-
-    #[allow(deprecated)]
-    fn description(&self) -> &str {
-        self.inner.description()
-    }
-
-    #[allow(deprecated)]
-    fn cause(&self) -> Option<&dyn Error> {
-        self.inner.cause()
     }
 }
 
@@ -110,7 +83,7 @@ pub enum GetInvocationOutputResponse {
 
 /// This trait provides the functionalities to interact with Restate invocations.
 pub trait InvocationClient {
-    /// Append the invocation to the log, waiting for the submit notification emitted by the PartitionProcessor.
+    /// Append the invocation to the log, waiting for the PP to emit [`SubmittedInvocationNotification`] when the command is processed.
     fn append_invocation_and_wait_submit_notification(
         &self,
         request_id: PartitionProcessorRpcRequestId,
@@ -124,24 +97,28 @@ pub trait InvocationClient {
         invocation_request: InvocationRequest,
     ) -> impl Future<Output = Result<InvocationOutput, InvocationClientError>> + Send;
 
+    /// Attach to an existing invocation and wait for its output.
     fn attach_invocation(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
     ) -> impl Future<Output = Result<AttachInvocationResponse, InvocationClientError>> + Send;
 
+    /// Get an invocation output, when present.
     fn get_invocation_output(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
     ) -> impl Future<Output = Result<GetInvocationOutputResponse, InvocationClientError>> + Send;
 
+    /// **DEPRECATED** Append [`InvocationResponse`] to an existing invocation journal. Only ServiceProtocol <= 3
     fn append_invocation_response(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_response: InvocationResponse,
     ) -> impl Future<Output = Result<(), InvocationClientError>> + Send;
 
+    /// Append a signal to an existing invocation journal.
     fn append_signal(
         &self,
         request_id: PartitionProcessorRpcRequestId,
