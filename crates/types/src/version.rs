@@ -44,6 +44,10 @@ impl Version {
     pub fn prev(self) -> Self {
         Version(self.0.saturating_sub(1))
     }
+
+    pub fn invalid() -> Self {
+        Version::INVALID
+    }
 }
 
 impl From<crate::protobuf::common::Version> for Version {

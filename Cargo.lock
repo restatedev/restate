@@ -6436,8 +6436,10 @@ dependencies = [
 name = "restate-admin"
 version = "1.3.3-dev"
 dependencies = [
+ "ahash 0.8.11",
  "anyhow",
  "arc-swap",
+ "assert2",
  "axum",
  "bytes",
  "bytestring",
@@ -7905,6 +7907,7 @@ version = "1.3.3-dev"
 dependencies = [
  "anyhow",
  "arrow",
+ "assert2",
  "bytes",
  "bytesize",
  "bytestring",

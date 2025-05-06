@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use restate_types::cluster::cluster_state::{ClusterState, RunMode};
+use restate_types::cluster::cluster_state::{ClusterState, ReplayStatus, RunMode};
 use restate_types::identifiers::PartitionId;
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
@@ -18,7 +18,7 @@ use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 /// information and the target scheduling plan to instruct nodes to start/stop partition processors.
 #[derive(Debug, Default, Clone)]
 pub struct ObservedClusterState {
-    partitions: HashMap<PartitionId, ObservedPartitionState>,
+    pub partitions: HashMap<PartitionId, ObservedPartitionState>,
     // The logic that uses ObservedClusterState assumes that it has a snapshot of the current alive
     // nodes. We could use restate_core::cluster_state::ClusterState directly, if we kept the read
     // lock. However, since ObservedClusterState is held across await points, this would prevent
@@ -91,13 +91,25 @@ impl ObservedClusterState {
     pub fn update_partitions(&mut self, cluster_state: &ClusterState) {
         // update node_sets and leaders of partitions
         for alive_node in cluster_state.alive_nodes() {
+            if !self
+                .alive_nodes
+                .contains_key(&alive_node.generational_node_id.as_plain())
+            {
+                // ignore nodes that are not alive according to the cluster state
+                continue;
+            }
+
             let mut current_partitions = HashSet::default();
 
             let node_id = alive_node.generational_node_id.as_plain();
 
             for (partition_id, status) in &alive_node.partitions {
                 let partition = self.partitions.entry(*partition_id).or_default();
-                partition.upsert_partition_processor(node_id, status.effective_mode);
+                partition.upsert_partition_processor(
+                    node_id,
+                    status.effective_mode,
+                    status.replay_status,
+                );
 
                 current_partitions.insert(*partition_id);
             }
@@ -119,11 +131,25 @@ impl ObservedClusterState {
         self.partitions
             .retain(|_, partition| !partition.partition_processors.is_empty());
     }
+
+    /// Checks whether there exists a partition processor on the given node for the given partition
+    /// which is active (wrt [`ReplayStatus`]).
+    pub fn is_partition_processor_active(
+        &self,
+        partition_id: &PartitionId,
+        node_id: &PlainNodeId,
+    ) -> bool {
+        self.partitions
+            .get(partition_id)
+            .and_then(|partition| partition.partition_processors.get(node_id))
+            .map(|processor_state| processor_state.replay_status == ReplayStatus::Active)
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ObservedPartitionState {
-    pub partition_processors: HashMap<PlainNodeId, RunMode>,
+    pub partition_processors: HashMap<PlainNodeId, PartitionProcessorState>,
 }
 
 impl ObservedPartitionState {
@@ -131,21 +157,48 @@ impl ObservedPartitionState {
         self.partition_processors.remove(node_id);
     }
 
-    fn upsert_partition_processor(&mut self, node_id: PlainNodeId, run_mode: RunMode) {
-        self.partition_processors.insert(node_id, run_mode);
+    fn upsert_partition_processor(
+        &mut self,
+        node_id: PlainNodeId,
+        run_mode: RunMode,
+        replay_status: ReplayStatus,
+    ) {
+        self.partition_processors.insert(
+            node_id,
+            PartitionProcessorState {
+                run_mode,
+                replay_status,
+            },
+        );
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartitionProcessorState {
+    pub run_mode: RunMode,
+    pub replay_status: ReplayStatus,
+}
+
+impl PartitionProcessorState {
+    pub fn new(run_mode: RunMode, replay_status: ReplayStatus) -> Self {
+        Self {
+            run_mode,
+            replay_status,
+        }
     }
 }
 
 #[cfg(test)]
 pub mod tests {
     use crate::cluster_controller::observed_cluster_state::{
-        ObservedClusterState, ObservedPartitionState,
+        ObservedClusterState, ObservedPartitionState, PartitionProcessorState,
     };
     use googletest::prelude::{empty, eq};
     use googletest::{assert_that, elements_are, unordered_elements_are};
     use itertools::Itertools;
     use restate_types::cluster::cluster_state::{
-        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
+        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, ReplayStatus,
+        RunMode,
     };
     use restate_types::identifiers::PartitionId;
     use restate_types::partition_table::PartitionTable;
@@ -170,10 +223,6 @@ pub mod tests {
             let Some(observed_state) = observed_state.partition_state(partition_id) else {
                 panic!("partition {partition_id} not found in observed state");
             };
-            assert_that!(
-                observed_state.partition_processors.len(),
-                eq(partition.placement.len())
-            );
 
             for (position, node_id) in partition.placement.iter().with_position() {
                 let run_mode = if matches!(
@@ -185,8 +234,11 @@ pub mod tests {
                     RunMode::Follower
                 };
                 assert_that!(
-                    observed_state.partition_processors.get(node_id),
-                    eq(Some(&run_mode))
+                    observed_state
+                        .partition_processors
+                        .get(node_id)
+                        .map(|p| p.run_mode),
+                    eq(Some(run_mode))
                 );
             }
         }
@@ -212,11 +264,12 @@ pub mod tests {
             partition_id: PartitionId,
             node_id: PlainNodeId,
             run_mode: RunMode,
+            replay_status: ReplayStatus,
         ) {
             self.partitions
                 .entry(partition_id)
                 .or_default()
-                .upsert_partition_processor(node_id, run_mode);
+                .upsert_partition_processor(node_id, run_mode, replay_status);
             self.nodes_to_partitions
                 .entry(node_id)
                 .or_default()
@@ -225,7 +278,9 @@ pub mod tests {
     }
 
     impl ObservedPartitionState {
-        pub fn new(partition_processors: impl IntoIterator<Item = (PlainNodeId, RunMode)>) -> Self {
+        pub fn new(
+            partition_processors: impl IntoIterator<Item = (PlainNodeId, PartitionProcessorState)>,
+        ) -> Self {
             let partition_processors: HashMap<_, _, _> = partition_processors.into_iter().collect();
 
             Self {
@@ -238,12 +293,16 @@ pub mod tests {
         PartitionProcessorStatus {
             planned_mode: RunMode::Leader,
             effective_mode: RunMode::Leader,
+            replay_status: ReplayStatus::Active,
             ..PartitionProcessorStatus::default()
         }
     }
 
     fn follower_partition() -> PartitionProcessorStatus {
-        PartitionProcessorStatus::default()
+        PartitionProcessorStatus {
+            replay_status: ReplayStatus::Active,
+            ..PartitionProcessorStatus::default()
+        }
     }
 
     fn alive_node(
@@ -273,16 +332,34 @@ pub mod tests {
         let mut state = ObservedPartitionState::default();
         assert_that!(state.partition_processors, empty());
 
-        state.upsert_partition_processor(node_1, RunMode::Leader);
-        state.upsert_partition_processor(node_2, RunMode::Leader);
-        state.upsert_partition_processor(node_3, RunMode::Follower);
+        state.upsert_partition_processor(node_1, RunMode::Leader, ReplayStatus::Active);
+        state.upsert_partition_processor(node_2, RunMode::Leader, ReplayStatus::Active);
+        state.upsert_partition_processor(node_3, RunMode::Follower, ReplayStatus::Active);
 
         assert_that!(
             state.partition_processors,
             unordered_elements_are![
-                (eq(node_1), eq(RunMode::Leader)),
-                (eq(node_2), eq(RunMode::Leader)),
-                (eq(node_3), eq(RunMode::Follower))
+                (
+                    eq(node_1),
+                    eq(PartitionProcessorState::new(
+                        RunMode::Leader,
+                        ReplayStatus::Active
+                    ))
+                ),
+                (
+                    eq(node_2),
+                    eq(PartitionProcessorState::new(
+                        RunMode::Leader,
+                        ReplayStatus::Active
+                    ))
+                ),
+                (
+                    eq(node_3),
+                    eq(PartitionProcessorState::new(
+                        RunMode::Follower,
+                        ReplayStatus::Active
+                    ))
+                )
             ]
         );
 
@@ -291,8 +368,20 @@ pub mod tests {
         assert_that!(
             state.partition_processors,
             unordered_elements_are![
-                (eq(node_1), eq(RunMode::Leader)),
-                (eq(node_3), eq(RunMode::Follower))
+                (
+                    eq(node_1),
+                    eq(PartitionProcessorState::new(
+                        RunMode::Leader,
+                        ReplayStatus::Active
+                    ))
+                ),
+                (
+                    eq(node_3),
+                    eq(PartitionProcessorState::new(
+                        RunMode::Follower,
+                        ReplayStatus::Active
+                    ))
+                )
             ]
         );
     }
@@ -369,15 +458,27 @@ pub mod tests {
                 (
                     eq(partition_1),
                     eq(ObservedPartitionState::new([
-                        (node_1.as_plain(), RunMode::Leader),
-                        (node_2.as_plain(), RunMode::Follower)
+                        (
+                            node_1.as_plain(),
+                            PartitionProcessorState::new(RunMode::Leader, ReplayStatus::Active)
+                        ),
+                        (
+                            node_2.as_plain(),
+                            PartitionProcessorState::new(RunMode::Follower, ReplayStatus::Active)
+                        )
                     ]))
                 ),
                 (
                     eq(partition_2),
                     eq(ObservedPartitionState::new([
-                        (node_1.as_plain(), RunMode::Leader),
-                        (node_2.as_plain(), RunMode::Follower)
+                        (
+                            node_1.as_plain(),
+                            PartitionProcessorState::new(RunMode::Leader, ReplayStatus::Active)
+                        ),
+                        (
+                            node_2.as_plain(),
+                            PartitionProcessorState::new(RunMode::Follower, ReplayStatus::Active)
+                        )
                     ]))
                 )
             ]
@@ -429,14 +530,14 @@ pub mod tests {
                     eq(partition_2),
                     eq(ObservedPartitionState::new([(
                         node_1.as_plain(),
-                        RunMode::Leader
+                        PartitionProcessorState::new(RunMode::Leader, ReplayStatus::Active)
                     )]))
                 ),
                 (
                     eq(partition_3),
                     eq(ObservedPartitionState::new([(
                         node_1.as_plain(),
-                        RunMode::Follower
+                        PartitionProcessorState::new(RunMode::Follower, ReplayStatus::Active)
                     )]))
                 ),
             ]

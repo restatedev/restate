@@ -8,34 +8,41 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeMap, HashSet};
-use std::sync::Arc;
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::collections::hash_map::Entry;
+use std::iter;
 use std::time::Duration;
 
-use itertools::Itertools;
-use rand::seq::IteratorRandom;
-use tracing::{Level, debug, enabled, info, instrument, trace, warn};
+use ahash::HashMap;
+use assert2::let_assert;
+use tracing::{Level, debug, enabled, info, instrument, trace};
 
+use crate::cluster_controller::logs_controller;
+use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_futures_util::overdue::OverdueLoggingExt;
-use restate_metadata_store::{ReadError, ReadWriteError, WriteError};
+use restate_metadata_store::{
+    MetadataStoreClient, ReadError, ReadModifyWriteError, ReadWriteError, WriteError,
+};
 use restate_types::cluster::cluster_state::RunMode;
+use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
-use restate_types::locality::LocationScope;
 use restate_types::logs::LogId;
 use restate_types::metadata::Precondition;
+use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::{
-    Partition, PartitionPlacement, PartitionReplication, PartitionTable,
+use restate_types::partition_table::{PartitionPlacement, PartitionReplication, PartitionTable};
+use restate_types::partitions::{PartitionConfiguration, worker_candidate_filter};
+use restate_types::replication::balanced_spread_selector::{
+    BalancedSpreadSelector, SelectorOptions,
 };
-use restate_types::{NodeId, PlainNodeId, Version};
-
-use crate::cluster_controller::logs_controller;
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use restate_types::replication::{NodeSet, ReplicationProperty};
+use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading scheduling plan from metadata store: {0}")]
@@ -73,9 +80,129 @@ impl<T: PartitionProcessorPlacementHints> PartitionProcessorPlacementHints for &
     }
 }
 
+#[derive(Debug, Clone)]
+struct PartitionState {
+    leader: Option<PlainNodeId>,
+    current: PartitionConfiguration,
+    next: Option<PartitionConfiguration>,
+}
+
+impl PartitionState {
+    fn new(current: PartitionConfiguration, next: Option<PartitionConfiguration>) -> Self {
+        Self {
+            leader: None,
+            current,
+            next,
+        }
+    }
+
+    fn update_configuration(
+        &mut self,
+        current: PartitionConfiguration,
+        next: Option<PartitionConfiguration>,
+    ) {
+        if self.current.version() < current.version() {
+            self.current = current;
+        }
+
+        if let Some(next) = next {
+            if self
+                .next
+                .as_ref()
+                .is_none_or(|my_next| my_next.version() < next.version())
+            {
+                self.next = Some(next);
+            }
+        }
+
+        if self
+            .next
+            .as_ref()
+            .is_some_and(|next| next.version() <= self.current.version())
+        {
+            self.next = None;
+        }
+    }
+
+    fn replicas(&self) -> impl Iterator<Item = &PlainNodeId> {
+        self.current.replica_set().iter().chain(
+            self.next
+                .as_ref()
+                .map(|config| itertools::Either::Left(config.replica_set().iter()))
+                .unwrap_or(itertools::Either::Right(iter::empty())),
+        )
+    }
+
+    fn contains_replica_current(&self, node_id: PlainNodeId) -> bool {
+        self.current.replica_set().contains(node_id)
+    }
+
+    fn generate_instructions(
+        &self,
+        partition_id: &PartitionId,
+        observed_cluster_state: &ObservedClusterState,
+        commands: &mut BTreeMap<PlainNodeId, Vec<ControlProcessor>>,
+    ) {
+        // todo: Avoid cloning of node_set if this becomes measurable in flame graphs
+        let mut observed_state = observed_cluster_state
+            .partition_state(partition_id)
+            .map(|state| state.partition_processors.clone())
+            .unwrap_or_default();
+
+        if let Some(leader) = &self.leader {
+            if !observed_state
+                .remove(leader)
+                .is_some_and(|state| state.run_mode == RunMode::Leader)
+            {
+                commands.entry(*leader).or_default().push(ControlProcessor {
+                    partition_id: *partition_id,
+                    command: ProcessorCommand::from(RunMode::Leader),
+                });
+            }
+        }
+
+        for node_id in self.replicas() {
+            let run_mode = if self.leader == Some(*node_id) {
+                RunMode::Leader
+            } else {
+                RunMode::Follower
+            };
+            if !observed_state
+                .remove(node_id)
+                .is_some_and(|state| state.run_mode == run_mode)
+            {
+                commands
+                    .entry(*node_id)
+                    .or_default()
+                    .push(ControlProcessor {
+                        partition_id: *partition_id,
+                        command: ProcessorCommand::from(run_mode),
+                    });
+            }
+        }
+
+        // all remaining entries in observed_state are not part of target, thus, stop them!
+        for node_id in observed_state.keys() {
+            commands
+                .entry(*node_id)
+                .or_default()
+                .push(ControlProcessor {
+                    partition_id: *partition_id,
+                    command: ProcessorCommand::Stop,
+                });
+        }
+    }
+}
+
+struct PartitionConfigurationUpdate {
+    current: PartitionConfiguration,
+    next: Option<PartitionConfiguration>,
+}
+
 pub struct Scheduler<T> {
     metadata_writer: MetadataWriter,
     networking: Networking<T>,
+    partitions: HashMap<PartitionId, PartitionState>,
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -87,6 +214,23 @@ impl<T: TransportConnect> Scheduler<T> {
         Self {
             metadata_writer,
             networking,
+            partitions: HashMap::default(),
+        }
+    }
+
+    pub fn update_partition_configuration(
+        &mut self,
+        partition_id: PartitionId,
+        current: PartitionConfiguration,
+        next: Option<PartitionConfiguration>,
+    ) {
+        match self.partitions.entry(partition_id) {
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().update_configuration(current, next);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(PartitionState::new(current, next));
+            }
         }
     }
 
@@ -97,27 +241,29 @@ impl<T: TransportConnect> Scheduler<T> {
         placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
         trace!(?observed_cluster_state, "On observed cluster state");
-        let alive_workers = observed_cluster_state
-            .alive_nodes()
-            .map(|node_id| (*node_id).as_plain())
-            .filter(|node_id| nodes_config.has_worker_role(node_id))
-            .collect();
 
-        self.update_partition_placement(&alive_workers, nodes_config, placement_hints)
-            .await?;
+        self.ensure_valid_partition_configuration(
+            observed_cluster_state,
+            nodes_config,
+            placement_hints,
+        )
+        .await?;
+
+        // todo move draining workers to disabled if they no longer run any partition processors;
+        //  since the worker state is stored in the NodesConfiguration and the replica sets are
+        //  stored in the EpochMetadata we cannot guarantee linearizability. Hence, when setting a
+        //  worker to draining it might still be added to replica sets by cluster controllers until
+        //  they learn about the updated nodes configuration. To reduce the risk of this, we should
+        //  wait a little bit to give the nodes configuration time to be spread across the cluster.
 
         self.instruct_nodes(observed_cluster_state)?;
 
         Ok(())
     }
 
-    pub async fn _on_tick(&mut self) {
-        // nothing to do since we don't make time based scheduling decisions yet
-    }
-
-    async fn update_partition_placement(
+    async fn ensure_valid_partition_configuration(
         &mut self,
-        alive_workers: &HashSet<PlainNodeId>,
+        observed_cluster_state: &ObservedClusterState,
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
@@ -125,30 +271,134 @@ impl<T: TransportConnect> Scheduler<T> {
         let partition_table = Metadata::with_current(|m| m.partition_table_ref());
 
         if logs.num_logs() != partition_table.len() {
-            // either the partition table or the logs are not fully initialized
-            // hence there is nothing we can do atm.
-            // we need to wait until both partitions and logs are created
+            // either the partition table or the logs are not fully initialized, hence there is
+            // nothing we can do atm. we need to wait until both partitions and logs are created
             return Ok(());
         }
         let version = partition_table.version();
 
-        // todo(azmy): avoid cloning the partition table every time by keeping
-        //  the latest built always available as a field
-        let mut builder = partition_table.clone().into_builder();
-        let partition_replication = builder.partition_replication().clone();
+        // todo a bulk get of all EpochMetadata if self.partitions.is_empty()
 
-        builder.for_each(|partition_id, placement| {
-            let mut target_state = TargetPartitionPlacementState::new(placement);
-            self.ensure_replication(
+        for partition_id in partition_table.iter_ids() {
+            let entry = self.partitions.entry(*partition_id);
+
+            // make sure that we have a valid partition processor configuration
+            let mut occupied_entry = match entry {
+                Entry::Occupied(mut entry) if entry.get().current.is_valid() => {
+                    if Self::requires_reconfiguration(entry.get(), nodes_config) {
+                        trace!("Partition {} requires reconfiguration", partition_id);
+
+                        let_assert!(
+                            PartitionReplication::Limit(partition_replication) =
+                                partition_table.replication(),
+                            "Limit should be the only used partition replication type"
+                        );
+
+                        // select all valid worker candidates as the preferred nodes for the next
+                        // configuration
+                        let preferred_nodes = entry
+                            .get()
+                            .replicas()
+                            .filter(|replica| {
+                                // only keep alive nodes in the preferred nodes set to allow moving
+                                // slowly to a more evenly spread replica set if nodes are currently
+                                // dead.
+                                observed_cluster_state.alive_generation(**replica).is_some()
+                            })
+                            .copied()
+                            .collect();
+
+                        if let Some(next) = Self::choose_partition_configuration(
+                            *partition_id,
+                            nodes_config,
+                            partition_replication.clone(),
+                            preferred_nodes,
+                        ) {
+                            *entry.get_mut() = Self::reconfigure_partition_configuration(
+                                self.metadata_writer.raw_metadata_store_client(),
+                                *partition_id,
+                                entry
+                                    .get()
+                                    .next
+                                    .as_ref()
+                                    .map(|next| next.version())
+                                    .unwrap_or_else(|| entry.get().current.version()),
+                                next,
+                            )
+                            .await?;
+                        }
+                    }
+
+                    entry
+                }
+                entry => {
+                    let preferred_nodes: NodeSet = placement_hints
+                        .preferred_nodes(partition_id)
+                        .cloned()
+                        .chain(placement_hints.preferred_leader(partition_id))
+                        .collect();
+                    let_assert!(
+                        PartitionReplication::Limit(partition_replication) =
+                            partition_table.replication(),
+                        "Limit should be the only used partition replication type"
+                    );
+
+                    // no or no valid current configuration, pick a valid configuration
+                    if let Some(current) = Self::choose_partition_configuration(
+                        *partition_id,
+                        nodes_config,
+                        partition_replication.clone(),
+                        preferred_nodes,
+                    ) {
+                        entry.insert_entry(
+                            Self::store_initial_partition_configuration(
+                                self.metadata_writer.raw_metadata_store_client(),
+                                *partition_id,
+                                current,
+                            )
+                            .await?,
+                        )
+                    } else {
+                        // no valid configuration, skip
+                        continue;
+                    }
+                }
+            };
+
+            // check whether we can transition from the current configuration to the next
+            // configuration, which is possible as soon as a single partition processor from the
+            // next configuration has become active
+            if let Some(next) = &occupied_entry.get().next {
+                if next.replica_set().iter().any(|node_id| {
+                    observed_cluster_state.is_partition_processor_active(partition_id, node_id)
+                }) {
+                    let partition_configuration_update = Self::complete_reconfiguration(
+                        self.metadata_writer.raw_metadata_store_client(),
+                        *partition_id,
+                        occupied_entry.get().current.version(),
+                        next.version(),
+                    )
+                    .await?;
+                    occupied_entry.get_mut().update_configuration(
+                        partition_configuration_update.current,
+                        partition_configuration_update.next,
+                    );
+                }
+            }
+
+            // select the leader based on the observed cluster state
+            self.select_leader(
                 partition_id,
-                &mut target_state,
-                alive_workers,
-                &partition_replication,
-                nodes_config,
-                &placement_hints,
+                observed_cluster_state,
+                placement_hints.preferred_leader(partition_id),
             );
+        }
 
-            self.ensure_leadership(partition_id, &mut target_state, &placement_hints);
+        // update the PartitionTable placement which is still needed for routing messages from the
+        // ingress and datafusion
+        let mut builder = partition_table.clone().into_builder();
+        builder.for_each(|partition_id, placement| {
+            self.update_placement(partition_id, placement);
         });
 
         if let Some(partition_table) = builder.build_if_modified() {
@@ -172,6 +422,271 @@ impl<T: TransportConnect> Scheduler<T> {
         }
 
         Ok(())
+    }
+
+    async fn store_initial_partition_configuration(
+        metadata_store_client: &MetadataStoreClient,
+        partition_id: PartitionId,
+        current: PartitionConfiguration,
+    ) -> Result<PartitionState, Error> {
+        match metadata_store_client
+            .read_modify_write(
+                partition_processor_epoch_key(partition_id),
+                |epoch_metadata: Option<EpochMetadata>| {
+                    if let Some(epoch_metadata) = epoch_metadata {
+                        // check if current has been modified in the meantime
+                        if epoch_metadata.current().version() < current.version() {
+                            Ok(epoch_metadata.update_current_configuration(current.clone()))
+                        } else {
+                            let (_, _, current, next) = epoch_metadata.into_inner();
+                            Err(PartitionConfigurationUpdate { current, next })
+                        }
+                    } else {
+                        Ok(EpochMetadata::new(current.clone(), None))
+                    }
+                },
+            )
+            .await
+        {
+            Ok(_) => {
+                debug!("Initialized partition {} with {:?}", partition_id, current);
+                Ok(PartitionState::new(current, None))
+            }
+            Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => Ok(
+                PartitionState::new(concurrent_update.current, concurrent_update.next),
+            ),
+            Err(ReadModifyWriteError::ReadWrite(err)) => Err(err.into()),
+        }
+    }
+
+    async fn reconfigure_partition_configuration(
+        metadata_store_client: &MetadataStoreClient,
+        partition_id: PartitionId,
+        expected_next_version: Version,
+        next: PartitionConfiguration,
+    ) -> Result<PartitionState, Error> {
+        match metadata_store_client
+            .read_modify_write(
+                partition_processor_epoch_key(partition_id),
+                |epoch_metadata: Option<EpochMetadata>| {
+                    if let Some(epoch_metadata) = epoch_metadata {
+                        // Check if next has been modified in the meantime. If next is not present,
+                        // then check whether current contains a larger version than the expected next
+                        // version because we might have completed a reconfiguration in the meantime.
+                        if epoch_metadata
+                            .next()
+                            .map(|next| next.version())
+                            .unwrap_or(epoch_metadata.current().version())
+                            <= expected_next_version
+                        {
+                            Ok(epoch_metadata.reconfigure(next.clone()))
+                        } else {
+                            let (_, _, current, next) = epoch_metadata.into_inner();
+                            Err(PartitionConfigurationUpdate { current, next })
+                        }
+                    } else {
+                        // missing epoch metadata so we set next to be current right away
+                        Ok(EpochMetadata::new(next.clone(), None))
+                    }
+                },
+            )
+            .await
+        {
+            Ok(epoch_metadata) => {
+                debug!("Reconfigured partition {} to {:?}", partition_id, next);
+                let (_, _, current, next) = epoch_metadata.into_inner();
+                Ok(PartitionState::new(current, next))
+            }
+            Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => Ok(
+                PartitionState::new(concurrent_update.current, concurrent_update.next),
+            ),
+            Err(ReadModifyWriteError::ReadWrite(err)) => Err(err.into()),
+        }
+    }
+
+    async fn complete_reconfiguration(
+        metadata_store_client: &MetadataStoreClient,
+        partition_id: PartitionId,
+        current_version: Version,
+        next_version: Version,
+    ) -> Result<PartitionConfigurationUpdate, Error> {
+        match metadata_store_client.read_modify_write(partition_processor_epoch_key(partition_id), |epoch_metadata: Option<EpochMetadata>| {
+            match epoch_metadata {
+                None => panic!("Did not find epoch metadata which should be present. This indicates a corruption of the metadata store."),
+                Some(epoch_metadata) => {
+                    let Some(next_version) = epoch_metadata.next().map(|config| config.version()) else {
+                        // if there is no next configuration, then a concurrent modification has happened
+                        let (_, _, current, next) = epoch_metadata.into_inner();
+                        return Err(PartitionConfigurationUpdate {
+                            current,
+                            next,
+                        });
+                    };
+
+                    match next_version.cmp(&next_version) {
+                        Ordering::Less => unreachable!("we should not know about a newer next configuration than the metadata store"),
+                        Ordering::Equal => Ok(epoch_metadata.complete_reconfiguration()),
+                        Ordering::Greater => {
+                            let (_, _, current, next) = epoch_metadata.into_inner();
+                            Err(PartitionConfigurationUpdate {
+                                current,
+                                next,
+                            })
+                        }
+                    }
+                }
+            }
+        }).await {
+            Ok(epoch_metadata) => {
+                info!("Successfully transitioned from partition processor configuration {} to {}", current_version, next_version);
+                let (_, _, current, next) = epoch_metadata.into_inner();
+                Ok(PartitionConfigurationUpdate {
+                    current,
+                    next,
+                })
+            }
+            Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => {
+                Ok(concurrent_update)
+            }
+            Err(ReadModifyWriteError::ReadWrite(err)) => {
+                Err(err.into())
+            }
+        }
+    }
+
+    /// Checks whether the given partition requires reconfiguration. A partition requires
+    /// reconfiguration in the following cases:
+    ///
+    /// * next contains a replica that is no longer a valid worker candidate.
+    /// * current contains a replica that is no longer a valid worker candidate, and there is no
+    ///   ongoing reconfiguration happening already
+    ///
+    /// In this case, the method returns true, otherwise false.
+    fn requires_reconfiguration(
+        partition_state: &PartitionState,
+        nodes_config: &NodesConfiguration,
+    ) -> bool {
+        let current_requires_reconfiguration =
+            partition_state.current.replica_set().iter().any(|replica| {
+                !nodes_config
+                    .find_node_by_id(*replica)
+                    .map(|node_config| worker_candidate_filter(*replica, node_config))
+                    .unwrap_or_default()
+            });
+
+        let next_requires_reconfiguration = partition_state.next.as_ref().map(|next| {
+            next.replica_set().iter().any(|replica| {
+                !nodes_config
+                    .find_node_by_id(*replica)
+                    .map(|node_config| worker_candidate_filter(*replica, node_config))
+                    .unwrap_or_default()
+            })
+        });
+
+        let ongoing_reconfiguration = next_requires_reconfiguration.is_some();
+        let next_requires_reconfiguration = next_requires_reconfiguration.unwrap_or(false);
+
+        (current_requires_reconfiguration && !ongoing_reconfiguration)
+            || next_requires_reconfiguration
+    }
+
+    fn choose_partition_configuration(
+        partition_id: PartitionId,
+        nodes_config: &NodesConfiguration,
+        partition_replication: ReplicationProperty,
+        preferred_nodes: NodeSet,
+    ) -> Option<PartitionConfiguration> {
+        let options =
+            SelectorOptions::new(u64::from(partition_id)).with_preferred_nodes(preferred_nodes);
+
+        BalancedSpreadSelector::select(
+            nodes_config,
+            &partition_replication,
+            worker_candidate_filter,
+            &options,
+        )
+        .map(|replica_set| {
+            PartitionConfiguration::new(partition_replication, replica_set, HashMap::default())
+        })
+        .inspect_err(|err| {
+            debug!(
+                "Failed to select replica set for partition {partition_id}: {}",
+                err
+            )
+        })
+        .ok()
+    }
+
+    fn select_leader(
+        &mut self,
+        partition_id: &PartitionId,
+        observed_cluster_state: &ObservedClusterState,
+        preferred_leader: Option<PlainNodeId>,
+    ) {
+        let Some(partition) = self.partitions.get_mut(partition_id) else {
+            return;
+        };
+
+        // try to select the preferred leader first if it's still alive and part of current
+        if let Some(preferred_leader) = preferred_leader {
+            if observed_cluster_state
+                .alive_generation(preferred_leader)
+                .is_some()
+                && partition.contains_replica_current(preferred_leader)
+            {
+                partition.leader = Some(preferred_leader);
+                return;
+            }
+        }
+
+        // pick the alive node currently running as leader if it is a replica in current
+        if let Some(leader) = observed_cluster_state
+            .partition_state(partition_id)
+            .and_then(|partition_state| {
+                partition_state
+                    .partition_processors
+                    .iter()
+                    .find(|(node_id, state)| {
+                        state.run_mode == RunMode::Leader
+                            && partition.contains_replica_current(**node_id)
+                    })
+                    .map(|(node_id, _)| *node_id)
+            })
+        {
+            assert!(
+                observed_cluster_state.alive_generation(leader).is_some(),
+                "only alive nodes should run the leader"
+            );
+            partition.leader = Some(leader);
+            return;
+        }
+
+        // no leader is currently running in current; pick from the alive nodes in the current configuration
+        if let Some(alive_replica) = partition
+            .current
+            .replica_set()
+            .iter()
+            .find(|node_id| observed_cluster_state.alive_generation(**node_id).is_some())
+        {
+            partition.leader = Some(*alive_replica);
+            return;
+        }
+
+        // couldn't find a leader because no node in current was alive
+        partition.leader = None;
+    }
+
+    fn update_placement(&self, partition_id: &PartitionId, placement: &mut PartitionPlacement) {
+        if let Some(partition) = self.partitions.get(partition_id) {
+            if let Some(leader) = partition.leader {
+                // a bit wasteful to create new nodesets over and over again if nothing changes; but
+                // it's hopefully not for too long
+                *placement = partition.replicas().cloned().collect();
+                placement.set_leader(leader);
+            } else {
+                placement.clear();
+            }
+        }
     }
 
     #[instrument(skip_all)]
@@ -216,173 +731,11 @@ impl<T: TransportConnect> Scheduler<T> {
         Ok(())
     }
 
-    fn ensure_replication<H: PartitionProcessorPlacementHints>(
-        &self,
-        partition_id: &PartitionId,
-        target_state: &mut TargetPartitionPlacementState,
-        alive_workers: &HashSet<PlainNodeId>,
-        partition_replication: &PartitionReplication,
-        nodes_config: &NodesConfiguration,
-        placement_hints: &H,
-    ) {
-        let mut rng = rand::rng();
-        target_state
-            .node_set
-            .retain(|node_id| alive_workers.contains(node_id));
-
-        match partition_replication {
-            PartitionReplication::Everywhere => {
-                // The extend will only add the new nodes that
-                // don't exist in the node set.
-                // the retain done above will make sure alive nodes in the set
-                // will keep there initial order.
-                target_state.node_set.extend(alive_workers.iter().cloned());
-            }
-            PartitionReplication::Limit(replication_factor) => {
-                if replication_factor.greatest_defined_scope() > LocationScope::Node {
-                    warn!("Location aware partition replication is not supported yet");
-                }
-
-                let replication_factor = usize::from(replication_factor.num_copies());
-
-                if target_state.node_set.len() == replication_factor {
-                    return;
-                }
-
-                let preferred_worker_nodes = placement_hints
-                    .preferred_nodes(partition_id)
-                    .filter(|node_id| nodes_config.has_worker_role(node_id));
-                let preferred_leader =
-                    placement_hints
-                        .preferred_leader(partition_id)
-                        .and_then(|node_id| {
-                            if alive_workers.contains(&node_id) {
-                                Some(node_id)
-                            } else {
-                                None
-                            }
-                        });
-
-                // if we are under replicated and have other alive nodes available
-                if target_state.node_set.len() < replication_factor
-                    && target_state.node_set.len() < alive_workers.len()
-                {
-                    if let Some(preferred_leader) = preferred_leader {
-                        target_state.node_set.insert(preferred_leader);
-                    }
-
-                    // todo: Implement cleverer strategies
-                    // randomly choose from the preferred workers nodes first
-                    let new_nodes = preferred_worker_nodes
-                        .filter(|node_id| !target_state.node_set.contains(**node_id))
-                        .cloned()
-                        .choose_multiple(
-                            &mut rng,
-                            replication_factor - target_state.node_set.len(),
-                        );
-
-                    target_state.node_set.extend(new_nodes);
-
-                    if target_state.node_set.len() < replication_factor {
-                        // randomly choose from the remaining worker nodes
-                        let new_nodes = alive_workers
-                            .iter()
-                            .filter(|node| !target_state.node_set.contains(**node))
-                            .cloned()
-                            .choose_multiple(
-                                &mut rng,
-                                replication_factor - target_state.node_set.len(),
-                            );
-
-                        target_state.node_set.extend(new_nodes);
-                    }
-                } else if target_state.node_set.len() > replication_factor {
-                    let preferred_worker_nodes: HashSet<PlainNodeId> =
-                        preferred_worker_nodes.cloned().collect();
-
-                    // first remove the not preferred nodes
-                    for node_id in target_state
-                        .node_set
-                        .iter()
-                        .copied()
-                        .filter(|node_id| {
-                            !preferred_worker_nodes.contains(node_id)
-                                && Some(*node_id) != preferred_leader
-                        })
-                        .choose_multiple(&mut rng, target_state.node_set.len() - replication_factor)
-                    {
-                        target_state.node_set.remove(node_id);
-                    }
-
-                    if target_state.node_set.len() > replication_factor {
-                        for node_id in target_state
-                            .node_set
-                            .iter()
-                            .filter(|node_id| Some(**node_id) != preferred_leader)
-                            .copied()
-                            .choose_multiple(
-                                &mut rng,
-                                target_state.node_set.len() - replication_factor,
-                            )
-                        {
-                            target_state.node_set.remove(node_id);
-                        }
-                    }
-                }
-            }
-        }
-
-        // check if the leader is still part of the node set; if not, then clear leader field
-        if let Some(leader) = target_state.leader.as_ref() {
-            if !target_state.node_set.contains(*leader) {
-                target_state.leader = None;
-            }
-        }
-    }
-
-    fn ensure_leadership<H: PartitionProcessorPlacementHints>(
-        &self,
-        partition_id: &PartitionId,
-        target_state: &mut TargetPartitionPlacementState,
-        placement_hints: &H,
-    ) {
-        let preferred_leader = placement_hints.preferred_leader(partition_id);
-
-        if target_state.leader.is_none() {
-            target_state.leader = self.select_leader_from(target_state, preferred_leader);
-        } else if preferred_leader
-            .is_some_and(|preferred_leader| target_state.node_set.contains(preferred_leader))
-        {
-            target_state.leader = preferred_leader;
-        }
-    }
-
-    fn select_leader_from(
-        &self,
-        leader_candidates: &TargetPartitionPlacementState,
-        preferred_leader: Option<PlainNodeId>,
-    ) -> Option<PlainNodeId> {
-        // todo: Implement leader balancing between nodes
-        preferred_leader
-            .filter(|leader| leader_candidates.contains(*leader))
-            .or_else(|| {
-                let mut rng = rand::rng();
-                leader_candidates.node_set.iter().choose(&mut rng).cloned()
-            })
-    }
-
     fn instruct_nodes(&self, observed_cluster_state: &ObservedClusterState) -> Result<(), Error> {
-        let partition_table = Metadata::with_current(|m| m.partition_table_ref());
-
         let mut commands = BTreeMap::default();
 
-        for (partition_id, partition) in partition_table.iter() {
-            self.generate_instructions_for_partition(
-                partition_id,
-                partition,
-                observed_cluster_state,
-                &mut commands,
-            );
+        for (partition_id, partition) in &self.partitions {
+            partition.generate_instructions(partition_id, observed_cluster_state, &mut commands);
         }
 
         if !commands.is_empty() {
@@ -440,107 +793,28 @@ impl<T: TransportConnect> Scheduler<T> {
 
         Ok(())
     }
+}
 
-    fn generate_instructions_for_partition(
-        &self,
-        partition_id: &PartitionId,
-        partition: &Partition,
-        observed_cluster_state: &ObservedClusterState,
-        commands: &mut BTreeMap<PlainNodeId, Vec<ControlProcessor>>,
-    ) {
-        // todo: Avoid cloning of node_set if this becomes measurable
-        let mut observed_state = observed_cluster_state
-            .partition_state(partition_id)
-            .map(|state| state.partition_processors.clone())
-            .unwrap_or_default();
+/// Placement hints for the [`logs_controller::LogsController`] based on the current
+/// state of the scheduler.
+pub struct SchedulerNodeSetSelectorHints<'a, T> {
+    scheduler: &'a Scheduler<T>,
+}
 
-        for (position, node_id) in partition.placement.iter().with_position() {
-            let run_mode = if matches!(
-                position,
-                itertools::Position::First | itertools::Position::Only
-            ) {
-                RunMode::Leader
-            } else {
-                RunMode::Follower
-            };
-            if !observed_state
-                .remove(node_id)
-                .is_some_and(|observed_run_mode| observed_run_mode == run_mode)
-            {
-                commands
-                    .entry(*node_id)
-                    .or_default()
-                    .push(ControlProcessor {
-                        partition_id: *partition_id,
-                        command: ProcessorCommand::from(run_mode),
-                    });
-            }
-        }
-
-        // all remaining entries in observed_state are not part of target, thus, stop them!
-        for node_id in observed_state.keys() {
-            commands
-                .entry(*node_id)
-                .or_default()
-                .push(ControlProcessor {
-                    partition_id: *partition_id,
-                    command: ProcessorCommand::Stop,
-                });
-        }
+impl<'a, T> SchedulerNodeSetSelectorHints<'a, T> {
+    pub fn new(scheduler: &'a Scheduler<T>) -> Self {
+        Self { scheduler }
     }
 }
 
-pub struct PartitionTableNodeSetSelectorHints {
-    partition_table: Arc<PartitionTable>,
-}
-
-impl From<Arc<PartitionTable>> for PartitionTableNodeSetSelectorHints {
-    fn from(value: Arc<PartitionTable>) -> Self {
-        Self {
-            partition_table: value,
-        }
-    }
-}
-
-impl logs_controller::NodeSetSelectorHints for PartitionTableNodeSetSelectorHints {
+impl<T> logs_controller::NodeSetSelectorHints for SchedulerNodeSetSelectorHints<'_, T> {
     fn preferred_sequencer(&self, log_id: &LogId) -> Option<NodeId> {
         let partition_id = PartitionId::from(*log_id);
 
-        self.partition_table
+        self.scheduler
+            .partitions
             .get(&partition_id)
-            .and_then(|partition| partition.placement.leader().map(NodeId::from))
-    }
-}
-
-/// The target state of a partition.
-#[derive(Debug)]
-struct TargetPartitionPlacementState<'a> {
-    /// Node which is the designated leader
-    pub leader: Option<PlainNodeId>,
-    /// Set of nodes that should run a partition processor for this partition
-    pub node_set: &'a mut PartitionPlacement,
-}
-
-impl<'a> TargetPartitionPlacementState<'a> {
-    fn new(placement: &'a mut PartitionPlacement) -> Self {
-        Self {
-            leader: placement.leader(),
-            node_set: placement,
-        }
-    }
-}
-
-impl TargetPartitionPlacementState<'_> {
-    pub fn contains(&self, value: PlainNodeId) -> bool {
-        self.node_set.contains(value)
-    }
-}
-
-impl Drop for TargetPartitionPlacementState<'_> {
-    fn drop(&mut self) {
-        if let Some(node_id) = self.leader.take() {
-            self.node_set.set_leader(node_id);
-        }
+            .and_then(|partition| partition.leader.map(NodeId::from))
     }
 }
 
@@ -563,7 +837,8 @@ mod tests {
     };
     use restate_core::{Metadata, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{
-        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
+        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, ReplayStatus,
+        RunMode,
     };
     use restate_types::identifiers::PartitionId;
     use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
@@ -571,21 +846,18 @@ mod tests {
         ControlProcessors, PartitionManagerService, ProcessorCommand,
     };
     use restate_types::net::{AdvertisedAddress, UnaryMessage};
-    use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role, StorageState};
-    use restate_types::partition_table::{
-        PartitionPlacement, PartitionReplication, PartitionTable, PartitionTableBuilder,
+    use restate_types::nodes_config::{
+        NodeConfig, NodesConfiguration, Role, WorkerConfig, WorkerState,
     };
+    use restate_types::partition_table::{PartitionReplication, PartitionTable};
     use restate_types::replication::NodeSet;
     use restate_types::replication::ReplicationProperty;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
-    use crate::cluster_controller::logs_controller::tests::MockNodes;
     use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
     use crate::cluster_controller::observed_cluster_state::tests::matches_partition_table;
-    use crate::cluster_controller::scheduler::{
-        PartitionProcessorPlacementHints, Scheduler, TargetPartitionPlacementState,
-    };
+    use crate::cluster_controller::scheduler::{PartitionProcessorPlacementHints, Scheduler};
 
     struct NoPlacementHints;
 
@@ -609,10 +881,22 @@ mod tests {
         let metadata_writer = test_env.metadata_writer.clone();
         let networking = test_env.networking.clone();
 
-        let initial_partition_table = test_env.metadata.partition_table_ref();
-
         let mut scheduler = Scheduler::new(metadata_writer, networking);
         let observed_cluster_state = ObservedClusterState::default();
+
+        scheduler
+            .on_observed_cluster_state(
+                &observed_cluster_state,
+                &Metadata::with_current(|m| m.nodes_config_ref()),
+                NoPlacementHints,
+            )
+            .await?;
+
+        let initial_partition_table = metadata_store_client
+            .get::<PartitionTable>(PARTITION_TABLE_KEY.clone())
+            .await
+            .expect("partition table")
+            .unwrap();
 
         scheduler
             .on_observed_cluster_state(
@@ -628,7 +912,7 @@ mod tests {
             .expect("partition table")
             .unwrap();
 
-        assert_eq!(*initial_partition_table, partition_table);
+        assert_eq!(initial_partition_table, partition_table);
 
         Ok(())
     }
@@ -639,12 +923,6 @@ mod tests {
             NonZero::new(3).expect("non-zero"),
         )))
         .await?;
-        Ok(())
-    }
-
-    #[test(restate_core::test(start_paused = true))]
-    async fn schedule_partitions_with_all_nodes_replication() -> googletest::Result<()> {
-        schedule_partitions(PartitionReplication::Everywhere).await?;
         Ok(())
     }
 
@@ -670,6 +948,9 @@ mod tests {
                         .unwrap(),
                 ))
                 .roles(Role::Worker.into())
+                .worker_config(WorkerConfig {
+                    worker_state: WorkerState::Active,
+                })
                 .build();
             nodes_config.upsert_node(node_config);
         }
@@ -747,7 +1028,7 @@ mod tests {
                 .await;
 
             let observed_cluster_state =
-                derive_observed_cluster_state(&cluster_state, control_messages);
+                derive_observed_cluster_state(&cluster_state, &cs, control_messages);
             let mut target_partition_table = metadata_store_client
                 .get::<PartitionTable>(PARTITION_TABLE_KEY.clone())
                 .await?
@@ -762,33 +1043,22 @@ mod tests {
                 .collect();
 
             for (_, partition) in target_partition_table.iter_mut() {
-                let target_state = TargetPartitionPlacementState::new(&mut partition.placement);
                 // assert that the replication strategy was respected
                 match &partition_replication {
-                    PartitionReplication::Everywhere => {
-                        // assert that every partition has a leader which is part of the alive nodes set
-                        assert!(target_state.node_set.is_subset(&alive_nodes));
-
-                        assert!(
-                            target_state
-                                .leader
-                                .is_some_and(|leader| alive_nodes.contains(leader))
-                        );
-                    }
+                    PartitionReplication::Everywhere => unreachable!("everywhere was deprecated"),
                     PartitionReplication::Limit(replication_property) => {
-                        // assert that every partition has a leader which is part of the alive nodes set
-                        assert!(
-                            target_state
-                                .leader
-                                .is_some_and(|leader| alive_nodes.contains(leader))
-                        );
+                        if let Some(leader) = partition.placement.leader() {
+                            // if a leader was chosen, then it must be in the set of alive nodes
+                            assert!(alive_nodes.contains(leader));
 
-                        assert_eq!(
-                            target_state.node_set.len(),
-                            alive_nodes
-                                .len()
-                                .min(usize::from(replication_property.num_copies()))
-                        );
+                            // the placement should contain as many nodes as the replication property specifies
+                            assert!(
+                                partition.placement.len()
+                                    >= usize::from(replication_property.num_copies())
+                            );
+                        } else {
+                            assert!(partition.placement.is_empty());
+                        }
                     }
                 }
             }
@@ -797,106 +1067,13 @@ mod tests {
         Ok(())
     }
 
-    #[test(restate_core::test)]
-    async fn handle_too_few_placed_partition_processors() -> googletest::Result<()> {
-        let num_partition_processors = NonZero::new(2).expect("non-zero");
-
-        let mut partition_table_builder =
-            PartitionTable::with_equally_sized_partitions(Version::MIN, 2).into_builder();
-
-        partition_table_builder.for_each(|_, target_state| {
-            target_state.extend([PlainNodeId::from(0)]);
-        });
-
-        let partition_table = run_ensure_replication_test(
-            partition_table_builder,
-            PartitionReplication::Limit(ReplicationProperty::new(num_partition_processors)),
-        )
-        .await?;
-        let partition = partition_table
-            .get(&PartitionId::from(0))
-            .expect("must be present");
-
-        assert_eq!(
-            partition.placement.len(),
-            num_partition_processors.get() as usize
-        );
-
-        Ok(())
-    }
-
-    #[test(restate_core::test)]
-    async fn handle_too_many_placed_partition_processors() -> googletest::Result<()> {
-        let num_partition_processors = NonZero::new(2).expect("non-zero");
-
-        let mut partition_table_builder =
-            PartitionTable::with_equally_sized_partitions(Version::MIN, 2).into_builder();
-
-        partition_table_builder.for_each(|_, placement| {
-            placement.extend([
-                PlainNodeId::from(0),
-                PlainNodeId::from(1),
-                PlainNodeId::from(2),
-            ]);
-        });
-
-        let partition_table = run_ensure_replication_test(
-            partition_table_builder,
-            PartitionReplication::Limit(ReplicationProperty::new(num_partition_processors)),
-        )
-        .await?;
-        let partition = partition_table
-            .get(&PartitionId::from(0))
-            .expect("must be present");
-
-        assert_eq!(
-            partition.placement.len(),
-            num_partition_processors.get() as usize
-        );
-
-        Ok(())
-    }
-
-    async fn run_ensure_replication_test(
-        mut partition_table_builder: PartitionTableBuilder,
-        partition_replication: PartitionReplication,
-    ) -> googletest::Result<PartitionTable> {
-        let env = TestCoreEnv::create_with_single_node(0, 0).await;
-
-        let scheduler = Scheduler::new(env.metadata_writer.clone(), env.networking.clone());
-        let alive_workers = vec![
-            PlainNodeId::from(0),
-            PlainNodeId::from(1),
-            PlainNodeId::from(2),
-        ]
-        .into_iter()
-        .collect();
-        let nodes_config = MockNodes::builder()
-            .with_nodes([0, 1, 2], Role::Worker.into(), StorageState::ReadWrite)
-            .build()
-            .nodes_config;
-
-        partition_table_builder.for_each(|partition_id, placement| {
-            let mut target_state = TargetPartitionPlacementState::new(placement);
-
-            scheduler.ensure_replication(
-                partition_id,
-                &mut target_state,
-                &alive_workers,
-                &partition_replication,
-                &nodes_config,
-                &NoPlacementHints,
-            );
-        });
-
-        Ok(partition_table_builder.build())
-    }
-
     fn derive_observed_cluster_state(
         cluster_state: &ClusterState,
+        cs: &restate_core::cluster_state::ClusterState,
         control_messages: Vec<(GenerationalNodeId, Incoming<Unary<ControlProcessors>>)>,
     ) -> ObservedClusterState {
         let mut observed_cluster_state = ObservedClusterState::default();
+        observed_cluster_state.update_liveness(cs);
         observed_cluster_state.update_partitions(cluster_state);
 
         // apply commands
@@ -915,6 +1092,7 @@ mod tests {
                             control_processor.partition_id,
                             plain_node_id,
                             RunMode::Follower,
+                            ReplayStatus::Active,
                         );
                     }
                     ProcessorCommand::Leader => {
@@ -922,6 +1100,7 @@ mod tests {
                             control_processor.partition_id,
                             plain_node_id,
                             RunMode::Leader,
+                            ReplayStatus::Active,
                         );
                     }
                 }
@@ -1023,7 +1202,10 @@ mod tests {
 
         for idx in 0..num_partitions {
             if rng.random_bool(0.5) {
-                let mut status = PartitionProcessorStatus::new();
+                let mut status = PartitionProcessorStatus {
+                    replay_status: ReplayStatus::Active,
+                    ..PartitionProcessorStatus::default()
+                };
 
                 if rng.random_bool(0.5) {
                     // make the partition the leader
@@ -1036,30 +1218,5 @@ mod tests {
         }
 
         result
-    }
-    #[test]
-    fn target_placement_state() {
-        let mut placement = PartitionPlacement::from_iter([
-            PlainNodeId::from(1),
-            PlainNodeId::from(2),
-            PlainNodeId::from(3),
-        ]);
-
-        let mut target_state = TargetPartitionPlacementState::new(&mut placement);
-
-        assert!(matches!(target_state.leader, Some(node_id) if node_id == PlainNodeId::from(1)));
-
-        target_state.leader = Some(PlainNodeId::from(3));
-
-        drop(target_state);
-
-        assert_eq!(
-            placement,
-            PartitionPlacement::from_iter([
-                PlainNodeId::from(3),
-                PlainNodeId::from(1),
-                PlainNodeId::from(2),
-            ])
-        );
     }
 }
