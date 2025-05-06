@@ -45,6 +45,7 @@ use restate_types::SharedString;
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
 
+use crate::cluster_state::ClusterState;
 use crate::metric_definitions::{self, STATUS_COMPLETED, STATUS_FAILED, TC_FINISHED, TC_SPAWN};
 use crate::{Metadata, ShutdownError, ShutdownSourceErr};
 
@@ -292,6 +293,7 @@ struct TaskCenterInner {
     managed_tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
     global_metadata: OnceLock<Metadata>,
     health: Health,
+    cluster_state: ClusterState,
     root_task_context: TaskContext,
 }
 
@@ -328,6 +330,7 @@ impl TaskCenterInner {
             managed_runtimes: Mutex::new(HashMap::with_capacity(64)),
             root_task_context,
             pause_time,
+            cluster_state: Default::default(),
             health: Health::default(),
         }
     }
