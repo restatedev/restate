@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use bytes::BytesMut;
+use restate_encoding::NetSerde;
 use serde::{Deserialize, Serialize};
 
 use crate::storage::{
@@ -20,7 +21,7 @@ use crate::time::NanosSinceEpoch;
 
 use super::{KeyFilter, Keys, MatchKeyQuery};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct Record {
     created_at: NanosSinceEpoch,
     #[serde(with = "serde_with::As::<EncodedPolyBytes>")]

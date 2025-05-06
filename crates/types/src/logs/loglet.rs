@@ -11,6 +11,8 @@
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
+use restate_encoding::{BilrostNewType, NetSerde};
+
 use crate::logs::LogId;
 use crate::logs::metadata::SegmentIndex;
 
@@ -34,6 +36,8 @@ use crate::logs::metadata::SegmentIndex;
     derive_more::From,
     derive_more::Deref,
     derive_more::Into,
+    BilrostNewType,
+    NetSerde,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
