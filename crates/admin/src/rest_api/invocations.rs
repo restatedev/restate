@@ -17,7 +17,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest};
+use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
 use restate_wal_protocol::{Command, Envelope};
 use serde::Deserialize;
 use tracing::warn;
@@ -73,8 +73,8 @@ pub struct DeleteInvocationParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_invocation<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn delete_invocation<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Path(invocation_id): Path<String>,
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
 ) -> Result<StatusCode, MetaApiError> {
@@ -83,13 +83,20 @@ pub async fn delete_invocation<V>(
         .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
 
     let cmd = match mode.unwrap_or_default() {
-        DeletionMode::Cancel => {
-            Command::TerminateInvocation(InvocationTermination::cancel(invocation_id))
-        }
-        DeletionMode::Kill => {
-            Command::TerminateInvocation(InvocationTermination::kill(invocation_id))
-        }
-        DeletionMode::Purge => Command::PurgeInvocation(PurgeInvocationRequest { invocation_id }),
+        DeletionMode::Cancel => Command::TerminateInvocation(InvocationTermination {
+            invocation_id,
+            flavor: TerminationFlavor::Cancel,
+            response_sink: None,
+        }),
+        DeletionMode::Kill => Command::TerminateInvocation(InvocationTermination {
+            invocation_id,
+            flavor: TerminationFlavor::Kill,
+            response_sink: None,
+        }),
+        DeletionMode::Purge => Command::PurgeInvocation(PurgeInvocationRequest {
+            invocation_id,
+            response_sink: None,
+        }),
     };
 
     let partition_key = invocation_id.partition_key();
