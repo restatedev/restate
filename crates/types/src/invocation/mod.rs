@@ -352,6 +352,33 @@ impl WithInvocationId for InvocationRequest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct RestateVersion(String);
+
+impl RestateVersion {
+    pub fn current() -> Self {
+        Self(env!("CARGO_PKG_VERSION").to_owned())
+    }
+
+    pub fn unknown() -> Self {
+        // We still provide a semver valid version here
+        Self("0.0.0-dev".to_owned())
+    }
+
+    pub fn new(s: String) -> Self {
+        Self(s)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
@@ -376,6 +403,9 @@ pub struct ServiceInvocation {
     //  The submit notification is sent back both when this invocation request attached to an existing invocation,
     //  or when this request started a fresh invocation.
     pub submit_notification_sink: Option<SubmitNotificationSink>,
+
+    /// Restate version at the moment of the invocation creation.
+    pub restate_version: RestateVersion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -403,6 +433,7 @@ impl ServiceInvocation {
             idempotency_key: request.header.idempotency_key,
             response_sink: None,
             submit_notification_sink: None,
+            restate_version: RestateVersion::current(),
         }
     }
 
@@ -423,6 +454,7 @@ impl ServiceInvocation {
             completion_retention_duration: None,
             idempotency_key: None,
             submit_notification_sink: None,
+            restate_version: RestateVersion::current(),
         }
     }
 
@@ -1053,6 +1085,9 @@ mod serde_hacks {
         pub response_sink: Option<ServiceInvocationResponseSink>,
         pub submit_notification_sink: Option<SubmitNotificationSink>,
 
+        #[serde(default = "RestateVersion::unknown")]
+        pub restate_version: RestateVersion,
+
         // TODO(slinkydeveloper) this field is here because serde doesn't like much when I change the shape of an enum variant from empty to tuple/named fields
         pub source_ingress_rpc_id: Option<PartitionProcessorRpcRequestId>,
     }
@@ -1080,6 +1115,7 @@ mod serde_hacks {
                 idempotency_key,
                 response_sink,
                 submit_notification_sink,
+                restate_version,
                 source_ingress_rpc_id,
             }: ServiceInvocation,
         ) -> Self {
@@ -1102,6 +1138,7 @@ mod serde_hacks {
                     Source::Service(id, target) => super::Source::Service(id, target),
                     Source::Internal => super::Source::Internal,
                 },
+                restate_version,
             }
         }
     }
@@ -1120,6 +1157,7 @@ mod serde_hacks {
                 idempotency_key,
                 response_sink,
                 submit_notification_sink,
+                restate_version,
             }: super::ServiceInvocation,
         ) -> Self {
             let source_ingress_rpc_id = if let super::Source::Ingress(rpc_id) = &source {
@@ -1139,6 +1177,7 @@ mod serde_hacks {
                 idempotency_key,
                 response_sink: response_sink.map(Into::into),
                 submit_notification_sink: submit_notification_sink.map(Into::into),
+                restate_version,
                 source_ingress_rpc_id,
                 source: match source {
                     super::Source::Ingress(_) => Source::Ingress,
@@ -1367,6 +1406,7 @@ mod mocks {
                 completion_retention_duration: None,
                 idempotency_key: None,
                 submit_notification_sink: None,
+                restate_version: RestateVersion::current(),
             }
         }
     }
@@ -1375,6 +1415,15 @@ mod mocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod restate_version {
+        use super::*;
+
+        #[test]
+        fn unknown_version_is_valid_semver() {
+            semver::Version::parse(RestateVersion::unknown().as_str()).unwrap();
+        }
+    }
 
     mod invocation_response {
         use super::*;

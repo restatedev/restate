@@ -400,8 +400,10 @@ pub mod v1 {
                     source,
                     span_context,
                     creation_time,
+                    created_using_restate_version,
                     modification_time,
                     response_sinks,
+                    modified_using_restate_version,
                     inboxed_transition_time,
                     scheduled_transition_time,
                     running_transition_time,
@@ -429,7 +431,9 @@ pub mod v1 {
                 let timestamps =
                     restate_storage_api::invocation_status_table::StatusTimestamps::new(
                         MillisSinceEpoch::new(creation_time),
+                        restate_version_from_pb(created_using_restate_version),
                         MillisSinceEpoch::new(modification_time),
+                        restate_version_from_pb(modified_using_restate_version),
                         inboxed_transition_time.map(MillisSinceEpoch::new),
                         scheduled_transition_time.map(MillisSinceEpoch::new),
                         running_transition_time.map(MillisSinceEpoch::new),
@@ -618,7 +622,9 @@ pub mod v1 {
                         span_context: Some(span_context.into()),
                         // SAFETY: We're only mapping data types here
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                        created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
+                        modified_using_restate_version: unsafe {timestamps.last_modified_using_restate_version().as_str().to_owned()},
                         inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
                             .map(|t| t.as_u64()),
                         scheduled_transition_time: unsafe {
@@ -677,8 +683,9 @@ pub mod v1 {
                         span_context: Some(span_context.into()),
                         // SAFETY: We're only mapping data types here
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                        created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                        inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
+                        modified_using_restate_version: unsafe {timestamps.last_modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
                             .map(|t| t.as_u64()),
                         scheduled_transition_time: unsafe {
                             timestamps.scheduled_transition_time()
@@ -740,8 +747,9 @@ pub mod v1 {
                             span_context: Some(journal_metadata.span_context.into()),
                             // SAFETY: We're only mapping data types here
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                            created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                            inboxed_transition_time: unsafe {
+                            modified_using_restate_version: unsafe {timestamps.last_modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe {
                                 timestamps.inboxed_transition_time()
                             }
                             .map(|t| t.as_u64()),
@@ -831,7 +839,9 @@ pub mod v1 {
                             span_context: Some(journal_metadata.span_context.into()),
                             // SAFETY: We're only mapping data types here
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                            created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
+                            modified_using_restate_version: unsafe {timestamps.last_modified_using_restate_version().as_str().to_owned()},
                             inboxed_transition_time: unsafe {
                                 timestamps.inboxed_transition_time()
                             }
@@ -893,8 +903,9 @@ pub mod v1 {
                         span_context: Some(span_context.into()),
                         // SAFETY: We're only mapping data types here
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                        created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                        inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
+                        modified_using_restate_version: unsafe {timestamps.last_modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
                             .map(|t| t.as_u64()),
                         scheduled_transition_time: unsafe {
                             timestamps.scheduled_transition_time()
@@ -1168,7 +1179,9 @@ pub mod v1 {
                         timestamps:
                             restate_storage_api::invocation_status_table::StatusTimestamps::new(
                                 MillisSinceEpoch::new(value.creation_time),
+                                restate_types::invocation::RestateVersion::unknown(),
                                 MillisSinceEpoch::new(value.modification_time),
+                                restate_types::invocation::RestateVersion::unknown(),
                                 None,
                                 None,
                                 None,
@@ -1287,7 +1300,9 @@ pub mod v1 {
                         timestamps:
                             restate_storage_api::invocation_status_table::StatusTimestamps::new(
                                 MillisSinceEpoch::new(value.creation_time),
+                                restate_types::invocation::RestateVersion::unknown(),
                                 MillisSinceEpoch::new(value.modification_time),
+                                restate_types::invocation::RestateVersion::unknown(),
                                 None,
                                 None,
                                 None,
@@ -1409,7 +1424,9 @@ pub mod v1 {
                         response_sinks,
                         timestamps: restate_storage_api::invocation_status_table::StatusTimestamps::new(
                             MillisSinceEpoch::new(value.creation_time),
+                            restate_types::invocation::RestateVersion::unknown(),
                             MillisSinceEpoch::new(value.modification_time),
+                            restate_types::invocation::   RestateVersion::unknown(),
                             None,
                             None,
                             None,
@@ -1497,7 +1514,9 @@ pub mod v1 {
                         timestamps:
                             restate_storage_api::invocation_status_table::StatusTimestamps::new(
                                 MillisSinceEpoch::new(value.creation_time),
+                                restate_types::invocation::RestateVersion::unknown(),
                                 MillisSinceEpoch::new(value.modification_time),
+                                restate_types::invocation::RestateVersion::unknown(),
                                 None,
                                 None,
                                 None,
@@ -1717,6 +1736,7 @@ pub mod v1 {
                     idempotency_key,
                     completion_retention_time,
                     submit_notification_sink,
+                    restate_version,
                 } = value;
 
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
@@ -1774,6 +1794,7 @@ pub mod v1 {
                     completion_retention_duration: completion_retention_time,
                     idempotency_key,
                     submit_notification_sink: submit_notification_sink,
+                    restate_version: restate_version_from_pb(restate_version),
                 })
             }
         }
@@ -1800,6 +1821,7 @@ pub mod v1 {
                         .map(Duration::from),
                     idempotency_key: value.idempotency_key.map(|s| s.to_string()),
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
+                    restate_version: value.restate_version.into_string(),
                 }
             }
         }
@@ -3747,6 +3769,16 @@ pub mod v1 {
         impl From<JournalEntryIndex> for crate::journal_table_v2::JournalEntryIndex {
             fn from(value: JournalEntryIndex) -> Self {
                 Self::from(value.entry_index)
+            }
+        }
+
+        fn restate_version_from_pb(
+            restate_version: String,
+        ) -> restate_types::invocation::RestateVersion {
+            if restate_version.is_empty() {
+                restate_types::invocation::RestateVersion::unknown()
+            } else {
+                restate_types::invocation::RestateVersion::new(restate_version)
             }
         }
     }

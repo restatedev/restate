@@ -126,19 +126,11 @@ pub async fn mock_start_invocation_with_invocation_target(
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let actions = state_machine
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(ServiceInvocation::initialize(
             invocation_id,
-            invocation_target: invocation_target.clone(),
-            argument: Default::default(),
-            source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
-            response_sink: None,
-            span_context: Default::default(),
-            headers: vec![],
-            execution_time: None,
-            completion_retention_duration: None,
-            idempotency_key: None,
-            submit_notification_sink: None,
-        }))
+            invocation_target.clone(),
+            Source::Ingress(PartitionProcessorRpcRequestId::new()),
+        )))
         .await;
 
     assert_that!(

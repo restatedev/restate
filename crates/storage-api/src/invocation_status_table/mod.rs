@@ -16,8 +16,8 @@ use rangemap::RangeInclusiveMap;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::invocation::{
-    Header, InvocationEpoch, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    Header, InvocationEpoch, InvocationInput, InvocationTarget, ResponseResult, RestateVersion,
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal_v2::{CompletionId, EntryIndex, NotificationId};
 use restate_types::time::MillisSinceEpoch;
@@ -30,7 +30,9 @@ use std::time::Duration;
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusTimestamps {
     creation_time: MillisSinceEpoch,
+    created_using_restate_version: RestateVersion,
     modification_time: MillisSinceEpoch,
+    modified_using_restate_version: RestateVersion,
 
     inboxed_transition_time: Option<MillisSinceEpoch>,
     scheduled_transition_time: Option<MillisSinceEpoch>,
@@ -39,10 +41,18 @@ pub struct StatusTimestamps {
 }
 
 impl StatusTimestamps {
-    pub fn init(creation_time: MillisSinceEpoch) -> Self {
+    /// Create a new StatusTimestamps data structure using the system time.
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub fn init(created_using_restate_version: RestateVersion) -> Self {
+        let creation_time = MillisSinceEpoch::now();
         Self {
             creation_time,
+            created_using_restate_version: created_using_restate_version.clone(),
             modification_time: creation_time,
+            modified_using_restate_version: created_using_restate_version,
             inboxed_transition_time: None,
             scheduled_transition_time: None,
             running_transition_time: None,
@@ -50,9 +60,12 @@ impl StatusTimestamps {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         creation_time: MillisSinceEpoch,
+        created_using_restate_version: RestateVersion,
         modification_time: MillisSinceEpoch,
+        modified_using_restate_version: RestateVersion,
         inboxed_transition_time: Option<MillisSinceEpoch>,
         scheduled_transition_time: Option<MillisSinceEpoch>,
         running_transition_time: Option<MillisSinceEpoch>,
@@ -60,7 +73,9 @@ impl StatusTimestamps {
     ) -> Self {
         Self {
             creation_time,
+            created_using_restate_version,
             modification_time,
+            modified_using_restate_version,
             inboxed_transition_time,
             scheduled_transition_time,
             running_transition_time,
@@ -74,16 +89,8 @@ impl StatusTimestamps {
     /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
     pub fn update(&mut self) {
-        self.modification_time = MillisSinceEpoch::now()
-    }
-
-    /// Create a new StatusTimestamps data structure using the system time.
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub fn now() -> Self {
-        StatusTimestamps::init(MillisSinceEpoch::now())
+        self.modification_time = MillisSinceEpoch::now();
+        self.modified_using_restate_version = RestateVersion::current()
     }
 
     /// Update the statistics with an updated [`Self::inboxed_transition_time()`].
@@ -135,6 +142,13 @@ impl StatusTimestamps {
         self.creation_time
     }
 
+    /// Restate version which the invocation was created with.
+    ///
+    /// This value is agreed among replicas.
+    pub fn created_using_restate_version(&self) -> &RestateVersion {
+        &self.created_using_restate_version
+    }
+
     /// Modification time of the [`InvocationStatus`].
     ///
     /// # Safety
@@ -142,6 +156,15 @@ impl StatusTimestamps {
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
     pub unsafe fn modification_time(&self) -> MillisSinceEpoch {
         self.modification_time
+    }
+
+    /// Restate version which the invocation was last modified with.
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub unsafe fn last_modified_using_restate_version(&self) -> &RestateVersion {
+        &self.modified_using_restate_version
     }
 
     /// Inboxed transition time of the [`InvocationStatus`], if any.
@@ -421,7 +444,7 @@ impl PreFlightInvocationMetadata {
     pub fn from_service_invocation(service_invocation: ServiceInvocation) -> Self {
         Self {
             response_sinks: service_invocation.response_sink.into_iter().collect(),
-            timestamps: StatusTimestamps::now(),
+            timestamps: StatusTimestamps::init(service_invocation.restate_version),
             invocation_target: service_invocation.invocation_target,
             argument: service_invocation.argument,
             source: service_invocation.source,
@@ -684,6 +707,12 @@ mod test_util {
 
     use restate_types::invocation::VirtualObjectHandlerType;
 
+    impl StatusTimestamps {
+        pub fn mock() -> Self {
+            Self::init(RestateVersion::current())
+        }
+    }
+
     impl InFlightInvocationMetadata {
         pub fn mock() -> Self {
             InFlightInvocationMetadata {
@@ -696,7 +725,7 @@ mod test_util {
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 pinned_deployment: None,
                 response_sinks: HashSet::new(),
-                timestamps: StatusTimestamps::now(),
+                timestamps: StatusTimestamps::mock(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 completion_retention_duration: Duration::ZERO,
                 idempotency_key: None,
@@ -709,7 +738,7 @@ mod test_util {
 
     impl CompletedInvocation {
         pub fn mock_neo() -> Self {
-            let mut timestamps = StatusTimestamps::now();
+            let mut timestamps = StatusTimestamps::mock();
             timestamps.record_running_transition_time();
             timestamps.record_completed_transition_time();
 
@@ -740,7 +769,7 @@ mod test_util {
                 span_context: ServiceInvocationSpanContext::default(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 idempotency_key: None,
-                timestamps: StatusTimestamps::now(),
+                timestamps: StatusTimestamps::mock(),
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
             }
