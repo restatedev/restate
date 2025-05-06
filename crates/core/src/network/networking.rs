@@ -10,15 +10,15 @@
 
 use std::time::Duration;
 
-use restate_types::NodeId;
 use restate_types::net::RpcRequest;
+use restate_types::{GenerationalNodeId, NodeId};
 
 use tokio::time::Instant;
 
 use super::connection::OwnedSendPermit;
 use super::{
-    ConnectError, Connection, ConnectionClosed, ConnectionManager, NetworkSender, RpcError,
-    Swimlane,
+    ConnectError, Connection, ConnectionClosed, ConnectionManager, LazyConnection, NetworkSender,
+    RpcError, Swimlane,
 };
 use super::{GrpcConnector, TransportConnect};
 
@@ -80,6 +80,16 @@ impl<T: TransportConnect> NetworkSender for Networking<T> {
         self.connections
             .get_or_connect(node_id, swimlane, &self.connector)
             .await
+    }
+
+    fn lazy_connect(
+        &self,
+        node_id: GenerationalNodeId,
+        swimlane: Swimlane,
+        buffer_size: usize,
+        auto_reconnect: bool,
+    ) -> LazyConnection {
+        LazyConnection::create(node_id, self.clone(), swimlane, buffer_size, auto_reconnect)
     }
 
     /// Acquire an owned send permit for a node
