@@ -127,7 +127,7 @@ fn serialize_store_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> {
             loglet_id: LogletId::new(12u16.into(), 4.into()),
             known_global_tail: LogletOffset::new(55),
         },
-        payloads,
+        payloads: payloads.into(),
         timeout_at: Some(MillisSinceEpoch::now()),
         flags: StoreFlags::empty(),
         first_offset: LogletOffset::new(56),

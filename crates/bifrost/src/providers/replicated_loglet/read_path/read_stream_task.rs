@@ -377,6 +377,9 @@ impl ReadStreamTask {
                         self.add_to_cache(offset, &maybe_record);
                     } else if offset == self.read_pointer {
                         match maybe_record {
+                            MaybeRecord::Unknown => {
+                                unreachable!()
+                            }
                             MaybeRecord::TrimGap(gap) => {
                                 let permit = permits.next().expect("must have at least one permit");
                                 trace!(
