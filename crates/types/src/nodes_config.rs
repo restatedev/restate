@@ -156,6 +156,13 @@ impl NodesConfiguration {
         self.name_lookup.len()
     }
 
+    pub fn contains(&self, id: &PlainNodeId) -> bool {
+        self.nodes
+            .get(id)
+            .map(|maybe| maybe.is_node())
+            .unwrap_or_default()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.name_lookup.is_empty()
     }
