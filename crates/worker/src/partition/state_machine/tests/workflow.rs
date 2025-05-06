@@ -10,6 +10,7 @@
 
 use super::*;
 
+use crate::partition::state_machine::tests::matchers::actions::forward_purge_invocation_response;
 use restate_storage_api::invocation_status_table::CompletedInvocation;
 use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
@@ -335,11 +336,20 @@ async fn purge_completed_workflow() {
     txn.commit().await.unwrap();
 
     // Send timer fired command
-    let _ = test_env
+    let request_id = PartitionProcessorRpcRequestId::new();
+    let actions = test_env
         .apply(Command::PurgeInvocation(PurgeInvocationRequest {
             invocation_id,
+            response_sink: Some(InvocationMutationResponseSink::Ingress { request_id }),
         }))
         .await;
+    assert_that!(
+        actions,
+        contains(forward_purge_invocation_response(
+            request_id,
+            PurgeInvocationResponse::Ok
+        ))
+    );
     assert_that!(
         test_env
             .storage()

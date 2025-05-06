@@ -624,10 +624,12 @@ message OutboxMessage {
 
   message OutboxKill {
     InvocationId invocation_id = 1;
+    optional bytes request_id = 2;
   }
 
   message OutboxCancel {
     InvocationId invocation_id = 1;
+    optional bytes request_id = 2;
   }
 
   message AttachInvocationRequest {

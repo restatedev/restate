@@ -59,13 +59,16 @@ use restate_types::identifiers::{
     PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
-use restate_types::invocation::client::InvocationOutputResponse;
+use restate_types::invocation::client::{
+    CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
+    PurgeInvocationResponse,
+};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationEpoch, InvocationQuery, InvocationResponse,
-    InvocationTarget, InvocationTargetType, InvocationTermination, JournalCompletionTarget,
-    NotifySignalRequest, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, Source, SubmitNotificationSink, TerminationFlavor,
-    VirtualObjectHandlerType, WorkflowHandlerType,
+    AttachInvocationRequest, InvocationEpoch, InvocationMutationResponseSink, InvocationQuery,
+    InvocationResponse, InvocationTarget, InvocationTargetType, InvocationTermination,
+    JournalCompletionTarget, NotifySignalRequest, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SubmitNotificationSink,
+    TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
 use restate_types::journal::Completion;
@@ -456,6 +459,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Command::PurgeInvocation(purge_invocation_request) => {
                 lifecycle::OnPurgeCommand {
                     invocation_id: purge_invocation_request.invocation_id,
+                    response_sink: purge_invocation_request.response_sink,
                 }
                 .apply(self)
                 .await?;
@@ -464,6 +468,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Command::PurgeJournal(purge_invocation_request) => {
                 lifecycle::OnPurgeJournalCommand {
                     invocation_id: purge_invocation_request.invocation_id,
+                    response_sink: purge_invocation_request.response_sink,
                 }
                 .apply(self)
                 .await?;
@@ -998,6 +1003,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         InvocationTermination {
             invocation_id,
             flavor: termination_flavor,
+            response_sink,
         }: InvocationTermination,
     ) -> Result<(), Error>
     where
@@ -1013,12 +1019,19 @@ impl<S> StateMachineApplyContext<'_, S> {
             + PromiseTable,
     {
         match termination_flavor {
-            TerminationFlavor::Kill => self.on_kill_invocation(invocation_id).await,
-            TerminationFlavor::Cancel => self.on_cancel_invocation(invocation_id).await,
+            TerminationFlavor::Kill => self.on_kill_invocation(invocation_id, response_sink).await,
+            TerminationFlavor::Cancel => {
+                self.on_cancel_invocation(invocation_id, response_sink)
+                    .await
+            }
         }
     }
 
-    async fn on_kill_invocation(&mut self, invocation_id: InvocationId) -> Result<(), Error>
+    async fn on_kill_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        response_sink: Option<InvocationMutationResponseSink>,
+    ) -> Result<(), Error>
     where
         S: VirtualObjectStatusTable
             + InvocationStatusTable
@@ -1037,14 +1050,17 @@ impl<S> StateMachineApplyContext<'_, S> {
             InvocationStatus::Invoked(metadata) => {
                 self.kill_invoked_invocation(invocation_id, metadata)
                     .await?;
+                self.reply_to_kill(response_sink, KillInvocationResponse::Ok);
             }
             InvocationStatus::Suspended { metadata, .. } => {
                 self.kill_suspended_invocation(invocation_id, metadata)
                     .await?;
+                self.reply_to_kill(response_sink, KillInvocationResponse::Ok);
             }
             InvocationStatus::Inboxed(inboxed) => {
                 self.terminate_inboxed_invocation(TerminationFlavor::Kill, invocation_id, inboxed)
-                    .await?
+                    .await?;
+                self.reply_to_kill(response_sink, KillInvocationResponse::Ok);
             }
             InvocationStatus::Scheduled(scheduled) => {
                 self.terminate_scheduled_invocation(
@@ -1052,12 +1068,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id,
                     scheduled,
                 )
-                .await?
+                .await?;
+                self.reply_to_kill(response_sink, KillInvocationResponse::Ok);
             }
             InvocationStatus::Completed(_) => {
                 debug!(
                     "Received kill command for completed invocation '{invocation_id}'. To cleanup the invocation after it's been completed, use the purge invocation command."
                 );
+                self.reply_to_kill(response_sink, KillInvocationResponse::AlreadyCompleted);
             }
             InvocationStatus::Free => {
                 trace!("Received kill command for unknown invocation with id '{invocation_id}'.");
@@ -1068,13 +1086,18 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
                 self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+                self.reply_to_kill(response_sink, KillInvocationResponse::NotFound);
             }
         };
 
         Ok(())
     }
 
-    async fn on_cancel_invocation(&mut self, invocation_id: InvocationId) -> Result<(), Error>
+    async fn on_cancel_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        response_sink: Option<InvocationMutationResponseSink>,
+    ) -> Result<(), Error>
     where
         S: VirtualObjectStatusTable
             + InvocationStatusTable
@@ -1098,6 +1121,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 OnCancelCommand {
                     invocation_id,
                     invocation_status: status,
+                    response_sink,
                 }
                 .apply(self)
                 .await?;
@@ -1129,6 +1153,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.storage
                     .put_invocation_status(&invocation_id, &status)
                     .await?;
+                self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
                 return Ok(());
             }
             _ => {
@@ -1144,6 +1169,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     metadata.journal_metadata.length,
                 )
                 .await?;
+                self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
             }
             InvocationStatus::Suspended {
                 metadata,
@@ -1167,6 +1193,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 {
                     self.do_resume_service( invocation_id, metadata).await?;
                 }
+                self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
             }
             InvocationStatus::Inboxed(inboxed) => {
                 self.terminate_inboxed_invocation(
@@ -1174,7 +1201,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id,
                     inboxed,
                 )
-                .await?
+                .await?;
+                self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
             }
             InvocationStatus::Scheduled(scheduled) => {
                 self.terminate_scheduled_invocation(
@@ -1182,10 +1210,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id,
                     scheduled,
                 )
-                .await?
+                .await?;
+                self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
             }
             InvocationStatus::Completed(_) => {
-                debug!("Received cancel command for completed invocation '{invocation_id}'. To cleanup the invocation after it's been completed, use the purge invocation command.");
+                debug!(
+                    "Received cancel command for completed invocation '{invocation_id}'. To cleanup the invocation after it's been completed, use the purge invocation command."
+                );
+                self.reply_to_cancel(response_sink, CancelInvocationResponse::AlreadyCompleted);
             }
             InvocationStatus::Free => {
                 trace!("Received cancel command for unknown invocation with id '{invocation_id}'.");
@@ -1196,6 +1228,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
                 self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+                self.reply_to_cancel(response_sink, CancelInvocationResponse::NotFound);
             }
         };
 
@@ -1431,9 +1464,13 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?
         };
 
-        for id in invocation_ids_to_kill {
+        for invocation_id in invocation_ids_to_kill {
             self.handle_outgoing_message(OutboxMessage::InvocationTermination(
-                InvocationTermination::kill(id),
+                InvocationTermination {
+                    invocation_id,
+                    flavor: TerminationFlavor::Kill,
+                    response_sink: None,
+                },
             ))
             .await?;
         }
@@ -1481,7 +1518,11 @@ impl<S> StateMachineApplyContext<'_, S> {
                     // For calls, we don't immediately complete the call entry with cancelled,
                     // but we let the cancellation result propagate from the callee.
                     self.handle_outgoing_message(OutboxMessage::InvocationTermination(
-                        InvocationTermination::cancel(enrichment_result.invocation_id),
+                        InvocationTermination {
+                            invocation_id: enrichment_result.invocation_id,
+                            flavor: TerminationFlavor::Cancel,
+                            response_sink: None,
+                        },
                     ))
                     .await?;
                 }
@@ -1558,7 +1599,11 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    async fn on_purge_invocation(&mut self, invocation_id: InvocationId) -> Result<(), Error>
+    async fn on_purge_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        response_sink: Option<InvocationMutationResponseSink>,
+    ) -> Result<(), Error>
     where
         S: InvocationStatusTable
             + IdempotencyTable
@@ -1597,15 +1642,18 @@ impl<S> StateMachineApplyContext<'_, S> {
                         .await?;
                     self.do_clear_all_promises(service_id).await?;
                 }
+
+                self.reply_to_purge(response_sink, PurgeInvocationResponse::Ok);
             }
             InvocationStatus::Free => {
                 trace!("Received purge command for unknown invocation with id '{invocation_id}'.");
-                // Nothing to do
+                self.reply_to_purge(response_sink, PurgeInvocationResponse::NotFound);
             }
             _ => {
                 trace!(
                     "Ignoring purge command as the invocation '{invocation_id}' is still ongoing."
                 );
+                self.reply_to_purge(response_sink, PurgeInvocationResponse::NotCompleted);
             }
         };
 
@@ -1666,7 +1714,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.on_service_invocation(service_invocation).await
             }
             Timer::CleanInvocationStatus(invocation_id) => {
-                self.on_purge_invocation(invocation_id).await
+                self.on_purge_invocation(invocation_id, None).await
             }
             Timer::NeoInvoke(invocation_id) => self.on_neo_invoke_timer(invocation_id).await,
         }
@@ -2929,6 +2977,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 InvocationTermination {
                     invocation_id: target_invocation_id,
                     flavor: TerminationFlavor::Cancel,
+                    response_sink: None,
                 },
             ))
             .await?;
@@ -3344,6 +3393,72 @@ impl<S> StateMachineApplyContext<'_, S> {
             request_id,
             invocation_id,
             completion_expiry_time,
+            response,
+        });
+    }
+
+    fn reply_to_cancel(
+        &mut self,
+        response_sink: Option<InvocationMutationResponseSink>,
+        response: CancelInvocationResponse,
+    ) {
+        if response_sink.is_none() {
+            return;
+        }
+        let InvocationMutationResponseSink::Ingress { request_id } = response_sink.unwrap();
+        debug_if_leader!(
+            self.is_leader,
+            "Send cancel response to request id '{:?}': {:?}",
+            request_id,
+            response
+        );
+
+        self.action_collector.push(Action::ForwardCancelResponse {
+            request_id,
+            response,
+        });
+    }
+
+    fn reply_to_kill(
+        &mut self,
+        response_sink: Option<InvocationMutationResponseSink>,
+        response: KillInvocationResponse,
+    ) {
+        if response_sink.is_none() {
+            return;
+        }
+        let InvocationMutationResponseSink::Ingress { request_id } = response_sink.unwrap();
+        debug_if_leader!(
+            self.is_leader,
+            "Send kill response to request id '{:?}': {:?}",
+            request_id,
+            response
+        );
+
+        self.action_collector.push(Action::ForwardKillResponse {
+            request_id,
+            response,
+        });
+    }
+
+    fn reply_to_purge(
+        &mut self,
+        response_sink: Option<InvocationMutationResponseSink>,
+        response: PurgeInvocationResponse,
+    ) {
+        if response_sink.is_none() {
+            return;
+        }
+        let InvocationMutationResponseSink::Ingress { request_id } = response_sink.unwrap();
+        debug_if_leader!(
+            self.is_leader,
+            "Send purge response to request id '{:?}': {:?}",
+            request_id,
+            response
+        );
+
+        self.action_collector.push(Action::ForwardPurgeResponse {
+            request_id,
             response,
         });
     }

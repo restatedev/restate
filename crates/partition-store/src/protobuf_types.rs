@@ -175,7 +175,9 @@ pub mod v1 {
         use restate_types::identifiers::{
             PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
         };
-        use restate_types::invocation::{InvocationTermination, TerminationFlavor};
+        use restate_types::invocation::{
+            InvocationMutationResponseSink, InvocationTermination, TerminationFlavor,
+        };
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::journal::raw::RawEntry;
         use restate_types::journal_v2::{EntryMetadata, NotificationId, NotificationType};
@@ -3509,24 +3511,46 @@ pub mod v1 {
                     ),
                     outbox_message::OutboxMessage::Kill(outbox_kill) => {
                         restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
-                            InvocationTermination::kill(
-                                restate_types::identifiers::InvocationId::try_from(
+                            InvocationTermination {
+                                invocation_id: restate_types::identifiers::InvocationId::try_from(
                                     outbox_kill
                                         .invocation_id
                                         .ok_or(ConversionError::missing_field("invocation_id"))?,
                                 )?,
-                            ),
+                                flavor: TerminationFlavor::Kill,
+                                response_sink: outbox_kill
+                                    .request_id
+                                    .map(|b| {
+                                        PartitionProcessorRpcRequestId::from_slice(b.as_ref())
+                                            .map_err(ConversionError::invalid_data)
+                                    })
+                                    .transpose()?
+                                    .map(|request_id| InvocationMutationResponseSink::Ingress {
+                                        request_id,
+                                    }),
+                            },
                         )
                     }
                     outbox_message::OutboxMessage::Cancel(outbox_cancel) => {
                         restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
-                            InvocationTermination::cancel(
-                                restate_types::identifiers::InvocationId::try_from(
+                            InvocationTermination {
+                                invocation_id: restate_types::identifiers::InvocationId::try_from(
                                     outbox_cancel
                                         .invocation_id
                                         .ok_or(ConversionError::missing_field("invocation_id"))?,
                                 )?,
-                            ),
+                                flavor: TerminationFlavor::Cancel,
+                                response_sink: outbox_cancel
+                                    .request_id
+                                    .map(|b| {
+                                        PartitionProcessorRpcRequestId::from_slice(b.as_ref())
+                                            .map_err(ConversionError::invalid_data)
+                                    })
+                                    .transpose()?
+                                    .map(|request_id| InvocationMutationResponseSink::Ingress {
+                                        request_id,
+                                    }),
+                            },
                         )
                     }
                     outbox_message::OutboxMessage::AttachInvocationRequest(
@@ -3577,6 +3601,11 @@ pub mod v1 {
                                 invocation_id: Some(InvocationId::from(
                                     invocation_termination.invocation_id,
                                 )),
+                                request_id: invocation_termination.response_sink.map(
+                                    |InvocationMutationResponseSink::Ingress { request_id }| {
+                                        Bytes::copy_from_slice(&request_id.to_bytes())
+                                    },
+                                ),
                             })
                         }
                         TerminationFlavor::Cancel => {
@@ -3584,6 +3613,11 @@ pub mod v1 {
                                 invocation_id: Some(InvocationId::from(
                                     invocation_termination.invocation_id,
                                 )),
+                                request_id: invocation_termination.response_sink.map(
+                                    |InvocationMutationResponseSink::Ingress { request_id }| {
+                                        Bytes::copy_from_slice(&request_id.to_bytes())
+                                    },
+                                ),
                             })
                         }
                     },
