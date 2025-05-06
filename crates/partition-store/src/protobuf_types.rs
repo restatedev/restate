@@ -2233,7 +2233,7 @@ pub mod v1 {
             fn from(value: GenerationalNodeId) -> Self {
                 super::GenerationalNodeId {
                     id: value.raw_id(),
-                    generation: value.raw_generation(),
+                    generation: value.generation(),
                 }
             }
         }
