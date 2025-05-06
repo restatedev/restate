@@ -101,18 +101,11 @@ pub enum NetworkError {
     ConnectionClosed(#[from] ConnectionClosed),
     #[error("cannot send messages to this node: {0}")]
     ConnectionFailed(String),
-    #[error("remote metadata version mismatch: {0}")]
-    // todo(azmy): A temporary error that should be removed
-    // after relaxing the restrictions on node ids in upcoming change
-    RemoteVersionMismatch(String),
 }
 
 impl From<ConnectError> for NetworkError {
     fn from(value: ConnectError) -> Self {
         match value {
-            ConnectError::RemoteMetadataVersionMismatch(e) => {
-                NetworkError::RemoteVersionMismatch(e)
-            }
             ConnectError::Handshake(_) => NetworkError::ConnectionFailed(value.to_string()),
             ConnectError::Throttled(_) => NetworkError::ConnectionFailed(value.to_string()),
             ConnectError::Transport(e) => NetworkError::ConnectionFailed(e),
@@ -132,10 +125,6 @@ pub enum DiscoveryError {
 
 #[derive(Debug, thiserror::Error, Clone)]
 pub enum ConnectError {
-    #[error("remote metadata version mismatch: {0}")]
-    // todo(azmy): A temporary error that should be removed
-    // after relaxing the restrictions on node ids in upcoming change
-    RemoteMetadataVersionMismatch(String),
     #[error(transparent)]
     Handshake(#[from] HandshakeError),
     #[error("connect throttled; {0:?} left in throttling window")]
@@ -155,7 +144,6 @@ impl From<tonic::Status> for ConnectError {
             Code::DeadlineExceeded => {
                 Self::Handshake(HandshakeError::Timeout(value.message().to_owned()))
             }
-            Code::FailedPrecondition => Self::RemoteMetadataVersionMismatch(value.message().into()),
             _ => Self::Handshake(HandshakeError::Failed(value.message().to_owned())),
         }
     }
