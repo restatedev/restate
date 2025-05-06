@@ -17,6 +17,7 @@ mod bifrost;
 #[cfg(feature = "clap")]
 mod cli_option_overrides;
 mod common;
+mod gossip;
 mod http;
 mod ingress;
 mod kafka;
@@ -34,6 +35,7 @@ pub use bifrost::*;
 #[cfg(feature = "clap")]
 pub use cli_option_overrides::*;
 pub use common::*;
+pub use gossip::*;
 pub use http::*;
 pub use ingress::*;
 pub use kafka::*;
