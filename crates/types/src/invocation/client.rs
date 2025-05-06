@@ -81,6 +81,27 @@ pub enum GetInvocationOutputResponse {
     Ready(InvocationOutput),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelInvocationResponse {
+    Appended,
+    NotFound,
+    AlreadyCompleted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KillInvocationResponse {
+    Ok,
+    NotFound,
+    AlreadyCompleted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PurgeInvocationResponse {
+    Ok,
+    NotFound,
+    NotCompleted,
+}
+
 /// This trait provides the functionalities to interact with Restate invocations.
 pub trait InvocationClient {
     /// Append the invocation to the log, waiting for the PP to emit [`SubmittedInvocationNotification`] when the command is processed.
@@ -125,4 +146,25 @@ pub trait InvocationClient {
         invocation_id: InvocationId,
         signal: Signal,
     ) -> impl Future<Output = Result<(), InvocationClientError>> + Send;
+
+    /// Cancel the given invocation.
+    fn cancel_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> impl Future<Output = Result<CancelInvocationResponse, InvocationClientError>> + Send;
+
+    /// Kill the given invocation.
+    fn kill_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> impl Future<Output = Result<KillInvocationResponse, InvocationClientError>> + Send;
+
+    /// Purge the given invocation.
+    fn purge_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send;
 }
