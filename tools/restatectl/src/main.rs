@@ -23,7 +23,6 @@ async fn main() -> ClingFinished<CliApp> {
     aws_lc_rs::default_provider()
         .install_default()
         .expect("no other default crypto provider being installed");
-    restatectl::lambda::handle_lambda_if_needed().await;
 
     let _ = ctrlc::set_handler(move || {
         // Showing cursor again if it was hidden by dialoguer.
