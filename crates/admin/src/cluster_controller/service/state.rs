@@ -35,7 +35,7 @@ use crate::cluster_controller::logs_controller::{
     LogsBasedPartitionProcessorPlacementHints, LogsController,
 };
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler::{PartitionTableNodeSetSelectorHints, Scheduler};
+use crate::cluster_controller::scheduler::{Scheduler, SchedulerNodeSetSelectorHints};
 use crate::cluster_controller::service::Service;
 
 pub enum ClusterControllerState<T> {
@@ -202,9 +202,7 @@ where
         self.logs_controller.on_observed_cluster_state_update(
             &nodes_config,
             observed_cluster_state,
-            Metadata::with_current(|m| {
-                PartitionTableNodeSetSelectorHints::from(m.partition_table_snapshot())
-            }),
+            SchedulerNodeSetSelectorHints::new(&self.scheduler),
         )?;
 
         self.scheduler

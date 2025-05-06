@@ -1166,7 +1166,7 @@ impl PartitionProcessorManager {
             .read_modify_write(partition_processor_epoch_key(partition_id), |epoch| {
                 let next_epoch = epoch
                     .map(|epoch: EpochMetadata| epoch.claim_leadership(node_id, partition_id))
-                    .unwrap_or_else(|| EpochMetadata::new(node_id, partition_id));
+                    .ok_or("missing epoch metadata".to_owned())?;
 
                 Ok(next_epoch)
             })
