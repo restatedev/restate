@@ -375,6 +375,10 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
             // We had a response from this node and there is still a lot we can do
             match stored.status {
+                Status::Unknown => {
+                    warn!(peer = %node_id, "Store failed on peer. Unknown error!");
+                    self.graylist.insert(node_id);
+                }
                 Status::Ok => {
                     // only if status is okay that we remove this node
                     // from the gray list, and move to replicated list
@@ -667,7 +671,7 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
             first_offset: self.first_offset,
             flags: StoreFlags::empty(),
             known_archived: LogletOffset::INVALID,
-            payloads: Arc::clone(&self.records),
+            payloads: Arc::clone(&self.records).into(),
             sequencer: *self.sequencer_shared_state.sequencer(),
             timeout_at: Some(timeout_at),
         };

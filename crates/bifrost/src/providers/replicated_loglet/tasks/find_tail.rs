@@ -544,7 +544,10 @@ impl<'a> FindTailOnNode<'a> {
                         // fall-through for retries
                     }
                     // unexpected statuses
-                    Status::SequencerMismatch | Status::OutOfBounds | Status::Malformed => {
+                    Status::SequencerMismatch
+                    | Status::OutOfBounds
+                    | Status::Malformed
+                    | Status::Unknown => {
                         warn!(
                             loglet_id = %self.loglet_id,
                             peer = %self.node_id,
@@ -631,7 +634,10 @@ impl WaitForTailOnNode {
                             // fall-through for retries
                         }
                         // unexpected statuses
-                        Status::SequencerMismatch | Status::OutOfBounds | Status::Malformed => {
+                        Status::SequencerMismatch
+                        | Status::OutOfBounds
+                        | Status::Malformed
+                        | Status::Unknown => {
                             error!(
                                 "Unexpected status from log-server node_id={} when waiting for tail update for loglet_id={}: {:?}",
                                 self.node_id, self.loglet_id, msg.status

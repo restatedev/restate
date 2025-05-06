@@ -131,7 +131,18 @@ impl From<MillisSinceEpoch> for SystemTime {
 /// accurate when used on the same node. This roughly maps to std::time::Instant except that the
 /// value is portable across nodes.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    BilrostNewType,
+    NetSerde,
 )]
 #[serde(transparent)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

@@ -422,6 +422,10 @@ impl<S: LogStore> LogletWorker<S> {
             // If shutdown happened, this task will be disposed of and we won't send
             // the response.
             match msg.query {
+                TailUpdateQuery::Unknown => {
+                    reciprocal.send(TailUpdated::empty().with_status(Status::Malformed));
+                    return Ok(());
+                }
                 TailUpdateQuery::LocalTail(target_offset) => {
                     local_tail_watch
                         .wait_for_offset_or_seal(target_offset)
@@ -656,7 +660,7 @@ mod tests {
             known_archived: LogletOffset::INVALID,
             first_offset: LogletOffset::OLDEST,
             flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
+            payloads: payloads.clone().into(),
         };
 
         // offsets 3, 4
@@ -667,7 +671,7 @@ mod tests {
             known_archived: LogletOffset::INVALID,
             first_offset: LogletOffset::new(3),
             flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
+            payloads: payloads.clone().into(),
         };
 
         let (msg1, msg1_reply) =
@@ -717,7 +721,7 @@ mod tests {
             known_archived: LogletOffset::INVALID,
             first_offset: LogletOffset::OLDEST,
             flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
+            payloads: payloads.clone().into(),
         };
 
         let seal1 = Seal {
@@ -738,7 +742,7 @@ mod tests {
             known_archived: LogletOffset::INVALID,
             first_offset: LogletOffset::new(3),
             flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
+            payloads: payloads.clone().into(),
         };
 
         let (msg1, msg1_reply) =
@@ -785,7 +789,7 @@ mod tests {
             known_archived: LogletOffset::INVALID,
             first_offset: LogletOffset::new(3),
             flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
+            payloads: payloads.clone().into(),
         };
         let (msg3, msg3_reply) =
             ServiceMessage::fake_rpc(msg3, Some(LOGLET.into()), SEQUENCER, None);
@@ -838,7 +842,7 @@ mod tests {
             known_archived: LogletOffset::INVALID,
             first_offset: LogletOffset::OLDEST,
             flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
+            payloads: payloads.clone().into(),
         };
 
         // offsets 10, 11
@@ -849,7 +853,7 @@ mod tests {
             known_archived: LogletOffset::INVALID,
             first_offset: LogletOffset::new(10),
             flags: StoreFlags::empty(),
-            payloads: payloads.clone(),
+            payloads: payloads.clone().into(),
         };
 
         let seal1 = Seal {
@@ -865,7 +869,7 @@ mod tests {
             known_archived: LogletOffset::INVALID,
             first_offset: LogletOffset::new(5),
             flags: StoreFlags::IgnoreSeal,
-            payloads: payloads.clone(),
+            payloads: payloads.clone().into(),
         };
 
         // 16, 17
@@ -876,7 +880,7 @@ mod tests {
             known_archived: LogletOffset::INVALID,
             first_offset: LogletOffset::new(16),
             flags: StoreFlags::IgnoreSeal,
-            payloads: payloads.clone(),
+            payloads: payloads.clone().into(),
         };
 
         let (msg1, msg1_reply) =
