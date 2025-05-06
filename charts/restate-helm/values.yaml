@@ -1,17 +1,17 @@
 replicaCount: 1
 nameOverride: "restate"
-version: "" # pin a specific version
+version: "1.3.2" # pin a specific version
 
 image:
-  repository: docker.io/restatedev/restate
+  repository: docker.restate.dev/restatedev/restate
   pullPolicy: IfNotPresent
 
-imagePullSecrets: [ ]
+imagePullSecrets: []
 
 serviceAccount:
   create: true
-  annotations: { }
-podAnnotations: { }
+  annotations: {}
+podAnnotations: {}
 
 podSecurityContext:
   fsGroup: 2000
@@ -37,7 +37,7 @@ env:
 
 service:
   type: ClusterIP
-  annotations: { }
+  annotations: {}
 
 resources:
   limits:
@@ -68,3 +68,9 @@ serviceMonitor:
   enabled: false
   path: /metrics
   scheme: http
+
+# https://kubernetes.io/docs/concepts/workloads/pods/pod-topology-spread-constraints/
+topologySpreadConstraints:
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: ScheduleAnyway
