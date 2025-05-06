@@ -914,13 +914,14 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
 
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id,
-            invocation_target: invocation_target.clone(),
-            source: Source::Ingress(request_id_1),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),
-            ..ServiceInvocation::mock()
+            ..ServiceInvocation::initialize(
+                invocation_id,
+                invocation_target.clone(),
+                Source::Ingress(request_id_1),
+            )
         }))
         .await;
     assert_that!(
