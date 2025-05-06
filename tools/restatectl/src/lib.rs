@@ -15,4 +15,3 @@ pub use app::CliApp;
 mod build_info;
 pub(crate) mod connection;
 pub(crate) mod environment;
-pub mod lambda;

@@ -74,6 +74,8 @@ pub enum Command {
     ReplicatedLoglet(ReplicatedLoglet),
     /// Query cluster status
     Sql(SqlOpts),
+    /// Run a AWS Lambda server
+    Lambda(restate_cli_util::lambda::LambdaOpts),
 }
 
 fn init(common_opts: &CommonOpts) {
