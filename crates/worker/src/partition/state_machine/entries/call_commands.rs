@@ -105,13 +105,8 @@ where
 
         // Prepare the service invocation to propose
         let service_invocation = ServiceInvocation {
-            invocation_id,
-            invocation_target,
             argument: parameter,
-            source: Source::Service(
-                self.caller_invocation_id,
-                caller_invocation_metadata.invocation_target.clone(),
-            ),
+            headers,
             response_sink: self.result_notification_idx.map(|notification_idx| {
                 ServiceInvocationResponseSink::partition_processor(
                     self.caller_invocation_id,
@@ -120,12 +115,18 @@ where
                 )
             }),
             span_context: span_context.clone(),
-            headers,
             execution_time: self.execution_time,
             completion_retention_duration,
             journal_retention_duration,
             idempotency_key,
-            submit_notification_sink: None,
+            ..ServiceInvocation::initialize(
+                invocation_id,
+                invocation_target,
+                Source::Service(
+                    self.caller_invocation_id,
+                    caller_invocation_metadata.invocation_target.clone(),
+                ),
+            )
         };
 
         ctx.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))

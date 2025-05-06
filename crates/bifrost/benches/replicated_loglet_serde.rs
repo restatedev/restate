@@ -29,7 +29,7 @@ use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNu
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
-    InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext,
+    InvocationTarget, RestateVersion, ServiceInvocation, ServiceInvocationSpanContext,
 };
 use restate_types::journal_v2::CommandType;
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader, RawEntryInner};
@@ -95,6 +95,7 @@ fn invoke_cmd() -> Command {
         submit_notification_sink: Some(
             restate_types::invocation::SubmitNotificationSink::Ingress { request_id },
         ),
+        restate_version: RestateVersion::current(),
     })
 }
 

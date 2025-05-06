@@ -69,6 +69,9 @@ pub(crate) fn append_invocation_status_row(
     match invocation_status {
         InvocationStatus::Scheduled(scheduled) => {
             row.status("scheduled");
+            row.created_using_restate_version(
+                scheduled.metadata.created_using_restate_version.as_str(),
+            );
             fill_invoked_by(&mut row, output, scheduled.metadata.source);
             if let Some(execution_time) = scheduled.metadata.execution_time {
                 row.scheduled_start_at(execution_time.as_u64() as i64)
@@ -76,6 +79,9 @@ pub(crate) fn append_invocation_status_row(
         }
         InvocationStatus::Inboxed(inboxed) => {
             row.status("inboxed");
+            row.created_using_restate_version(
+                inboxed.metadata.created_using_restate_version.as_str(),
+            );
             fill_invoked_by(&mut row, output, inboxed.metadata.source);
             if let Some(execution_time) = inboxed.metadata.execution_time {
                 row.scheduled_start_at(execution_time.as_u64() as i64)
@@ -91,6 +97,7 @@ pub(crate) fn append_invocation_status_row(
         }
         InvocationStatus::Completed(completed) => {
             row.status("completed");
+            row.created_using_restate_version(completed.created_using_restate_version.as_str());
             fill_invoked_by(&mut row, output, completed.source);
             if let Some(execution_time) = completed.execution_time {
                 row.scheduled_start_at(execution_time.as_u64() as i64)
@@ -117,6 +124,7 @@ fn fill_in_flight_invocation_metadata(
     output: &mut String,
     meta: InFlightInvocationMetadata,
 ) {
+    row.created_using_restate_version(meta.created_using_restate_version.as_str());
     // journal_metadata and stats are filled by other functions
     if let Some(pinned_deployment) = meta.pinned_deployment {
         row.pinned_deployment_id(pinned_deployment.deployment_id.to_string());

@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::pin;
-use std::time::Duration;
 
 use futures::Stream;
 use tokio_stream::StreamExt;
@@ -85,20 +84,11 @@ async fn test_read_write() {
 
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
     let invocation_target = InvocationTarget::mock_from_service_id(service_id);
-    ServiceInvocation {
-        invocation_id: InvocationId::mock_generate(&invocation_target),
+    ServiceInvocation::initialize(
+        InvocationId::mock_generate(&invocation_target),
         invocation_target,
-        argument: Default::default(),
-        source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
-        response_sink: None,
-        span_context: Default::default(),
-        headers: vec![],
-        execution_time: None,
-        completion_retention_duration: Duration::ZERO,
-        journal_retention_duration: Duration::ZERO,
-        idempotency_key: None,
-        submit_notification_sink: None,
-    }
+        Source::Ingress(PartitionProcessorRpcRequestId::new()),
+    )
 }
 
 pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {
