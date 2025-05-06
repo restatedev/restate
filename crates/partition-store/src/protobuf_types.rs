@@ -624,7 +624,7 @@ pub mod v1 {
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                         created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                        modified_using_restate_version: unsafe {timestamps.last_modified_using_restate_version().as_str().to_owned()},
+                        modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()},
                         inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
                             .map(|t| t.as_u64()),
                         scheduled_transition_time: unsafe {
@@ -685,7 +685,7 @@ pub mod v1 {
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                         created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                        modified_using_restate_version: unsafe {timestamps.last_modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
+                        modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
                             .map(|t| t.as_u64()),
                         scheduled_transition_time: unsafe {
                             timestamps.scheduled_transition_time()
@@ -749,7 +749,7 @@ pub mod v1 {
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                             created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                            modified_using_restate_version: unsafe {timestamps.last_modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe {
+                            modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe {
                                 timestamps.inboxed_transition_time()
                             }
                             .map(|t| t.as_u64()),
@@ -841,7 +841,7 @@ pub mod v1 {
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                             created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                            modified_using_restate_version: unsafe {timestamps.last_modified_using_restate_version().as_str().to_owned()},
+                            modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()},
                             inboxed_transition_time: unsafe {
                                 timestamps.inboxed_transition_time()
                             }
@@ -905,7 +905,7 @@ pub mod v1 {
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                         created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                        modified_using_restate_version: unsafe {timestamps.last_modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
+                        modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
                             .map(|t| t.as_u64()),
                         scheduled_transition_time: unsafe {
                             timestamps.scheduled_transition_time()

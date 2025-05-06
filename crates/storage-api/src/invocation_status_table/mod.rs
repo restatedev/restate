@@ -163,7 +163,7 @@ impl StatusTimestamps {
     /// # Safety
     /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub unsafe fn last_modified_using_restate_version(&self) -> &RestateVersion {
+    pub unsafe fn modified_using_restate_version(&self) -> &RestateVersion {
         &self.modified_using_restate_version
     }
 
