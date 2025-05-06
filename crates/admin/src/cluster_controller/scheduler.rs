@@ -92,6 +92,22 @@ impl PartitionConfiguration {
         }
     }
 
+    fn merge_current(&mut self, current: PartitionProcessorConfiguration) {
+        if self.current.version() < current.version() {
+            self.current = current;
+        }
+    }
+
+    fn merge_next(&mut self, next: PartitionProcessorConfiguration) {
+        if self
+            .next
+            .as_ref()
+            .is_none_or(|config| config.version() < next.version())
+        {
+            self.next = Some(next);
+        }
+    }
+
     fn replicas(&self) -> impl Iterator<Item = &PlainNodeId> {
         self.current.replica_set.iter().chain(
             self.next
@@ -180,6 +196,25 @@ impl<T: TransportConnect> Scheduler<T> {
             metadata_writer,
             networking,
             partitions: HashMap::default(),
+        }
+    }
+
+    pub fn update_partition_configuration(
+        &mut self,
+        partition_id: PartitionId,
+        current: PartitionProcessorConfiguration,
+        next: Option<PartitionProcessorConfiguration>,
+    ) {
+        match self.partitions.entry(partition_id) {
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().merge_current(current);
+                if let Some(next) = next {
+                    entry.get_mut().merge_next(next);
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(PartitionConfiguration::new(current, next));
+            }
         }
     }
 
