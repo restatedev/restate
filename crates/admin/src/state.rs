@@ -14,7 +14,6 @@ use restate_bifrost::Bifrost;
 #[derive(Clone, derive_builder::Builder)]
 pub struct AdminServiceState<V, IC> {
     pub schema_registry: SchemaRegistry<V>,
-    #[allow(dead_code)]
     pub invocation_client: IC,
     pub bifrost: Bifrost,
 }
