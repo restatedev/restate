@@ -25,8 +25,7 @@ use codederror::CodedError;
 use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{ReadWriteError, WriteError, retry_on_retryable_error};
 use restate_core::network::{
-    GrpcConnector, MessageRouterBuilder, NetworkSender as _, NetworkServerBuilder, Networking,
-    Swimlane,
+    GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
 use restate_core::partitions::{PartitionRoutingRefresher, spawn_partition_routing_refresher};
 use restate_core::{Metadata, MetadataKind, MetadataWriter, TaskKind};
@@ -127,7 +126,7 @@ pub struct Node {
     partition_routing_refresher: PartitionRoutingRefresher,
     bifrost: BifrostService,
     metadata_server_role: Option<BoxedMetadataServer>,
-    failure_detector: FailureDetector,
+    failure_detector: FailureDetector<Networking<GrpcConnector>>,
     admin_role: Option<AdminRole<GrpcConnector>>,
     worker_role: Option<WorkerRole>,
     ingress_role: Option<IngressRole<GrpcConnector>>,
@@ -323,6 +322,8 @@ impl Node {
         };
 
         let failure_detector = FailureDetector::new(
+            &updateable_config.pinned().common.gossip,
+            networking.clone(),
             &mut router_builder,
             worker_role
                 .as_ref()
@@ -451,7 +452,8 @@ impl Node {
             .context("Giving up trying to initialize the node. Make sure that it can reach the metadata store and don't forget to provision the cluster on a fresh start")?
             .context("Failed initializing the node")?;
 
-        self.failure_detector.start()?;
+        self.failure_detector
+            .start(self.updateable_config.map(|c| &c.common.gossip))?;
 
         // wait for initial metadata sync.
         //
@@ -497,34 +499,6 @@ impl Node {
 
         // Start partition routing information refresher
         spawn_partition_routing_refresher(self.partition_routing_refresher)?;
-
-        //  todo this is a temporary solution to announce the updated NodesConfiguration to the
-        //  configured admin nodes. It should be removed once we have a gossip-based node status
-        //  protocol. Notifying the admin nodes is done on a best effort basis in case one admin
-        //  node is currently not available. This is ok, because the admin nodes will periodically
-        //  sync the NodesConfiguration from the metadata store themselves.
-        for admin_node in nodes_config.get_admin_nodes() {
-            // we don't have to announce us to ourselves
-            if admin_node.current_generation != my_node_id {
-                let admin_node_id = admin_node.current_generation;
-                let networking = self.networking.clone();
-
-                TaskCenter::spawn_unmanaged(
-                    TaskKind::Disposable,
-                    "announce-node-at-admin-node",
-                    async move {
-                        if let Err(err) = networking
-                            .get_connection(admin_node_id, Swimlane::Gossip)
-                            .await
-                        {
-                            debug!(
-                                "Failed connecting to admin node '{admin_node_id}' and announcing myself. This can indicate network problems: {err}"
-                            );
-                        }
-                    },
-                )?;
-            }
-        }
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
         // Need to run start in new tc scope to have access to metadata()
