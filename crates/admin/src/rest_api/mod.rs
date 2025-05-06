@@ -87,6 +87,18 @@ where
             delete(openapi_handler!(invocations::delete_invocation)),
         )
         .route(
+            "/invocations/:invocation_id/kill",
+            patch(openapi_handler!(invocations::kill_invocation)),
+        )
+        .route(
+            "/invocations/:invocation_id/cancel",
+            patch(openapi_handler!(invocations::cancel_invocation)),
+        )
+        .route(
+            "/invocations/:invocation_id/purge",
+            patch(openapi_handler!(invocations::purge_invocation)),
+        )
+        .route(
             "/subscriptions",
             post(openapi_handler!(subscriptions::create_subscription)),
         )

@@ -33,6 +33,7 @@ macro_rules! generate_meta_api_error {
     ($enum_name:ident: [$($variant:ident),* $(,)?]) => {
         // Generate the error enum with transparent variants
         #[derive(Debug, thiserror::Error)]
+        #[allow(clippy::enum_variant_names)]
         pub enum $enum_name {
             $(
                 #[error(transparent)]
@@ -144,8 +145,13 @@ impl_meta_api_error!(InvocationClientError: SERVICE_UNAVAILABLE "Error when rout
 
 #[derive(Debug, thiserror::Error)]
 #[error("The invocation '{0}' was already completed.")]
-pub(crate) struct InvocationWasAlreadyCompleted(pub(crate) String);
-impl_meta_api_error!(InvocationWasAlreadyCompleted: CONFLICT "The invocation was already completed, so it cannot be cancelled nor killed. You can instead purge the invocation, in order for restate to forget it.");
+pub(crate) struct InvocationWasAlreadyCompletedError(pub(crate) String);
+impl_meta_api_error!(InvocationWasAlreadyCompletedError: CONFLICT "The invocation was already completed, so it cannot be cancelled nor killed. You can instead purge the invocation, in order for restate to forget it.");
+
+#[derive(Debug, thiserror::Error)]
+#[error("The invocation '{0}' is not yet completed.")]
+pub(crate) struct PurgeInvocationNotCompletedError(pub(crate) String);
+impl_meta_api_error!(PurgeInvocationNotCompletedError: CONFLICT "The invocation is not yet completed. An invocation can be purged only when completed.");
 
 // --- Old Meta API errors. Please don't use these anymore.
 
