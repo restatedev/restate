@@ -19,12 +19,16 @@ use restate_storage_api::promise_table::PromiseTable;
 use restate_storage_api::service_status_table::VirtualObjectStatusTable;
 use restate_storage_api::state_table::StateTable;
 use restate_types::identifiers::{IdempotencyId, InvocationId};
-use restate_types::invocation::{InvocationTargetType, WorkflowHandlerType};
+use restate_types::invocation::client::PurgeInvocationResponse;
+use restate_types::invocation::{
+    InvocationMutationResponseSink, InvocationTargetType, WorkflowHandlerType,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use tracing::trace;
 
 pub struct OnPurgeCommand {
     pub invocation_id: InvocationId,
+    pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for OnPurgeCommand
@@ -38,7 +42,10 @@ where
         + PromiseTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        let OnPurgeCommand { invocation_id } = self;
+        let OnPurgeCommand {
+            invocation_id,
+            response_sink,
+        } = self;
         match ctx.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Completed(CompletedInvocation {
                 invocation_target,
@@ -87,14 +94,17 @@ where
                     )
                     .await?;
                 }
+                ctx.reply_to_purge_invocation(response_sink, PurgeInvocationResponse::Ok);
             }
             InvocationStatus::Free => {
                 trace!("Received purge command for unknown invocation with id '{invocation_id}'.");
+                ctx.reply_to_purge_invocation(response_sink, PurgeInvocationResponse::NotFound);
             }
             _ => {
                 trace!(
                     "Ignoring purge command as the invocation '{invocation_id}' is still ongoing."
                 );
+                ctx.reply_to_purge_invocation(response_sink, PurgeInvocationResponse::NotCompleted);
             }
         };
 

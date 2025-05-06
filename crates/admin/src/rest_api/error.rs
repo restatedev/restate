@@ -9,11 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use crate::schema_registry::error::{SchemaError, SchemaRegistryError, ServiceError};
+use anyhow::bail;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use codederror::{Code, CodedError};
-use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{Components, ToMediaTypes, ToResponses, okapi};
@@ -22,6 +22,156 @@ use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::ServiceType;
 use schemars::JsonSchema;
 use serde::Serialize;
+
+// --- Few helpers to define Admin API errors.
+
+/// Macro to generate an Admin API Error enum with the given variants.
+///
+/// All the errors should implement both axum IntoResponse and okapi_operation ToResponses (see macro below).
+///
+/// Example usage:
+///
+/// ```rust,ignore
+/// generate_meta_api_error!(CancelInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, InvocationWasAlreadyCompletedError]);
+/// ```
+#[macro_export]
+macro_rules! generate_meta_api_error {
+    // Entry point of the macro
+    ($enum_name:ident: [$($variant:ident),* $(,)?]) => {
+        // Generate the error enum with transparent variants
+        #[derive(Debug, thiserror::Error)]
+        #[allow(clippy::enum_variant_names)]
+        pub enum $enum_name {
+            $(
+                #[error(transparent)]
+                $variant(#[from] $variant),
+            )*
+        }
+
+        // Generate IntoResponse implementation
+        impl axum::response::IntoResponse for $enum_name {
+            fn into_response(self) -> axum::response::Response {
+                match self {
+                    $(
+                        $enum_name::$variant(err) => err.into_response(),
+                    )*
+                }
+            }
+        }
+
+        // Generate ToResponses implementation
+        impl okapi_operation::ToResponses for $enum_name {
+            fn generate(components: &mut okapi_operation::Components) -> Result<okapi_operation::okapi::openapi3::Responses, okapi_operation::anyhow::Error> {
+                // Collect responses from all variants
+                let responses = vec![
+                    $(
+                        <$variant as okapi_operation::ToResponses>::generate(components)?,
+                    )*
+                ];
+
+                // Fold the responses into one
+                $crate::rest_api::error::merge_error_responses::<$enum_name>(responses)
+            }
+        }
+    };
+}
+
+pub(crate) fn merge_error_responses<T>(
+    responses: Vec<Responses>,
+) -> Result<Responses, anyhow::Error> {
+    let mut result_responses = Responses::default();
+    for t_responses in responses {
+        assert!(
+            t_responses.default.is_none(),
+            "Errors should not define a default response"
+        );
+        for (status, response) in t_responses.responses {
+            if result_responses.responses.contains_key(&status) {
+                bail!(
+                    "Type {} has overlapping status {status} from different variants.",
+                    std::any::type_name::<T>()
+                )
+            }
+            result_responses.responses.insert(status, response);
+        }
+    }
+
+    Ok(result_responses)
+}
+
+/// Macro to implement both axum IntoResponse and okapi_operation ToResponses,
+/// such that the error can be used both as value from axum handlers and to auto generate the OpenAPI documentation.
+///
+/// Example usage:
+///
+/// ```rust,ignore
+/// #[derive(Debug, thiserror::Error)]
+// #[error("Error message returned in the HTTP API.")]
+// pub(crate) struct MyError;
+// impl_meta_api_error!(MyError: HTTP_STATUS_CODE "Error description rendered in the OpenAPI.");
+/// ```
+macro_rules! impl_meta_api_error {
+    ($error_name:ident: $status_code:ident $description:literal) => {
+        impl IntoResponse for $error_name {
+            fn into_response(self) -> Response {
+
+                (StatusCode::$status_code, Json(ErrorDescriptionResponse {
+                        message: self.to_string(),
+                        restate_code: None,
+                    })).into_response()
+            }
+        }
+
+        impl ToResponses for $error_name {
+            fn generate(components: &mut Components) -> Result<Responses, anyhow::Error> {
+                let error_media_type =
+                    <Json<ErrorDescriptionResponse> as ToMediaTypes>::generate(components)?;
+                Ok(Responses {
+                    responses: map! {
+                        StatusCode::$status_code.to_string() => okapi::openapi3::RefOr::Object(
+                            okapi::openapi3::Response { content: error_media_type.clone(), description: $description.to_owned(), ..Default::default() }
+                        ),
+                    },
+                    ..Default::default()
+                })
+            }
+        }
+    };
+    ($error_name:ident: $status_code:ident) => {
+        impl_meta_api_error!($error_name: $status_code "");
+    };
+}
+
+// --- Common Admin API errors.
+
+#[derive(Debug, thiserror::Error)]
+#[error("The request field '{0}' is invalid. Reason: {1}")]
+pub(crate) struct InvalidFieldError(pub(crate) &'static str, pub(crate) String);
+impl_meta_api_error!(InvalidFieldError: BAD_REQUEST);
+
+#[derive(Debug, thiserror::Error)]
+#[error("The requested invocation '{0}' does not exist")]
+pub(crate) struct InvocationNotFoundError(pub(crate) String);
+impl_meta_api_error!(InvocationNotFoundError: NOT_FOUND);
+
+#[derive(Debug, thiserror::Error)]
+#[error("Error when routing the request internally. Reason: {0}")]
+pub(crate) struct InvocationClientError(
+    #[from] pub(crate) restate_types::invocation::client::InvocationClientError,
+);
+impl_meta_api_error!(InvocationClientError: SERVICE_UNAVAILABLE "Error when routing the request within restate.");
+
+#[derive(Debug, thiserror::Error)]
+#[error("The invocation '{0}' was already completed.")]
+pub(crate) struct InvocationWasAlreadyCompletedError(pub(crate) String);
+impl_meta_api_error!(InvocationWasAlreadyCompletedError: CONFLICT "The invocation was already completed, so it cannot be cancelled nor killed. You can instead purge the invocation, in order for restate to forget it.");
+
+#[derive(Debug, thiserror::Error)]
+#[error("The invocation '{0}' is not yet completed.")]
+pub(crate) struct PurgeInvocationNotCompletedError(pub(crate) String);
+impl_meta_api_error!(PurgeInvocationNotCompletedError: CONFLICT "The invocation is not yet completed. An invocation can be purged only when completed.");
+
+// --- Old Meta API errors. Please don't use these anymore.
 
 /// This error is used by handlers to propagate API errors,
 /// and later converted to a response through the IntoResponse implementation
@@ -104,7 +254,7 @@ impl IntoResponse for MetaApiError {
 }
 
 impl ToResponses for MetaApiError {
-    fn generate(components: &mut Components) -> Result<Responses, Error> {
+    fn generate(components: &mut Components) -> Result<Responses, anyhow::Error> {
         let error_media_type =
             <Json<ErrorDescriptionResponse> as ToMediaTypes>::generate(components)?;
         Ok(Responses {
@@ -171,7 +321,7 @@ impl IntoResponse for GenericRestError {
 }
 
 impl ToResponses for GenericRestError {
-    fn generate(components: &mut Components) -> Result<Responses, Error> {
+    fn generate(components: &mut Components) -> Result<Responses, anyhow::Error> {
         let error_media_type =
             <Json<ErrorDescriptionResponse> as ToMediaTypes>::generate(components)?;
         Ok(Responses {
