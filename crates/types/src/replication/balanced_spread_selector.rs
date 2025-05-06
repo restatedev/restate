@@ -19,7 +19,7 @@ use xxhash_rust::xxh3::Xxh3;
 use crate::PlainNodeId;
 use crate::locality::topology::{Node, RegionKey, Topology, ZoneKey};
 use crate::locality::{LocationScope, NodeLocation};
-use crate::nodes_config::{NodeConfig, NodesConfiguration};
+use crate::nodes_config::{NodeConfig, NodesConfiguration, Role, WorkerState};
 use crate::replication::ReplicationProperty;
 
 use super::NodeSet;
@@ -562,6 +562,11 @@ fn is_candidate_viable(
     need_region + need_zone <= remain
 }
 
+/// Candidates are nodes with the worker role that have the active worker state.
+pub fn worker_candidate_filter(_node_id: PlainNodeId, config: &NodeConfig) -> bool {
+    config.has_role(Role::Worker) && config.worker_config.worker_state == WorkerState::Active
+}
+
 #[cfg(test)]
 mod tests {
     use googletest::prelude::*;
@@ -572,10 +577,6 @@ mod tests {
     use crate::{GenerationalNodeId, PlainNodeId};
 
     use super::*;
-
-    pub fn worker_candidate_filter(_node_id: PlainNodeId, config: &NodeConfig) -> bool {
-        config.has_role(Role::Worker) && config.worker_config.worker_state == WorkerState::Active
-    }
 
     fn generate_node(
         id: impl Into<PlainNodeId>,

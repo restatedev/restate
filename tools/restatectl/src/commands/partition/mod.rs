@@ -10,6 +10,8 @@
 
 mod gen_metadata;
 pub mod list;
+mod reconfigure;
+mod worker_state;
 
 use cling::prelude::*;
 
@@ -20,4 +22,8 @@ pub enum Partitions {
     List(list::ListPartitionsOpts),
     /// Prints a generated partition table in JSON format
     GenerateMetadata(gen_metadata::GeneratePartitionTableOpts),
+    /// Reconfigures the processors of the specified partition
+    Reconfigure(reconfigure::ReconfigureOpts),
+    /// Sets the state of a worker
+    SetWorkerState(worker_state::SetOpts),
 }

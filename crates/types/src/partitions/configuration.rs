@@ -17,10 +17,12 @@ use crate::{Version, Versioned};
 
 use super::state::{MemberState, ReplicaSetState};
 
+/// The Partition configuration contains information about which nodes run partition processors for
+/// the given partition.
 #[serde_with::serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PartitionConfiguration {
-    version: Version,
+    pub(crate) version: Version,
     #[serde_as(as = "serde_with::DisplayFromStr")]
     replication: ReplicationProperty,
     replica_set: NodeSet,

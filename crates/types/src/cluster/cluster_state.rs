@@ -121,6 +121,7 @@ pub enum RunMode {
 #[derive(
     Debug,
     Clone,
+    Copy,
     Eq,
     PartialEq,
     Serialize,
