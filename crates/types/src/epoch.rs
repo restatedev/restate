@@ -24,8 +24,8 @@ pub struct EpochMetadata {
     version: Version,
     leader_metadata: Option<LeaderMetadata>,
     epoch: LeaderEpoch,
-    current: PartitionProcessorConfiguration,
-    next: Option<PartitionProcessorConfiguration>,
+    current: PartitionConfiguration,
+    next: Option<PartitionConfiguration>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -41,10 +41,7 @@ impl Versioned for EpochMetadata {
 }
 
 impl EpochMetadata {
-    pub fn new(
-        current: PartitionProcessorConfiguration,
-        next: Option<PartitionProcessorConfiguration>,
-    ) -> Self {
+    pub fn new(current: PartitionConfiguration, next: Option<PartitionConfiguration>) -> Self {
         Self {
             version: Version::MIN,
             leader_metadata: None,
@@ -59,8 +56,8 @@ impl EpochMetadata {
     ) -> (
         Version,
         LeaderEpoch,
-        PartitionProcessorConfiguration,
-        Option<PartitionProcessorConfiguration>,
+        PartitionConfiguration,
+        Option<PartitionConfiguration>,
     ) {
         (self.version, self.epoch, self.current, self.next)
     }
@@ -94,7 +91,7 @@ impl EpochMetadata {
         }
     }
 
-    pub fn update_current_configuration(self, current: PartitionProcessorConfiguration) -> Self {
+    pub fn update_current_configuration(self, current: PartitionConfiguration) -> Self {
         Self {
             version: self.version.next(),
             leader_metadata: self.leader_metadata,
@@ -104,7 +101,7 @@ impl EpochMetadata {
         }
     }
 
-    pub fn reconfigure(self, mut next: PartitionProcessorConfiguration) -> Self {
+    pub fn reconfigure(self, mut next: PartitionConfiguration) -> Self {
         next.version = self
             .next
             .map(|next| next.version)
@@ -134,20 +131,22 @@ impl EpochMetadata {
         }
     }
 
-    pub fn current(&self) -> &PartitionProcessorConfiguration {
+    pub fn current(&self) -> &PartitionConfiguration {
         &self.current
     }
 
-    pub fn next(&self) -> Option<&PartitionProcessorConfiguration> {
+    pub fn next(&self) -> Option<&PartitionConfiguration> {
         self.next.as_ref()
     }
 }
 
 flexbuffers_storage_encode_decode!(EpochMetadata);
 
+/// The Partition configuration contains information about which nodes run partition processors for
+/// the given partition.
 #[serde_with::serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PartitionProcessorConfiguration {
+pub struct PartitionConfiguration {
     version: Version,
     #[serde_as(as = "serde_with::DisplayFromStr")]
     replication: ReplicationProperty,
@@ -156,8 +155,9 @@ pub struct PartitionProcessorConfiguration {
     context: HashMap<String, String>,
 }
 
-static INVALID_PARTITION_PROCESSOR_CONFIGURATION: LazyLock<PartitionProcessorConfiguration> =
-    LazyLock::new(|| PartitionProcessorConfiguration {
+/// Used as the returned value if no partition configuration was written in the [`EpochMetadata`].
+static INVALID_PARTITION_CONFIGURATION: LazyLock<PartitionConfiguration> =
+    LazyLock::new(|| PartitionConfiguration {
         version: Version::INVALID,
         modified_at: MillisSinceEpoch::now(),
         replication: ReplicationProperty::new(NonZeroU8::new(1).expect("1 to be greater than 0")),
@@ -165,7 +165,7 @@ static INVALID_PARTITION_PROCESSOR_CONFIGURATION: LazyLock<PartitionProcessorCon
         context: HashMap::default(),
     });
 
-impl PartitionProcessorConfiguration {
+impl PartitionConfiguration {
     pub fn new(
         replication: ReplicationProperty,
         replica_set: NodeSet,
@@ -187,7 +187,7 @@ impl PartitionProcessorConfiguration {
     }
 }
 
-impl Versioned for PartitionProcessorConfiguration {
+impl Versioned for PartitionConfiguration {
     fn version(&self) -> Version {
         self.version
     }
@@ -196,8 +196,7 @@ impl Versioned for PartitionProcessorConfiguration {
 mod compatibility {
     use crate::Version;
     use crate::epoch::{
-        EpochMetadata, INVALID_PARTITION_PROCESSOR_CONFIGURATION, LeaderMetadata,
-        PartitionProcessorConfiguration,
+        EpochMetadata, INVALID_PARTITION_CONFIGURATION, LeaderMetadata, PartitionConfiguration,
     };
     use crate::identifiers::LeaderEpoch;
 
@@ -209,8 +208,8 @@ mod compatibility {
 
         // those fields were added in version 1.3.3
         next_epoch: Option<LeaderEpoch>,
-        current: Option<PartitionProcessorConfiguration>,
-        next: Option<PartitionProcessorConfiguration>,
+        current: Option<PartitionConfiguration>,
+        next: Option<PartitionConfiguration>,
     }
 
     impl From<EpochMetadataShadow> for EpochMetadata {
@@ -226,7 +225,7 @@ mod compatibility {
                 }),
                 current: value
                     .current
-                    .unwrap_or_else(|| INVALID_PARTITION_PROCESSOR_CONFIGURATION.clone()),
+                    .unwrap_or_else(|| INVALID_PARTITION_CONFIGURATION.clone()),
                 next: value.next,
             }
         }
@@ -236,7 +235,7 @@ mod compatibility {
 #[cfg(test)]
 mod tests {
     use crate::GenerationalNodeId;
-    use crate::epoch::{EpochMetadata, PartitionProcessorConfiguration};
+    use crate::epoch::{EpochMetadata, PartitionConfiguration};
     use crate::identifiers::{LeaderEpoch, PartitionId};
     use crate::replication::ReplicationProperty;
     use std::collections::HashMap;
@@ -247,7 +246,7 @@ mod tests {
         let other_node_id = GenerationalNodeId::new(2, 1);
 
         let epoch = EpochMetadata::new(
-            PartitionProcessorConfiguration::new(
+            PartitionConfiguration::new(
                 ReplicationProperty::new_unchecked(1),
                 vec![node_id.as_plain(), other_node_id.as_plain()]
                     .into_iter()

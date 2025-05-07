@@ -24,7 +24,7 @@ use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportC
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::cluster::cluster_state::RunMode;
-use restate_types::epoch::{EpochMetadata, PartitionProcessorConfiguration};
+use restate_types::epoch::{EpochMetadata, PartitionConfiguration};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::LogId;
 use restate_types::metadata::Precondition;
@@ -75,18 +75,19 @@ impl<T: PartitionProcessorPlacementHints> PartitionProcessorPlacementHints for &
     }
 }
 
-struct PartitionConfiguration {
+#[derive(Debug, Clone)]
+struct PartitionState {
     leader: Option<PlainNodeId>,
     latest_epoch_metadata_version: Version,
-    current: PartitionProcessorConfiguration,
-    next: Option<PartitionProcessorConfiguration>,
+    current: PartitionConfiguration,
+    next: Option<PartitionConfiguration>,
 }
 
-impl PartitionConfiguration {
+impl PartitionState {
     fn new(
         latest_epoch_metadata_version: Version,
-        current: PartitionProcessorConfiguration,
-        next: Option<PartitionProcessorConfiguration>,
+        current: PartitionConfiguration,
+        next: Option<PartitionConfiguration>,
     ) -> Self {
         Self {
             latest_epoch_metadata_version,
@@ -99,8 +100,8 @@ impl PartitionConfiguration {
     fn update_configuration(
         &mut self,
         epoch_metadata_version: Version,
-        current: PartitionProcessorConfiguration,
-        next: Option<PartitionProcessorConfiguration>,
+        current: PartitionConfiguration,
+        next: Option<PartitionConfiguration>,
     ) {
         if self.latest_epoch_metadata_version < epoch_metadata_version {
             self.latest_epoch_metadata_version = epoch_metadata_version;
@@ -186,14 +187,14 @@ impl PartitionConfiguration {
 
 struct ConcurrentPartitionProcessorConfigurationUpdate {
     epoch_metadata_version: Version,
-    current: PartitionProcessorConfiguration,
-    next: Option<PartitionProcessorConfiguration>,
+    current: PartitionConfiguration,
+    next: Option<PartitionConfiguration>,
 }
 
 pub struct Scheduler<T> {
     metadata_writer: MetadataWriter,
     networking: Networking<T>,
-    partitions: HashMap<PartitionId, PartitionConfiguration>,
+    partitions: HashMap<PartitionId, PartitionState>,
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -213,8 +214,8 @@ impl<T: TransportConnect> Scheduler<T> {
         &mut self,
         partition_id: PartitionId,
         epoch_metadata_version: Version,
-        current: PartitionProcessorConfiguration,
-        next: Option<PartitionProcessorConfiguration>,
+        current: PartitionConfiguration,
+        next: Option<PartitionConfiguration>,
     ) {
         match self.partitions.entry(partition_id) {
             Entry::Occupied(mut entry) => {
@@ -223,11 +224,7 @@ impl<T: TransportConnect> Scheduler<T> {
                     .update_configuration(epoch_metadata_version, current, next);
             }
             Entry::Vacant(entry) => {
-                entry.insert(PartitionConfiguration::new(
-                    epoch_metadata_version,
-                    current,
-                    next,
-                ));
+                entry.insert(PartitionState::new(epoch_metadata_version, current, next));
             }
         }
     }
@@ -330,13 +327,13 @@ impl<T: TransportConnect> Scheduler<T> {
                             )
                             .await
                         {
-                            Ok(epoch_metadata) => entry.insert_entry(PartitionConfiguration::new(
+                            Ok(epoch_metadata) => entry.insert_entry(PartitionState::new(
                                 epoch_metadata.version(),
                                 current,
                                 None,
                             )),
                             Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => entry
-                                .insert_entry(PartitionConfiguration::new(
+                                .insert_entry(PartitionState::new(
                                     concurrent_update.epoch_metadata_version,
                                     concurrent_update.current,
                                     concurrent_update.next,
@@ -448,7 +445,7 @@ impl<T: TransportConnect> Scheduler<T> {
         alive_workers: &NodeSet,
         preferred_leader: Option<PlainNodeId>,
         preferred_nodes: &NodeSet,
-    ) -> Option<PartitionProcessorConfiguration> {
+    ) -> Option<PartitionConfiguration> {
         let options = if let Some(preferred_leader) = preferred_leader {
             NodeSetSelectorOptions::default().with_top_priority_node(preferred_leader)
         } else {
@@ -465,7 +462,7 @@ impl<T: TransportConnect> Scheduler<T> {
             options,
         )
         .map(|nodeset| {
-            PartitionProcessorConfiguration::new(partition_replication, nodeset, HashMap::default())
+            PartitionConfiguration::new(partition_replication, nodeset, HashMap::default())
         })
         .inspect_err(|err| debug!("Failed to select nodeset for partition processor: {}", err))
         .ok()

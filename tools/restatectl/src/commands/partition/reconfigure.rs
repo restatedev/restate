@@ -17,7 +17,7 @@ use restate_core::metadata_store::serialize_value;
 use restate_core::protobuf::metadata_proxy_svc::{
     GetRequest, PutRequest, new_metadata_proxy_client,
 };
-use restate_types::epoch::{EpochMetadata, PartitionProcessorConfiguration};
+use restate_types::epoch::{EpochMetadata, PartitionConfiguration};
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -78,7 +78,7 @@ pub async fn reconfigure_partition(
         None
     };
 
-    let next = PartitionProcessorConfiguration::new(
+    let next = PartitionConfiguration::new(
         ReplicationProperty::new_unchecked(
             u8::try_from(opts.replicas.len())
                 .expect("cannot configure more than {u8::MAX} replicas"),
