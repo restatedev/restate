@@ -10,6 +10,7 @@
 
 use ahash::HashMap;
 use assert2::let_assert;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::iter;
@@ -76,35 +77,35 @@ impl<T: PartitionProcessorPlacementHints> PartitionProcessorPlacementHints for &
 
 struct PartitionConfiguration {
     leader: Option<PlainNodeId>,
+    latest_epoch_metadata_version: Version,
     current: PartitionProcessorConfiguration,
     next: Option<PartitionProcessorConfiguration>,
 }
 
 impl PartitionConfiguration {
     fn new(
+        latest_epoch_metadata_version: Version,
         current: PartitionProcessorConfiguration,
         next: Option<PartitionProcessorConfiguration>,
     ) -> Self {
         Self {
+            latest_epoch_metadata_version,
             leader: None,
             current,
             next,
         }
     }
 
-    fn merge_current(&mut self, current: PartitionProcessorConfiguration) {
-        if self.current.version() < current.version() {
+    fn update_configuration(
+        &mut self,
+        epoch_metadata_version: Version,
+        current: PartitionProcessorConfiguration,
+        next: Option<PartitionProcessorConfiguration>,
+    ) {
+        if self.latest_epoch_metadata_version < epoch_metadata_version {
+            self.latest_epoch_metadata_version = epoch_metadata_version;
             self.current = current;
-        }
-    }
-
-    fn merge_next(&mut self, next: PartitionProcessorConfiguration) {
-        if self
-            .next
-            .as_ref()
-            .is_none_or(|config| config.version() < next.version())
-        {
-            self.next = Some(next);
+            self.next = next;
         }
     }
 
@@ -133,7 +134,7 @@ impl PartitionConfiguration {
         if let Some(leader) = &self.leader {
             if !observed_state
                 .remove(leader)
-                .is_some_and(|observed_run_mode| observed_run_mode == RunMode::Leader)
+                .is_some_and(|state| state.run_mode == RunMode::Leader)
             {
                 commands.entry(*leader).or_default().push(ControlProcessor {
                     partition_id: *partition_id,
@@ -150,7 +151,7 @@ impl PartitionConfiguration {
             };
             if !observed_state
                 .remove(node_id)
-                .is_some_and(|observed_run_mode| observed_run_mode == run_mode)
+                .is_some_and(|state| state.run_mode == run_mode)
             {
                 commands
                     .entry(*node_id)
@@ -176,6 +177,7 @@ impl PartitionConfiguration {
 }
 
 struct ConcurrentPartitionProcessorConfigurationUpdate {
+    epoch_metadata_version: Version,
     current: PartitionProcessorConfiguration,
     next: Option<PartitionProcessorConfiguration>,
 }
@@ -202,18 +204,22 @@ impl<T: TransportConnect> Scheduler<T> {
     pub fn update_partition_configuration(
         &mut self,
         partition_id: PartitionId,
+        epoch_metadata_version: Version,
         current: PartitionProcessorConfiguration,
         next: Option<PartitionProcessorConfiguration>,
     ) {
         match self.partitions.entry(partition_id) {
             Entry::Occupied(mut entry) => {
-                entry.get_mut().merge_current(current);
-                if let Some(next) = next {
-                    entry.get_mut().merge_next(next);
-                }
+                entry
+                    .get_mut()
+                    .update_configuration(epoch_metadata_version, current, next);
             }
             Entry::Vacant(entry) => {
-                entry.insert(PartitionConfiguration::new(current, next));
+                entry.insert(PartitionConfiguration::new(
+                    epoch_metadata_version,
+                    current,
+                    next,
+                ));
             }
         }
     }
@@ -232,8 +238,13 @@ impl<T: TransportConnect> Scheduler<T> {
             .filter(|node_id| nodes_config.has_worker_role(node_id))
             .collect();
 
-        self.update_partition_placement(&alive_workers, nodes_config, placement_hints)
-            .await?;
+        self.update_partition_placement(
+            observed_cluster_state,
+            &alive_workers,
+            nodes_config,
+            placement_hints,
+        )
+        .await?;
 
         self.instruct_nodes(observed_cluster_state)?;
 
@@ -242,6 +253,7 @@ impl<T: TransportConnect> Scheduler<T> {
 
     async fn update_partition_placement(
         &mut self,
+        observed_cluster_state: &ObservedClusterState,
         alive_workers: &NodeSet,
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
@@ -262,66 +274,122 @@ impl<T: TransportConnect> Scheduler<T> {
             let entry = self.partitions.entry(*partition_id);
 
             // make sure that we have a valid partition processor configuration
-            if !matches!(&entry, Entry::Occupied(entry) if entry.get().current.is_valid()) {
-                let preferred_nodes: NodeSet = placement_hints
-                    .preferred_nodes(partition_id)
-                    .cloned()
-                    .collect();
-                let_assert!(
-                    PartitionReplication::Limit(partition_replication) =
-                        partition_table.partition_replication(),
-                    "Limit should be the only used partition replication type"
-                );
+            let mut occupied_entry = match entry {
+                Entry::Occupied(entry) if entry.get().current.is_valid() => entry,
+                entry => {
+                    let preferred_nodes: NodeSet = placement_hints
+                        .preferred_nodes(partition_id)
+                        .cloned()
+                        .collect();
+                    let_assert!(
+                        PartitionReplication::Limit(partition_replication) =
+                            partition_table.partition_replication(),
+                        "Limit should be the only used partition replication type"
+                    );
 
-                // no or no valid current configuration, pick a valid configuration
-                if let Some(current) = Self::choose_partition_processor_configuration(
-                    nodes_config,
-                    partition_replication.clone(),
-                    alive_workers,
-                    placement_hints.preferred_leader(partition_id),
-                    &preferred_nodes,
-                ) {
-                    match self
-                        .metadata_writer
-                        .raw_metadata_store_client()
-                        .read_modify_write(
-                            partition_processor_epoch_key(*partition_id),
-                            |epoch_metadata: Option<EpochMetadata>| {
-                                if let Some(epoch_metadata) = epoch_metadata {
-                                    // check if current has been modified in the meantime
-                                    if epoch_metadata.current().version() < current.version() {
-                                        Ok(epoch_metadata
-                                            .update_current_configuration(current.clone()))
+                    // no or no valid current configuration, pick a valid configuration
+                    if let Some(current) = Self::choose_partition_processor_configuration(
+                        nodes_config,
+                        partition_replication.clone(),
+                        alive_workers,
+                        placement_hints.preferred_leader(partition_id),
+                        &preferred_nodes,
+                    ) {
+                        match self
+                            .metadata_writer
+                            .raw_metadata_store_client()
+                            .read_modify_write(
+                                partition_processor_epoch_key(*partition_id),
+                                |epoch_metadata: Option<EpochMetadata>| {
+                                    if let Some(epoch_metadata) = epoch_metadata {
+                                        // check if current has been modified in the meantime
+                                        if epoch_metadata.current().version() < current.version() {
+                                            Ok(epoch_metadata
+                                                .update_current_configuration(current.clone()))
+                                        } else {
+                                            let (epoch_metadata_version, _, current, next) =
+                                                epoch_metadata.into_inner();
+                                            Err(ConcurrentPartitionProcessorConfigurationUpdate {
+                                                epoch_metadata_version,
+                                                current,
+                                                next,
+                                            })
+                                        }
                                     } else {
-                                        let (_, current, next) = epoch_metadata.into_inner();
+                                        Ok(EpochMetadata::new(current.clone(), None))
+                                    }
+                                },
+                            )
+                            .await
+                        {
+                            Ok(epoch_metadata) => entry.insert_entry(PartitionConfiguration::new(
+                                epoch_metadata.version(),
+                                current,
+                                None,
+                            )),
+                            Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => entry
+                                .insert_entry(PartitionConfiguration::new(
+                                    concurrent_update.epoch_metadata_version,
+                                    concurrent_update.current,
+                                    concurrent_update.next,
+                                )),
+                            Err(ReadModifyWriteError::ReadWrite(err)) => {
+                                return Err(err.into());
+                            }
+                        }
+                    } else {
+                        // no valid configuration, skip
+                        continue;
+                    }
+                }
+            };
+
+            // check whether we can transition from the current configuration to the next one
+            if let Some(next) = &occupied_entry.get().next {
+                if next.replica_set.iter().all(|node_id| {
+                    observed_cluster_state.is_partition_processor_active(partition_id, node_id)
+                }) {
+                    match self.metadata_writer.raw_metadata_store_client().read_modify_write(partition_processor_epoch_key(*partition_id), |epoch_metadata: Option<EpochMetadata>| {
+                        match epoch_metadata {
+                            None => panic!("Did not find epoch metadata which should be present. This indicates a corruption of the metadata store."),
+                            Some(epoch_metadata) => {
+                                let Some(next_version) = epoch_metadata.next().map(|config| config.version()) else {
+                                    // if there is no next configuration, then a concurrent modification has happened
+                                    let (epoch_metadata_version, _, current, next) = epoch_metadata.into_inner();
+                                    return Err(ConcurrentPartitionProcessorConfigurationUpdate {
+                                        epoch_metadata_version,
+                                        current,
+                                        next,
+                                    });
+                                };
+
+                                match next_version.cmp(&next.version()) {
+                                    Ordering::Less => unreachable!("we should not know about a newer next configuration than the metadata store"),
+                                    Ordering::Equal => Ok(epoch_metadata.complete_reconfiguration()),
+                                    Ordering::Greater => {
+                                        let (epoch_metadata_version, _, current, next) = epoch_metadata.into_inner();
                                         Err(ConcurrentPartitionProcessorConfigurationUpdate {
+                                            epoch_metadata_version,
                                             current,
                                             next,
                                         })
                                     }
-                                } else {
-                                    Ok(EpochMetadata::new(current.clone(), None))
                                 }
-                            },
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            entry.insert_entry(PartitionConfiguration::new(current, None));
+                            }
+                        }
+                    }).await {
+                        Ok(epoch_metadata) => {
+                            info!("Successfully transitioned from partition processor configuration {} to {}", occupied_entry.get().current.version(), next.version());
+                            let (epoch_metadata_version, _, current, next) = epoch_metadata.into_inner();
+                            occupied_entry.get_mut().update_configuration(epoch_metadata_version, current, next);
                         }
                         Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => {
-                            entry.insert_entry(PartitionConfiguration::new(
-                                concurrent_update.current,
-                                concurrent_update.next,
-                            ));
+                            occupied_entry.get_mut().update_configuration(concurrent_update.epoch_metadata_version, concurrent_update.current, concurrent_update.next);
                         }
                         Err(ReadModifyWriteError::ReadWrite(err)) => {
                             return Err(err.into());
                         }
                     }
-                } else {
-                    // no valid configuration, skip
-                    continue;
                 }
             }
 
@@ -335,6 +403,8 @@ impl<T: TransportConnect> Scheduler<T> {
             );
         }
 
+        // update the PartitionTable placement which is still needed for routing messages from the
+        // ingress and datafusion
         let mut builder = partition_table.clone().into_builder();
         builder.for_each(|partition_id, placement| {
             self.update_placement(partition_id, placement);
@@ -579,7 +649,8 @@ mod tests {
     };
     use restate_core::{Metadata, TestCoreEnv, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::{
-        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
+        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, ReplayStatus,
+        RunMode,
     };
     use restate_types::identifiers::PartitionId;
     use restate_types::locality::NodeLocation;
@@ -597,7 +668,9 @@ mod tests {
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
-    use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+    use crate::cluster_controller::observed_cluster_state::{
+        ObservedClusterState, PartitionProcessorState,
+    };
     use crate::cluster_controller::scheduler::{PartitionProcessorPlacementHints, Scheduler};
 
     struct NoPlacementHints;
@@ -842,7 +915,10 @@ mod tests {
                 };
                 assert_that!(
                     observed_state.partition_processors.get(node_id),
-                    eq(Some(&run_mode))
+                    eq(Some(&PartitionProcessorState::new(
+                        run_mode,
+                        ReplayStatus::Active
+                    )))
                 );
             }
         }
@@ -872,6 +948,7 @@ mod tests {
                             control_processor.partition_id,
                             plain_node_id,
                             RunMode::Follower,
+                            ReplayStatus::Active,
                         );
                     }
                     ProcessorCommand::Leader => {
@@ -879,6 +956,7 @@ mod tests {
                             control_processor.partition_id,
                             plain_node_id,
                             RunMode::Leader,
+                            ReplayStatus::Active,
                         );
                     }
                 }

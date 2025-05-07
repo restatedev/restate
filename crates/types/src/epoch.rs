@@ -57,11 +57,12 @@ impl EpochMetadata {
     pub fn into_inner(
         self,
     ) -> (
+        Version,
         LeaderEpoch,
         PartitionProcessorConfiguration,
         Option<PartitionProcessorConfiguration>,
     ) {
-        (self.epoch, self.current, self.next)
+        (self.version, self.epoch, self.current, self.next)
     }
 
     pub fn epoch(&self) -> LeaderEpoch {
@@ -99,6 +100,20 @@ impl EpochMetadata {
             leader_metadata: self.leader_metadata,
             current,
             next: self.next,
+            epoch: self.epoch,
+        }
+    }
+
+    pub fn complete_reconfiguration(self) -> Self {
+        let next = self
+            .next
+            .expect("can only reconfigure if there is a next epoch");
+
+        Self {
+            version: self.version.next(),
+            leader_metadata: self.leader_metadata,
+            current: next,
+            next: None,
             epoch: self.epoch,
         }
     }

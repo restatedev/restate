@@ -253,8 +253,8 @@ where
                 }
                 Some(epoch_metadata) = self.epoch_metadata_rx.recv() => {
                     for (partition_id, epoch_metadata) in epoch_metadata {
-                        let (_, current, next) = epoch_metadata.into_inner();
-                        self.scheduler.update_partition_configuration(partition_id, current, next);
+                        let (version, _, current, next) = epoch_metadata.into_inner();
+                        self.scheduler.update_partition_configuration(partition_id, version, current, next);
                     }
                 }
             }
