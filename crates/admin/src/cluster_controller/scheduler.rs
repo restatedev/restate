@@ -118,6 +118,14 @@ impl PartitionConfiguration {
         )
     }
 
+    fn contains_replica(&self, node_id: PlainNodeId) -> bool {
+        self.current.replica_set.contains(node_id)
+            || self
+                .next
+                .as_ref()
+                .is_some_and(|config| config.replica_set.contains(node_id))
+    }
+
     fn generate_instructions(
         &self,
         partition_id: &PartitionId,
@@ -398,6 +406,7 @@ impl<T: TransportConnect> Scheduler<T> {
             // select the leader based on the observed cluster state
             self.select_leader(
                 partition_id,
+                observed_cluster_state,
                 alive_workers,
                 placement_hints.preferred_leader(partition_id),
             );
@@ -465,37 +474,61 @@ impl<T: TransportConnect> Scheduler<T> {
     fn select_leader(
         &mut self,
         partition_id: &PartitionId,
+        observed_cluster_state: &ObservedClusterState,
         alive_workers: &NodeSet,
         preferred_leader: Option<PlainNodeId>,
     ) {
-        if let Some(partition) = self.partitions.get_mut(partition_id) {
-            // try to select the preferred leader first if it's still alive
-            if let Some(preferred_leader) = preferred_leader {
-                if alive_workers.contains(preferred_leader)
-                    && partition.current.replica_set.contains(preferred_leader)
-                {
-                    partition.leader = Some(preferred_leader);
-                    return;
-                }
-            }
+        let Some(partition) = self.partitions.get_mut(partition_id) else {
+            return;
+        };
 
-            if let Some(alive_replica) = partition
-                .current
-                .replica_set
-                .intersect(alive_workers)
-                .next()
+        // try to select the preferred leader first if it's still alive
+        if let Some(preferred_leader) = preferred_leader {
+            if alive_workers.contains(preferred_leader)
+                && partition.contains_replica(preferred_leader)
             {
-                partition.leader = Some(alive_replica);
+                partition.leader = Some(preferred_leader);
                 return;
             }
+        }
 
-            if let Some(alive_next_replica) = partition
-                .next
-                .as_ref()
-                .and_then(|config| config.replica_set.intersect(alive_workers).next())
-            {
-                partition.leader = Some(alive_next_replica);
-            }
+        // pick the alive node currently running as leader if it is a replica
+        if let Some(leader) = observed_cluster_state
+            .partitions
+            .get(partition_id)
+            .and_then(|partition_state| {
+                partition_state
+                    .partition_processors
+                    .iter()
+                    .find(|(node_id, state)| {
+                        state.run_mode == RunMode::Leader && partition.contains_replica(**node_id)
+                    })
+                    .map(|(node_id, _)| *node_id)
+            })
+        {
+            assert!(alive_workers.contains(leader));
+            partition.leader = Some(leader);
+            return;
+        }
+
+        // no leader is currently running; pick from the alive nodes in the current configuration
+        if let Some(alive_replica) = partition
+            .current
+            .replica_set
+            .intersect(alive_workers)
+            .next()
+        {
+            partition.leader = Some(alive_replica);
+            return;
+        }
+
+        // last resort; pick from the alive nodes in the next configuration if there is any
+        if let Some(alive_next_replica) = partition
+            .next
+            .as_ref()
+            .and_then(|config| config.replica_set.intersect(alive_workers).next())
+        {
+            partition.leader = Some(alive_next_replica);
         }
     }
 
