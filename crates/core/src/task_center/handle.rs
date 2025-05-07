@@ -20,6 +20,7 @@ use restate_types::SharedString;
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
 
+use crate::cluster_state::{ClusterState, ClusterStateUpdater};
 use crate::{Metadata, ShutdownError};
 
 use super::{
@@ -69,6 +70,14 @@ impl Handle {
 
     pub fn health(&self) -> &Health {
         &self.inner.health
+    }
+
+    pub fn cluster_state(&self) -> &ClusterState {
+        &self.inner.cluster_state
+    }
+
+    pub fn cluster_state_updater(&self) -> ClusterStateUpdater {
+        self.inner.cluster_state.clone().updater()
     }
 
     /// Returns true if the task center was requested to shutdown
