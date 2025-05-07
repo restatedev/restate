@@ -30,7 +30,7 @@ mod tracking;
 pub mod transport_connector;
 mod types;
 
-pub use connection::{Connection, UnboundedConnectionRef};
+pub use connection::{ConnectThrottle, Connection, UnboundedConnectionRef};
 pub use connection_manager::ConnectionManager;
 pub use error::*;
 pub use grpc::GrpcConnector;

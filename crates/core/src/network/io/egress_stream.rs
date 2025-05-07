@@ -265,6 +265,10 @@ impl EgressStream {
         Self::new(10)
     }
 
+    pub fn with_capacity(capacity: usize) -> (EgressSender, Self, super::Shared) {
+        Self::new(capacity)
+    }
+
     fn new(capacity: usize) -> (EgressSender, Self, super::Shared) {
         let (unbounded_tx, unbounded) = mpsc::unbounded_channel();
         let (tx, rx) = mpsc::channel(capacity);
