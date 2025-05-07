@@ -138,3 +138,67 @@ impl EmptyState for BilrostDisplayFromStr {
         self.inner.is_empty()
     }
 }
+
+/// A special adaptor that always skip the field on encode and decode the value
+/// always using [`Default::default()`]
+pub struct BilrostSkip;
+
+impl<'a, Source> BilrostAsAdaptor<'a, Source> for BilrostSkip
+where
+    Source: Default,
+{
+    fn create(_value: &'a Source) -> Self {
+        Self
+    }
+
+    fn into_inner(self) -> Result<Source, DecodeError> {
+        Ok(Source::default())
+    }
+}
+
+impl Wiretyped<General> for BilrostSkip {
+    const WIRE_TYPE: bilrost::encoding::WireType = <() as Wiretyped<General>>::WIRE_TYPE;
+}
+
+impl ValueEncoder<General> for BilrostSkip {
+    fn encode_value<B: bytes::BufMut + ?Sized>(_value: &Self, _buf: &mut B) {}
+
+    fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(_value: &Self, _buf: &mut B) {}
+
+    fn value_encoded_len(_value: &Self) -> usize {
+        0
+    }
+}
+
+impl ValueDecoder<General> for BilrostSkip {
+    fn decode_value<B: bytes::Buf + ?Sized>(
+        _value: &mut Self,
+        _buf: bilrost::encoding::Capped<B>,
+        _ctx: bilrost::encoding::DecodeContext,
+    ) -> Result<(), bilrost::DecodeError> {
+        Ok(())
+    }
+}
+
+impl ForOverwrite for BilrostSkip {
+    fn for_overwrite() -> Self
+    where
+        Self: Sized,
+    {
+        Self
+    }
+}
+
+impl EmptyState for BilrostSkip {
+    fn clear(&mut self) {}
+    fn empty() -> Self
+    where
+        Self: Sized,
+    {
+        Self
+    }
+
+    fn is_empty(&self) -> bool {
+        true
+    }
+}

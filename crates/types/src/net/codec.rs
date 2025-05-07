@@ -109,7 +109,8 @@ pub fn encode_as_bilrost<T: bilrost::Message>(
         "bilrost encoding is supported from protocol version v2"
     );
 
-    value.encode_to_bytes()
+    let buf = value.encode_fast();
+    Bytes::from(buf.into_vec())
 }
 
 pub fn decode_as_bilrost<T: OwnedMessage>(
