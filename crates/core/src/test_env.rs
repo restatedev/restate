@@ -118,7 +118,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
 
     pub fn add_mock_nodes_config(mut self) -> Self {
         self.nodes_config =
-            create_mock_nodes_config(self.my_node_id.raw_id(), self.my_node_id.raw_generation());
+            create_mock_nodes_config(self.my_node_id.raw_id(), self.my_node_id.generation());
         self
     }
 

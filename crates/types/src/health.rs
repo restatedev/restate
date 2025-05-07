@@ -140,6 +140,13 @@ where
         self.0.borrow()
     }
 
+    /// Note that the receiver is primed with the current value
+    pub fn subscribe(&self) -> watch::Receiver<T> {
+        let mut rx = self.0.subscribe();
+        rx.mark_changed();
+        rx
+    }
+
     pub async fn wait_for_value(&self, status: T) {
         // we don't expose (close) so it's safe to unwrap.
         self.0.subscribe().wait_for(|s| *s == status).await.unwrap();
