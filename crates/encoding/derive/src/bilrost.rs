@@ -112,11 +112,30 @@ pub fn bilrost_as(input: TokenStream) -> TokenStream {
         Err(err) => return err.to_compile_error().into(),
     };
 
-    let name = &input.ident;
+    let name = input.ident;
+    let generics = input.generics;
+    let where_clause = &generics.where_clause;
+
+    let empty_state_where_clause = match where_clause.as_ref().map(|w| &w.predicates) {
+        None => {
+            quote! {
+                where
+                    #name #generics: Default,
+            }
+        }
+        Some(predicate) => {
+            let iter = predicate.iter();
+            quote! {
+                where
+                    #name #generics: Default,
+                    #(#iter),*
+            }
+        }
+    };
 
     let output = quote! {
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General> for #name {
+        impl #generics ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General> for #name #generics #where_clause {
             fn encode_value<B: ::bytes::BufMut + ?Sized>(value: &Self, buf: &mut B) {
                 let adaptor = <#adaptor as ::restate_encoding::BilrostAsAdaptor<_>>::create(value);
                 <#adaptor as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General>>::encode_value(&adaptor, buf)
@@ -134,7 +153,7 @@ pub fn bilrost_as(input: TokenStream) -> TokenStream {
         }
 
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::ValueDecoder<::bilrost::encoding::General> for #name {
+        impl #generics ::bilrost::encoding::ValueDecoder<::bilrost::encoding::General> for #name #generics #where_clause {
             fn decode_value<B: ::bytes::Buf + ?Sized>(
                 value: &mut Self,
                 buf: ::bilrost::encoding::Capped<B>,
@@ -148,12 +167,13 @@ pub fn bilrost_as(input: TokenStream) -> TokenStream {
         }
 
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::Wiretyped<::bilrost::encoding::General> for #name {
+        impl #generics ::bilrost::encoding::Wiretyped<::bilrost::encoding::General> for #name #generics #where_clause {
             const WIRE_TYPE: ::bilrost::encoding::WireType = <#adaptor as ::bilrost::encoding::Wiretyped<::bilrost::encoding::General>>::WIRE_TYPE;
         }
 
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::EmptyState for #name where #name: Default {
+        impl #generics ::bilrost::encoding::EmptyState for #name #generics
+        #empty_state_where_clause {
             fn clear(&mut self) {
                 *self = Self::empty();
             }
@@ -170,7 +190,8 @@ pub fn bilrost_as(input: TokenStream) -> TokenStream {
             }
         }
 
-        impl ::bilrost::encoding::ForOverwrite for #name where #name: Default {
+        impl #generics ::bilrost::encoding::ForOverwrite for #name #generics
+            #empty_state_where_clause {
             fn for_overwrite() -> Self
             where
                 Self: Sized,

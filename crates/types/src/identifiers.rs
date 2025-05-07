@@ -905,7 +905,9 @@ macro_rules! ulid_backed_id {
                 Ord,
                 serde_with::SerializeDisplay,
                 serde_with::DeserializeFromStr,
+                ::restate_encoding::BilrostAs
             )]
+            #[bilrost_as([< $res_name IdMessage >])]
             pub struct [< $res_name Id >](pub(crate) Ulid);
 
             impl [< $res_name Id >] {
@@ -967,6 +969,21 @@ macro_rules! ulid_backed_id {
 
                 fn json_schema(g: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
                     <String as schemars::JsonSchema>::json_schema(g)
+                }
+            }
+
+            #[derive(::bilrost::Message)]
+            struct [< $res_name IdMessage >](::restate_encoding::U128);
+
+            impl From<&[< $res_name Id >]> for [< $res_name IdMessage >] {
+                fn from(value: &[< $res_name Id >]) -> Self {
+                    Self(u128::from(value.0).into())
+                }
+            }
+
+            impl From<[< $res_name IdMessage >]> for [< $res_name Id >] {
+                fn from(value: [< $res_name IdMessage >]) -> Self {
+                    Self(u128::from(value.0).into())
                 }
             }
         }
