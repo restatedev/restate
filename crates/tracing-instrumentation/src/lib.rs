@@ -16,6 +16,7 @@ pub mod prometheus_metrics;
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Display;
+use std::sync::OnceLock;
 
 use exporter::RuntimeModifierSpanExporter;
 use opentelemetry::trace::{TraceError, TracerProvider};
@@ -25,6 +26,8 @@ use opentelemetry_otlp::{SpanExporter, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::BatchSpanProcessor;
 use pretty::Pretty;
+use prometheus_metrics::Prometheus;
+use restate_types::GenerationalNodeId;
 use tonic::codegen::http::HeaderMap;
 use tonic::metadata::MetadataMap;
 use tonic::transport::ClientTlsConfig;
@@ -44,13 +47,24 @@ use restate_types::net::BindAddress;
 use crate::exporter::UserServiceModifierSpanExporter;
 use crate::pretty::PrettyFields;
 
-pub use exporter::set_global_node_id;
-
 const SERVICE_INSTANCE_NAME: &str = "service.instance.name";
 const RESTATE_INVOCATION_ID: &str = "restate.invocation.id";
 const RESTATE_INVOCATION_TARGET: &str = "restate.invocation.target";
 const RESTATE_ERROR_CODE: &str = "restate.error.code";
 const RESTATE_INVOCATION_ERROR_STACKTRACE: &str = "restate.invocation.error.stacktrace";
+
+pub(crate) static GLOBAL_NODE_ID: OnceLock<GenerationalNodeId> = OnceLock::new();
+pub(crate) static GLOBAL_PROMETHEUS: OnceLock<Prometheus> = OnceLock::new();
+
+pub fn set_global_node_id(node_id: GenerationalNodeId) {
+    GLOBAL_NODE_ID
+        .set(node_id)
+        .expect("Global NodeId is not set");
+
+    if let Some(prometheus) = GLOBAL_PROMETHEUS.get() {
+        prometheus.set_node_id(node_id.as_plain());
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
