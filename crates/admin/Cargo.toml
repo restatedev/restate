@@ -32,7 +32,7 @@ restate-storage-query-datafusion = { workspace = true }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-utoipa = { workspace = true }
 restate-wal-protocol = { workspace = true }
-restate-web-ui = { git = "https://github.com/restatedev/restate-web-ui-crate", optional = true, version = "0.0.66", tag = "v0.0.66" }
+restate-web-ui = { git = "https://github.com/restatedev/restate-web-ui-crate", optional = true, version = "0.0.67", tag = "v0.0.67" }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
