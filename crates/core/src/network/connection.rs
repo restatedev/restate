@@ -281,7 +281,14 @@ impl Connection {
         let nodes_config = metadata.nodes_config_snapshot();
         let cluster_name = nodes_config.cluster_name().to_owned();
 
-        let (tx, egress, shared) = EgressStream::create();
+        let (tx, egress, shared) = if let Swimlane::Gossip = swimlane {
+            // For gossip swimlane, we need those connections to be as tight as possible. Buffering
+            // too much outside the socket buffers isn't helpful as it increases the chances of
+            // falsely believing that our messages are going through.
+            EgressStream::with_capacity(1)
+        } else {
+            EgressStream::create()
+        };
 
         // perform handshake.
         shared
