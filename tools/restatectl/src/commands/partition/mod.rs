@@ -22,5 +22,5 @@ pub enum Partitions {
     /// Prints a generated partition table in JSON format
     GenerateMetadata(gen_metadata::GeneratePartitionTableOpts),
     /// Reconfigures the processors of the specified partition
-    Reconfigure(),
+    Reconfigure(reconfigure::ReconfigureOpts),
 }

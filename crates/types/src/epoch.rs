@@ -104,10 +104,26 @@ impl EpochMetadata {
         }
     }
 
+    pub fn reconfigure(self, mut next: PartitionProcessorConfiguration) -> Self {
+        next.version = self
+            .next
+            .map(|next| next.version)
+            .unwrap_or(self.current.version)
+            .next();
+
+        Self {
+            version: self.version.next(),
+            leader_metadata: self.leader_metadata,
+            current: self.current,
+            next: Some(next),
+            epoch: self.epoch,
+        }
+    }
+
     pub fn complete_reconfiguration(self) -> Self {
         let next = self
             .next
-            .expect("can only reconfigure if there is a next epoch");
+            .expect("can only reconfigure if there is a next partition configuration");
 
         Self {
             version: self.version.next(),
