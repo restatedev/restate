@@ -58,6 +58,14 @@ impl ConnectThrottle {
         Ok(())
     }
 
+    /// Resets the connection throttle for the given destination.
+    pub fn reset(dest: &Destination) {
+        let mut last_failures = THROTTLE.destination_state.write();
+        if last_failures.remove(dest).is_some() {
+            trace!("Connection throttling to {} has been reset", dest);
+        }
+    }
+
     /// If the connection fails, record the time so we reject attempts for a while, and
     /// it resets the deadline to zero if connection was successful.
     pub fn note_connect_status(dest: &Destination, success: bool) {
