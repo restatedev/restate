@@ -763,16 +763,17 @@ impl Member {
 
         let mut nodes_config_watch =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
+        let mut nodes_config = Metadata::with_current(|m| m.updateable_nodes_config());
 
         loop {
             tokio::select! {
                 Ok(()) = nodes_config_watch.changed() => {
-                    let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
-                    if self.should_leave(nodes_config.as_ref()) {
+                    let nodes_config = nodes_config.live_load();
+                    if self.should_leave(nodes_config) {
                         break;
                     }
 
-                    self.update_node_addresses();
+                    self.update_node_addresses(nodes_config);
                 },
                 _ = self.tick_interval.tick() => {
                     self.raw_node.tick();
@@ -791,28 +792,29 @@ impl Member {
                     }
                 },
                 Some(request) = self.request_rx.recv() => {
-                    self.handle_request(request);
+                    self.handle_request(request, nodes_config.live_load());
                 },
                 Some(request) = self.join_cluster_rx.recv() => {
-                    self.handle_join_request(request);
+                    self.handle_join_request(request, nodes_config.live_load());
                 }
                 Some(command) = self.command_rx.recv() => {
-                    self.handle_command(command);
+                    self.handle_command(command, nodes_config.live_load());
                 }
                 _ = self.status_update_interval.tick() => {
                     self.update_status();
                 },
             }
 
-            self.on_ready().await?;
-            self.update_leadership();
+            let metadata_nodes_config = nodes_config.live_load();
+            self.on_ready(metadata_nodes_config).await?;
+            self.update_leadership(metadata_nodes_config);
 
             if self.is_leaving {
                 break;
             }
         }
 
-        self.fail_pending_requests();
+        self.fail_pending_requests(nodes_config.live_load());
 
         let mut storage = self.raw_node.raft.r.raft_log.store;
 
@@ -876,12 +878,12 @@ impl Member {
         }
     }
 
-    fn update_leadership(&mut self) {
+    fn update_leadership(&mut self, metadata_nodes_config: &NodesConfiguration) {
         let previous_is_leader = self.is_leader;
         self.is_leader = self.raw_node.raft.leader_id == self.raw_node.raft.id;
 
         if previous_is_leader && !self.is_leader {
-            let known_leader = self.fail_pending_requests();
+            let known_leader = self.fail_pending_requests(metadata_nodes_config);
 
             info!(
                 possible_leader = ?known_leader,
@@ -892,8 +894,11 @@ impl Member {
         }
     }
 
-    fn fail_pending_requests(&mut self) -> Option<KnownLeader> {
-        let known_leader = self.known_leader();
+    fn fail_pending_requests(
+        &mut self,
+        metadata_nodes_config: &NodesConfiguration,
+    ) -> Option<KnownLeader> {
+        let known_leader = self.known_leader(metadata_nodes_config);
         // todo we might fail some of the request too eagerly here because the answer might be
         //  stored in the unapplied log entries. Better to fail the callbacks based on
         //  (term, index).
@@ -908,14 +913,18 @@ impl Member {
         known_leader
     }
 
-    fn handle_request(&mut self, request: MetadataStoreRequest) {
+    fn handle_request(
+        &mut self,
+        request: MetadataStoreRequest,
+        metadata_nodes_config: &NodesConfiguration,
+    ) {
         let request = request.into_request();
         trace!("Handle metadata store request: {request:?}");
 
         if !self.is_leader {
             request.fail(RequestError::Unavailable(
                 "not leader".into(),
-                self.known_leader(),
+                self.known_leader(metadata_nodes_config),
             ));
             return;
         }
@@ -934,7 +943,7 @@ impl Member {
                     && previous_pending_read_count == self.raw_node.raft.pending_read_count()
                 {
                     // fail the request if we cannot serve read-only requests yet
-                    read_only_request.fail(RequestError::Unavailable("Cannot serve read-only queries yet because the latest commit index has not been retrieved. Try again in a bit".into(), self.known_leader()));
+                    read_only_request.fail(RequestError::Unavailable("Cannot serve read-only queries yet because the latest commit index has not been retrieved. Try again in a bit".into(), self.known_leader(metadata_nodes_config)));
                 } else {
                     self.kv_storage
                         .register_read_only_request(read_only_request);
@@ -959,7 +968,11 @@ impl Member {
         }
     }
 
-    fn handle_join_request(&mut self, join_cluster_request: JoinClusterRequest) {
+    fn handle_join_request(
+        &mut self,
+        join_cluster_request: JoinClusterRequest,
+        metadata_nodes_config: &NodesConfiguration,
+    ) {
         let (response_tx, joining_member_id) = join_cluster_request.into_inner();
 
         trace!("Handle join request from node '{}'", joining_member_id);
@@ -967,7 +980,9 @@ impl Member {
         // sanity checks
 
         if !self.is_leader {
-            let _ = response_tx.send(Err(JoinClusterError::NotLeader(self.known_leader())));
+            let _ = response_tx.send(Err(JoinClusterError::NotLeader(
+                self.known_leader(metadata_nodes_config),
+            )));
             return;
         }
 
@@ -994,9 +1009,8 @@ impl Member {
             return;
         }
 
-        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
         let nodes_config =
-            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
+            Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
 
         let Ok(joining_node_config) = nodes_config.find_node_by_id(joining_member_id.node_id)
         else {
@@ -1083,7 +1097,7 @@ impl Member {
         (conf_change, next_configuration)
     }
 
-    async fn on_ready(&mut self) -> Result<(), Error> {
+    async fn on_ready(&mut self, metadata_nodes_config: &NodesConfiguration) -> Result<(), Error> {
         if !self.raw_node.has_ready() {
             return Ok(());
         }
@@ -1104,7 +1118,7 @@ impl Member {
         self.handle_read_states(ready.take_read_states()).await?;
 
         // then handle committed entries
-        self.handle_committed_entries(ready.take_committed_entries())
+        self.handle_committed_entries(ready.take_committed_entries(), metadata_nodes_config)
             .await?;
 
         // append new Raft entries to storage
@@ -1138,8 +1152,11 @@ impl Member {
 
         // handle committed entries
         if !light_ready.committed_entries().is_empty() {
-            self.handle_committed_entries(light_ready.take_committed_entries())
-                .await?;
+            self.handle_committed_entries(
+                light_ready.take_committed_entries(),
+                metadata_nodes_config,
+            )
+            .await?;
         }
 
         self.raw_node.advance_apply();
@@ -1252,6 +1269,7 @@ impl Member {
     async fn handle_committed_entries(
         &mut self,
         committed_entries: Vec<Entry>,
+        metadata_nodes_config: &NodesConfiguration,
     ) -> Result<(), Error> {
         for entry in committed_entries {
             if entry.data.is_empty() {
@@ -1262,7 +1280,8 @@ impl Member {
             match entry.get_entry_type() {
                 EntryType::EntryNormal => self.handle_normal_entry(entry)?,
                 EntryType::EntryConfChange | EntryType::EntryConfChangeV2 => {
-                    self.handle_conf_change(entry).await?
+                    self.handle_conf_change(entry, metadata_nodes_config)
+                        .await?
                 }
             }
         }
@@ -1278,7 +1297,11 @@ impl Member {
         Ok(())
     }
 
-    async fn handle_conf_change(&mut self, entry: Entry) -> Result<(), ConfChangeError> {
+    async fn handle_conf_change(
+        &mut self,
+        entry: Entry,
+        metadata_nodes_config: &NodesConfiguration,
+    ) -> Result<(), ConfChangeError> {
         let cc_v2 = match entry.entry_type {
             EntryType::EntryNormal => {
                 panic!("normal entries should be handled by handle_normal_entry")
@@ -1354,8 +1377,8 @@ impl Member {
 
             self.create_snapshot(entry.index, entry.term).await?;
 
-            self.update_leadership();
-            self.update_node_addresses();
+            self.update_leadership(metadata_nodes_config);
+            self.update_node_addresses(metadata_nodes_config);
             self.update_status();
 
             // check whether we removed ourselves, and we should leave
@@ -1561,10 +1584,9 @@ impl Member {
         }
     }
 
-    fn update_node_addresses(&mut self) {
-        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+    fn update_node_addresses(&mut self, metadata_nodes_config: &NodesConfiguration) {
         let nodes_config =
-            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
+            Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
 
         trace!(
             "Update node addresses in networking based on NodesConfiguration '{}'",
@@ -1617,7 +1639,11 @@ impl Member {
         self.record_summary_metrics(&self.status_tx.borrow());
     }
 
-    fn handle_command(&mut self, command: MetadataCommand) {
+    fn handle_command(
+        &mut self,
+        command: MetadataCommand,
+        metadata_nodes_config: &NodesConfiguration,
+    ) {
         match command {
             MetadataCommand::AddNode(result_tx) => {
                 let _ = result_tx.send(Err(MetadataCommandError::AddNode(
@@ -1629,7 +1655,12 @@ impl Member {
                 plain_node_id,
                 created_at_millis,
             } => {
-                self.remove_member(result_tx, plain_node_id, created_at_millis);
+                self.remove_member(
+                    result_tx,
+                    plain_node_id,
+                    created_at_millis,
+                    metadata_nodes_config,
+                );
             }
         }
     }
@@ -1639,11 +1670,14 @@ impl Member {
         response_tx: oneshot::Sender<Result<(), MetadataCommandError>>,
         plain_node_id: PlainNodeId,
         created_at_millis: Option<CreatedAtMillis>,
+        metadata_nodes_config: &NodesConfiguration,
     ) {
         trace!("Handle removing node '{}'", plain_node_id);
 
         if !self.is_leader {
-            let _ = response_tx.send(Err(MetadataCommandError::NotLeader(self.known_leader())));
+            let _ = response_tx.send(Err(MetadataCommandError::NotLeader(
+                self.known_leader(metadata_nodes_config),
+            )));
             return;
         }
 
@@ -1690,9 +1724,8 @@ impl Member {
             return;
         }
 
-        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
         let nodes_config =
-            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
+            Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
 
         if nodes_config
             .find_node_by_id(leaving_member_id.node_id)
@@ -1792,16 +1825,15 @@ impl Member {
 
     /// Returns the known leader from the Raft instance or a random known leader from the
     /// current nodes configuration.
-    fn known_leader(&self) -> Option<KnownLeader> {
+    fn known_leader(&self, metadata_nodes_config: &NodesConfiguration) -> Option<KnownLeader> {
         if self.raw_node.raft.leader_id == INVALID_ID {
             return None;
         }
 
         let leader = to_plain_node_id(self.raw_node.raft.leader_id);
 
-        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
         let nodes_config =
-            Self::latest_nodes_configuration(&self.kv_storage, &metadata_nodes_config);
+            Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
         nodes_config
             .find_node_by_id(leader)
             .ok()
@@ -1873,6 +1905,7 @@ impl Standby {
 
         let mut nodes_config_watcher =
             Metadata::with_current(|m| m.watch(MetadataKind::NodesConfiguration));
+        let mut nodes_config = Metadata::with_current(|m| m.updateable_nodes_config());
         let my_node_name = Configuration::pinned().common.node_name().to_owned();
         let mut my_member_id = None;
 
@@ -1926,7 +1959,7 @@ impl Standby {
                         command_rx,);
                 }
                 _ = nodes_config_watcher.changed() => {
-                    let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+                    let nodes_config = nodes_config.live_load();
                     if let Some(node_config) = nodes_config.find_node_by_name(&my_node_name) {
                         // we first need to wait until we have joined the Restate cluster to obtain our node id and thereby our member id
                         if my_member_id.is_none() {
@@ -1941,7 +1974,7 @@ impl Standby {
                             // Persist latest NodesConfiguration so that we know about the MetadataServerState at least
                             // as of now when restarting.
                             storage
-                                .store_nodes_configuration(&nodes_config)
+                                .store_nodes_configuration(nodes_config)
                                 .await?;
                             join_cluster.set(Some(Self::join_cluster(my_member_id.expect("MemberId to be known")).fuse()).into());
                         }
@@ -1965,8 +1998,16 @@ impl Standby {
 
         let mut known_leader = None;
 
+        let mut nodes_config = Metadata::with_current(|m| m.updateable_nodes_config());
+
         loop {
-            let err = match Self::attempt_to_join(known_leader.clone(), member_id).await {
+            let err = match Self::attempt_to_join(
+                known_leader.clone(),
+                member_id,
+                nodes_config.live_load(),
+            )
+            .await
+            {
                 Ok(version) => return (member_id, version),
                 Err(err) => err,
             };
@@ -1989,9 +2030,8 @@ impl Standby {
     async fn attempt_to_join(
         known_leader: Option<KnownLeader>,
         member_id: MemberId,
+        nodes_config: &NodesConfiguration,
     ) -> Result<Version, JoinError> {
-        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
-
         let address = if let Some(known_leader) = known_leader {
             debug!(
                 "Trying to join metadata store at node '{}'",
