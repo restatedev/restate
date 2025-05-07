@@ -259,7 +259,10 @@ mod tests {
     }
 
     fn follower_partition() -> PartitionProcessorStatus {
-        PartitionProcessorStatus::default()
+        PartitionProcessorStatus {
+            replay_status: ReplayStatus::Active,
+            ..PartitionProcessorStatus::default()
+        }
     }
 
     fn alive_node(

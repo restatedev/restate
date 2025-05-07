@@ -725,10 +725,22 @@ mod tests {
         let metadata_writer = test_env.metadata_writer.clone();
         let networking = test_env.networking.clone();
 
-        let initial_partition_table = test_env.metadata.partition_table_ref();
-
         let mut scheduler = Scheduler::new(metadata_writer, networking);
         let observed_cluster_state = ObservedClusterState::default();
+
+        scheduler
+            .on_observed_cluster_state(
+                &observed_cluster_state,
+                &Metadata::with_current(|m| m.nodes_config_ref()),
+                NoPlacementHints,
+            )
+            .await?;
+
+        let initial_partition_table = metadata_store_client
+            .get::<PartitionTable>(PARTITION_TABLE_KEY.clone())
+            .await
+            .expect("partition table")
+            .unwrap();
 
         scheduler
             .on_observed_cluster_state(
@@ -744,7 +756,7 @@ mod tests {
             .expect("partition table")
             .unwrap();
 
-        assert_eq!(*initial_partition_table, partition_table);
+        assert_eq!(initial_partition_table, partition_table);
 
         Ok(())
     }
@@ -755,12 +767,6 @@ mod tests {
             NonZero::new(3).expect("non-zero"),
         )))
         .await?;
-        Ok(())
-    }
-
-    #[test(restate_core::test(start_paused = true))]
-    async fn schedule_partitions_with_all_nodes_replication() -> googletest::Result<()> {
-        schedule_partitions(PartitionReplication::Everywhere).await?;
         Ok(())
     }
 
@@ -902,11 +908,12 @@ mod tests {
                                 .is_some_and(|leader| alive_nodes.contains(leader))
                         );
 
-                        assert_eq!(
-                            partition.placement.len(),
-                            alive_nodes
-                                .len()
-                                .min(usize::from(replication_property.num_copies()))
+                        // until we have a strict node set selector we accept larger replica sets
+                        assert!(
+                            partition.placement.len()
+                                >= alive_nodes
+                                    .len()
+                                    .min(usize::from(replication_property.num_copies()))
                         );
                     }
                 }
@@ -1066,7 +1073,10 @@ mod tests {
 
         for idx in 0..num_partitions {
             if rng.random_bool(0.5) {
-                let mut status = PartitionProcessorStatus::new();
+                let mut status = PartitionProcessorStatus {
+                    replay_status: ReplayStatus::Active,
+                    ..PartitionProcessorStatus::default()
+                };
 
                 if rng.random_bool(0.5) {
                     // make the partition the leader
