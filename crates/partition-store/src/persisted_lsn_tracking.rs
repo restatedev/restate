@@ -18,12 +18,14 @@ use crate::protobuf_types::PartitionStoreProtobufValue;
 
 pub(crate) struct LatestAppliedLsnCollector {
     applied_lsns: HashMap<PartitionId, Lsn>,
+    properties: Vec<(CString, CString)>,
 }
 
 impl LatestAppliedLsnCollector {
     fn new() -> Self {
         LatestAppliedLsnCollector {
             applied_lsns: Default::default(),
+            properties: vec![],
         }
     }
 }
@@ -36,13 +38,13 @@ impl TablePropertiesCollector for LatestAppliedLsnCollector {
         entry_type: rocksdb::table_properties::EntryType,
         _seq: u64,
         _file_size: u64,
-    ) -> bool {
+    ) -> Result<(), ()> {
         if !matches!(entry_type, EntryType::EntryPut) {
-            return true;
+            return Ok(());
         }
 
         match extract_partition_applied_lsn(key, value) {
-            Ok(None) => true,
+            Ok(None) => Ok(()),
             Ok(Some((partition_id, lsn))) => {
                 self.applied_lsns
                     .entry(partition_id)
@@ -52,34 +54,28 @@ impl TablePropertiesCollector for LatestAppliedLsnCollector {
                         }
                     })
                     .or_insert(lsn);
-                true
+                Ok(())
             }
             Err(err) => {
                 warn!("Failed to decode partition LSN from raw key-value: {}", err);
-                false
+                Err(())
             }
         }
     }
 
-    fn finish(&mut self, properties: &mut HashMap<CString, CString>) -> bool {
+    fn finish(&mut self) -> Result<impl IntoIterator<Item = &(CString, CString)>, ()> {
         for (partition_id, lsn) in &self.applied_lsns {
-            properties.insert(
+            self.properties.push((
                 CString::new(applied_lsn_property_name(*partition_id)).unwrap(),
                 CString::new(lsn.as_u64().to_string()).unwrap(),
-            );
+            ));
         }
-        true
+
+        Ok(self.properties.iter())
     }
 
-    fn get_readable_properties(&self) -> HashMap<CString, CString> {
-        let mut properties = HashMap::new();
-        for (partition_id, lsn) in &self.applied_lsns {
-            properties.insert(
-                CString::new(applied_lsn_property_name(*partition_id)).unwrap(),
-                CString::new(lsn.as_u64().to_string()).unwrap(),
-            );
-        }
-        properties
+    fn get_readable_properties(&self) -> impl IntoIterator<Item = &(CString, CString)> {
+        self.properties.iter()
     }
 
     fn name(&self) -> &CStr {
