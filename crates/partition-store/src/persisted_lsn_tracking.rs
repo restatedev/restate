@@ -3,7 +3,7 @@ use std::ffi::{CStr, CString};
 
 use rocksdb::event_listener::{EventListener, FlushJobInfo};
 use rocksdb::table_properties::{
-    EntryType, TablePropertiesCollector, TablePropertiesCollectorFactory,
+    CollectorError, EntryType, TablePropertiesCollector, TablePropertiesCollectorFactory,
 };
 use tokio::sync::watch;
 use tracing::warn;
@@ -38,7 +38,7 @@ impl TablePropertiesCollector for LatestAppliedLsnCollector {
         entry_type: rocksdb::table_properties::EntryType,
         _seq: u64,
         _file_size: u64,
-    ) -> Result<(), ()> {
+    ) -> Result<(), CollectorError> {
         if !matches!(entry_type, EntryType::EntryPut) {
             return Ok(());
         }
@@ -58,12 +58,12 @@ impl TablePropertiesCollector for LatestAppliedLsnCollector {
             }
             Err(err) => {
                 warn!("Failed to decode partition LSN from raw key-value: {}", err);
-                Err(())
+                Err(CollectorError::new())
             }
         }
     }
 
-    fn finish(&mut self) -> Result<impl IntoIterator<Item = &(CString, CString)>, ()> {
+    fn finish(&mut self) -> Result<impl IntoIterator<Item = &(CString, CString)>, CollectorError> {
         for (partition_id, lsn) in &self.applied_lsns {
             self.properties.push((
                 CString::new(applied_lsn_property_name(*partition_id)).unwrap(),
