@@ -92,6 +92,8 @@ pub enum TaskKind {
     RoleRunner,
     /// Cluster controller is the first thing that gets stopped when the server is shut down
     ClusterController,
+    #[strum(props(runtime = "default"))]
+    FailureDetector,
     SystemService,
     #[strum(props(OnCancel = "abort", runtime = "ingress"))]
     Ingress,

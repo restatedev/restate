@@ -7267,6 +7267,7 @@ dependencies = [
 name = "restate-node"
 version = "1.3.3-dev"
 dependencies = [
+ "ahash 0.8.11",
  "anyhow",
  "async-trait",
  "axum",
@@ -7274,14 +7275,17 @@ dependencies = [
  "bytestring",
  "codederror",
  "derive_builder",
+ "derive_more",
  "enumset",
  "futures",
  "googletest",
  "http 1.2.0",
+ "itertools 0.14.0",
  "jemalloc_pprof",
  "metrics",
  "metrics-exporter-prometheus",
  "prost-dto",
+ "rand 0.9.0",
  "restate-admin",
  "restate-bifrost",
  "restate-core",
