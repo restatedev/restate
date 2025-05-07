@@ -21,8 +21,9 @@ use serde_with::{DeserializeAs, serde_as};
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 
 use super::{
-    AwsOptions, Configuration, HttpOptions, InvalidConfigurationError, ObjectStoreOptions,
-    PerfStatsLevel, RocksDbOptions, StructWithDefaults, print_warning_deprecated_config_option,
+    AwsOptions, Configuration, GossipOptions, HttpOptions, InvalidConfigurationError,
+    ObjectStoreOptions, PerfStatsLevel, RocksDbOptions, StructWithDefaults,
+    print_warning_deprecated_config_option,
 };
 use crate::PlainNodeId;
 use crate::locality::NodeLocation;
@@ -314,6 +315,10 @@ pub struct CommonOptions {
     /// Restate uses Scarf to collect anonymous usage data to help us understand how the software is being used.
     /// You can set this flag to true to disable this collection. It can also be set with the environment variable DO_NOT_TRACK=1.
     pub disable_telemetry: bool,
+
+    /// Options of gossip-based failure detector
+    #[serde(flatten)]
+    pub gossip: GossipOptions,
 }
 
 impl CommonOptions {
@@ -471,6 +476,7 @@ impl Default for CommonOptions {
             ),
             initialization_timeout: Duration::from_secs(5 * 60).into(),
             disable_telemetry: false,
+            gossip: GossipOptions::default(),
         }
     }
 }
@@ -865,6 +871,9 @@ pub struct CommonOptionsShadow {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     initialization_timeout: humantime::Duration,
     disable_telemetry: bool,
+    #[serde(flatten)]
+    pub gossip: GossipOptions,
+
     #[serde_as(as = "crate::replication::ReplicationPropertyFromTo")]
     pub default_replication: ReplicationProperty,
 
@@ -997,6 +1006,7 @@ impl From<CommonOptionsShadow> for CommonOptions {
             network_error_retry_policy: value.network_error_retry_policy,
             initialization_timeout: value.initialization_timeout,
             disable_telemetry: value.disable_telemetry,
+            gossip: value.gossip,
 
             auto_provision,
             default_num_partitions,
