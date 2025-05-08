@@ -67,7 +67,7 @@ impl PartitionToNodesRoutingTable {
         let mut inner = HashMap::<PartitionId, NodeId>::with_capacity(
             partition_table.num_partitions() as usize,
         );
-        for (partition_id, partition) in partition_table.partitions() {
+        for (partition_id, partition) in partition_table.iter() {
             if let Some(leader) = partition.placement.leader() {
                 inner.insert(*partition_id, leader.into());
             }
