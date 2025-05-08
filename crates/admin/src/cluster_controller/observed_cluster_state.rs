@@ -60,10 +60,6 @@ impl ObservedClusterState {
     }
 
     /// Update observed cluster state with given [`ClusterState`]
-    ///
-    /// Nodes in [`NodeState::Suspect`] state are treated as [`NodeState::Alive`].
-    /// This means that their `last known` state will not be cleared
-    /// until they are marked as dead in [`ClusterState`].
     fn update_nodes(&mut self, cluster_state: &ClusterState) {
         for (node_id, node_state) in &cluster_state.nodes {
             match node_state {
@@ -71,11 +67,6 @@ impl ObservedClusterState {
                     self.dead_nodes.remove(node_id);
                     self.alive_nodes
                         .insert(*node_id, alive_node.generational_node_id);
-                }
-                NodeState::Suspect(maybe_node) => {
-                    self.dead_nodes.remove(node_id);
-                    self.alive_nodes
-                        .insert(*node_id, maybe_node.generational_node_id);
                 }
                 NodeState::Dead(_) => {
                     self.alive_nodes.remove(node_id);
