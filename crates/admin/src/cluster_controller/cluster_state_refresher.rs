@@ -129,7 +129,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                                 network_sender
                                     .call_rpc(
                                         node_id,
-                                        Swimlane::Gossip,
+                                        Swimlane::General,
                                         GetNodeState::default(),
                                         None,
                                         Some(heartbeat_timeout),

@@ -66,7 +66,6 @@ pub struct NodeStateResponse {
     pub uptime: Duration,
 }
 
-// Gossip protocol types
 #[derive(Debug, Clone, BilrostNewType, NetSerde)]
 pub struct GossipFlags(u32);
 bitflags! {
@@ -90,6 +89,8 @@ bitflags! {
         /// to send gossips, this could happen in asymmetric network failures. In this case, we
         /// don't consider this node (the sender) as alive and we don't count the gossip message
         /// as a valid liveness signal, but we still use peer information within the message as usual.
+        ///
+        /// This is *not* a `Special` message
         const FeelingLonely = 1 << 4;
         /// This gossip message contains extra information about the nodes in the cluster.
         /// The field _extras_ can be respected.
@@ -97,10 +98,12 @@ bitflags! {
     }
 }
 
-/// The sender of the message is the
+/// A gossip message sent between nodes to drive the failure detector
+///
+/// Note: The sender of the message is inferred from the network message envelope
 #[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Gossip {
-    /// the sender's startup time in milliseconds since epoch. This value must be unique and
+    /// The sender's startup time in milliseconds since epoch. This value must be unique and
     /// incrementing for each restart of the same node.
     #[bilrost(1)]
     pub instance_ts: MillisSinceEpoch,
@@ -115,7 +118,7 @@ pub struct Gossip {
     #[bilrost(4)]
     pub nodes: Vec<Node>,
     /// Extra optional information about the nodes in the cluster
-    /// Ignored if `Enriched` flag is not set on the message
+    /// Ignored if `Enriched` flag is not set on the message.
     #[bilrost(5)]
     pub extras: Vec<Extras>,
 }

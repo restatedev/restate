@@ -961,7 +961,7 @@ mod tests {
             .connection_manager()
             .accept_fake_server_connection(
                 GenerationalNodeId::new(2, 2),
-                Swimlane::Gossip,
+                Swimlane::General,
                 ConnectionDirection::Bidirectional,
                 // let node2 receive messages and use the same message handler as node1
                 Some(router.build().into()),
@@ -1285,7 +1285,7 @@ mod tests {
             .connection_manager()
             .accept_fake_server_connection(
                 GenerationalNodeId::new(2, 2),
-                Swimlane::Gossip,
+                Swimlane::General,
                 ConnectionDirection::Bidirectional,
                 Some(router.build().into()),
             )
