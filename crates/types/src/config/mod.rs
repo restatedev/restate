@@ -312,38 +312,27 @@ pub struct ConfigurationShadow {
     ingress: IngressOptions,
     bifrost: BifrostOptions,
     metadata_server: MetadataServerOptions,
-    // previous name of metadata server options; kept for backwards compatibility
-    // todo remove with 1.4.0
-    #[serde_as(as = "Option<metadata_server::MetadataServerOptionsWithConfigurationDefaults>")]
-    metadata_store: Option<MetadataServerOptions>,
+
     networking: NetworkingOptions,
     log_server: LogServerOptions,
 }
 
 impl From<ConfigurationShadow> for Configuration {
     fn from(value: ConfigurationShadow) -> Self {
-        let metadata_server = if value.metadata_server == MetadataServerOptions::default()
-            && value.metadata_store.is_some()
-        {
-            print_warning_deprecated_config_option("metadata-store", Some("metadata-server"));
-            value.metadata_store.unwrap()
-        } else {
-            value.metadata_server
-        };
-
         Configuration {
             common: value.common,
             worker: value.worker,
             admin: value.admin,
             ingress: value.ingress,
             bifrost: value.bifrost,
-            metadata_server,
+            metadata_server: value.metadata_server,
             networking: value.networking,
             log_server: value.log_server,
         }
     }
 }
 
+#[allow(unused)]
 fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<&str>) {
     // we can't use tracing since config loading happens before tracing is initialized
     if let Some(replacement) = replacement {
@@ -353,12 +342,6 @@ fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<
     } else {
         eprintln!("Using the deprecated config option '{deprecated}'.");
     }
-}
-
-fn print_warning_deprecated_value_using_default(option: &str, value: &str) {
-    eprintln!(
-        "Config option '{option}' does no longer support the value '{value}'. Using the default value instead."
-    );
 }
 
 fn print_warning_deprecated_value(option: &str, value: &str, help_msg: &str) {
