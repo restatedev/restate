@@ -324,11 +324,7 @@ impl GenerationalNodeId {
         self.0.0
     }
 
-    pub fn raw_generation(self) -> u32 {
-        self.1
-    }
-
-    pub fn as_plain(self) -> PlainNodeId {
+    pub const fn as_plain(self) -> PlainNodeId {
         self.0
     }
 
