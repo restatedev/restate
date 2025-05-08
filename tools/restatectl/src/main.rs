@@ -76,7 +76,7 @@ mod tests {
         let roles = *config.roles();
 
         let mut cluster = Cluster::builder()
-            .temp_base_dir()
+            .temp_base_dir("restatectl_smoke_test")
             .nodes(Node::new_test_nodes(
                 config,
                 BinarySource::CargoTest,

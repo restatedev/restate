@@ -50,7 +50,7 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
     let mut cluster = Cluster::builder()
         .cluster_name("raft_metadata_cluster_smoke_test")
         .nodes(nodes)
-        .temp_base_dir()
+        .temp_base_dir("raft_metadata_cluster_smoke_test")
         .build()
         .start()
         .await?;
@@ -162,7 +162,7 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
     let mut cluster = Cluster::builder()
         .cluster_name("raft_metadata_cluster_chaos_test")
         .nodes(nodes)
-        .temp_base_dir()
+        .temp_base_dir("raft_metadata_cluster_chaos_test")
         .build()
         .start()
         .await?;
@@ -348,7 +348,7 @@ async fn raft_metadata_cluster_reconfiguration() -> googletest::Result<()> {
     let mut cluster = Cluster::builder()
         .cluster_name("raft_metadata_cluster_reconfiguration")
         .nodes(nodes)
-        .temp_base_dir()
+        .temp_base_dir("raft_metadata_cluster_reconfiguration")
         .build()
         .start()
         .await?;
