@@ -149,6 +149,11 @@ impl LazyConnection {
     }
 
     #[must_use]
+    pub fn has_capacity(&self) -> bool {
+        self.is_connected() && self.sender.capacity() > 0
+    }
+
+    #[must_use]
     pub fn is_connected(&self) -> bool {
         !self.is_closed() && self.is_connected.load(Ordering::Relaxed)
     }
