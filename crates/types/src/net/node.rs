@@ -10,13 +10,19 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
+use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_encoding::NetSerde;
+use restate_encoding::{BilrostNewType, NetSerde};
 
 use super::ServiceTag;
-use crate::net::{bilrost_wire_codec_with_v1_fallback, define_rpc, define_service};
+use crate::GenerationalNodeId;
+use crate::net::{
+    bilrost_wire_codec, bilrost_wire_codec_with_v1_fallback, define_rpc, define_service,
+    define_unary_message,
+};
+use crate::time::MillisSinceEpoch;
 use crate::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
 
 pub struct GossipService;
@@ -35,6 +41,12 @@ define_rpc! {
 bilrost_wire_codec_with_v1_fallback!(GetNodeState);
 bilrost_wire_codec_with_v1_fallback!(NodeStateResponse);
 
+define_unary_message! {
+    @message = Gossip,
+    @service = GossipService,
+}
+bilrost_wire_codec!(Gossip);
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct GetNodeState {}
 
@@ -52,4 +64,77 @@ pub struct NodeStateResponse {
     #[serde(default)]
     #[bilrost(2)]
     pub uptime: Duration,
+}
+
+// Gossip protocol types
+#[derive(Debug, Clone, BilrostNewType, NetSerde)]
+pub struct GossipFlags(u32);
+bitflags! {
+    impl GossipFlags: u32 {
+        /// This message is a special message, no information about peers will be included
+        const Special = 1 << 0;
+        /// Gossip message is for a bring-up. no `nodes` should be expected in this message.
+        /// Needs to be combined with `Special`
+        const BringUp = 1 << 1;
+        /// flag for bring-up to indicate that the node has fully started. If unset, it means that
+        /// the node is still starting up.
+        /// Needs to be combined with `Special`
+        const ReadyToServe = 1 << 2;
+        /// The node is broadcasting that it's failing over (shutting down) and it's asking for
+        /// peers to gracefully fail over to another node.
+        ///
+        /// This can be used in conjunction with `Special` or it can be set on regular gossip
+        /// messages.
+        const FailingOver = 1 << 3;
+        /// Node didn't receive gossip messages for some _configurable_ time, yet it's able
+        /// to send gossips, this could happen in asymmetric network failures. In this case, we
+        /// don't consider this node (the sender) as alive and we don't count the gossip message
+        /// as a valid liveness signal, but we still use peer information within the message as usual.
+        const FeelingLonely = 1 << 4;
+        /// This gossip message contains extra information about the nodes in the cluster.
+        /// The field _extras_ can be respected.
+        const Enriched = 1 << 5;
+    }
+}
+
+/// The sender of the message is the
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
+pub struct Gossip {
+    /// the sender's startup time in milliseconds since epoch. This value must be unique and
+    /// incrementing for each restart of the same node.
+    #[bilrost(1)]
+    pub instance_ts: MillisSinceEpoch,
+    /// Timestamp at sender when this message was constructed. Used to measure delay/clock-skew between nodes
+    /// and to fence against processing old messages.
+    #[bilrost(2)]
+    pub sent_at: MillisSinceEpoch,
+    #[bilrost(3)]
+    pub flags: GossipFlags,
+    /// Information about the cluster form the sender's point of view. It also includes the sender itself, albeit
+    /// not every field of the sender's state will be respected.
+    #[bilrost(4)]
+    pub nodes: Vec<Node>,
+    /// Extra optional information about the nodes in the cluster
+    /// Ignored if `Enriched` flag is not set on the message
+    #[bilrost(5)]
+    pub extras: Vec<Extras>,
+}
+
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
+pub struct Node {
+    #[bilrost(1)]
+    pub instance_ts: MillisSinceEpoch,
+    #[bilrost(2)]
+    pub node_id: GenerationalNodeId,
+    /// How many gossip intervals have passed since the last time we heard from/about this node (directly or
+    /// indirectly)
+    #[bilrost(3)]
+    pub gossip_age: u32,
+    #[bilrost(4)]
+    pub in_failover: bool,
+}
+
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
+pub struct Extras {
+    // todo!()
 }

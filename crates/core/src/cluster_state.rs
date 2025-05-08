@@ -8,10 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::hash_map;
 use std::sync::Arc;
 
 use ahash::HashMap;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::Notify;
+use tokio::sync::futures::Notified;
 use tokio::sync::watch;
 
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
@@ -41,14 +44,14 @@ struct State {
 
 static_assertions::assert_eq_size!(State, u64);
 
-#[derive(Debug, Default)]
-struct Node {
-    state: watch::Sender<State>,
-}
+type Node = watch::Sender<State>;
 
 #[derive(Default)]
 struct Inner {
     nodes: RwLock<HashMap<PlainNodeId, Node>>,
+    /// Global notify to wake up all waiters who are interested in any state change or
+    /// insertions/removals from the map without monitoring individual nodes.
+    global_notify: Notify,
 }
 
 /// Access to liveness information about the cluster.
@@ -69,6 +72,7 @@ pub struct ClusterState {
 /// membership.
 pub struct ClusterStateUpdateReadGuard<'a> {
     guard: RwLockReadGuard<'a, HashMap<PlainNodeId, Node>>,
+    global_notify: &'a Notify,
 }
 
 impl ClusterStateUpdateReadGuard<'_> {
@@ -78,7 +82,7 @@ impl ClusterStateUpdateReadGuard<'_> {
             return false;
         };
 
-        node.state.send_if_modified(|current_node| {
+        let changed = node.send_if_modified(|current_node| {
             if current_node.generation > node_id.generation() {
                 // reject the change, generations do not go backwards.
                 return false;
@@ -93,7 +97,13 @@ impl ClusterStateUpdateReadGuard<'_> {
                 changed = true;
             }
             changed
-        })
+        });
+
+        if changed {
+            self.global_notify.notify_waiters();
+        }
+
+        changed
     }
 }
 
@@ -101,19 +111,29 @@ impl ClusterStateUpdateReadGuard<'_> {
 /// membership.
 pub struct ClusterStateUpdateWriteGuard<'a> {
     guard: RwLockWriteGuard<'a, HashMap<PlainNodeId, Node>>,
+    global_notify: &'a Notify,
 }
 
 impl ClusterStateUpdateWriteGuard<'_> {
     /// Removes the node from the map if exists
     pub fn remove_node(&mut self, node_id: PlainNodeId) {
-        self.guard.remove(&node_id);
+        if self.guard.remove(&node_id).is_some() {
+            self.global_notify.notify_waiters();
+        }
     }
 
     /// Adds the node to the map if it doesn't exist
     pub fn upsert_node_state(&mut self, node_id: GenerationalNodeId, new_state: NodeState) -> bool {
-        let node = self.guard.entry(node_id.as_plain()).or_default();
+        let mut new_node = false;
+        let node = match self.guard.entry(node_id.as_plain()) {
+            hash_map::Entry::Occupied(node) => node.into_mut(),
+            hash_map::Entry::Vacant(vacant) => {
+                new_node = true;
+                vacant.insert(Node::default())
+            }
+        };
 
-        node.state.send_if_modified(|current_node| {
+        let changed = node.send_if_modified(|current_node| {
             if current_node.generation > node_id.generation() {
                 // reject the change, generations do not go backwards.
                 return false;
@@ -128,7 +148,13 @@ impl ClusterStateUpdateWriteGuard<'_> {
                 changed = true;
             }
             changed
-        })
+        });
+
+        if new_node || changed {
+            self.global_notify.notify_waiters();
+        }
+
+        changed || new_node
     }
 }
 
@@ -144,6 +170,7 @@ impl ClusterStateUpdater {
     pub fn write(&mut self) -> ClusterStateUpdateWriteGuard {
         ClusterStateUpdateWriteGuard {
             guard: self.inner.nodes.write(),
+            global_notify: &self.inner.global_notify,
         }
     }
 
@@ -151,6 +178,7 @@ impl ClusterStateUpdater {
     pub fn read(&mut self) -> ClusterStateUpdateReadGuard {
         ClusterStateUpdateReadGuard {
             guard: self.inner.nodes.read(),
+            global_notify: &self.inner.global_notify,
         }
     }
 
@@ -177,13 +205,14 @@ impl ClusterState {
         ClusterStateUpdater { inner: self.inner }
     }
 
+    /// Returns the current state of the node or dead if it's an unknown node
     pub fn get_node_state(&self, node_id: NodeId) -> NodeState {
         let current = self
             .inner
             .nodes
             .read()
             .get(&node_id.id())
-            .map(|n| *n.state.borrow());
+            .map(|n| *n.borrow());
         let Some(current) = current else {
             return NodeState::Dead;
         };
@@ -197,6 +226,34 @@ impl ClusterState {
         }
     }
 
+    /// Consumes the input iterator and returns the node state for each node in the same order
+    ///
+    ///
+    /// Note: we return a materialized vector to avoid returning the read guard. If we leaked the
+    /// read guard, callers might hold it for too long by mistake.
+    pub fn map_from_ids(&self, iter: impl Iterator<Item = NodeId>) -> Vec<NodeState> {
+        let guard = self.inner.nodes.read();
+
+        let get_state_for_node = |node_id: NodeId| {
+            let current = guard.get(&node_id.id()).map(|n| *n.borrow());
+            let Some(current) = current else {
+                return NodeState::Dead;
+            };
+
+            match node_id {
+                NodeId::Plain(_) => current.state,
+                NodeId::Generational(gen_node_id)
+                    if gen_node_id.generation() == current.generation =>
+                {
+                    current.state
+                }
+                NodeId::Generational(_) => NodeState::Dead,
+            }
+        };
+
+        iter.map(get_state_for_node).collect()
+    }
+
     /// Returns true if the node is Alive.
     ///
     /// Note: Failing over nodes will not be considered alive by this
@@ -206,6 +263,15 @@ impl ClusterState {
         node_state.is_alive()
     }
 
+    /// Future to monitor changes to the cluster state
+    ///
+    /// If you don't want to miss any changes, it's advised to create this future first, read the
+    /// cluster state, then await this future for updates.
+    pub fn changed(&self) -> Notified<'_> {
+        self.inner.global_notify.notified()
+    }
+
+    /// Returns a list of all nodes known to the cluster state
     pub fn all(&self) -> Vec<(GenerationalNodeId, NodeState)> {
         self.inner
             .nodes
@@ -213,13 +279,14 @@ impl ClusterState {
             .iter()
             .map(|(node_id, node)| {
                 (
-                    node_id.with_generation(node.state.borrow().generation),
-                    node.state.borrow().state,
+                    node_id.with_generation(node.borrow().generation),
+                    node.borrow().state,
                 )
             })
             .collect()
     }
 
+    /// Returns a list of watches of all nodes known to the cluster state
     pub fn all_watches(&self) -> Vec<(PlainNodeId, NodeStateWatch)> {
         self.inner
             .nodes
@@ -230,7 +297,7 @@ impl ClusterState {
                     *node_id,
                     NodeStateWatch {
                         node_id: *node_id,
-                        rx: node.state.subscribe(),
+                        rx: node.subscribe(),
                     },
                 )
             })
@@ -249,7 +316,6 @@ impl ClusterState {
             .write()
             .entry(node_id)
             .or_default()
-            .state
             .subscribe();
 
         NodeStateWatch { node_id, rx }
@@ -353,8 +419,10 @@ impl NodeStateWatch {
 #[cfg(test)]
 mod tests {
     use std::task::Poll;
+    use std::time::Duration;
 
-    use futures::poll;
+    use futures::{FutureExt, poll};
+    use tokio::task::JoinSet;
 
     use super::*;
 
@@ -459,5 +527,38 @@ mod tests {
             poll!(&mut wait_for_alive_fut),
             Poll::Ready((GenerationalNodeId::new(100, 2), NodeState::Alive))
         );
+    }
+
+    // global watching a node state
+    #[tokio::test(start_paused = true)]
+    async fn watch_global_changes() {
+        let cluster_state = ClusterState::default();
+        let node_id = GenerationalNodeId::new(1, 2);
+        let mut updater = cluster_state.clone().updater();
+        updater.upsert_node_state(node_id, NodeState::Alive);
+
+        let notified = cluster_state.changed();
+        assert_eq!(notified.now_or_never(), None);
+        let notified = cluster_state.changed();
+
+        updater.set_node_state(node_id, NodeState::Dead);
+
+        let mut tasks = JoinSet::new();
+        for _ in 0..10 {
+            tasks.spawn({
+                let cluster_state = cluster_state.clone();
+                async move {
+                    cluster_state.changed().await;
+                }
+            });
+        }
+
+        // fake sleep to ensure tasks have started
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        updater.upsert_node_state(GenerationalNodeId::new(2, 10), NodeState::Alive);
+        let _ = notified.await;
+
+        // join all tasks, assert
+        assert_eq!(tasks.join_all().await.len(), 10);
     }
 }
