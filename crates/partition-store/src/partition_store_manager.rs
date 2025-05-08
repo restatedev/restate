@@ -67,7 +67,7 @@ impl PartitionStoreManager {
 
         let mut db_opts = db_options();
 
-        let event_listener = PersistedLsnEventListener::create();
+        let event_listener = PersistedLsnEventListener::default();
         let persisted_lsns = event_listener.persisted_lsns.clone();
         db_opts.add_event_listener(event_listener);
 

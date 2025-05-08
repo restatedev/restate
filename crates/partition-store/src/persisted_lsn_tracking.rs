@@ -17,21 +17,13 @@ use crate::fsm_table::{PartitionStateMachineKey, SequenceNumber, fsm_variable};
 use crate::keys::{KeyKind, TableKey};
 use crate::protobuf_types::PartitionStoreProtobufValue;
 
-pub(crate) struct LatestAppliedLsnCollector {
+#[derive(Default)]
+pub(crate) struct AppliedLsnCollector {
     applied_lsns: HashMap<PartitionId, Lsn>,
     properties: Vec<(CString, CString)>,
 }
 
-impl LatestAppliedLsnCollector {
-    fn new() -> Self {
-        LatestAppliedLsnCollector {
-            applied_lsns: Default::default(),
-            properties: vec![],
-        }
-    }
-}
-
-impl TablePropertiesCollector for LatestAppliedLsnCollector {
+impl TablePropertiesCollector for AppliedLsnCollector {
     fn add_user_key(
         &mut self,
         key: &[u8],
@@ -80,25 +72,24 @@ impl TablePropertiesCollector for LatestAppliedLsnCollector {
     }
 
     fn name(&self) -> &CStr {
-        c"LatestAppliedLsnCollector"
+        c"AppliedLsnCollector"
     }
 }
 
-#[derive(Default)]
-pub(crate) struct LatestAppliedLsnCollectorFactory {}
+pub(crate) struct AppliedLsnCollectorFactory;
 
-impl TablePropertiesCollectorFactory for LatestAppliedLsnCollectorFactory {
-    type Collector = LatestAppliedLsnCollector;
+impl TablePropertiesCollectorFactory for AppliedLsnCollectorFactory {
+    type Collector = AppliedLsnCollector;
 
     fn create(
         &mut self,
         _context: rocksdb::table_properties::TablePropertiesCollectorContext,
-    ) -> LatestAppliedLsnCollector {
-        LatestAppliedLsnCollector::new()
+    ) -> AppliedLsnCollector {
+        AppliedLsnCollector::default()
     }
 
     fn name(&self) -> &CStr {
-        c"LatestAppliedLsnCollectorFactory"
+        c"AppliedLsnCollectorFactory"
     }
 }
 
@@ -112,14 +103,6 @@ pub type PersistedLsnLookup = DashMap<PartitionId, Lsn>;
 #[derive(Default)]
 pub(crate) struct PersistedLsnEventListener {
     pub(crate) persisted_lsns: Arc<PersistedLsnLookup>,
-}
-
-impl PersistedLsnEventListener {
-    pub fn create() -> Self {
-        PersistedLsnEventListener {
-            persisted_lsns: Default::default(),
-        }
-    }
 }
 
 impl EventListener for PersistedLsnEventListener {
@@ -156,13 +139,11 @@ impl EventListener for PersistedLsnEventListener {
 }
 
 /// Custom table property name for Restate applied LSN
-#[inline]
 fn applied_lsn_property_name(partition_id: PartitionId) -> String {
     format!("restate.partition_{}.applied_lsn", partition_id)
 }
 
 /// Given a raw key-value pair, extract the partition id and its applied LSN, if the key is an Applied LSN FSM variable
-#[inline]
 fn extract_partition_applied_lsn(
     mut key: &[u8],
     value: &[u8],
@@ -183,7 +164,6 @@ fn extract_partition_applied_lsn(
     Ok(None)
 }
 
-#[inline]
 fn decode_lsn(mut value: &[u8]) -> Result<Lsn, StorageError> {
     SequenceNumber::decode(&mut value).map(|sn| Lsn::from(u64::from(sn)))
 }

@@ -45,7 +45,7 @@ use restate_types::storage::StorageCodec;
 
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
-use crate::persisted_lsn_tracking::LatestAppliedLsnCollectorFactory;
+use crate::persisted_lsn_tracking::AppliedLsnCollectorFactory;
 use crate::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -257,7 +257,7 @@ pub(crate) fn cf_options(
 
         // Always collect applied LSN table properties in partition store CFs
         cf_options
-            .add_table_properties_collector_factory(LatestAppliedLsnCollectorFactory::default());
+            .add_table_properties_collector_factory(AppliedLsnCollectorFactory);
 
         cf_options
     }
