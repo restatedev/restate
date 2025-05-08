@@ -104,7 +104,13 @@ impl TablePropertiesCollectorFactory for LatestAppliedLsnCollectorFactory {
 
 pub type PersistedLsnLookup = DashMap<PartitionId, Lsn>;
 
-pub struct PersistedLsnEventListener {
+/// Event listener tracking persisted LSNs across
+///
+/// This listener works in conjunction with the [`AppliedLsnCollector`] to track the high watermark
+/// applied LSNs per partition, once tables are flushed to disk. The event listener will only track
+/// partitions for which there are already entries in the [`persisted_lsns`] map.
+#[derive(Default)]
+pub(crate) struct PersistedLsnEventListener {
     pub(crate) persisted_lsns: Arc<PersistedLsnLookup>,
 }
 
@@ -132,10 +138,12 @@ impl EventListener for PersistedLsnEventListener {
             if let Some(applied_lsn) = flush_job_info.get_user_collected_property(&key) {
                 match applied_lsn.to_str().expect("valid string").parse::<u64>() {
                     Ok(lsn) => {
+                        // Note: we only modify entries, never insert, from the event listener. If
+                        // we don't find an existing entry for the partition, that means that the
+                        // PartitionStoreManager has already closed or dropped it.
                         self.persisted_lsns
                             .entry(partition_id)
-                            .and_modify(|persisted_lsn| *persisted_lsn = lsn.into())
-                            .or_insert(lsn.into());
+                            .and_modify(|persisted_lsn| *persisted_lsn = lsn.into());
                     }
                     Err(err) => warn!(
                         key,
@@ -183,12 +191,12 @@ fn decode_lsn(mut value: &[u8]) -> Result<Lsn, StorageError> {
 #[cfg(test)]
 mod tests {
     use bytes::BytesMut;
+
     use restate_storage_api::StorageError;
     use restate_types::storage::StorageCodec;
 
-    use crate::protobuf_types::ProtobufStorageWrapper;
-
     use super::*;
+    use crate::protobuf_types::ProtobufStorageWrapper;
 
     #[test]
     fn test_extract_partition_applied_lsn() -> googletest::Result<()> {
