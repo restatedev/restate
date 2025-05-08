@@ -11,19 +11,20 @@
 mod processor_state;
 mod spawn_processor_task;
 
+use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ahash::HashMap;
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
 use metrics::gauge;
 use rand::Rng;
 use rand::seq::SliceRandom;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, info_span, instrument, warn};
@@ -98,7 +99,6 @@ pub struct PartitionProcessorManager {
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
-    persisted_lsn_rx: watch::Receiver<(PartitionId, Lsn)>,
     target_tail_lsns: HashMap<PartitionId, Lsn>,
     archived_lsns: HashMap<PartitionId, Lsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
@@ -106,7 +106,6 @@ pub struct PartitionProcessorManager {
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
-    persisted_lsns: HashMap<PartitionId, Lsn>,
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
     latest_snapshots: HashMap<PartitionId, SnapshotCreated>,
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
@@ -184,7 +183,6 @@ impl PartitionProcessorManager {
         router_builder: &mut MessageRouterBuilder,
         bifrost: Bifrost,
         snapshot_repository: Option<SnapshotRepository>,
-        persisted_lsn_rx: watch::Receiver<(PartitionId, Lsn)>,
     ) -> Self {
         let ppm_svc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
         let pp_rpc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
@@ -202,13 +200,11 @@ impl PartitionProcessorManager {
             bifrost,
             rx,
             tx,
-            persisted_lsn_rx,
             archived_lsns: HashMap::default(),
             target_tail_lsns: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
             pending_control_processors: None,
             asynchronous_operations: JoinSet::default(),
-            persisted_lsns: HashMap::default(),
             pending_snapshots: HashMap::default(),
             latest_snapshots: HashMap::default(),
             snapshot_export_tasks: FuturesUnordered::default(),
@@ -276,15 +272,6 @@ impl PartitionProcessorManager {
                 }
                 Some(partition_processor_rpc) = pp_rpc_rx.next() => {
                     self.on_partition_processor_rpc(partition_processor_rpc);
-                }
-                Ok(_) = self.persisted_lsn_rx.changed() => {
-                    let (partition_id, lsn) = *self.persisted_lsn_rx.borrow_and_update();
-                    debug!(
-                        %partition_id,
-                        persisted_lsn = %lsn,
-                        "Partition persisted LSN update"
-                    );
-                    self.persisted_lsns.insert(partition_id, lsn);
                 }
                 Some(result) = self.snapshot_export_tasks.next() => {
                     if let Ok(result) = result {
@@ -692,7 +679,7 @@ impl PartitionProcessorManager {
 
                 // it is a bit unfortunate that we share PartitionProcessorStatus between the
                 // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
-                status.last_persisted_log_lsn = self.persisted_lsns.get(partition_id).cloned();
+                status.last_persisted_log_lsn = self.partition_store_manager.get_persisted_lsn(*partition_id);
                 status.last_archived_log_lsn = self.archived_lsns.get(partition_id).cloned();
 
                 let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
@@ -782,7 +769,6 @@ impl PartitionProcessorManager {
                 if self.pending_snapshots.contains_key(&partition_id) {
                     info!(%partition_id, "Partition processor stop requested with snapshot task result outstanding");
                 }
-                self.persisted_lsns.remove(&partition_id);
                 self.archived_lsns.remove(&partition_id);
                 self.latest_snapshots.remove(&partition_id);
             }
@@ -1257,7 +1243,6 @@ mod tests {
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::{Constant, Live};
     use restate_types::locality::NodeLocation;
-    use restate_types::logs::{Lsn, SequenceNumber};
     use restate_types::net::AdvertisedAddress;
     use restate_types::net::partition_processor_manager::{
         ControlProcessor, ControlProcessors, ProcessorCommand,
@@ -1268,7 +1253,6 @@ mod tests {
     use restate_types::{GenerationalNodeId, Version};
     use std::time::Duration;
     use test_log::test;
-    use tokio::sync::watch;
 
     /// This test ensures that the lifecycle of partition processors is properly managed by the
     /// [`PartitionProcessorManager`]. See https://github.com/restatedev/restate/issues/2258 for
@@ -1301,11 +1285,8 @@ mod tests {
         let partition_store_manager = PartitionStoreManager::create(
             Constant::new(StorageOptions::default()),
             &[(PartitionId::MIN, 0..=PartitionKey::MAX)],
-            None,
         )
         .await?;
-
-        let (_, persisted_lsn_rx) = watch::channel((PartitionId::MIN, Lsn::INVALID));
 
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
@@ -1315,7 +1296,6 @@ mod tests {
             &mut env_builder.router_builder,
             bifrost,
             None,
-            persisted_lsn_rx,
         );
 
         let env = env_builder.build().await;

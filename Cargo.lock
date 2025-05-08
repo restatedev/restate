@@ -7338,11 +7338,13 @@ dependencies = [
 name = "restate-partition-store"
 version = "1.3.3-dev"
 dependencies = [
+ "ahash 0.8.11",
  "anyhow",
  "bytes",
  "bytestring",
  "codederror",
  "criterion",
+ "dashmap",
  "derive_builder",
  "derive_more",
  "enum-map",
@@ -7907,6 +7909,7 @@ dependencies = [
 name = "restate-worker"
 version = "1.3.3-dev"
 dependencies = [
+ "ahash 0.8.11",
  "anyhow",
  "assert2",
  "async-channel",

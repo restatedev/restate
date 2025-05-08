@@ -1,11 +1,12 @@
-use std::collections::HashMap;
 use std::ffi::{CStr, CString};
+use std::sync::Arc;
 
+use ahash::HashMap;
+use dashmap::DashMap;
 use rocksdb::event_listener::{EventListener, FlushJobInfo};
 use rocksdb::table_properties::{
     CollectorError, EntryType, TablePropertiesCollector, TablePropertiesCollectorFactory,
 };
-use tokio::sync::watch;
 use tracing::warn;
 
 use restate_storage_api::StorageError;
@@ -97,12 +98,22 @@ impl TablePropertiesCollectorFactory for LatestAppliedLsnCollectorFactory {
     }
 
     fn name(&self) -> &CStr {
-        c"AppliedLsnTrackingCollectorFactory"
+        c"LatestAppliedLsnCollectorFactory"
     }
 }
 
+pub type PersistedLsnLookup = DashMap<PartitionId, Lsn>;
+
 pub struct PersistedLsnEventListener {
-    pub(crate) persisted_lsn_tx: watch::Sender<(PartitionId, Lsn)>,
+    pub(crate) persisted_lsns: Arc<PersistedLsnLookup>,
+}
+
+impl PersistedLsnEventListener {
+    pub fn create() -> Self {
+        PersistedLsnEventListener {
+            persisted_lsns: Default::default(),
+        }
+    }
 }
 
 impl EventListener for PersistedLsnEventListener {
@@ -120,9 +131,11 @@ impl EventListener for PersistedLsnEventListener {
             let key = applied_lsn_property_name(partition_id);
             if let Some(applied_lsn) = flush_job_info.get_user_collected_property(&key) {
                 match applied_lsn.to_str().expect("valid string").parse::<u64>() {
-                    Ok(persisted_lsn) => {
-                        self.persisted_lsn_tx
-                            .send_replace((partition_id, persisted_lsn.into()));
+                    Ok(lsn) => {
+                        self.persisted_lsns
+                            .entry(partition_id)
+                            .and_modify(|persisted_lsn| *persisted_lsn = lsn.into())
+                            .or_insert(lsn.into());
                     }
                     Err(err) => warn!(
                         key,

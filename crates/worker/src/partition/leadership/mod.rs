@@ -644,7 +644,6 @@ mod tests {
         let partition_store_manager = PartitionStoreManager::create(
             Constant::new(storage_options.clone()).boxed(),
             &[(PARTITION_ID, PARTITION_KEY_RANGE)],
-            None,
         )
         .await?;
 
