@@ -416,7 +416,7 @@ impl TrimMode {
                 for (partition_id, processor_status) in partition_status.iter() {
                     let log_id = LogId::from(*partition_id);
 
-                    // We allow trimming of archived partitions even in the presence of dead/suspect nodes; such
+                    // We allow trimming of archived partitions even in the presence of dead nodes; such
                     // nodes will be forced to fast-forward over any potential trim gaps when they return.
                     // However, if we have alive nodes that report applied LSNs smaller than the highest
                     // archived LSN, we allow them to catch up from the log before trimming. There is a risk
@@ -486,7 +486,6 @@ mod tests {
     use RunMode::{Follower, Leader};
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
-        SuspectNode,
     };
     use restate_types::identifiers::PartitionId;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -882,10 +881,6 @@ mod tests {
             nodes: [
                 (n1.as_plain(), alive_node(n1, n1_partitions)),
                 (n2.as_plain(), alive_node(n2, n2_partitions)),
-                (
-                    PlainNodeId::new(3),
-                    suspect_node(GenerationalNodeId::new(3, 0)),
-                ),
                 (PlainNodeId::new(4), dead_node()),
             ]
             .into(),
@@ -902,7 +897,7 @@ mod tests {
                 (LogId::from(p2), (Lsn::new(10), p2)),
                 (LogId::from(p3), (Lsn::new(5), p3)),
             ]),
-            "Dead or suspect nodes do not block trimming when archived LSN is used"
+            "Dead nodes do not block trimming when archived LSN is used"
         );
     }
 
@@ -935,13 +930,6 @@ mod tests {
             last_heartbeat_at: MillisSinceEpoch::now(),
             partitions,
             uptime: Duration::default(),
-        })
-    }
-
-    fn suspect_node(generational_node_id: GenerationalNodeId) -> NodeState {
-        NodeState::Suspect(SuspectNode {
-            generational_node_id,
-            last_attempt: MillisSinceEpoch::now(),
         })
     }
 
