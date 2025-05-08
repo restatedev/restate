@@ -26,16 +26,11 @@ message ClusterState {
 }
 
 message NodeState {
+  reserved 3;
   oneof state {
     AliveNode alive = 1;
     DeadNode dead = 2;
-    SuspectNode suspect = 3;
   }
-}
-
-message SuspectNode {
-  restate.common.NodeId generational_node_id = 1;
-  google.protobuf.Timestamp last_attempt = 2;
 }
 
 message AliveNode {

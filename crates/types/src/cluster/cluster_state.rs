@@ -49,21 +49,14 @@ impl ClusterState {
     pub fn alive_nodes(&self) -> impl Iterator<Item = &AliveNode> {
         self.nodes.values().flat_map(|node| match node {
             NodeState::Alive(alive_node) => Some(alive_node),
-            NodeState::Dead(_) | NodeState::Suspect(_) => None,
+            NodeState::Dead(_) => None,
         })
     }
 
     pub fn dead_nodes(&self) -> impl Iterator<Item = &PlainNodeId> {
         self.nodes.iter().flat_map(|(node_id, state)| match state {
-            NodeState::Alive(_) | NodeState::Suspect(_) => None,
-            NodeState::Dead(_) => Some(node_id),
-        })
-    }
-
-    pub fn dead_or_suspect_nodes(&self) -> impl Iterator<Item = &PlainNodeId> {
-        self.nodes.iter().flat_map(|(node_id, state)| match state {
             NodeState::Alive(_) => None,
-            NodeState::Dead(_) | NodeState::Suspect(_) => Some(node_id),
+            NodeState::Dead(_) => Some(node_id),
         })
     }
 
@@ -89,7 +82,6 @@ fn instant_to_proto(t: Instant) -> prost_types::Duration {
 pub enum NodeState {
     Alive(AliveNode),
     Dead(DeadNode),
-    Suspect(SuspectNode),
 }
 
 #[derive(Debug, Clone, IntoProst)]
@@ -110,17 +102,6 @@ pub struct AliveNode {
 #[prost(target = "crate::protobuf::cluster::DeadNode")]
 pub struct DeadNode {
     pub last_seen_alive: Option<MillisSinceEpoch>,
-}
-
-#[derive(Debug, Clone, IntoProst)]
-#[prost(target = "crate::protobuf::cluster::SuspectNode")]
-/// As the name implies, SuspectNode is both dead and alive
-/// until we receive a heartbeat
-pub struct SuspectNode {
-    #[prost(required)]
-    pub generational_node_id: GenerationalNodeId,
-    #[prost(required)]
-    pub last_attempt: MillisSinceEpoch,
 }
 
 #[derive(

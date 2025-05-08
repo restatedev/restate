@@ -165,7 +165,6 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                                     last_heartbeat_at, ..
                                 }) => Some(*last_heartbeat_at),
                                 NodeState::Dead(DeadNode { last_seen_alive }) => *last_seen_alive,
-                                NodeState::Suspect(_) => None,
                             },
                         );
 
