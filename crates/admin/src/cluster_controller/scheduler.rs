@@ -125,7 +125,7 @@ impl<T: TransportConnect> Scheduler<T> {
         let logs = Metadata::with_current(|m| m.logs_ref());
         let partition_table = Metadata::with_current(|m| m.partition_table_ref());
 
-        if logs.num_logs() != partition_table.num_partitions() as usize {
+        if logs.num_logs() != partition_table.len() {
             // either the partition table or the logs are not fully initialized
             // hence there is nothing we can do atm.
             // we need to wait until both partitions and logs are created
@@ -377,7 +377,7 @@ impl<T: TransportConnect> Scheduler<T> {
 
         let mut commands = BTreeMap::default();
 
-        for (partition_id, partition) in partition_table.partitions() {
+        for (partition_id, partition) in partition_table.iter() {
             self.generate_instructions_for_partition(
                 partition_id,
                 partition,
@@ -499,7 +499,7 @@ impl logs_controller::NodeSetSelectorHints for PartitionTableNodeSetSelectorHint
         let partition_id = PartitionId::from(*log_id);
 
         self.partition_table
-            .get_partition(&partition_id)
+            .get(&partition_id)
             .and_then(|partition| partition.placement.leader().map(NodeId::from))
     }
 }
@@ -759,7 +759,7 @@ mod tests {
                 .map(|node| node.generational_node_id.as_plain())
                 .collect();
 
-            for (_, partition) in target_partition_table.partitions_mut() {
+            for (_, partition) in target_partition_table.iter_mut() {
                 let target_state = TargetPartitionPlacementState::new(&mut partition.placement);
                 // assert that the replication strategy was respected
                 match &partition_replication {
@@ -894,12 +894,9 @@ mod tests {
         partition_table: &PartitionTable,
         observed_state: &ObservedClusterState,
     ) -> googletest::Result<()> {
-        assert_that!(
-            observed_state.partitions.len(),
-            eq(partition_table.num_partitions() as usize)
-        );
+        assert_that!(observed_state.partitions.len(), eq(partition_table.len()));
 
-        for (partition_id, partition) in partition_table.partitions() {
+        for (partition_id, partition) in partition_table.iter() {
             let Some(observed_state) = observed_state.partitions.get(partition_id) else {
                 panic!("partition {partition_id} not found in observed state");
             };

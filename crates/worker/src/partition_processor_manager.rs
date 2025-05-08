@@ -813,7 +813,7 @@ impl PartitionProcessorManager {
                         }
                     }
                 } else if let Some(partition_key_range) = partition_table
-                    .get_partition(&partition_id)
+                    .get(&partition_id)
                     .map(|partition| &partition.key_range)
                 {
                     debug!(%partition_id, "Starting new partition processor to run as {}", control_processor.command);
