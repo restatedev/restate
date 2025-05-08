@@ -422,7 +422,7 @@ impl SelectPartitions for SelectPartitionsFromMetadata {
     async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError> {
         Ok(Metadata::with_current(|m| {
             m.partition_table_ref()
-                .partitions()
+                .iter()
                 .map(|(a, b)| (*a, b.clone()))
                 .collect()
         }))

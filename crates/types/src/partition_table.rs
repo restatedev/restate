@@ -136,15 +136,15 @@ impl PartitionTable {
         self.version = version;
     }
 
-    pub fn partitions(&self) -> impl Iterator<Item = (&PartitionId, &Partition)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&PartitionId, &Partition)> {
         self.partitions.iter()
     }
 
-    pub fn partitions_mut(&mut self) -> impl Iterator<Item = (&PartitionId, &mut Partition)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&PartitionId, &mut Partition)> {
         self.partitions.iter_mut()
     }
 
-    pub fn partition_ids(&self) -> impl Iterator<Item = &PartitionId> {
+    pub fn iter_ids(&self) -> impl Iterator<Item = &PartitionId> {
         self.partitions.keys()
     }
 
@@ -152,15 +152,20 @@ impl PartitionTable {
         u16::try_from(self.partitions.len()).expect("number of partitions should fit into u16")
     }
 
-    pub fn get_partition(&self, partition_id: &PartitionId) -> Option<&Partition> {
+    /// use num_partitions() you need `u16`
+    pub fn len(&self) -> usize {
+        self.partitions.len()
+    }
+
+    pub fn get(&self, partition_id: &PartitionId) -> Option<&Partition> {
         self.partitions.get(partition_id)
     }
 
-    pub fn contains_partition(&self, partition_id: &PartitionId) -> bool {
+    pub fn contains(&self, partition_id: &PartitionId) -> bool {
         self.partitions.contains_key(partition_id)
     }
 
-    pub fn partition_replication(&self) -> &PartitionReplication {
+    pub fn replication(&self) -> &PartitionReplication {
         &self.replication
     }
 
@@ -352,6 +357,10 @@ impl PartitionTableBuilder {
 
     pub fn num_partitions(&self) -> u16 {
         self.inner.num_partitions()
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
     }
 
     pub fn set_partition_replication(&mut self, partition_replication: PartitionReplication) {
