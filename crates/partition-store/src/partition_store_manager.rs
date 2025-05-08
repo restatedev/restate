@@ -37,7 +37,7 @@ use crate::persisted_lsn_tracking::{PersistedLsnEventListener, PersistedLsnLooku
 use crate::snapshots::LocalPartitionSnapshot;
 
 const DB_NAME: &str = "db";
-pub(crate) const PARTITION_CF_PREFIX: &str = "data-";
+const PARTITION_CF_PREFIX: &str = "data-";
 
 /// Controls how a partition store is opened
 #[derive(Clone, Debug, Eq, PartialEq)]

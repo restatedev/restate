@@ -256,8 +256,7 @@ pub(crate) fn cf_options(
         ]);
 
         // Always collect applied LSN table properties in partition store CFs
-        cf_options
-            .add_table_properties_collector_factory(AppliedLsnCollectorFactory);
+        cf_options.add_table_properties_collector_factory(AppliedLsnCollectorFactory);
 
         cf_options
     }

@@ -7,15 +7,17 @@ use rocksdb::event_listener::{EventListener, FlushJobInfo};
 use rocksdb::table_properties::{
     CollectorError, EntryType, TablePropertiesCollector, TablePropertiesCollectorFactory,
 };
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use restate_storage_api::StorageError;
 use restate_types::{identifiers::PartitionId, logs::Lsn};
 
-use crate::PARTITION_CF_PREFIX;
 use crate::fsm_table::{PartitionStateMachineKey, SequenceNumber, fsm_variable};
 use crate::keys::{KeyKind, TableKey};
 use crate::protobuf_types::PartitionStoreProtobufValue;
+
+const APPLIED_LSNS_PROPERTY_NAME: &CStr = c"restate_applied_lsns";
 
 #[derive(Default)]
 pub(crate) struct AppliedLsnCollector {
@@ -51,17 +53,32 @@ impl TablePropertiesCollector for AppliedLsnCollector {
             }
             Err(err) => {
                 warn!("Failed to decode partition LSN from raw key-value: {}", err);
-                Err(CollectorError::new())
+                Err(CollectorError::default())
             }
         }
     }
 
     fn finish(&mut self) -> Result<impl IntoIterator<Item = &(CString, CString)>, CollectorError> {
-        for (partition_id, lsn) in &self.applied_lsns {
-            self.properties.push((
-                CString::new(applied_lsn_property_name(*partition_id)).unwrap(),
-                CString::new(lsn.as_u64().to_string()).unwrap(),
-            ));
+        if !self.applied_lsns.is_empty() {
+            let lsns_to_serialize: Vec<(PartitionId, Lsn)> =
+                self.applied_lsns.iter().map(|(k, v)| (*k, *v)).collect();
+
+            let applied_lsns_struct = AppliedLsns {
+                lsns: lsns_to_serialize,
+            };
+
+            match serde_json::to_vec(&applied_lsns_struct) {
+                Ok(json) => {
+                    self.properties.push((
+                        APPLIED_LSNS_PROPERTY_NAME.to_owned(),
+                        CString::new(json).unwrap(),
+                    ));
+                }
+                Err(err) => {
+                    warn!("Failed to serialize AppliedLsns: {}", err);
+                    return Err(CollectorError::default());
+                }
+            }
         }
 
         Ok(self.properties.iter())
@@ -105,42 +122,39 @@ pub(crate) struct PersistedLsnEventListener {
     pub(crate) persisted_lsns: Arc<PersistedLsnLookup>,
 }
 
-impl EventListener for PersistedLsnEventListener {
-    fn on_flush_completed(&self, flush_job_info: FlushJobInfo) {
-        if let Some(id_str) = flush_job_info.cf_name.strip_prefix(PARTITION_CF_PREFIX) {
-            let Ok(id) = id_str.parse::<u16>() else {
-                warn!(
-                    "Failed to parse partition id from cf_name: {}",
-                    flush_job_info.cf_name
-                );
-                return;
-            };
-
-            let partition_id = PartitionId::from(id);
-            let key = applied_lsn_property_name(partition_id);
-            if let Some(applied_lsn) = flush_job_info.get_user_collected_property(&key) {
-                match applied_lsn.to_str().expect("valid string").parse::<u64>() {
-                    Ok(lsn) => {
-                        // Note: we only modify entries, never insert, from the event listener. If
-                        // we don't find an existing entry for the partition, that means that the
-                        // PartitionStoreManager has already closed or dropped it.
-                        self.persisted_lsns
-                            .entry(partition_id)
-                            .and_modify(|persisted_lsn| *persisted_lsn = lsn.into());
-                    }
-                    Err(err) => warn!(
-                        key,
-                        "Failed to parse applied LSN from table property: {}", err
-                    ),
-                };
-            }
-        }
-    }
+#[derive(Serialize, Deserialize)]
+struct AppliedLsns {
+    lsns: Vec<(PartitionId, Lsn)>,
 }
 
-/// Custom table property name for Restate applied LSN
-fn applied_lsn_property_name(partition_id: PartitionId) -> String {
-    format!("restate.partition_{}.applied_lsn", partition_id)
+impl EventListener for PersistedLsnEventListener {
+    fn on_flush_completed(&self, flush_job_info: FlushJobInfo) {
+        let Some(applied_lsns) =
+            flush_job_info.get_user_collected_property(APPLIED_LSNS_PROPERTY_NAME)
+        else {
+            return;
+        };
+
+        let applied_lsns = match serde_json::from_slice::<AppliedLsns>(applied_lsns.as_bytes()) {
+            Ok(lsns) => lsns,
+            Err(err) => {
+                warn!(
+                    "Found applied LSNs property but failed to decode it: {}",
+                    err
+                );
+                return;
+            }
+        };
+
+        for (partition_id, lsn) in applied_lsns.lsns {
+            // Note: we only modify entries, never insert, from the event listener. If we don't find
+            // an existing entry for the partition, that means that the PartitionStoreManager has
+            // already closed or dropped it.
+            self.persisted_lsns
+                .entry(partition_id)
+                .and_modify(|persisted_lsn| *persisted_lsn = lsn);
+        }
+    }
 }
 
 /// Given a raw key-value pair, extract the partition id and its applied LSN, if the key is an Applied LSN FSM variable
