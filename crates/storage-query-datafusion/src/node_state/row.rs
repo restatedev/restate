@@ -35,9 +35,5 @@ pub(crate) fn append_node_row(
                 row.last_seen_at(ts.as_u64() as i64);
             }
         }
-        NodeState::Suspect(suspect) => {
-            row.last_attempt_at(suspect.last_attempt.as_u64() as i64);
-            row.gen_node_id(format_using(output, &suspect.generational_node_id));
-        }
     }
 }

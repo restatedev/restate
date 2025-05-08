@@ -134,12 +134,6 @@ async fn compact_cluster_status(
             State::Dead(_dead) => {
                 row.with_id(node_id, Color::Red);
             }
-            State::Suspect(suspect) => {
-                row.with_id(
-                    suspect.generational_node_id.context("node id is missing")?,
-                    Color::Yellow,
-                );
-            }
         };
 
         table.add_row(row);
