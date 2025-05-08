@@ -985,7 +985,7 @@ impl LogsControllerInner {
 
     fn on_partition_table_update(&mut self, partition_table: &PartitionTable) {
         // update the provisioning logs
-        for (partition_id, _) in partition_table.partitions() {
+        for (partition_id, _) in partition_table.iter() {
             self.logs_state
                 .entry((*partition_id).into())
                 .or_insert_with(|| {
