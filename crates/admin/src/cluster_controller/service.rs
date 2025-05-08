@@ -21,6 +21,11 @@ use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, trace, warn};
 
+use self::state::ClusterControllerState;
+use super::cluster_state_refresher::ClusterStateRefresher;
+use super::grpc_svc_handler::ClusterCtrlSvcHandler;
+use crate::cluster_controller::logs_controller;
+use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use restate_bifrost::{Bifrost, SealedSegment};
 use restate_core::cancellation_token;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
@@ -51,13 +56,6 @@ use restate_types::protobuf::common::AdminStatus;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{GenerationalNodeId, NodeId, Version};
-
-use self::state::ClusterControllerState;
-use super::cluster_state_refresher::ClusterStateRefresher;
-use super::grpc_svc_handler::ClusterCtrlSvcHandler;
-use crate::cluster_controller::logs_controller::{self, NodeSetSelectorHints};
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler::PartitionTableNodeSetSelectorHints;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -750,9 +748,11 @@ impl SealAndExtendTask {
             .and_then(|ext| ext.sequencer)
             .or_else(|| {
                 Metadata::with_current(|m| {
-                    PartitionTableNodeSetSelectorHints::from(m.partition_table_snapshot())
+                    let partition_id = PartitionId::from(self.log_id);
+                    m.partition_table_snapshot()
+                        .get_partition(&partition_id)
+                        .and_then(|partition| partition.placement.leader().map(NodeId::from))
                 })
-                .preferred_sequencer(&self.log_id)
             });
 
         let (provider, params) = match &provider_config {
