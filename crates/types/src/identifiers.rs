@@ -56,6 +56,7 @@ use crate::time::MillisSinceEpoch;
 #[debug("e{}", _0)]
 pub struct LeaderEpoch(u64);
 impl LeaderEpoch {
+    pub const INVALID: Self = Self(0);
     pub const INITIAL: Self = Self(1);
 
     pub fn next(self) -> Self {

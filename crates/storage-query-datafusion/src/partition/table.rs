@@ -67,7 +67,7 @@ async fn for_each_partition(
     let mut builder = PartitionBuilder::new(schema.clone());
 
     let mut output = String::new();
-    for (_, partition) in partition_table.partitions() {
+    for (_, partition) in partition_table.iter() {
         append_partition_rows(
             &mut builder,
             &mut output,
