@@ -28,6 +28,15 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      topologySpreadConstraints:
+      - labelSelector:
+          matchLabels:
+            {{- include "restate.selectorLabels" . | nindent 12 }}
+      {{- with .Values.topologySpreadConstraints }}
+        maxSkew: {{ .maxSkew }}
+        topologyKey: {{ .topologyKey }}
+        whenUnsatisfiable: {{ .whenUnsatisfiable }}
+      {{- end }}
       {{- if .Values.extraInitContainers }}
       initContainers:
         {{ toYaml .Values.extraInitContainers | nindent 8 }}

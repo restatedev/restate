@@ -10,5 +10,5 @@ env:
   - name: RESTATE_METADATA_SERVER__TYPE
     value: "replicated"
   - name: RESTATE_AUTO_PROVISION
-    # provision with `kubectl exec -it restate-0 -- restatectl provision --log-provider replicated --log-replication 2 --yes`
+    # provision with `kubectl exec -it restate-0 -- restatectl provision --log-provider replicated --log-replication 2 --partition-replication 2 --yes`
     value: "false"
