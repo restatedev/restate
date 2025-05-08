@@ -7913,6 +7913,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "codederror",
+ "dashmap",
  "derive_builder",
  "derive_more",
  "enumset",
