@@ -39,6 +39,8 @@ mod state_table_test;
 mod timer_table_test;
 mod virtual_object_status_table_test;
 
+mod persisted_lsn_tracking_test;
+
 async fn storage_test_environment() -> PartitionStore {
     storage_test_environment_with_manager().await.1
 }

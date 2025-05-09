@@ -8,23 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod persisted_lsn_watchdog;
 mod processor_state;
 mod spawn_processor_task;
 
+use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ahash::HashMap;
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
 use metrics::gauge;
 use rand::Rng;
 use rand::seq::SliceRandom;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, info_span, instrument, warn};
@@ -56,7 +56,6 @@ use restate_types::health::HealthStatus;
 use restate_types::identifiers::SnapshotId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
-use restate_types::live::LiveLoadExt;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::metadata::MetadataKind;
@@ -81,7 +80,6 @@ use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_LAST_APPLIED_LSN_LAG};
 use crate::partition::ProcessorError;
 use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
-use crate::partition_processor_manager::persisted_lsn_watchdog::PersistedLogLsnWatchdog;
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
@@ -101,7 +99,6 @@ pub struct PartitionProcessorManager {
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
-    persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
     target_tail_lsns: HashMap<PartitionId, Lsn>,
     archived_lsns: HashMap<PartitionId, Lsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
@@ -203,15 +200,14 @@ impl PartitionProcessorManager {
             bifrost,
             rx,
             tx,
-            persisted_lsns_rx: None,
             archived_lsns: HashMap::default(),
             target_tail_lsns: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
             pending_control_processors: None,
             asynchronous_operations: JoinSet::default(),
-            snapshot_export_tasks: FuturesUnordered::default(),
             pending_snapshots: HashMap::default(),
             latest_snapshots: HashMap::default(),
+            snapshot_export_tasks: FuturesUnordered::default(),
             snapshot_repository,
             fast_forward_on_startup: HashMap::default(),
         }
@@ -228,18 +224,6 @@ impl PartitionProcessorManager {
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
 
-        let (persisted_lsns_tx, persisted_lsns_rx) = watch::channel(BTreeMap::default());
-        self.persisted_lsns_rx = Some(persisted_lsns_rx);
-
-        let watchdog = PersistedLogLsnWatchdog::new(
-            self.updateable_config
-                .clone()
-                .map(|config| &config.worker.storage)
-                .boxed(),
-            self.partition_store_manager.clone(),
-            persisted_lsns_tx,
-        );
-        TaskCenter::spawn_child(TaskKind::Watchdog, "persisted-lsn-watchdog", watchdog.run())?;
         let metadata = Metadata::current();
 
         let mut logs_version_watcher = metadata.watch(MetadataKind::Logs);
@@ -648,10 +632,8 @@ impl PartitionProcessorManager {
             .expect("spawn obtain leader epoch task");
     }
 
+    /// Collect enriched processor status from all running partitions
     fn get_state(&self) -> BTreeMap<PartitionId, PartitionProcessorStatus> {
-        let persisted_lsns = self.persisted_lsns_rx.as_ref().map(|w| w.borrow());
-
-        // For all running partitions, collect state, enrich it, and send it back.
         self.processor_states
             .iter()
             .filter_map(|(partition_id, processor_state)| {
@@ -697,10 +679,7 @@ impl PartitionProcessorManager {
 
                 // it is a bit unfortunate that we share PartitionProcessorStatus between the
                 // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
-                status.last_persisted_log_lsn = persisted_lsns
-                    .as_ref()
-                    .and_then(|lsns| lsns.get(partition_id).cloned());
-
+                status.last_persisted_log_lsn = self.partition_store_manager.get_persisted_lsn(*partition_id);
                 status.last_archived_log_lsn = self.archived_lsns.get(partition_id).cloned();
 
                 let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();

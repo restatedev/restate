@@ -19,11 +19,11 @@ mod partition_processor_manager;
 mod subscription_controller;
 mod subscription_integration;
 
-use codederror::CodedError;
-use restate_core::TaskCenter;
 use std::time::Duration;
 
+use codederror::CodedError;
 use restate_bifrost::Bifrost;
+use restate_core::TaskCenter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;

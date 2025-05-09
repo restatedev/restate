@@ -32,7 +32,7 @@ impl PartitionStoreProtobufValue for SequenceNumber {
     type ProtobufType = crate::protobuf_types::v1::SequenceNumber;
 }
 
-mod fsm_variable {
+pub(crate) mod fsm_variable {
     pub(crate) const INBOX_SEQ_NUMBER: u64 = 0;
     pub(crate) const OUTBOX_SEQ_NUMBER: u64 = 1;
 

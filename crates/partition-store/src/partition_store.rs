@@ -22,6 +22,7 @@ use rocksdb::DBPinnableSlice;
 use rocksdb::DBRawIteratorWithThreadMode;
 use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
+use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{BoundColumnFamily, SliceTransform};
 use rocksdb::{DBCompressionType, SnapshotWithThreadMode};
 use static_assertions::const_assert_eq;
@@ -44,6 +45,7 @@ use restate_types::storage::StorageCodec;
 
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
+use crate::persisted_lsn_tracking::AppliedLsnCollectorFactory;
 use crate::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -252,6 +254,9 @@ pub(crate) fn cf_options(
             DBCompressionType::Zstd,
             DBCompressionType::Zstd,
         ]);
+
+        // Always collect applied LSN table properties in partition store CFs
+        cf_options.add_table_properties_collector_factory(AppliedLsnCollectorFactory);
 
         cf_options
     }
