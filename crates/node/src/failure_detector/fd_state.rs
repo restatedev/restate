@@ -12,16 +12,19 @@ use ahash::{HashMap, HashMapExt};
 use itertools::Itertools;
 use metrics::{counter, gauge};
 use rand::seq::{IteratorRandom, SliceRandom};
+use restate_core::worker_api::ProcessorsManagerHandle;
 use tokio::time::Instant;
 use tracing::{debug, error, warn};
 
 use restate_core::cluster_state::ClusterStateUpdater;
 use restate_core::network::{ConnectThrottle, NetworkSender};
 use restate_types::config::GossipOptions;
+use restate_types::identifiers::PartitionId;
 use restate_types::net::node::{Gossip, GossipFlags};
 use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partition_table::PartitionTable;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+use restate_types::{GenerationalNodeId, PlainNodeId, Version, net};
 
 use crate::metric_definitions::{
     GOSSIP_INSTANCE, GOSSIP_LONELY, GOSSIP_NODES, GOSSIP_RECEIVED, STATE_ALIVE, STATE_DEAD,
@@ -29,6 +32,7 @@ use crate::metric_definitions::{
 };
 
 use super::node_state::{Node, NodeState};
+use super::partition_state::PartitionState;
 
 const GOSSIP_ATTEMPT_LIMIT: usize = 20;
 
@@ -69,6 +73,7 @@ pub struct FdState {
     pub(super) my_instance_ts: MillisSinceEpoch,
     in_failover: bool,
     last_processed_nc_version: Version,
+    last_processed_pt_version: Version,
     pub(super) my_node_id: GenerationalNodeId,
     #[debug("{:?}", last_gossip_received_at.elapsed())]
     last_gossip_received_at: Instant,
@@ -77,6 +82,7 @@ pub struct FdState {
     last_gossip_tick: Instant,
     num_gossip_received: usize,
     node_states: HashMap<PlainNodeId, Node>,
+    partitions: HashMap<PartitionId, PartitionState>,
     #[debug(skip)]
     cs_updater: ClusterStateUpdater,
 }
@@ -85,6 +91,7 @@ impl FdState {
     pub fn new(
         my_node_id: GenerationalNodeId,
         nodes_config: &NodesConfiguration,
+        partition_table: &PartitionTable,
         cs_updater: ClusterStateUpdater,
     ) -> Self {
         let now = Instant::now();
@@ -92,11 +99,13 @@ impl FdState {
             my_instance_ts: MillisSinceEpoch::now(),
             in_failover: false,
             last_processed_nc_version: Version::INVALID,
+            last_processed_pt_version: Version::INVALID,
             my_node_id,
             last_gossip_received_at: now,
             last_gossip_tick: now,
             num_gossip_received: 0,
             node_states: HashMap::with_capacity(nodes_config.len()),
+            partitions: HashMap::with_capacity(partition_table.len()),
             cs_updater,
         };
         // make sure that our state is pre-seeded with our exact generation
@@ -109,6 +118,7 @@ impl FdState {
         this.refresh_nodes_config(nodes_config)
             .expect("initializing with nodes config that doesn't contain this node");
 
+        this.refresh_partition_table(partition_table);
         this
     }
 
@@ -180,6 +190,32 @@ impl FdState {
         Ok(())
     }
 
+    pub fn refresh_partition_table(&mut self, partition_table: &PartitionTable) {
+        let pt_version = partition_table.version();
+        if pt_version <= self.last_processed_pt_version {
+            // save energy, we have already processed this update in a previous run
+            return;
+        }
+
+        // removed partitions?
+        // Our goal is to synchronize the partition table with with our merged view of partitions
+        for partition_id in partition_table.iter_ids() {
+            self.partitions.entry(*partition_id).or_default();
+        }
+
+        let mut removed_partitions = Vec::new();
+        self.partitions.retain(|pid, _state| {
+            let keep = partition_table.contains(pid);
+            if !keep {
+                removed_partitions.push(*pid);
+            }
+
+            keep
+        });
+
+        // todo: update worker-level partition state
+    }
+
     pub fn is_stable(&self, opts: &GossipOptions) -> bool {
         // special case for standalone mode
         if self.node_states.len() == 1 {
@@ -189,7 +225,11 @@ impl FdState {
     }
 
     /// returns true if there has been at least a gossip interval since the last one.
-    pub fn gossip_tick(&mut self, opts: &GossipOptions) -> bool {
+    pub fn gossip_tick(
+        &mut self,
+        opts: &GossipOptions,
+        ppm_handle: &Option<ProcessorsManagerHandle>,
+    ) -> bool {
         let now = Instant::now();
         assert!(!opts.gossip_tick_interval.is_zero());
         // calculate how many intervals we have missed to compensate for long stalls
@@ -199,12 +239,22 @@ impl FdState {
             .div_duration_f32(*opts.gossip_tick_interval)
             .floor() as u32;
         if full_intervals > 0 {
+            // update node states
             for node in self.node_states.values_mut() {
                 if node.gen_node_id.as_plain() == self.my_node_id.as_plain() {
                     // keeping ourselves alive
                     node.gossip_age = 0;
                 } else {
                     node.gossip_age = node.gossip_age.saturating_add(full_intervals);
+                }
+            }
+
+            if let Some(handle) = ppm_handle {
+                for state in handle.state_map().iter() {
+                    let pid = *state.key();
+                    let state = state.value();
+                    let current = self.partitions.entry(pid).or_default();
+                    current.merge_with_local_state(state);
                 }
             }
             self.last_gossip_tick = now;
@@ -267,7 +317,7 @@ impl FdState {
         opts: &GossipOptions,
         sender_id: GenerationalNodeId,
         sender_nc_version: Version,
-        msg: &Gossip,
+        msg: Gossip,
     ) {
         let is_sender_lonely = msg.flags.intersects(GossipFlags::FeelingLonely);
         let is_sender_in_failover = msg.flags.intersects(GossipFlags::FailingOver);
@@ -372,6 +422,13 @@ impl FdState {
             }
         }
 
+        if msg.flags.intersects(GossipFlags::Enriched) {
+            for partition in msg.partitions.into_iter() {
+                let state = self.partitions.entry(partition.id).or_default();
+                state.merge_with_gossip(partition);
+            }
+        }
+
         let left_until_stable = (opts.gossip_fd_stability_threshold.get() as usize)
             .checked_sub(self.num_gossip_received);
         if let Some(left_until_stable) = left_until_stable {
@@ -428,14 +485,16 @@ impl FdState {
     }
 
     pub fn make_gossip_message(
-        &self,
+        &mut self,
         opts: &GossipOptions,
         include_extras: bool,
         nodes_config: &NodesConfiguration,
+        partition_table: &PartitionTable,
     ) -> Gossip {
         let mut flags = GossipFlags::empty();
-        if include_extras {
-            // todo!()
+
+        // do not include extras if we don't have a valid partition table
+        if include_extras && partition_table.version() > Version::INVALID {
             flags |= GossipFlags::Enriched;
         }
 
@@ -473,13 +532,38 @@ impl FdState {
                 }
             })
             .collect();
+
+        let partitions = if include_extras {
+            self.make_partition_state_list(partition_table)
+        } else {
+            Vec::new()
+        };
+
         Gossip {
             instance_ts: self.my_instance_ts,
             sent_at: MillisSinceEpoch::now(),
             flags,
             nodes,
-            extras: Vec::new(),
+            partitions,
         }
+    }
+
+    fn make_partition_state_list(
+        &mut self,
+        partition_table: &PartitionTable,
+    ) -> Vec<net::node::Partition> {
+        partition_table
+            .iter_ids()
+            .map(|pid| {
+                let state = self.partitions.entry(*pid).or_default();
+                net::node::Partition {
+                    id: *pid,
+                    leader_epoch: state.leader_epoch,
+                    observed_current_config: state.observed_current_config.clone(),
+                    observed_next_config: state.observed_next_config.clone(),
+                }
+            })
+            .collect()
     }
 
     pub fn update_my_node_state(&mut self, opts: &GossipOptions) {

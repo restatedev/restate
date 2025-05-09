@@ -10,10 +10,12 @@
 
 mod fd_state;
 mod node_state;
+mod partition_state;
 
 use std::time::Duration;
 
 use metrics::counter;
+use restate_types::partition_table::PartitionTable;
 use tokio::time::Instant;
 use tokio::time::MissedTickBehavior;
 use tokio_stream::StreamExt as TokioStreamExt;
@@ -50,6 +52,8 @@ pub struct FailureDetector<T> {
     processor_manager_handle: Option<ProcessorsManagerHandle>,
     gossip_svc_rx: ServiceReceiver<GossipService>,
     gossip_interval: tokio::time::Interval,
+    // when did we send the last gossip message with extras
+    intervals_since_last_extras: u32,
     last_dumped: Instant,
 }
 
@@ -69,6 +73,7 @@ impl<T: NetworkSender> FailureDetector<T> {
             processor_manager_handle,
             gossip_svc_rx,
             gossip_interval,
+            intervals_since_last_extras: u32::MAX,
             last_dumped: Instant::now(),
         }
     }
@@ -96,18 +101,25 @@ impl<T: NetworkSender> FailureDetector<T> {
         mut opts: impl LiveLoad<Live = GossipOptions> + 'static,
     ) -> anyhow::Result<()> {
         debug!("Failure Detector Starting");
-        let (my_node_id, mut nodes_config, mut nodes_config_watch) = Metadata::with_current(|m| {
-            (
-                m.my_node_id(),
-                m.updateable_nodes_config(),
-                m.watch(MetadataKind::NodesConfiguration),
-            )
-        });
+        let (my_node_id, mut nodes_config, mut partition_table, mut nodes_config_watch) =
+            Metadata::with_current(|m| {
+                (
+                    m.my_node_id(),
+                    m.updateable_nodes_config(),
+                    m.updateable_partition_table(),
+                    m.watch(MetadataKind::NodesConfiguration),
+                )
+            });
 
         let mut shutting_down = false;
         let (my_node_health, cs_updater) =
             TaskCenter::with_current(|tc| (tc.health().clone(), tc.cluster_state_updater()));
-        let mut fd_state = FdState::new(my_node_id, nodes_config.live_load(), cs_updater);
+        let mut fd_state = FdState::new(
+            my_node_id,
+            nodes_config.live_load(),
+            partition_table.live_load(),
+            cs_updater,
+        );
         // We are starting up. let others know as early as possible so they can update their
         // nodes configuration, and implicitly start the suspect timer for this node.
         let mut my_node_status_watch = my_node_health.node_status().subscribe();
@@ -153,7 +165,7 @@ impl<T: NetworkSender> FailureDetector<T> {
                 }
                 tick_instant = self.gossip_interval.tick() => {
                     let opts = opts.live_load();
-                    self.tick(opts, tick_instant, &mut fd_state, nodes_config.live_load())?;
+                    self.tick(opts, tick_instant, &mut fd_state, nodes_config.live_load(), partition_table.live_load())?;
                 }
                 Some(op) = network_rx.next() => {
                     let opts = opts.live_load();
@@ -182,6 +194,7 @@ impl<T: NetworkSender> FailureDetector<T> {
         tick_instant: Instant,
         state: &mut FdState,
         nodes_config: &NodesConfiguration,
+        partition_table: &PartitionTable,
     ) -> Result<(), Error> {
         state.refresh_nodes_config(nodes_config)?;
         // Used as proxy for overload/stall detection
@@ -193,7 +206,7 @@ impl<T: NetworkSender> FailureDetector<T> {
                 tick_lag,
             );
         }
-        let interval_passed = state.gossip_tick(opts);
+        let interval_passed = state.gossip_tick(opts, &self.processor_manager_handle);
 
         // If we are not stable yet, we shouldn't make state machine transitions.
         //
@@ -215,12 +228,13 @@ impl<T: NetworkSender> FailureDetector<T> {
         // At least one interval has passed, let's send a gossip round
         if interval_passed {
             let mut sent = 0;
-            // todo 1: include extras every N intervals.
-            //
+            let include_extras =
+                self.intervals_since_last_extras >= opts.gossip_extras_exchange_frequency.get();
             // What to do with V1 nodes? Those don't have the unary handler for
             // GossipService so messages will be lost. It's relatively low-risk until more nodes
             // are started up.
-            let msg = state.make_gossip_message(opts, false, nodes_config);
+            let msg =
+                state.make_gossip_message(opts, include_extras, nodes_config, partition_table);
             for target_node in state.select_targets_for_gossip(nodes_config, &self.networking) {
                 match target_node.send_gossip(&self.networking, msg.clone()) {
                     Err(err) => {
@@ -230,6 +244,10 @@ impl<T: NetworkSender> FailureDetector<T> {
                         sent += 1;
                         sent_counter.increment(1);
                         if sent >= opts.gossip_num_peers.get() {
+                            if include_extras {
+                                self.intervals_since_last_extras = 0;
+                            } else {
+                            }
                             break;
                         }
                     }
@@ -239,6 +257,12 @@ impl<T: NetworkSender> FailureDetector<T> {
                 trace!(
                     "Finished a full round of attempts without finding a suitable target node to gossip to!"
                 );
+            }
+            if sent > 0 && include_extras {
+                self.intervals_since_last_extras = 0;
+            } else {
+                self.intervals_since_last_extras =
+                    self.intervals_since_last_extras.saturating_add(1);
             }
         }
 
@@ -268,7 +292,7 @@ impl<T: NetworkSender> FailureDetector<T> {
             return;
         }
         trace!(%peer, "Received a gossip message {:?}", msg);
-        state.update_from_gossip_message(opts, peer, peer_nc_version, &msg);
+        state.update_from_gossip_message(opts, peer, peer_nc_version, msg);
     }
 
     /// Handle V1's GetNodeState rpc request
@@ -309,7 +333,7 @@ impl<T: NetworkSender> FailureDetector<T> {
             sent_at: MillisSinceEpoch::now(),
             flags,
             nodes: Vec::new(),
-            extras: Vec::new(),
+            partitions: Vec::new(),
         };
 
         for (_, node) in state.peers() {
@@ -326,7 +350,7 @@ impl<T: NetworkSender> FailureDetector<T> {
             sent_at: MillisSinceEpoch::now(),
             flags,
             nodes: Vec::new(),
-            extras: Vec::new(),
+            partitions: Vec::new(),
         };
 
         for (_, node) in state.peers() {
