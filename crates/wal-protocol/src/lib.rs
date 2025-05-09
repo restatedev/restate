@@ -189,6 +189,8 @@ pub enum Command {
     TerminateInvocation(InvocationTermination),
     /// Purge a completed invocation
     PurgeInvocation(PurgeInvocationRequest),
+    /// Purge a completed invocation journal
+    PurgeJournal(PurgeInvocationRequest),
     /// Start an invocation on this partition
     Invoke(ServiceInvocation),
     /// Truncate the message outbox up to, and including, the specified index.
@@ -251,6 +253,7 @@ impl HasRecordKeys for Envelope {
                 Keys::Single(terminate.invocation_id.partition_key())
             }
             Command::PurgeInvocation(purge) => Keys::Single(purge.invocation_id.partition_key()),
+            Command::PurgeJournal(purge) => Keys::Single(purge.invocation_id.partition_key()),
             Command::Invoke(invoke) => Keys::Single(invoke.partition_key()),
             // todo: Remove this, or pass the partition key range but filter based on partition-id
             // on read if needed.
