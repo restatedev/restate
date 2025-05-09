@@ -18,6 +18,7 @@ use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::DashMap;
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
 use metrics::gauge;
@@ -35,8 +36,8 @@ use restate_core::network::{
     BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver, Verdict,
 };
 use restate_core::worker_api::{
-    ProcessorsManagerCommand, ProcessorsManagerHandle, SnapshotCreated, SnapshotError,
-    SnapshotResult,
+    PartitionState, ProcessorsManagerCommand, ProcessorsManagerHandle, SnapshotCreated,
+    SnapshotError, SnapshotResult,
 };
 use restate_core::{
     Metadata, ShutdownError, TaskCenterFutureExt, TaskHandle, TaskKind, cancellation_watcher,
@@ -100,6 +101,8 @@ pub struct PartitionProcessorManager {
     bifrost: Bifrost,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
+
+    state_map: Arc<DashMap<PartitionId, PartitionState>>,
 
     persisted_lsns_rx: Option<watch::Receiver<BTreeMap<PartitionId, Lsn>>>,
     target_tail_lsns: HashMap<PartitionId, Lsn>,
@@ -203,6 +206,7 @@ impl PartitionProcessorManager {
             bifrost,
             rx,
             tx,
+            state_map: Arc::new(DashMap::default()),
             persisted_lsns_rx: None,
             archived_lsns: HashMap::default(),
             target_tail_lsns: HashMap::default(),
@@ -222,7 +226,7 @@ impl PartitionProcessorManager {
     }
 
     pub fn handle(&self) -> ProcessorsManagerHandle {
-        ProcessorsManagerHandle::new(self.tx.clone())
+        ProcessorsManagerHandle::new(self.tx.clone(), self.state_map.clone())
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {

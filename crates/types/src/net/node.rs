@@ -17,12 +17,14 @@ use serde_with::serde_as;
 use restate_encoding::{BilrostNewType, NetSerde};
 
 use super::ServiceTag;
-use crate::GenerationalNodeId;
+use crate::identifiers::LeaderEpoch;
+use crate::logs::Lsn;
 use crate::net::{
     bilrost_wire_codec, bilrost_wire_codec_with_v1_fallback, define_rpc, define_service,
     define_unary_message,
 };
 use crate::time::MillisSinceEpoch;
+use crate::{GenerationalNodeId, PlainNodeId, Version};
 use crate::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
 
 pub struct GossipService;
@@ -92,8 +94,8 @@ bitflags! {
         ///
         /// This is *not* a `Special` message
         const FeelingLonely = 1 << 4;
-        /// This gossip message contains extra information about the nodes in the cluster.
-        /// The field _extras_ can be respected.
+        /// This gossip message contains the merged partition state, otherwise, extra
+        /// fields like `partitions` should be ignored.
         const Enriched = 1 << 5;
     }
 }
@@ -120,7 +122,7 @@ pub struct Gossip {
     /// Extra optional information about the nodes in the cluster
     /// Ignored if `Enriched` flag is not set on the message.
     #[bilrost(5)]
-    pub extras: Vec<Extras>,
+    pub partitions: Vec<Partition>,
 }
 
 #[derive(Debug, Clone, bilrost::Message, NetSerde)]
@@ -138,6 +140,30 @@ pub struct Node {
 }
 
 #[derive(Debug, Clone, bilrost::Message, NetSerde)]
-pub struct Extras {
-    // todo!()
+pub struct Partition {
+    pub id: PartitionId,
+    pub leader_epoch: LeaderEpoch,
+    pub observed_current_config: PartitionConfiguration,
+    pub observed_next_config: Option<PartitionConfiguration>,
+}
+
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
+pub struct PartitionConfiguration {
+    pub version: Version,
+    pub replica_set: Vec<Member>,
+}
+
+impl Default for PartitionConfiguration {
+    fn default() -> Self {
+        Self {
+            version: Version::INVALID,
+            replica_set: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
+pub struct Member {
+    pub node_id: PlainNodeId,
+    pub durable_lsn: Lsn,
 }

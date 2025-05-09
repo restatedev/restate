@@ -98,7 +98,6 @@ pub struct Node {
     /// The version at which we observed the presence of this node. This could be directly acquired
     /// from a nodes configuration object or from the header of a gossip message.
     nc_version_witness: Version,
-    // pub(super) extras: Option<Box<dyn Extras>>,
     // if we have a connection we can use to this node's generation
     // The connection swims on gossip's swimlane.
     #[debug("is_closed?={}, is_none?={}", connection.as_ref().is_some_and(|c| c.is_closed()), connection.is_none())]
@@ -115,7 +114,6 @@ impl Node {
             in_failover: false,
             nc_version_witness: Version::INVALID,
             connection: None,
-            // extras: None,
         }
     }
     /// Resets the node state if the generation is higher than the current one.
