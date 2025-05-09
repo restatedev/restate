@@ -61,7 +61,7 @@ async fn create_snapshot(
 
         let partition_table: PartitionTable = StorageCodec::decode(&mut response.encoded)?;
 
-        partition_table.partition_ids().cloned().collect()
+        partition_table.iter_ids().cloned().collect()
     } else {
         opts.partition_id
             .iter()
