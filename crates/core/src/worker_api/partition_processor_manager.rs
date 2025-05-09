@@ -10,7 +10,10 @@
 
 use std::collections::BTreeMap;
 use std::io;
+use std::sync::Arc;
 
+use dashmap::DashMap;
+use parking_lot::RwLock;
 use tokio::sync::{mpsc, oneshot};
 
 use restate_types::logs::{LogId, Lsn};
@@ -20,6 +23,12 @@ use restate_types::{
 };
 
 use crate::ShutdownError;
+
+// preview/temporary until the contract is agreed upon
+#[allow(dead_code)]
+pub struct PartitionState(Arc<RwLock<PartitionStateInner>>);
+
+struct PartitionStateInner {}
 
 #[derive(Debug)]
 pub enum ProcessorsManagerCommand {
@@ -31,12 +40,18 @@ pub enum ProcessorsManagerCommand {
     GetState(oneshot::Sender<BTreeMap<PartitionId, PartitionProcessorStatus>>),
 }
 
-#[derive(Debug, Clone)]
-pub struct ProcessorsManagerHandle(mpsc::Sender<ProcessorsManagerCommand>);
+#[derive(Clone)]
+pub struct ProcessorsManagerHandle {
+    sender: mpsc::Sender<ProcessorsManagerCommand>,
+    state: Arc<DashMap<PartitionId, PartitionState>>,
+}
 
 impl ProcessorsManagerHandle {
-    pub fn new(sender: mpsc::Sender<ProcessorsManagerCommand>) -> Self {
-        Self(sender)
+    pub fn new(
+        sender: mpsc::Sender<ProcessorsManagerCommand>,
+        state: Arc<DashMap<PartitionId, PartitionState>>,
+    ) -> Self {
+        Self { sender, state }
     }
 
     pub async fn create_snapshot(
@@ -45,7 +60,7 @@ impl ProcessorsManagerHandle {
         min_target_lsn: Option<Lsn>,
     ) -> SnapshotResult {
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.sender
             .send(ProcessorsManagerCommand::CreateSnapshot {
                 partition_id,
                 min_target_lsn,
@@ -67,11 +82,15 @@ impl ProcessorsManagerHandle {
         &self,
     ) -> Result<BTreeMap<PartitionId, PartitionProcessorStatus>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.sender
             .send(ProcessorsManagerCommand::GetState(tx))
             .await
             .map_err(|_| ShutdownError)?;
         rx.await.map_err(|_| ShutdownError)
+    }
+
+    pub fn state_map(&self) -> &Arc<DashMap<PartitionId, PartitionState>> {
+        &self.state
     }
 }
 
