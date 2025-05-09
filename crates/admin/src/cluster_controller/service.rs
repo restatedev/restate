@@ -326,18 +326,24 @@ impl<T: TransportConnect> Service<T> {
 
         let mut state: ClusterControllerState<T> = ClusterControllerState::Follower;
 
+        let cs = TaskCenter::with_current(|tc| tc.cluster_state().clone());
+
         loop {
             tokio::select! {
                 _ = self.heartbeat_interval.tick() => {
                     // Ignore error if system is shutting down
                     let _ = self.cluster_state_refresher.schedule_refresh();
                 },
+                () = cs.changed() => {
+                    self.observed_cluster_state.update_liveness(&cs);
+                },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
-                    self.observed_cluster_state.update(&cluster_state);
+                    self.observed_cluster_state.update_liveness(&cs);
+                    self.observed_cluster_state.update_partitions(&cluster_state);
                     trace!(observed_cluster_state = ?self.observed_cluster_state, "Observed cluster state updated");
                     // todo quarantine this cluster controller if errors re-occur too often so that
                     //  another cluster controller can take over
-                    if let Err(err) = state.update(&self) {
+                    if let Err(err) = state.update(&self, &cs) {
                         warn!(%err, "Failed to update cluster state. This can impair the overall cluster operations");
                         continue;
                     }
