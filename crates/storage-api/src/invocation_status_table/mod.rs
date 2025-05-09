@@ -377,6 +377,18 @@ impl InvocationStatus {
             _ => None,
         }
     }
+
+    #[inline]
+    pub fn discriminant(&self) -> Option<InvocationStatusDiscriminants> {
+        match self {
+            InvocationStatus::Scheduled(_) => Some(InvocationStatusDiscriminants::Scheduled),
+            InvocationStatus::Inboxed(_) => Some(InvocationStatusDiscriminants::Inboxed),
+            InvocationStatus::Invoked(_) => Some(InvocationStatusDiscriminants::Invoked),
+            InvocationStatus::Suspended { .. } => Some(InvocationStatusDiscriminants::Suspended),
+            InvocationStatus::Completed(_) => Some(InvocationStatusDiscriminants::Completed),
+            InvocationStatus::Free => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

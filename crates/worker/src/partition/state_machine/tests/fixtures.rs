@@ -95,6 +95,35 @@ pub fn invoker_entry_effect_for_epoch(
     })
 }
 
+pub fn invoker_end_effect(invocation_id: InvocationId) -> Command {
+    invoker_end_effect_for_epoch(invocation_id, 0)
+}
+
+pub fn invoker_end_effect_for_epoch(
+    invocation_id: InvocationId,
+    invocation_epoch: InvocationEpoch,
+) -> Command {
+    Command::InvokerEffect(InvokerEffect {
+        invocation_id,
+        invocation_epoch,
+        kind: InvokerEffectKind::End,
+    })
+}
+
+pub fn pinned_deployment_v5(
+    invocation_id: InvocationId,
+    service_protocol_version: ServiceProtocolVersion,
+) -> Command {
+    Command::InvokerEffect(InvokerEffect {
+        invocation_id,
+        invocation_epoch: 0,
+        kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
+            deployment_id: DeploymentId::default(),
+            service_protocol_version,
+        }),
+    })
+}
+
 pub fn invoker_suspended(
     invocation_id: InvocationId,
     waiting_for_notifications: impl Into<HashSet<journal_v2::NotificationId>>,
@@ -156,13 +185,9 @@ pub async fn mock_start_invocation(state_machine: &mut TestEnv) -> InvocationId 
 
 pub async fn mock_pinned_deployment_v5(state_machine: &mut TestEnv, invocation_id: InvocationId) {
     let _ = state_machine
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(pinned_deployment_v5(
             invocation_id,
-            invocation_epoch: 0,
-            kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
-                deployment_id: DeploymentId::default(),
-                service_protocol_version: ServiceProtocolVersion::V5,
-            }),
-        }))
+            ServiceProtocolVersion::V5,
+        ))
         .await;
 }
