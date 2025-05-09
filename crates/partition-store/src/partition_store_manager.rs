@@ -48,12 +48,12 @@ pub enum OpenMode {
 
 #[derive(Clone, Debug)]
 pub struct PartitionStoreManager {
-    partition_stores: Arc<Mutex<PartitionStoreLookup>>,
+    lookup: Arc<Mutex<PartitionLookup>>,
     persisted_lsns: Arc<PersistedLsnLookup>,
     rocksdb: Arc<RocksDb>,
 }
 
-type PartitionStoreLookup = HashMap<PartitionId, PartitionStore>;
+type PartitionLookup = HashMap<PartitionId, PartitionStore>;
 
 impl PartitionStoreManager {
     pub async fn create(
@@ -90,7 +90,7 @@ impl PartitionStoreManager {
 
         Ok(Self {
             rocksdb,
-            partition_stores: Arc::default(),
+            lookup: Arc::default(),
             persisted_lsns,
         })
     }
@@ -98,17 +98,13 @@ impl PartitionStoreManager {
     /// Check whether we have a partition store for the given partition id, irrespective of whether
     /// the store is open or not.
     pub async fn has_partition_store(&self, partition_id: PartitionId) -> bool {
-        let _guard = self.partition_stores.lock().await;
+        let _guard = self.lookup.lock().await;
         let cf_name = cf_for_partition(partition_id);
         self.rocksdb.inner().cf_handle(&cf_name).is_some()
     }
 
     pub async fn get_partition_store(&self, partition_id: PartitionId) -> Option<PartitionStore> {
-        self.partition_stores
-            .lock()
-            .await
-            .get(&partition_id)
-            .cloned()
+        self.lookup.lock().await.get(&partition_id).cloned()
     }
 
     pub async fn open_partition_store(
@@ -118,7 +114,7 @@ impl PartitionStoreManager {
         open_mode: OpenMode,
         opts: &RocksDbOptions,
     ) -> Result<PartitionStore, RocksError> {
-        let guard = self.partition_stores.lock().await;
+        let guard = self.lookup.lock().await;
         if let Some(store) = guard.get(&partition_id) {
             return Ok(store.clone());
         }
@@ -148,7 +144,7 @@ impl PartitionStoreManager {
         snapshot: LocalPartitionSnapshot,
         opts: &RocksDbOptions,
     ) -> Result<PartitionStore, RocksError> {
-        let guard = self.partition_stores.lock().await;
+        let guard = self.lookup.lock().await;
         if guard.contains_key(&partition_id) {
             warn!(
                 %partition_id,
@@ -203,7 +199,7 @@ impl PartitionStoreManager {
     /// Creates and registers a new partition store
     async fn create_partition_store(
         &self,
-        mut guard: MutexGuard<'_, PartitionStoreLookup>,
+        mut guard: MutexGuard<'_, PartitionLookup>,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
         cf_name: CfName,
@@ -230,7 +226,7 @@ impl PartitionStoreManager {
             Ok(Some(applied_lsn)) => applied_lsn,
             Ok(None) => Lsn::INVALID,
             Err(err) => {
-                warn!(
+                debug!(
                     %partition_id,
                     "Failed reading the applied LSN for partition store: {}", err
                 );
@@ -253,7 +249,7 @@ impl PartitionStoreManager {
         snapshot_id: SnapshotId,
         snapshot_base_path: &Path,
     ) -> Result<LocalPartitionSnapshot, SnapshotError> {
-        let guard = self.partition_stores.lock().await;
+        let guard = self.lookup.lock().await;
         let mut partition_store = guard
             .get(&partition_id)
             .cloned()
@@ -265,7 +261,7 @@ impl PartitionStoreManager {
     }
 
     pub async fn drop_partition(&self, partition_id: PartitionId) {
-        let mut guard = self.partition_stores.lock().await;
+        let mut guard = self.lookup.lock().await;
         self.rocksdb
             .inner()
             .as_raw_db()
@@ -281,7 +277,7 @@ impl PartitionStoreManager {
         &self,
         partition_id: PartitionId,
     ) -> Result<(), restate_storage_api::StorageError> {
-        let mut guard = self.partition_stores.lock().await;
+        let mut guard = self.lookup.lock().await;
         let live_store = guard.remove(&partition_id);
         // It's critical that we flush the CF, as we assume that all written
         // data are fully persisted if we reopen this partition store.

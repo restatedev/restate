@@ -108,9 +108,7 @@ pub(crate) struct PersistedLsnEventListener {
 
 impl EventListener for PersistedLsnEventListener {
     fn on_flush_completed(&self, flush_job_info: FlushJobInfo) {
-        for key in
-            flush_job_info.get_user_collected_property_keys(Some(APPLIED_LSNS_PROPERTY_PREFIX))
-        {
+        for key in flush_job_info.get_user_collected_property_keys(APPLIED_LSNS_PROPERTY_PREFIX) {
             let partition_id = key[APPLIED_LSNS_PROPERTY_PREFIX.len()..]
                 .to_string_lossy()
                 .parse::<u16>()
@@ -144,7 +142,7 @@ impl EventListener for PersistedLsnEventListener {
 /// Given a raw key-value pair, extract the partition id and its applied LSN, if the key is an Applied LSN FSM variable
 fn extract_partition_applied_lsn(
     mut key: &[u8],
-    value: &[u8],
+    mut value: &[u8],
 ) -> Result<Option<(PartitionId, Lsn)>, StorageError> {
     if !key.starts_with(KeyKind::Fsm.as_bytes()) {
         return Ok(None);
@@ -154,16 +152,12 @@ fn extract_partition_applied_lsn(
     if fsm_key.state_id == Some(fsm_variable::APPLIED_LSN) {
         if let Some(padded_partition_id) = fsm_key.partition_id {
             let partition_id = PartitionId::from(padded_partition_id);
-            let applied_lsn = decode_lsn(value)?;
+            let applied_lsn = SequenceNumber::decode(&mut value).map(u64::from)?.into();
             return Ok(Some((partition_id, applied_lsn)));
         }
     }
 
     Ok(None)
-}
-
-fn decode_lsn(mut value: &[u8]) -> Result<Lsn, StorageError> {
-    SequenceNumber::decode(&mut value).map(|sn| Lsn::from(u64::from(sn)))
 }
 
 #[cfg(test)]
