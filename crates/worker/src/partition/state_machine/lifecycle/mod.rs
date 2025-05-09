@@ -16,6 +16,7 @@ mod notify_signal;
 mod notify_sleep_completion;
 mod pinned_deployment;
 mod purge;
+mod purge_journal;
 mod resume;
 mod suspend;
 
@@ -27,5 +28,6 @@ pub(super) use notify_signal::OnNotifySignalCommand;
 pub(super) use notify_sleep_completion::OnNotifySleepCompletionCommand;
 pub(super) use pinned_deployment::OnPinnedDeploymentCommand;
 pub(super) use purge::OnPurgeCommand;
+pub(super) use purge_journal::OnPurgeJournalCommand;
 pub(super) use resume::ResumeInvocationCommand;
 pub(super) use suspend::OnSuspendCommand;
