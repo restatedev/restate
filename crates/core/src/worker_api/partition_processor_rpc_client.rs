@@ -18,8 +18,9 @@ use restate_types::identifiers::{
     InvocationId, PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
 use restate_types::invocation::client::{
-    AttachInvocationResponse, GetInvocationOutputResponse, InvocationClient, InvocationClientError,
-    InvocationOutput, SubmittedInvocationNotification,
+    AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
+    InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
+    PurgeInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
@@ -362,5 +363,71 @@ where
         );
 
         Ok(())
+    }
+
+    async fn cancel_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> Result<CancelInvocationResponse, InvocationClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::CancelInvocation { invocation_id },
+            )
+            .await?;
+
+        Ok(match response {
+            PartitionProcessorRpcResponse::CancelInvocation(cancel_invocation_response) => {
+                cancel_invocation_response.into()
+            }
+            _ => {
+                panic!("Expecting CancelInvocation rpc response")
+            }
+        })
+    }
+
+    async fn kill_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> Result<KillInvocationResponse, InvocationClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::KillInvocation { invocation_id },
+            )
+            .await?;
+
+        Ok(match response {
+            PartitionProcessorRpcResponse::KillInvocation(kill_invocation_response) => {
+                kill_invocation_response.into()
+            }
+            _ => {
+                panic!("Expecting KillInvocation rpc response")
+            }
+        })
+    }
+
+    async fn purge_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> Result<PurgeInvocationResponse, InvocationClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id },
+            )
+            .await?;
+
+        Ok(match response {
+            PartitionProcessorRpcResponse::PurgeInvocation(purge_invocation_response) => {
+                purge_invocation_response.into()
+            }
+            _ => {
+                panic!("Expecting PurgeInvocation rpc response")
+            }
+        })
     }
 }
