@@ -22,6 +22,7 @@ derive_more = { workspace = true }
 http = { workspace = true }
 http-serde = { workspace = true }
 humantime = { workspace = true }
+jiff = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
