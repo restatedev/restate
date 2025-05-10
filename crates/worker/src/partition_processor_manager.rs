@@ -112,7 +112,7 @@ pub struct PartitionProcessorManager {
 
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
     latest_snapshots: HashMap<PartitionId, SnapshotCreated>,
-    snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
+    snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotTaskResult>>,
     snapshot_repository: Option<SnapshotRepository>,
     fast_forward_on_startup: HashMap<PartitionId, Lsn>,
 }
@@ -122,7 +122,10 @@ struct PendingSnapshotTask {
     sender: Option<oneshot::Sender<SnapshotResult>>,
 }
 
-type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
+type SnapshotTaskResult = (
+    PartitionId,
+    Result<PartitionSnapshotMetadata, SnapshotError>,
+);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -865,7 +868,7 @@ impl PartitionProcessorManager {
 
         let snapshot_repository = self.snapshot_repository.clone();
         let Some(snapshot_repository) = snapshot_repository else {
-            let _ = sender.send(Err(SnapshotError::RepositoryNotConfigured(partition_id)));
+            let _ = sender.send(Err(SnapshotError::RepositoryNotConfigured));
             return;
         };
 
@@ -882,36 +885,36 @@ impl PartitionProcessorManager {
         );
     }
 
-    fn on_create_snapshot_task_completed(&mut self, result: SnapshotResultInternal) {
-        let (partition_id, response) = match result {
-            Ok(metadata) => {
-                self.archived_lsns
-                    .insert(metadata.partition_id, metadata.min_applied_lsn);
-
-                let response = SnapshotCreated::from(&metadata);
-                self.latest_snapshots
-                    .entry(metadata.partition_id)
-                    .and_modify(|e| {
-                        if response.min_applied_lsn > e.min_applied_lsn {
-                            *e = response.clone();
-                        }
-                    })
-                    .or_insert_with(|| response.clone());
-
-                (metadata.partition_id, Ok(response))
-            }
-            Err(snapshot_error) => (snapshot_error.partition_id(), Err(snapshot_error)),
+    fn on_create_snapshot_task_completed(
+        &mut self,
+        (partition_id, snapshot_result): SnapshotTaskResult,
+    ) {
+        let Some(pending_snapshot) = self.pending_snapshots.remove(&partition_id) else {
+            info!(
+                ?snapshot_result,
+                "Snapshot task result received without a pending task!",
+            );
+            return;
         };
 
-        if let Some(pending_task) = self.pending_snapshots.remove(&partition_id) {
-            if let Some(sender) = pending_task.sender {
-                let _ = sender.send(response);
-            }
-        } else {
-            info!(
-                result = ?response,
-                "Snapshot task result received without a pending task!",
-            )
+        let response = snapshot_result
+            .map(|metadata| SnapshotCreated::from(&metadata))
+            .inspect(|snapshot| {
+                self.archived_lsns
+                    .insert(partition_id, snapshot.min_applied_lsn);
+                self.latest_snapshots
+                    .entry(partition_id)
+                    .and_modify(|e| {
+                        if snapshot.min_applied_lsn > e.min_applied_lsn {
+                            *e = snapshot.clone();
+                        }
+                    })
+                    .or_insert_with(|| snapshot.clone());
+            });
+
+        if let Some(sender) = pending_snapshot.sender {
+            // Ignore send error if receiver is gone
+            let _ = sender.send(response);
         }
     }
 

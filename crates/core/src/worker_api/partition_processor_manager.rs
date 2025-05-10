@@ -51,15 +51,8 @@ impl ProcessorsManagerHandle {
                 tx,
             })
             .await
-            .map_err(|_| {
-                SnapshotError::Internal(
-                    partition_id,
-                    "Unable to send command to PartitionProcessorManager".to_string(),
-                )
-            })?;
-        rx.await.map_err(|_| {
-            SnapshotError::Internal(partition_id, "Unable to receive response".to_string())
-        })?
+            .map_err(|e| SnapshotError::Internal(e.into()))?;
+        rx.await.map_err(|e| SnapshotError::Internal(e.into()))?
     }
 
     pub async fn get_state(
@@ -82,37 +75,22 @@ pub struct SnapshotCreated {
     pub snapshot_id: SnapshotId,
     pub log_id: LogId,
     pub min_applied_lsn: Lsn,
-    pub partition_id: PartitionId,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
     #[error("Partition {0} not found")]
     PartitionNotFound(PartitionId),
-    #[error("Snapshot creation already in progress")]
+    #[error("Snapshot export in progress for partition {0}")]
     SnapshotInProgress(PartitionId),
-    #[error("Partition processor state does not permit snapshotting")]
+    #[error("Partition Processor state does not permit snapshotting of partition {0}")]
     InvalidState(PartitionId),
     #[error("Snapshot repository is not configured")]
-    RepositoryNotConfigured(PartitionId),
-    #[error("Snapshot export failed: {1}")]
+    RepositoryNotConfigured,
+    #[error("Snapshot export failed for partition {0}: {1}")]
     Export(PartitionId, #[source] anyhow::Error),
     #[error("Snapshot repository IO error: {1}")]
     RepositoryIo(PartitionId, #[source] anyhow::Error),
-    #[error("Internal error creating snapshot: {1}")]
-    Internal(PartitionId, String),
-}
-
-impl SnapshotError {
-    pub fn partition_id(&self) -> PartitionId {
-        match self {
-            SnapshotError::PartitionNotFound(partition_id) => *partition_id,
-            SnapshotError::SnapshotInProgress(partition_id) => *partition_id,
-            SnapshotError::InvalidState(partition_id) => *partition_id,
-            SnapshotError::RepositoryNotConfigured(partition_id) => *partition_id,
-            SnapshotError::Export(partition_id, _) => *partition_id,
-            SnapshotError::RepositoryIo(partition_id, _) => *partition_id,
-            SnapshotError::Internal(partition_id, _) => *partition_id,
-        }
-    }
+    #[error("Internal error: {0}")]
+    Internal(anyhow::Error),
 }
