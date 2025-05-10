@@ -17,11 +17,9 @@ use tracing::info;
 use url::Url;
 
 use restate_object_store_util::create_object_store_client;
-
-use crate::metadata_store::providers::objstore::version_repository::{
-    Tag, TaggedValue, VersionRepository, VersionRepositoryError,
-};
 use restate_types::config::MetadataClientKind;
+
+use super::version_repository::{Tag, TaggedValue, VersionRepository, VersionRepositoryError};
 
 #[derive(Debug)]
 pub(crate) struct ObjectStoreVersionRepository {

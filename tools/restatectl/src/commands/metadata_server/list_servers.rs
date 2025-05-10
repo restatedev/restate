@@ -21,7 +21,7 @@ use tracing::debug;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_metadata_server::grpc::new_metadata_server_client;
+use restate_metadata_server_grpc::grpc::new_metadata_server_client;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{PlainNodeId, Version};
