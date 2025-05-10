@@ -59,6 +59,7 @@ humantime = { workspace = true }
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
 itertools = { workspace = true }
+json-patch = "2.0.0"
 jsonwebtoken = { version = "9.1.0" }
 octocrab = { version = "0.44.0", features = ["stream"] }
 open = "5.1.2"
