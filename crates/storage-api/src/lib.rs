@@ -21,6 +21,10 @@ pub enum StorageError {
     DataIntegrityError,
     #[error("Operational error that can be caused during a graceful shutdown")]
     OperationalError,
+    #[error("Snapshot export failed: {0}")]
+    SnapshotExport(anyhow::Error),
+    #[error("Precondition failed: {0}")]
+    PreconditionFailed(anyhow::Error),
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;

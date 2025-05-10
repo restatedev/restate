@@ -270,6 +270,7 @@ impl PartitionStoreManager {
         partition_store
             .create_snapshot(snapshot_base_path, min_target_lsn, snapshot_id)
             .await
+            .map_err(|err| SnapshotError::Export(partition_id, err.into()))
     }
 
     pub async fn drop_partition(&self, partition_id: PartitionId) {
