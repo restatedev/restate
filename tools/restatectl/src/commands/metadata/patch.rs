@@ -17,7 +17,9 @@ use tonic::Code;
 
 use crate::commands::metadata::MetadataCommonOpts;
 use crate::connection::{ConnectionInfo, NodeOperationError};
-use restate_core::protobuf::metadata_proxy_svc::{PutRequest, new_metadata_proxy_client};
+use restate_metadata_store::protobuf::metadata_proxy_svc::{
+    PutRequest, client::new_metadata_proxy_client,
+};
 use restate_types::Version;
 use restate_types::errors::SimpleStatus;
 use restate_types::metadata::Precondition;

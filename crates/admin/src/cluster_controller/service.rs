@@ -27,10 +27,8 @@ use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForRea
 use restate_core::network::{
     NetworkSender, NetworkServerBuilder, Networking, Swimlane, TransportConnect,
 };
-use restate_core::{
-    Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind,
-    metadata_store::ReadModifyWriteError,
-};
+use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind};
+use restate_metadata_store::ReadModifyWriteError;
 use restate_storage_query_datafusion::BuildError;
 use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
 use restate_types::cluster::cluster_state::ClusterState;

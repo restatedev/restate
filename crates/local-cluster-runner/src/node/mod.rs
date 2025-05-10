@@ -15,14 +15,14 @@ use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt, stream};
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
-use restate_core::metadata_store::ReadError;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::{
     ProvisionClusterRequest as ProtoProvisionClusterRequest, new_node_ctl_client,
 };
-use restate_metadata_server::grpc::{
+use restate_metadata_server_grpc::grpc::{
     RemoveNodeRequest, StatusResponse, new_metadata_server_client,
 };
+use restate_metadata_store::ReadError;
 use restate_types::config::{InvalidConfigurationError, MetadataServerKind};
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::nodes_config::MetadataServerState;
@@ -741,8 +741,9 @@ impl StartedNode {
     /// Obtain a metadata client based on this nodes client config.
     pub async fn metadata_client(
         &self,
-    ) -> anyhow::Result<restate_metadata_server::MetadataStoreClient> {
-        restate_metadata_server::create_client(self.config().common.metadata_client.clone()).await
+    ) -> anyhow::Result<restate_metadata_store::MetadataStoreClient> {
+        restate_metadata_providers::create_client(self.config().common.metadata_client.clone())
+            .await
     }
 
     /// Check to see if the admin address is healthy. Returns false if this node has no admin role.

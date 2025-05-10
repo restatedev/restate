@@ -14,8 +14,10 @@ use cling::{Collect, Run};
 use itertools::Itertools;
 
 use restate_cli_util::c_println;
-use restate_core::metadata_store::serialize_value;
-use restate_core::protobuf::metadata_proxy_svc::{PutRequest, new_metadata_proxy_client};
+use restate_metadata_store::protobuf::metadata_proxy_svc::{
+    PutRequest, client::new_metadata_proxy_client,
+};
+use restate_metadata_store::serialize_value;
 use restate_types::PlainNodeId;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;

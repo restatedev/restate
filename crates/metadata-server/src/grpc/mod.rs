@@ -8,53 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tonic::codec::CompressionEncoding;
-use tonic::transport::Channel;
-
-use restate_core::network::grpc::DEFAULT_GRPC_COMPRESSION;
-
-pub mod client;
 pub(crate) mod handler;
 
-tonic::include_proto!("restate.metadata_server_svc");
-pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("metadata_server_svc");
-
-/// Creates a new MetadataServerSvcClient with appropriate configuration
-pub fn new_metadata_server_client(
-    channel: Channel,
-) -> metadata_server_svc_client::MetadataServerSvcClient<Channel> {
-    metadata_server_svc_client::MetadataServerSvcClient::new(channel)
-        // note: the order of those calls defines the priority
-        .accept_compressed(CompressionEncoding::Zstd)
-        .accept_compressed(CompressionEncoding::Gzip)
-        .send_compressed(DEFAULT_GRPC_COMPRESSION)
-}
-
 pub mod pb_conversions {
-    use restate_types::Version;
+    use restate_metadata_server_grpc::grpc;
+    use restate_metadata_server_grpc::grpc::{WriteRequest, WriteRequestKind};
     use restate_types::errors::ConversionError;
-    use restate_types::metadata::VersionedValue;
 
-    use crate::grpc::{GetResponse, GetVersionResponse, Ulid, WriteRequest, WriteRequestKind};
-    use crate::{MetadataServerSummary, grpc};
-
-    impl TryFrom<GetResponse> for Option<VersionedValue> {
-        type Error = ConversionError;
-
-        fn try_from(value: GetResponse) -> Result<Self, Self::Error> {
-            if let Some(versioned_value) = value.value {
-                Ok(Some(VersionedValue::try_from(versioned_value)?))
-            } else {
-                Ok(None)
-            }
-        }
-    }
-
-    impl From<GetVersionResponse> for Option<Version> {
-        fn from(value: GetVersionResponse) -> Self {
-            value.version.map(Into::into)
-        }
-    }
+    use crate::MetadataServerSummary;
 
     impl From<MetadataServerSummary> for grpc::StatusResponse {
         fn from(value: MetadataServerSummary) -> Self {
@@ -96,21 +57,6 @@ pub mod pb_conversions {
                     snapshot: snapshot.map(grpc::SnapshotSummary::from),
                 },
             }
-        }
-    }
-
-    impl From<ulid::Ulid> for Ulid {
-        fn from(value: ulid::Ulid) -> Self {
-            Self {
-                high: (value.0 >> 64) as u64,
-                low: value.0 as u64,
-            }
-        }
-    }
-
-    impl From<Ulid> for ulid::Ulid {
-        fn from(value: Ulid) -> Self {
-            Self::from((u128::from(value.high) << 64) | value.low as u128)
         }
     }
 
@@ -186,19 +132,5 @@ pub mod pb_conversions {
 
             Ok(request)
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::Ulid;
-
-    #[test]
-    fn test_ulid_encoding() {
-        let id = ulid::Ulid::new();
-        let encoded = Ulid::from(id);
-        let decoded = ulid::Ulid::from(encoded);
-
-        assert_eq!(id, decoded);
     }
 }

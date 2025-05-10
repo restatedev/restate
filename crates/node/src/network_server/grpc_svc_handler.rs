@@ -16,15 +16,14 @@ use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
 use tracing::debug;
 
-use restate_core::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::{
+use restate_metadata_server_grpc::grpc::new_metadata_server_client;
+use restate_metadata_store::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::{
     MetadataProxySvc, MetadataProxySvcServer,
 };
-use restate_core::protobuf::metadata_proxy_svc::{
+use restate_metadata_store::protobuf::metadata_proxy_svc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest,
 };
-use restate_metadata_server::grpc::new_metadata_server_client;
 
-use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
 use restate_core::protobuf::node_ctl_svc::{
@@ -33,7 +32,8 @@ use restate_core::protobuf::node_ctl_svc::{
 };
 use restate_core::{Identification, MetadataWriter};
 use restate_core::{Metadata, MetadataKind};
-use restate_metadata_server::WriteError;
+// use restate_metadata_server::WriteError;
+use restate_metadata_store::{MetadataStoreClient, WriteError};
 use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::errors::ConversionError;

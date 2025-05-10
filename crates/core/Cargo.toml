@@ -9,7 +9,12 @@ publish = false
 
 [features]
 default = []
-test-util = ["restate-core-derive", "restate-types/test-util", "tokio/test-util"]
+test-util = [
+  "restate-core-derive",
+  "restate-metadata-store/test-util",
+  "restate-types/test-util",
+  "tokio/test-util"
+]
 options_schema = ["dep:schemars"]
 
 [dependencies]
@@ -19,6 +24,7 @@ restate-core-derive = { workspace = true, optional = true }
 restate-futures-util = { workspace = true }
 restate-object-store-util = { workspace = true }
 restate-types = { workspace = true }
+restate-metadata-store = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
@@ -77,8 +83,9 @@ tonic-build = { workspace = true }
 
 [dev-dependencies]
 restate-core = {path = ".", default-features = false, features = ["test-util"]}
-restate-test-util = { workspace = true }
 restate-core-derive = { workspace = true }
+restate-metadata-store = { workspace = true, features = ["test-util"] }
+restate-test-util = { workspace = true }
 
 googletest = { workspace = true }
 test-log = { workspace = true }

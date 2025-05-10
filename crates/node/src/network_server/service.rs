@@ -65,7 +65,7 @@ impl NetworkServer {
         server_builder.register_grpc_service(
             MetadataProxySvcHandler::new(metadata_writer.raw_metadata_store_client().clone())
                 .into_server(),
-            restate_core::protobuf::metadata_proxy_svc::FILE_DESCRIPTOR_SET,
+            restate_metadata_store::protobuf::metadata_proxy_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder.register_grpc_service(

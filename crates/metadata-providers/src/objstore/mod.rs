@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metadata_store::MetadataStore;
-use crate::metadata_store::providers::objstore::object_store_version_repository::ObjectStoreVersionRepository;
-use crate::metadata_store::providers::objstore::optimistic_store::OptimisticLockingMetadataStoreBuilder;
-use crate::metadata_store::providers::objstore::version_repository::VersionRepository;
-use crate::{TaskCenter, TaskKind};
-use restate_types::config::MetadataClientKind;
-
 mod glue;
 mod object_store_version_repository;
 mod optimistic_store;
 mod version_repository;
+
+use restate_core::{TaskCenter, TaskKind};
+use restate_metadata_store::MetadataStore;
+use restate_types::config::MetadataClientKind;
+
+use self::object_store_version_repository::ObjectStoreVersionRepository;
+use self::optimistic_store::OptimisticLockingMetadataStoreBuilder;
+use self::version_repository::VersionRepository;
 
 pub async fn create_object_store_based_meta_store(
     configuration: MetadataClientKind,

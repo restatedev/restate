@@ -8,8 +8,57 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::time::Duration;
+
+use arc_swap::ArcSwapOption;
+use bytes::BytesMut;
+use futures::FutureExt;
+use futures::future::{FusedFuture, OptionFuture};
+use futures::never::Never;
+use metrics::gauge;
+use prost::{DecodeError, EncodeError, Message as ProstMessage};
+use protobuf::{Message as ProtobufMessage, ProtobufError};
+use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
+use raft::{
+    Config, Error as RaftError, INVALID_ID, RawNode, ReadOnlyOption, SnapshotStatus, Storage,
+};
+use raft_proto::ConfChangeI;
+use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
+use rand::prelude::IteratorRandom;
+use rand::rng;
+use slog::o;
+use thiserror::__private::AsDisplay;
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time;
+use tokio::time::{Interval, MissedTickBehavior};
+use tracing::{Span, debug, error, info, instrument, trace, warn};
+use tracing_slog::TracingSlogDrain;
+use ulid::Ulid;
+
+use restate_core::network::NetworkServerBuilder;
+use restate_core::network::net_util::create_tonic_channel;
+use restate_core::{
+    Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind, cancellation_watcher,
+};
+use restate_metadata_server_grpc::grpc;
+use restate_metadata_server_grpc::grpc::MetadataServerSnapshot;
+use restate_metadata_store::serialize_value;
+use restate_rocksdb::RocksError;
+use restate_types::config::{Configuration, MetadataServerOptions};
+use restate_types::errors::{ConversionError, GenericError};
+use restate_types::health::HealthStatus;
+use restate_types::live::{Constant, LiveLoad};
+use restate_types::metadata::Precondition;
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::net::metadata::MetadataKind;
+use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
+use restate_types::protobuf::common::MetadataServerStatus;
+use restate_types::retries::RetryPolicy;
+use restate_types::{PlainNodeId, Version};
+
 use super::network::grpc_svc::new_metadata_server_network_client;
-use crate::grpc::MetadataServerSnapshot;
 use crate::grpc::handler::MetadataServerHandler;
 use crate::local::migrate_nodes_configuration;
 use crate::metric_definitions::{
@@ -28,54 +77,9 @@ use crate::{
     MetadataCommand, MetadataCommandError, MetadataCommandReceiver, MetadataServer,
     MetadataServerConfiguration, MetadataServerSummary, MetadataStoreRequest, ProvisionError,
     ProvisionReceiver, RaftSummary, RemoveNodeError, RemoveNodeResponseSender, Request,
-    RequestError, RequestReceiver, SnapshotSummary, StatusSender, WriteRequest, grpc, local,
+    RequestError, RequestReceiver, SnapshotSummary, StatusSender, WriteRequest, local,
     prepare_initial_nodes_configuration,
 };
-use arc_swap::ArcSwapOption;
-use bytes::BytesMut;
-use futures::FutureExt;
-use futures::future::{FusedFuture, OptionFuture};
-use futures::never::Never;
-use metrics::gauge;
-use prost::{DecodeError, EncodeError, Message as ProstMessage};
-use protobuf::{Message as ProtobufMessage, ProtobufError};
-use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
-use raft::{
-    Config, Error as RaftError, INVALID_ID, RawNode, ReadOnlyOption, SnapshotStatus, Storage,
-};
-use raft_proto::ConfChangeI;
-use raft_proto::eraftpb::{ConfChangeSingle, ConfChangeType, Snapshot, SnapshotMetadata};
-use rand::prelude::IteratorRandom;
-use rand::rng;
-use restate_core::metadata_store::serialize_value;
-use restate_core::network::NetworkServerBuilder;
-use restate_core::network::net_util::create_tonic_channel;
-use restate_core::{
-    Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind, cancellation_watcher,
-};
-use restate_rocksdb::RocksError;
-use restate_types::config::{Configuration, MetadataServerOptions};
-use restate_types::errors::{ConversionError, GenericError};
-use restate_types::health::HealthStatus;
-use restate_types::live::{Constant, LiveLoad};
-use restate_types::metadata::Precondition;
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
-use restate_types::protobuf::common::MetadataServerStatus;
-use restate_types::retries::RetryPolicy;
-use restate_types::{PlainNodeId, Version};
-use slog::o;
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
-use std::time::Duration;
-use thiserror::__private::AsDisplay;
-use tokio::sync::{mpsc, oneshot, watch};
-use tokio::time;
-use tokio::time::{Interval, MissedTickBehavior};
-use tracing::{Span, debug, error, info, instrument, trace, warn};
-use tracing_slog::TracingSlogDrain;
-use ulid::Ulid;
 
 const RAFT_INITIAL_LOG_TERM: u64 = 1;
 const RAFT_INITIAL_LOG_INDEX: u64 = 1;
@@ -205,7 +209,7 @@ impl RaftMetadataServer {
         server_builder.register_grpc_service(
             MetadataServerHandler::new(request_tx, Some(provision_tx), Some(status_rx), command_tx)
                 .into_server(),
-            grpc::FILE_DESCRIPTOR_SET,
+            restate_metadata_server_grpc::grpc::FILE_DESCRIPTOR_SET,
         );
 
         Ok(Self {
@@ -491,12 +495,14 @@ impl RaftMetadataServer {
         let mut members = HashMap::default();
         members.insert(my_member_id.node_id, my_member_id.created_at_millis);
         let mut metadata_store_snapshot = MetadataServerSnapshot {
-            configuration: Some(grpc::MetadataServerConfiguration::from(
-                MetadataServerConfiguration {
-                    version: Version::MIN,
-                    members,
-                },
-            )),
+            configuration: Some(
+                restate_metadata_server_grpc::grpc::MetadataServerConfiguration::from(
+                    MetadataServerConfiguration {
+                        version: Version::MIN,
+                        members,
+                    },
+                ),
+            ),
             ..MetadataServerSnapshot::default()
         };
 

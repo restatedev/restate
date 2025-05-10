@@ -16,7 +16,9 @@ use std::path::PathBuf;
 
 use cling::prelude::*;
 
-use restate_core::protobuf::metadata_proxy_svc::{GetRequest, new_metadata_proxy_client};
+use restate_metadata_store::protobuf::metadata_proxy_svc::{
+    GetRequest, client::new_metadata_proxy_client,
+};
 use restate_types::protobuf::metadata::VersionedValue;
 use restate_types::storage::StorageCodec;
 use restate_types::{Version, Versioned, flexbuffers_storage_encode_decode};

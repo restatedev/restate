@@ -41,7 +41,7 @@ pub enum Error {
     #[error(transparent)]
     AdminError(#[from] AdminError),
     #[error(transparent)]
-    MetadataStoreError(#[from] restate_core::metadata_store::ReadWriteError),
+    MetadataStoreError(#[from] restate_metadata_store::ReadWriteError),
 }
 
 #[derive(thiserror::Error, Debug)]

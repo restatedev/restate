@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::connection::ConnectionInfo;
 use anyhow::Context;
 use clap::Parser;
 use cling::{Collect, Run};
+use tracing::debug;
+
 use restate_cli_util::c_println;
-use restate_metadata_server::grpc::RemoveNodeRequest;
-use restate_metadata_server::grpc::metadata_server_svc_client::MetadataServerSvcClient;
+use restate_metadata_server_grpc::grpc::RemoveNodeRequest;
+use restate_metadata_server_grpc::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::PlainNodeId;
 use restate_types::nodes_config::{MetadataServerState, Role};
-use tracing::debug;
+
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "add")]

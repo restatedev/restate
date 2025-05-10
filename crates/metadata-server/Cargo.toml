@@ -8,13 +8,15 @@ license.workspace = true
 publish = false
 
 [features]
-options_schema = ["dep:schemars"]
 test-util = []
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-core = { workspace = true }
+restate-metadata-providers = { workspace = true, features = ["replicated"] }
+restate-metadata-server-grpc = { workspace = true, features = ["grpc-client", "grpc-server"] }
+restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 
@@ -43,7 +45,6 @@ raft = { git = "https://github.com/tikv/raft-rs", rev = "2fbeee5b89b22c392da3943
 raft-proto = { git = "https://github.com/tikv/raft-rs", rev = "2fbeee5b89b22c392da39435b79be9896acedd1d" }
 rand = { workspace = true }
 rocksdb = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
@@ -61,13 +62,9 @@ ulid = { workspace = true, features = ["serde"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
 
-anyhow = { workspace = true }
-assert2 = { workspace = true }
-flexbuffers = { workspace = true }
 googletest = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
-tracing-subscriber = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

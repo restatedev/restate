@@ -24,7 +24,6 @@ use tracing::{debug, error, info, trace, warn};
 
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
-use restate_core::metadata_store::{ReadWriteError, WriteError, retry_on_retryable_error};
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
@@ -36,6 +35,7 @@ use restate_log_server::LogServerService;
 use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
 };
+use restate_metadata_store::{ReadWriteError, WriteError, retry_on_retryable_error};
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::health::NodeStatus;
@@ -189,7 +189,7 @@ impl Node {
             .map(|(server, client)| (Some(server), client))?
         } else {
             let metadata_store_client =
-                restate_metadata_server::create_client(config.common.metadata_client.clone())
+                restate_metadata_providers::create_client(config.common.metadata_client.clone())
                     .await
                     .map_err(BuildError::MetadataStoreClient)?;
             (None, metadata_store_client)

@@ -15,7 +15,6 @@ use std::time::Instant;
 use tokio::sync::watch;
 use tracing::trace;
 
-use restate_core::network::net_util::CommonClientConnectionOptions;
 use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind,
@@ -23,6 +22,7 @@ use restate_core::{
 use restate_types::Version;
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState};
 use restate_types::config::Configuration;
+use restate_types::net::connect_opts::CommonClientConnectionOptions;
 use restate_types::net::node::GetNodeState;
 use restate_types::time::MillisSinceEpoch;
 

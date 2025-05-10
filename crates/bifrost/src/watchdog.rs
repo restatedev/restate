@@ -16,10 +16,8 @@ use enum_map::Enum;
 use tokio::task::JoinSet;
 use tracing::{debug, trace, warn};
 
-use restate_core::metadata_store::{
-    ReadModifyWriteError, ReadWriteError, retry_on_retryable_error,
-};
 use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, cancellation_watcher};
+use restate_metadata_store::{ReadModifyWriteError, ReadWriteError, retry_on_retryable_error};
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Logs, ProviderKind};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};

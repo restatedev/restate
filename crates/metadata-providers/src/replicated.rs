@@ -8,36 +8,52 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::KnownLeader;
-use crate::grpc::metadata_server_svc_client::MetadataServerSvcClient;
-use crate::grpc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
+use std::ops::Deref;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::BytesMut;
 use bytestring::ByteString;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use rand::Rng;
-use restate_core::metadata_store::{MetadataStore, ProvisionError, ReadError, WriteError};
-use restate_core::network::net_util::{CommonClientConnectionOptions, create_tonic_channel};
+use restate_types::retries::RetryPolicy;
+use tonic::transport::Channel;
+use tonic::{Code, Status};
+use tracing::{debug, instrument};
+
+use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{Metadata, TaskCenter, TaskKind, cancellation_watcher};
+use restate_metadata_server_grpc::grpc::metadata_server_svc_client::MetadataServerSvcClient;
+use restate_metadata_server_grpc::grpc::new_metadata_server_client;
+use restate_metadata_store::{
+    MetadataStore, MetadataStoreClient, ProvisionError, ReadError, WriteError,
+};
 use restate_types::config::Configuration;
 use restate_types::errors::ConversionError;
 use restate_types::errors::SimpleStatus;
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::net::AdvertisedAddress;
+use restate_types::net::connect_opts::CommonClientConnectionOptions;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
 use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};
-use std::ops::Deref;
-use std::sync::Arc;
-use tonic::transport::Channel;
-use tonic::{Code, Status};
-use tracing::{debug, instrument};
 
-use super::new_metadata_server_client;
+use restate_metadata_server_grpc::grpc::{DeleteRequest, GetRequest, ProvisionRequest, PutRequest};
 
 const MAX_RETRY_ATTEMPTS: usize = 3;
+pub const KNOWN_LEADER_KEY: &str = "x-restate-known-leader";
+
+/// Creates the [`MetadataStoreClient`] for the replicated metadata server.
+pub fn create_replicated_metadata_client(
+    addresses: Vec<AdvertisedAddress>,
+    backoff_policy: Option<RetryPolicy>,
+    connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
+) -> MetadataStoreClient {
+    let inner_client = GrpcMetadataServerClient::new(addresses, connection_options);
+    MetadataStoreClient::new(inner_client, backoff_policy)
+}
 
 #[derive(Debug, Clone, derive_more::Deref, derive_more::DerefMut)]
 struct MetadataServerSvcClientWithAddress {
@@ -58,6 +74,44 @@ impl MetadataServerSvcClientWithAddress {
 
     fn address(&self) -> AdvertisedAddress {
         self.address.clone()
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct KnownLeader {
+    pub node_id: PlainNodeId,
+    pub address: AdvertisedAddress,
+}
+
+impl KnownLeader {
+    pub fn add_to_status(&self, status: &mut tonic::Status) {
+        status.metadata_mut().insert(
+            KNOWN_LEADER_KEY,
+            serde_json::to_string(self)
+                .expect("KnownLeader to be serializable")
+                .parse()
+                .expect("to be valid metadata"),
+        );
+    }
+
+    pub fn from_status(status: &tonic::Status) -> Option<KnownLeader> {
+        if let Some(value) = status.metadata().get(KNOWN_LEADER_KEY) {
+            match value.to_str() {
+                Ok(value) => match serde_json::from_str(value) {
+                    Ok(known_leader) => Some(known_leader),
+                    Err(err) => {
+                        debug!("failed parsing known leader from metadata: {err}");
+                        None
+                    }
+                },
+                Err(err) => {
+                    debug!("failed parsing known leader from metadata: {err}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
     }
 }
 

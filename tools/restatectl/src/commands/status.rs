@@ -22,7 +22,7 @@ use restate_cli_util::_comfy_table::{Cell, Color, Row, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_core::protobuf::cluster_ctrl_svc::{ClusterStateRequest, new_cluster_ctrl_client};
-use restate_metadata_server::grpc::new_metadata_server_client;
+use restate_metadata_server_grpc::grpc::new_metadata_server_client;
 use restate_types::health::MetadataServerStatus;
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};

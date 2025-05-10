@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc::MetadataServerSnapshot;
-use crate::{
-    Callback, PreconditionViolation, ReadOnlyRequest, ReadOnlyRequestKind, RequestError,
-    RequestKind, WriteRequest, grpc,
-};
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use bytestring::ByteString;
+use tracing::{debug, trace};
+use ulid::Ulid;
+
 use restate_core::MetadataWriter;
 use restate_types::Version;
 use restate_types::errors::ConversionError;
@@ -21,10 +22,13 @@ use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tracing::{debug, trace};
-use ulid::Ulid;
+
+use crate::{
+    Callback, PreconditionViolation, ReadOnlyRequest, ReadOnlyRequestKind, RequestError,
+    RequestKind, WriteRequest,
+};
+use restate_metadata_server_grpc::grpc;
+use restate_metadata_server_grpc::grpc::MetadataServerSnapshot;
 
 pub struct KvMemoryStorage {
     read_only_requests: HashMap<Ulid, ReadOnlyRequest>,
@@ -263,18 +267,4 @@ pub enum CreateSnapshotError {
 struct KvSnapshot {
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     kv_entries: HashMap<ByteString, VersionedValue>,
-}
-
-impl TryFrom<grpc::KvEntry> for (ByteString, VersionedValue) {
-    type Error = ConversionError;
-
-    fn try_from(kv_entry: grpc::KvEntry) -> Result<Self, Self::Error> {
-        Ok((
-            ByteString::try_from(kv_entry.key).map_err(|_| ConversionError::invalid_data("key"))?,
-            kv_entry
-                .value
-                .ok_or(ConversionError::missing_field("value"))?
-                .try_into()?,
-        ))
-    }
 }

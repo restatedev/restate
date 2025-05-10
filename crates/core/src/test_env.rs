@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use futures::Stream;
 
+use restate_metadata_store::MetadataStoreClient;
 use restate_types::locality::NodeLocation;
 use restate_types::logs::metadata::{ProviderKind, bootstrap_logs_metadata};
 use restate_types::metadata::Precondition;
@@ -28,7 +29,6 @@ use restate_types::nodes_config::{
 use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, Version};
 
-use crate::metadata_store::MetadataStoreClient;
 use crate::network::protobuf::network::Message;
 use crate::network::{
     AcceptError, BackPressureMode, FailingConnector, Handler, MessageRouterBuilder, Networking,

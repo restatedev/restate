@@ -15,11 +15,11 @@ use restate_types::Version;
 use tokio::sync::oneshot::Sender;
 use tracing::warn;
 
-use crate::metadata_store::providers::objstore::optimistic_store::OptimisticLockingMetadataStoreBuilder;
-use crate::metadata_store::{
-    Precondition, ProvisionedMetadataStore, ReadError, VersionedValue, WriteError,
-};
-use crate::{ShutdownError, cancellation_watcher};
+use restate_core::{ShutdownError, cancellation_watcher};
+use restate_metadata_store::{ProvisionedMetadataStore, ReadError, WriteError};
+use restate_types::metadata::{Precondition, VersionedValue};
+
+use super::optimistic_store::OptimisticLockingMetadataStoreBuilder;
 
 #[derive(Debug)]
 pub(crate) enum Commands {

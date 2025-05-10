@@ -13,7 +13,7 @@ use std::ops::RangeInclusive;
 use http::Uri;
 
 use restate_core::ShutdownError;
-use restate_core::metadata_store::ReadModifyWriteError;
+use restate_metadata_store::ReadModifyWriteError;
 use restate_types::endpoint_manifest;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::DeploymentId;

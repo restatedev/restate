@@ -22,7 +22,7 @@ use tracing::{debug, info};
 use restate_core::protobuf::node_ctl_svc::{
     GetMetadataRequest, IdentResponse, new_node_ctl_client,
 };
-use restate_metadata_server::ReadModifyWriteError;
+use restate_metadata_store::ReadModifyWriteError;
 use restate_types::{
     Version, Versioned,
     errors::SimpleStatus,

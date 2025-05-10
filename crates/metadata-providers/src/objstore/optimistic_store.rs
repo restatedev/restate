@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metadata_store::providers::objstore::version_repository::VersionRepositoryError::PreconditionFailed;
-use crate::metadata_store::providers::objstore::version_repository::{
-    TaggedValue, VersionRepository, VersionRepositoryError,
-};
-use crate::metadata_store::{Precondition, ReadError, VersionedValue, WriteError};
 use bytes::{BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use rand::random;
+use std::borrow::Cow;
+
+use restate_metadata_store::{ReadError, WriteError};
 use restate_types::Version;
 use restate_types::config::MetadataClientKind;
-use std::borrow::Cow;
+use restate_types::metadata::{Precondition, VersionedValue};
+
+use super::version_repository::VersionRepositoryError::PreconditionFailed;
+use super::version_repository::{TaggedValue, VersionRepository, VersionRepositoryError};
 
 pub(crate) struct OptimisticLockingMetadataStoreBuilder {
     pub(crate) version_repository: Box<dyn VersionRepository>,
@@ -222,12 +223,14 @@ impl OptimisticLockingMetadataStore {
 
 #[cfg(test)]
 mod tests {
-    use crate::metadata_store::providers::objstore::object_store_version_repository::ObjectStoreVersionRepository;
-    use crate::metadata_store::providers::objstore::optimistic_store::OptimisticLockingMetadataStore;
-    use crate::metadata_store::{Precondition, VersionedValue, WriteError};
     use bytes::Bytes;
     use bytestring::ByteString;
+    use restate_metadata_store::WriteError;
     use restate_types::Version;
+    use restate_types::metadata::{Precondition, VersionedValue};
+
+    use crate::objstore::object_store_version_repository::ObjectStoreVersionRepository;
+    use crate::objstore::optimistic_store::OptimisticLockingMetadataStore;
 
     const KEY_1: ByteString = ByteString::from_static("1");
     const HELLO: Bytes = Bytes::from_static(b"hello");

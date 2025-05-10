@@ -20,7 +20,6 @@ pub mod cluster_state;
 mod error;
 mod identification;
 mod metadata;
-pub mod metadata_store;
 mod metric_definitions;
 pub mod network;
 pub mod partitions;

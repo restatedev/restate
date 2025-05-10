@@ -9,25 +9,129 @@
 // by the Apache License, Version 2.0.
 
 use std::cmp::max;
+use std::future::Future;
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
 use cling::prelude::*;
 use futures_util::StreamExt;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use restate_bifrost::BifrostService;
 use restate_bifrost::loglet::FindTailOptions;
+use restate_core::TaskCenterBuilder;
+use restate_core::TaskCenterFutureExt;
 use restate_core::network::MessageRouterBuilder;
+use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, TaskKind};
+use restate_metadata_server::MetadataServer;
+use restate_metadata_store::MetadataStoreClient;
 use restate_rocksdb::RocksDbManager;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, MetadataClientKind};
+use restate_types::config_loader::ConfigLoaderBuilder;
+use restate_types::health::HealthStatus;
+use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
+use restate_types::live::Pinned;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
+use restate_types::net::{AdvertisedAddress, BindAddress};
+use restate_types::protobuf::common::NodeRpcStatus;
 use restate_wal_protocol::Envelope;
 
-use crate::environment::metadata_store;
-use crate::environment::task_center::run_in_task_center;
+/// Loads configuration, creates a task center, executes the supplied function body in scope of TC, and shuts down.
+async fn run_in_task_center<F, O>(config_file: Option<&PathBuf>, fn_body: F) -> O::Output
+where
+    F: FnOnce(Pinned<Configuration>) -> O,
+    O: Future,
+{
+    let config_path = config_file
+        .as_ref()
+        .map(|p| std::fs::canonicalize(p).expect("config-file path is valid"));
+
+    let config_loader = ConfigLoaderBuilder::default()
+        .load_env(true)
+        .path(config_path.clone())
+        .build()
+        .unwrap();
+
+    let config = match config_loader.load_once() {
+        Ok(c) => c,
+        Err(e) => {
+            // We cannot use tracing here as it's not configured yet
+            eprintln!("{e:?}");
+            std::process::exit(1);
+        }
+    };
+
+    restate_types::config::set_current_config(config);
+    if rlimit::increase_nofile_limit(u64::MAX).is_err() {
+        warn!("Failed to increase the number of open file descriptors limit.");
+    }
+
+    let config = Configuration::pinned();
+
+    let task_center = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .ingress_runtime_handle(tokio::runtime::Handle::current())
+        .options(config.common.clone())
+        .build()
+        .expect("task_center builds")
+        .into_handle();
+
+    let result = fn_body(config).in_tc(&task_center).await;
+
+    task_center.shutdown_node("finished", 0).await;
+    result
+}
+
+async fn start_metadata_server(mut config: Configuration) -> anyhow::Result<MetadataStoreClient> {
+    let mut server_builder = NetworkServerBuilder::default();
+
+    // right now we only support running a local metadata store
+    let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
+    let bind_address = BindAddress::Uds(uds.clone());
+    config.common.metadata_client.kind = MetadataClientKind::Replicated {
+        addresses: vec![AdvertisedAddress::Uds(uds)],
+    };
+
+    let (service, client) = restate_metadata_server::create_metadata_server_and_client(
+        Live::from_value(config),
+        HealthStatus::default(),
+        &mut server_builder,
+    )
+    .await?;
+
+    let rpc_server_health = if !server_builder.is_empty() {
+        let rpc_server_health_status = HealthStatus::default();
+        TaskCenter::spawn(TaskKind::RpcServer, "metadata-rpc-server", {
+            let rpc_server_health_status = rpc_server_health_status.clone();
+            async move {
+                server_builder
+                    .run(rpc_server_health_status, &bind_address)
+                    .await
+            }
+        })?;
+        Some(rpc_server_health_status)
+    } else {
+        None
+    };
+
+    TaskCenter::spawn(
+        TaskKind::MetadataServer,
+        "local-metadata-server",
+        async move {
+            service.run(None).await?;
+            Ok(())
+        },
+    )?;
+
+    if let Some(rpc_server_health) = rpc_server_health {
+        info!("Waiting for local metadata store to startup");
+        rpc_server_health.wait_for_value(NodeRpcStatus::Ready).await;
+    }
+
+    Ok(client)
+}
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
@@ -75,7 +179,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
         let metadata = metadata_builder.to_metadata();
         TaskCenter::try_set_global_metadata(metadata.clone());
 
-        let metadata_store_client = metadata_store::start_metadata_server(config.clone()).await?;
+        let metadata_store_client = start_metadata_server(config.clone()).await?;
         debug!("Metadata store client created");
 
         let mut metadata_manager =

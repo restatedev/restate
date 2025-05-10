@@ -25,8 +25,9 @@ use tokio_util::net::Listener;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
 
-use restate_types::config::{Configuration, MetadataClientOptions, NetworkingOptions};
+use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
+use restate_types::net::connect_opts::CommonClientConnectionOptions;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 
 use crate::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
@@ -266,105 +267,5 @@ where
             let _ = fut.await;
             Ok(())
         });
-    }
-}
-
-/// Helper trait to extract common client connection options from different configuration types.
-pub trait CommonClientConnectionOptions {
-    fn connect_timeout(&self) -> Duration;
-    fn request_timeout(&self) -> Option<Duration>;
-    fn keep_alive_interval(&self) -> Duration;
-    fn keep_alive_timeout(&self) -> Duration;
-    fn http2_adaptive_window(&self) -> bool;
-}
-
-impl<T: CommonClientConnectionOptions> CommonClientConnectionOptions for &T {
-    fn connect_timeout(&self) -> Duration {
-        (*self).connect_timeout()
-    }
-
-    fn request_timeout(&self) -> Option<Duration> {
-        (*self).request_timeout()
-    }
-
-    fn keep_alive_interval(&self) -> Duration {
-        (*self).keep_alive_interval()
-    }
-
-    fn keep_alive_timeout(&self) -> Duration {
-        (*self).keep_alive_timeout()
-    }
-
-    fn http2_adaptive_window(&self) -> bool {
-        (*self).http2_adaptive_window()
-    }
-}
-
-impl<T> CommonClientConnectionOptions for Arc<T>
-where
-    T: CommonClientConnectionOptions,
-{
-    fn connect_timeout(&self) -> Duration {
-        (**self).connect_timeout()
-    }
-
-    fn request_timeout(&self) -> Option<Duration> {
-        (**self).request_timeout()
-    }
-
-    fn keep_alive_interval(&self) -> Duration {
-        (**self).keep_alive_interval()
-    }
-
-    fn keep_alive_timeout(&self) -> Duration {
-        (**self).keep_alive_timeout()
-    }
-
-    fn http2_adaptive_window(&self) -> bool {
-        (**self).http2_adaptive_window()
-    }
-}
-
-impl CommonClientConnectionOptions for NetworkingOptions {
-    fn connect_timeout(&self) -> Duration {
-        self.connect_timeout.into()
-    }
-
-    fn request_timeout(&self) -> Option<Duration> {
-        None
-    }
-
-    fn keep_alive_interval(&self) -> Duration {
-        self.http2_keep_alive_interval.into()
-    }
-
-    fn keep_alive_timeout(&self) -> Duration {
-        self.http2_keep_alive_timeout.into()
-    }
-
-    fn http2_adaptive_window(&self) -> bool {
-        self.http2_adaptive_window
-    }
-}
-
-impl CommonClientConnectionOptions for MetadataClientOptions {
-    fn connect_timeout(&self) -> Duration {
-        self.connect_timeout.into()
-    }
-
-    fn request_timeout(&self) -> Option<Duration> {
-        None
-    }
-
-    fn keep_alive_interval(&self) -> Duration {
-        self.keep_alive_interval.into()
-    }
-
-    fn keep_alive_timeout(&self) -> Duration {
-        self.keep_alive_timeout.into()
-    }
-
-    fn http2_adaptive_window(&self) -> bool {
-        true
     }
 }
