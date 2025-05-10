@@ -40,6 +40,7 @@ use restate_types::identifiers::SnapshotId;
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::logs::LogId;
 use restate_types::logs::Lsn;
+use restate_types::logs::SequenceNumber;
 use restate_types::storage::StorageCodec;
 
 use crate::keys::KeyKind;
