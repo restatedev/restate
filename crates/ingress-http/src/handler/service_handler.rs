@@ -186,8 +186,9 @@ where
             let mut invocation_request_header =
                 InvocationRequestHeader::initialize(invocation_id, invocation_target);
             invocation_request_header.with_related_span(SpanRelation::Parent(ingress_span_context));
-            invocation_request_header.completion_retention_duration =
-                invocation_target_meta.compute_retention(idempotency_key.is_some());
+            invocation_request_header.with_retention(
+                invocation_target_meta.compute_retention(idempotency_key.is_some()),
+            );
             if let Some(key) = idempotency_key {
                 invocation_request_header.idempotency_key = Some(key);
             }

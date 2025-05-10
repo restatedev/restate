@@ -180,7 +180,7 @@ async fn send_with_delay_and_idempotency_key() {
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 request_id: request_id_1,
             }),
-            completion_retention_duration: Some(retention),
+            completion_retention_duration: retention,
             // Doesn't matter the execution time here, just needs to be filled
             execution_time,
             source: Source::Ingress(request_id_1),
@@ -210,7 +210,7 @@ async fn send_with_delay_and_idempotency_key() {
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 request_id: request_id_2,
             }),
-            completion_retention_duration: Some(retention),
+            completion_retention_duration: retention,
             // Needs to be different from the original one!
             execution_time: execution_time.map(|m| m + Duration::from_secs(10)),
             source: Source::Ingress(request_id_2),

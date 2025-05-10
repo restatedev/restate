@@ -83,6 +83,17 @@ pub struct ServiceMetadata {
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub workflow_completion_retention: Option<humantime::Duration>,
 
+    /// # Journal retention
+    ///
+    /// The journal retention. This applies only to workflow calls, or to idempotent requests.
+    #[serde(
+        with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    pub journal_retention: Option<humantime::Duration>,
+
     /// # Inactivity timeout
     ///
     /// This timer guards against stalled service/handler invocations. Once it expires,
@@ -239,6 +250,7 @@ pub struct ServiceSchemas {
     pub location: ServiceLocation,
     pub idempotency_retention: Duration,
     pub workflow_completion_retention: Option<Duration>,
+    pub journal_retention: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
     pub abort_timeout: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +280,7 @@ impl ServiceSchemas {
             public: self.location.public,
             idempotency_retention: self.idempotency_retention.into(),
             workflow_completion_retention: self.workflow_completion_retention.map(Into::into),
+            journal_retention: self.journal_retention.map(Into::into),
             inactivity_timeout: self.inactivity_timeout.map(Into::into),
             abort_timeout: self.abort_timeout.map(Into::into),
         }
@@ -408,6 +421,7 @@ pub mod test_util {
                 public: true,
                 idempotency_retention: Duration::from_secs(60).into(),
                 workflow_completion_retention: None,
+                journal_retention: None,
                 inactivity_timeout: None,
                 abort_timeout: None,
             }
@@ -440,6 +454,7 @@ pub mod test_util {
                 public: true,
                 idempotency_retention: Duration::from_secs(60).into(),
                 workflow_completion_retention: None,
+                journal_retention: None,
                 inactivity_timeout: None,
                 abort_timeout: None,
             }

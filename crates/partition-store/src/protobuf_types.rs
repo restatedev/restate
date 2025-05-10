@@ -122,7 +122,9 @@ pub mod v1 {
         use bytestring::ByteString;
         use opentelemetry::trace::TraceState;
         use prost::Message;
-        use restate_storage_api::invocation_status_table::CompletionRangeEpochMap;
+        use restate_storage_api::invocation_status_table::{
+            CompletionRangeEpochMap, JournalMetadata,
+        };
         use restate_types::deployment::PinnedDeployment;
 
         use crate::protobuf_types::ConversionError;
@@ -410,6 +412,7 @@ pub mod v1 {
                     headers,
                     execution_time,
                     completion_retention_duration,
+                    journal_retention_duration,
                     idempotency_key,
                     inbox_sequence_number,
                     journal_length,
@@ -469,6 +472,10 @@ pub mod v1 {
                                             completion_retention_duration
                                                 .unwrap_or_default()
                                                 .try_into()?,
+                                        journal_retention_duration:
+                                        journal_retention_duration
+                                            .unwrap_or_default()
+                                            .try_into()?,
                                         idempotency_key: idempotency_key.map(ByteString::from),
                                     },
                             },
@@ -492,6 +499,10 @@ pub mod v1 {
                                             completion_retention_duration
                                                 .unwrap_or_default()
                                                 .try_into()?,
+                                        journal_retention_duration:
+                                        journal_retention_duration
+                                            .unwrap_or_default()
+                                            .try_into()?,
                                         idempotency_key: idempotency_key.map(ByteString::from),
                                     },
                             },
@@ -514,6 +525,10 @@ pub mod v1 {
                                 )?,
                                 source,
                                 completion_retention_duration: completion_retention_duration
+                                    .unwrap_or_default()
+                                    .try_into()?,
+                                journal_retention_duration:
+                                journal_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
@@ -542,6 +557,10 @@ pub mod v1 {
                                 )?,
                                 source,
                                 completion_retention_duration: completion_retention_duration
+                                    .unwrap_or_default()
+                                    .try_into()?,
+                                journal_retention_duration:
+                                journal_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
@@ -574,13 +593,25 @@ pub mod v1 {
                             restate_storage_api::invocation_status_table::CompletedInvocation {
                                 timestamps,
                                 invocation_target,
-                                span_context: expect_or_fail!(span_context)?.try_into()?,
                                 source,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 response_result: expect_or_fail!(result)?.try_into()?,
                                 completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
+                                journal_retention_duration:
+                                journal_retention_duration
+                                    .unwrap_or_default()
+                                    .try_into()?,
+                                journal_metadata:  restate_storage_api::invocation_status_table::JournalMetadata {
+                                    length: journal_length,
+                                    commands,
+                                    span_context: expect_or_fail!(span_context)?.try_into()?,
+                                },
+                                pinned_deployment: derive_pinned_deployment(
+                                    deployment_id,
+                                    service_protocol_version,
+                                )?,
                             },
                         ))
                     }
@@ -608,7 +639,7 @@ pub mod v1 {
                                     headers,
                                     execution_time,
                                     completion_retention_duration,
-                                    idempotency_key,
+                                    journal_retention_duration, idempotency_key,
                                 },
                         },
                     ) => InvocationStatusV2 {
@@ -639,6 +670,7 @@ pub mod v1 {
                         headers: headers.into_iter().map(Into::into).collect(),
                         execution_time: execution_time.map(|t| t.as_u64()),
                         completion_retention_duration: Some(completion_retention_duration.into()),
+                        journal_retention_duration: Some(journal_retention_duration.into()),
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: None,
                         journal_length: 0,
@@ -666,7 +698,7 @@ pub mod v1 {
                                     headers,
                                     execution_time,
                                     completion_retention_duration,
-                                    idempotency_key,
+                                    journal_retention_duration, idempotency_key,
                                 },
                             inbox_sequence_number,
                         },
@@ -697,7 +729,7 @@ pub mod v1 {
                         argument: Some(argument),
                         headers: headers.into_iter().map(Into::into).collect(),
                         execution_time: execution_time.map(|t| t.as_u64()),
-                        completion_retention_duration: Some(completion_retention_duration.into()),
+                        completion_retention_duration: Some(completion_retention_duration.into()),    journal_retention_duration: Some(journal_retention_duration.into()),
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: Some(inbox_sequence_number),
                         journal_length: 0,
@@ -721,7 +753,7 @@ pub mod v1 {
                             timestamps,
                             source,
                             completion_retention_duration,
-                            idempotency_key,
+                            journal_retention_duration, idempotency_key,
                             hotfix_apply_cancellation_after_deployment_is_pinned, current_invocation_epoch, completion_range_epoch_map
                         },
                     ) => {
@@ -766,7 +798,7 @@ pub mod v1 {
                             execution_time: None,
                             completion_retention_duration: Some(
                                 completion_retention_duration.into(),
-                            ),
+                            ),    journal_retention_duration: Some(journal_retention_duration.into()),
                             idempotency_key: idempotency_key.map(|key| key.to_string()),
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
@@ -795,7 +827,7 @@ pub mod v1 {
                                 timestamps,
                                 source,
                                 completion_retention_duration,
-                                idempotency_key, hotfix_apply_cancellation_after_deployment_is_pinned, current_invocation_epoch, completion_range_epoch_map,
+                                journal_retention_duration, idempotency_key, hotfix_apply_cancellation_after_deployment_is_pinned, current_invocation_epoch, completion_range_epoch_map,
                             },
                         waiting_for_notifications,
                     } => {
@@ -857,7 +889,7 @@ pub mod v1 {
                             execution_time: None,
                             completion_retention_duration: Some(
                                 completion_retention_duration.into(),
-                            ),
+                            ),    journal_retention_duration: Some(journal_retention_duration.into()),
                             idempotency_key: idempotency_key.map(|key| key.to_string()),
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
@@ -879,51 +911,62 @@ pub mod v1 {
                     restate_storage_api::invocation_status_table::InvocationStatus::Completed(
                         restate_storage_api::invocation_status_table::CompletedInvocation {
                             invocation_target,
-                            span_context,
                             source,
                             idempotency_key,
                             timestamps,
                             response_result,
                             completion_retention_duration,
+                            journal_retention_duration, journal_metadata,
+                            pinned_deployment
                         },
-                    ) => InvocationStatusV2 {
-                        status: invocation_status_v2::Status::Completed.into(),
-                        invocation_target: Some(invocation_target.into()),
-                        source: Some(source.into()),
-                        span_context: Some(span_context.into()),
-                        // SAFETY: We're only mapping data types here
-                        creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                        modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                        inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
-                            .map(|t| t.as_u64()),
-                        scheduled_transition_time: unsafe {
-                            timestamps.scheduled_transition_time()
+                    ) => {
+                        let (deployment_id, service_protocol_version) = match pinned_deployment {
+                            None => (None, None),
+                            Some(pinned_deployment) => (
+                                Some(pinned_deployment.deployment_id.to_string()),
+                                Some(pinned_deployment.service_protocol_version.as_repr()),
+                            ),
+                        };
+
+                        InvocationStatusV2 {
+                            status: invocation_status_v2::Status::Completed.into(),
+                            invocation_target: Some(invocation_target.into()),
+                            source: Some(source.into()),
+                            span_context: Some(journal_metadata.span_context.into()),
+                            // SAFETY: We're only mapping data types here
+                            creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                            modification_time: unsafe { timestamps.modification_time() }.as_u64(),
+                            inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
+                                .map(|t| t.as_u64()),
+                            scheduled_transition_time: unsafe {
+                                timestamps.scheduled_transition_time()
+                            }
+                                .map(|t| t.as_u64()),
+                            running_transition_time: unsafe { timestamps.running_transition_time() }
+                                .map(|t| t.as_u64()),
+                            completed_transition_time: unsafe {
+                                timestamps.completed_transition_time()
+                            }
+                                .map(|t| t.as_u64()),
+                            response_sinks: vec![],
+                            argument: None,
+                            headers: vec![],
+                            execution_time: None,
+                            completion_retention_duration: Some(completion_retention_duration.into()),    journal_retention_duration: Some(journal_retention_duration.into()),
+                            idempotency_key: idempotency_key.map(|key| key.to_string()),
+                            inbox_sequence_number: None,
+                            journal_length: journal_metadata.length,
+                            commands: journal_metadata.commands,
+                            deployment_id,
+                            service_protocol_version,
+                            hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                            current_invocation_epoch: 0,
+                            trim_points: vec![],
+                            waiting_for_completions: vec![],
+                            waiting_for_signal_indexes: vec![],
+                            waiting_for_signal_names: vec![],
+                            result: Some(response_result.into()),
                         }
-                        .map(|t| t.as_u64()),
-                        running_transition_time: unsafe { timestamps.running_transition_time() }
-                            .map(|t| t.as_u64()),
-                        completed_transition_time: unsafe {
-                            timestamps.completed_transition_time()
-                        }
-                        .map(|t| t.as_u64()),
-                        response_sinks: vec![],
-                        argument: None,
-                        headers: vec![],
-                        execution_time: None,
-                        completion_retention_duration: Some(completion_retention_duration.into()),
-                        idempotency_key: idempotency_key.map(|key| key.to_string()),
-                        inbox_sequence_number: None,
-                        journal_length: 0,
-                        commands: 0,
-                        deployment_id: None,
-                        service_protocol_version: None,
-                        hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                        current_invocation_epoch: 0,
-                        trim_points: vec![],
-                        waiting_for_completions: vec![],
-                        waiting_for_signal_indexes: vec![],
-                        waiting_for_signal_names: vec![],
-                        result: Some(response_result.into()),
                     },
                     restate_storage_api::invocation_status_table::InvocationStatus::Free => {
                         panic!("Unexpected serialization of Free status. This is a bug of the invocation status table")
@@ -1176,6 +1219,7 @@ pub mod v1 {
                             ),
                         source,
                         completion_retention_duration: completion_retention_time,
+                        journal_retention_duration: Default::default(),
                         idempotency_key,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
                         current_invocation_epoch: 0,
@@ -1295,6 +1339,7 @@ pub mod v1 {
                             ),
                         source: caller,
                         completion_retention_duration: completion_retention_time,
+                        journal_retention_duration: Default::default(),
                         idempotency_key,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
                         current_invocation_epoch: 0,
@@ -1423,6 +1468,7 @@ pub mod v1 {
                         idempotency_key,
                         completion_retention_duration: completion_retention_time,
                         invocation_target,
+                        journal_retention_duration: Default::default(),
                     },
                 })
             }
@@ -1444,6 +1490,7 @@ pub mod v1 {
                             headers,
                             execution_time,
                             completion_retention_duration: completion_retention_time,
+                            journal_retention_duration: _,
                             idempotency_key,
                         },
                     inbox_sequence_number,
@@ -1492,7 +1539,6 @@ pub mod v1 {
                 Ok(
                     restate_storage_api::invocation_status_table::CompletedInvocation {
                         invocation_target,
-                        span_context: Default::default(),
                         source,
                         timestamps:
                             restate_storage_api::invocation_status_table::StatusTimestamps::new(
@@ -1511,6 +1557,9 @@ pub mod v1 {
                         // The value Duration::MAX here disables the new cleaner task business logic.
                         // Look at crates/worker/src/partition/cleaner.rs for more details.
                         completion_retention_duration: std::time::Duration::MAX,
+                        journal_retention_duration: Default::default(),
+                        journal_metadata: JournalMetadata::empty(),
+                        pinned_deployment: None,
                     },
                 )
             }
@@ -1528,8 +1577,11 @@ pub mod v1 {
                     response_result,
                     // We don't store this in the old invocation status table
                     completion_retention_duration: _,
-                    // The old invocation status table doesn't support span context on Completed
-                    span_context: _,
+                    // The old invocation status table doesn't support journal metadata on Completed
+                    journal_retention_duration: _,
+                    journal_metadata: _,
+                    // The old invocation status table doesn't support PinnedDeployment on Completed
+                    pinned_deployment: _,
                 } = value;
 
                 Completed {
@@ -1715,7 +1767,8 @@ pub mod v1 {
                     headers,
                     execution_time,
                     idempotency_key,
-                    completion_retention_time,
+                    completion_retention_duration,
+                    journal_retention_duration,
                     submit_notification_sink,
                 } = value;
 
@@ -1752,9 +1805,14 @@ pub mod v1 {
                     Some(MillisSinceEpoch::new(execution_time))
                 };
 
-                let completion_retention_time = completion_retention_time
+                let completion_retention_duration = completion_retention_duration
                     .map(std::time::Duration::try_from)
-                    .transpose()?;
+                    .transpose()?
+                    .unwrap_or_default();
+                let journal_retention_duration = journal_retention_duration
+                    .map(std::time::Duration::try_from)
+                    .transpose()?
+                    .unwrap_or_default();
 
                 let idempotency_key = idempotency_key.map(ByteString::from);
 
@@ -1771,9 +1829,10 @@ pub mod v1 {
                     span_context,
                     headers,
                     execution_time,
-                    completion_retention_duration: completion_retention_time,
+                    completion_retention_duration,
+                    journal_retention_duration,
                     idempotency_key,
-                    submit_notification_sink: submit_notification_sink,
+                    submit_notification_sink,
                 })
             }
         }
@@ -1795,9 +1854,8 @@ pub mod v1 {
                     source: Some(source),
                     headers,
                     execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
-                    completion_retention_time: value
-                        .completion_retention_duration
-                        .map(Duration::from),
+                    completion_retention_duration: Some(value.completion_retention_duration.into()),
+                    journal_retention_duration: Some(value.journal_retention_duration.into()),
                     idempotency_key: value.idempotency_key.map(|s| s.to_string()),
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                 }
@@ -2777,12 +2835,16 @@ pub mod v1 {
                 let completion_retention_duration = std::time::Duration::try_from(
                     value.completion_retention_duration.unwrap_or_default(),
                 )?;
+                let journal_retention_duration = std::time::Duration::try_from(
+                    value.journal_retention_duration.unwrap_or_default(),
+                )?;
 
                 Ok(journal_v2::raw::CallOrSendMetadata {
                     invocation_id,
                     span_context,
                     invocation_target,
                     completion_retention_duration,
+                    journal_retention_duration,
                 })
             }
         }
@@ -2795,6 +2857,9 @@ pub mod v1 {
                     span_context: Some(SpanContext::from(value.span_context)),
                     completion_retention_duration: Some(Duration::from(
                         value.completion_retention_duration,
+                    )),
+                    journal_retention_duration: Some(Duration::from(
+                        value.journal_retention_duration,
                     )),
                 }
             }
