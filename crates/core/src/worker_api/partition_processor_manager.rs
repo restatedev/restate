@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
-use std::io;
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -90,24 +89,14 @@ pub struct SnapshotCreated {
 pub enum SnapshotError {
     #[error("Partition {0} not found")]
     PartitionNotFound(PartitionId),
-    #[error("Snapshot target LSN {min_target_lsn} > applied LSN {applied_lsn}")]
-    MinimumTargetLsnNotMet {
-        partition_id: PartitionId,
-        min_target_lsn: Lsn,
-        applied_lsn: Lsn,
-    },
     #[error("Snapshot creation already in progress")]
     SnapshotInProgress(PartitionId),
-    /// Partition Processor is not fully caught up.
     #[error("Partition processor state does not permit snapshotting")]
     InvalidState(PartitionId),
-    #[error("Snapshot destination is not configured")]
+    #[error("Snapshot repository is not configured")]
     RepositoryNotConfigured(PartitionId),
-    /// Database snapshot export error.
     #[error("Snapshot export failed: {1}")]
-    SnapshotExport(PartitionId, #[source] anyhow::Error),
-    #[error("Snapshot IO error: {1}")]
-    SnapshotIo(PartitionId, #[source] io::Error),
+    Export(PartitionId, #[source] anyhow::Error),
     #[error("Snapshot repository IO error: {1}")]
     RepositoryIo(PartitionId, #[source] anyhow::Error),
     #[error("Internal error creating snapshot: {1}")]
@@ -118,12 +107,10 @@ impl SnapshotError {
     pub fn partition_id(&self) -> PartitionId {
         match self {
             SnapshotError::PartitionNotFound(partition_id) => *partition_id,
-            SnapshotError::MinimumTargetLsnNotMet { partition_id, .. } => *partition_id,
             SnapshotError::SnapshotInProgress(partition_id) => *partition_id,
             SnapshotError::InvalidState(partition_id) => *partition_id,
             SnapshotError::RepositoryNotConfigured(partition_id) => *partition_id,
-            SnapshotError::SnapshotExport(partition_id, _) => *partition_id,
-            SnapshotError::SnapshotIo(partition_id, _) => *partition_id,
+            SnapshotError::Export(partition_id, _) => *partition_id,
             SnapshotError::RepositoryIo(partition_id, _) => *partition_id,
             SnapshotError::Internal(partition_id, _) => *partition_id,
         }
