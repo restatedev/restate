@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::local::storage::RocksDbStorage;
-use crate::{MetadataServer, MetadataStoreRequest, RequestError, RequestReceiver, RequestSender};
 use bytestring::ByteString;
-use restate_core::metadata_store::{
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, info, trace};
+
+use restate_core::{MetadataWriter, ShutdownError, cancellation_watcher};
+use restate_metadata_store::{
     MetadataStoreClient, ProvisionedMetadataStore, ReadError, WriteError, serialize_value,
 };
-use restate_core::{MetadataWriter, ShutdownError, cancellation_watcher};
 use restate_rocksdb::RocksError;
 use restate_types::config::{Configuration, MetadataServerOptions};
 use restate_types::health::HealthStatus;
@@ -25,8 +26,9 @@ use restate_types::nodes_config::{MetadataServerState, NodesConfiguration};
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::{PlainNodeId, Version};
-use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, info, trace};
+
+use crate::local::storage::RocksDbStorage;
+use crate::{MetadataServer, MetadataStoreRequest, RequestError, RequestReceiver, RequestSender};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {

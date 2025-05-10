@@ -12,25 +12,29 @@ use std::ops::Deref;
 
 use async_trait::async_trait;
 use metrics::{counter, histogram};
-use restate_core::metadata_store::serialize_value;
-use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
-use restate_types::errors::ConversionError;
-use restate_types::metadata::Precondition;
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::storage::StorageCodec;
 use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
 
-use crate::grpc::metadata_server_svc_server::MetadataServerSvc;
-use crate::grpc::{
+use restate_metadata_server_grpc::grpc::metadata_server_svc_server::MetadataServerSvc;
+use restate_metadata_server_grpc::grpc::metadata_server_svc_server::MetadataServerSvcServer;
+use restate_metadata_server_grpc::grpc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse,
     ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest, RemoveNodeRequest,
     StatusResponse,
 };
+use restate_metadata_store::serialize_value;
+use restate_types::config::Configuration;
+use restate_types::errors::ConversionError;
+use restate_types::metadata::Precondition;
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::nodes_config::{
+    LogServerConfig, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
+};
+use restate_types::storage::StorageCodec;
+use restate_types::{GenerationalNodeId, PlainNodeId};
+
 use crate::metric_definitions::{
     METADATA_SERVER_DELETE_DURATION, METADATA_SERVER_DELETE_TOTAL, METADATA_SERVER_GET_DURATION,
     METADATA_SERVER_GET_TOTAL, METADATA_SERVER_GET_VERSION_DURATION,
@@ -38,12 +42,72 @@ use crate::metric_definitions::{
     STATUS_COMPLETED, STATUS_FAILED,
 };
 use crate::{
-    MetadataCommand, MetadataCommandSender, MetadataServerSummary, MetadataStoreRequest,
-    ProvisionError, ProvisionRequest, ProvisionSender, RequestError, RequestSender, StatusWatch,
-    prepare_initial_nodes_configuration,
+    InvalidConfiguration, MetadataCommand, MetadataCommandSender, MetadataServerSummary,
+    MetadataStoreRequest, ProvisionError, ProvisionRequest, ProvisionSender, RequestError,
+    RequestSender, StatusWatch,
 };
 
-use super::metadata_server_svc_server::MetadataServerSvcServer;
+/// Ensures that the initial nodes configuration contains the current node and has the right
+/// [`MetadataServerState`] set.
+fn prepare_initial_nodes_configuration(
+    configuration: &Configuration,
+    nodes_configuration: &mut NodesConfiguration,
+) -> Result<PlainNodeId, InvalidConfiguration> {
+    let plain_node_id = if let Some(node_config) =
+        nodes_configuration.find_node_by_name(configuration.common.node_name())
+    {
+        if let Some(force_node_id) = configuration.common.force_node_id {
+            if force_node_id != node_config.current_generation.as_plain() {
+                return Err(InvalidConfiguration(format!(
+                    "nodes configuration has wrong plain node id; expected: {}, actual: {}",
+                    force_node_id,
+                    node_config.current_generation.as_plain()
+                )));
+            }
+        }
+
+        let restate_node_id = node_config.current_generation.as_plain();
+
+        let mut node_config = node_config.clone();
+        node_config.metadata_server_config.metadata_server_state = MetadataServerState::Member;
+
+        nodes_configuration.upsert_node(node_config);
+
+        restate_node_id
+    } else {
+        // give precedence to the force node id
+        let current_generation = configuration
+            .common
+            .force_node_id
+            .map(|node_id| node_id.with_generation(1))
+            .unwrap_or_else(|| {
+                nodes_configuration
+                    .max_plain_node_id()
+                    .map(|node_id| node_id.next().with_generation(1))
+                    .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID)
+            });
+
+        let metadata_server_config = MetadataServerConfig {
+            metadata_server_state: MetadataServerState::Member,
+        };
+
+        let node_config = NodeConfig::new(
+            configuration.common.node_name().to_owned(),
+            current_generation,
+            configuration.common.location().clone(),
+            configuration.common.advertised_address.clone(),
+            configuration.common.roles,
+            LogServerConfig::default(),
+            metadata_server_config,
+        );
+
+        nodes_configuration.upsert_node(node_config);
+
+        current_generation.as_plain()
+    };
+
+    Ok(plain_node_id)
+}
 
 /// Grpc svc handler for the metadata server.
 #[derive(Debug)]

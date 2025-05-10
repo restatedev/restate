@@ -15,45 +15,43 @@ pub mod local;
 mod metric_definitions;
 pub mod raft;
 
-use crate::local::LocalMetadataServer;
-use crate::raft::{RaftMetadataServer, create_replicated_metadata_client};
+use std::fmt::{Display, Formatter};
+use std::sync::Arc;
+
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
-use itertools::Itertools;
 use prost::Message;
 use raft_proto::eraftpb::Snapshot;
-use restate_core::metadata_store::providers::{
-    EtcdMetadataStore, create_object_store_based_meta_store,
-};
-pub use restate_core::metadata_store::{
-    MetadataStoreClient, ReadError, ReadModifyWriteError, WriteError,
-};
+use tokio::sync::{mpsc, oneshot, watch};
+use tonic::Status;
+use tracing::{debug, info};
+use ulid::Ulid;
+
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataWriter, ShutdownError};
+use restate_metadata_providers::replicated::{KnownLeader, create_replicated_metadata_client};
+use restate_metadata_server_grpc::{MetadataServerConfiguration, grpc as protobuf};
+pub use restate_metadata_store::{
+    MetadataStoreClient, ReadError, ReadModifyWriteError, WriteError,
+};
 use restate_types::config::{
-    Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
-    MetadataServerOptions,
+    Configuration, MetadataClientKind, MetadataServerKind, MetadataServerOptions,
 };
 use restate_types::errors::{ConversionError, GenericError, MaybeRetryableError};
 use restate_types::health::HealthStatus;
 use restate_types::live::LiveLoadExt;
 use restate_types::live::{Live, LiveLoad};
 use restate_types::metadata::{Precondition, VersionedValue};
-use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
 };
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
-use restate_types::{GenerationalNodeId, PlainNodeId, Version, config};
-use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
-use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, watch};
-use tonic::Status;
-use tracing::{debug, info};
-use ulid::Ulid;
+use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+
+use crate::local::LocalMetadataServer;
+use crate::raft::RaftMetadataServer;
 
 pub type BoxedMetadataServer = Box<dyn MetadataServer>;
 
@@ -413,12 +411,12 @@ struct WriteRequest {
 
 impl WriteRequest {
     fn encode_to_vec(self) -> Result<Vec<u8>, StorageEncodeError> {
-        let request = grpc::WriteRequest::from(self);
+        let request = protobuf::WriteRequest::from(self);
         Ok(request.encode_to_vec())
     }
 
     fn decode_from_bytes(bytes: Bytes) -> Result<Self, StorageDecodeError> {
-        let result = grpc::WriteRequest::decode(bytes)
+        let result = protobuf::WriteRequest::decode(bytes)
             .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
         result
             .try_into()
@@ -497,44 +495,6 @@ enum JoinClusterError {
     UnknownNode(PlainNodeId),
     #[error("node '{0}' does not have the 'metadata-server' role")]
     InvalidRole(PlainNodeId),
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct KnownLeader {
-    node_id: PlainNodeId,
-    address: AdvertisedAddress,
-}
-
-impl KnownLeader {
-    fn add_to_status(&self, status: &mut tonic::Status) {
-        status.metadata_mut().insert(
-            KNOWN_LEADER_KEY,
-            serde_json::to_string(self)
-                .expect("KnownLeader to be serializable")
-                .parse()
-                .expect("to be valid metadata"),
-        );
-    }
-
-    fn from_status(status: &tonic::Status) -> Option<KnownLeader> {
-        if let Some(value) = status.metadata().get(KNOWN_LEADER_KEY) {
-            match value.to_str() {
-                Ok(value) => match serde_json::from_str(value) {
-                    Ok(known_leader) => Some(known_leader),
-                    Err(err) => {
-                        debug!("failed parsing known leader from metadata: {err}");
-                        None
-                    }
-                },
-                Err(err) => {
-                    debug!("failed parsing known leader from metadata: {err}");
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    }
 }
 
 type JoinClusterResponseSender = oneshot::Sender<Result<Version, JoinClusterError>>;
@@ -616,7 +576,7 @@ enum MetadataServerSummary {
 }
 
 #[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
-#[prost(target = "crate::grpc::RaftSummary")]
+#[prost(target = "restate_metadata_server_grpc::grpc::RaftSummary")]
 struct RaftSummary {
     term: u64,
     committed: u64,
@@ -626,7 +586,7 @@ struct RaftSummary {
 }
 
 #[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst)]
-#[prost(target = "crate::grpc::SnapshotSummary")]
+#[prost(target = "restate_metadata_server_grpc::grpc::SnapshotSummary")]
 struct SnapshotSummary {
     index: u64,
     // size in bytes
@@ -640,63 +600,6 @@ impl SnapshotSummary {
             index: snapshot.get_metadata().get_index(),
         }
     }
-}
-
-#[derive(Clone, Debug, prost_dto::IntoProst, prost_dto::FromProst, derive_more::Display)]
-#[prost(target = "crate::grpc::MetadataServerConfiguration")]
-#[display("{version}; [{}]", members.keys().format(", "))]
-pub struct MetadataServerConfiguration {
-    #[prost(required)]
-    version: Version,
-    members: HashMap<PlainNodeId, CreatedAtMillis>,
-}
-
-impl MetadataServerConfiguration {
-    pub fn contains(&self, node_id: PlainNodeId) -> bool {
-        self.members.contains_key(&node_id)
-    }
-
-    pub fn num_members(&self) -> usize {
-        self.members.len()
-    }
-
-    pub fn version(&self) -> Version {
-        self.version
-    }
-}
-
-impl Default for MetadataServerConfiguration {
-    fn default() -> Self {
-        MetadataServerConfiguration {
-            version: Version::INVALID,
-            members: HashMap::default(),
-        }
-    }
-}
-
-/// Creates a [`MetadataStoreClient`] for the configured metadata store.
-pub async fn create_client(
-    metadata_client_options: MetadataClientOptions,
-) -> anyhow::Result<MetadataStoreClient> {
-    let backoff_policy = Some(metadata_client_options.backoff_policy.clone());
-
-    let client = match metadata_client_options.kind.clone() {
-        config::MetadataClientKind::Replicated { addresses } => create_replicated_metadata_client(
-            addresses,
-            backoff_policy,
-            Arc::new(metadata_client_options),
-        ),
-        config::MetadataClientKind::Etcd { addresses } => {
-            let store = EtcdMetadataStore::new(addresses, &metadata_client_options).await?;
-            MetadataStoreClient::new(store, backoff_policy)
-        }
-        conf @ config::MetadataClientKind::ObjectStore { .. } => {
-            let store = create_object_store_based_meta_store(conf).await?;
-            MetadataStoreClient::new(store, backoff_policy)
-        }
-    };
-
-    Ok(client)
 }
 
 /// Ensures that the initial nodes configuration contains the current node and has the right
