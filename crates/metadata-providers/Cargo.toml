@@ -1,0 +1,67 @@
+[package]
+name = "restate-metadata-providers"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+etcd = ["etcd-client"]
+objstore = [
+  "restate-core",
+  "restate-object-store-util",
+  "object_store",
+  "ciborium",
+  "serde",
+  "url",
+  "rand"
+]
+replicated = [
+  "restate-metadata-server-grpc",
+  "restate-core",
+  "indexmap",
+  "parking_lot",
+  "rand",
+  "tonic",
+  "derive_more",
+  "serde",
+  "serde_json",
+]
+
+[dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+restate-metadata-store = { workspace = true, features = ["grpc-client"] }
+restate-types = { workspace = true }
+restate-metadata-server-grpc = { workspace = true, optional = true, features = ["grpc-client"] }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+# Deps for etcd
+etcd-client = { workspace = true, optional = true }
+
+# Deps for objstore
+restate-core = { workspace = true, optional = true }
+restate-object-store-util = { workspace = true, optional = true }
+
+ciborium = { workspace = true, optional = true }
+object_store = { workspace = true, optional = true, features = ["aws"] }
+rand = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+
+# Deps for replicated metadata client
+indexmap = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true, features = ["transport", "codegen", "prost"] }
+derive_more = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }

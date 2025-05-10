@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metadata_store::providers::objstore::version_repository::VersionRepositoryError::PreconditionFailed;
-use crate::metadata_store::providers::objstore::version_repository::{
-    TaggedValue, VersionRepository, VersionRepositoryError,
-};
-use crate::metadata_store::{Precondition, ReadError, VersionedValue, WriteError};
 use bytes::{BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use rand::random;
+use std::borrow::Cow;
+
+use restate_metadata_store::{ReadError, WriteError};
 use restate_types::Version;
 use restate_types::config::MetadataClientKind;
-use std::borrow::Cow;
+use restate_types::metadata::{Precondition, VersionedValue};
+
+use super::version_repository::VersionRepositoryError::PreconditionFailed;
+use super::version_repository::{TaggedValue, VersionRepository, VersionRepositoryError};
 
 pub(crate) struct OptimisticLockingMetadataStoreBuilder {
     pub(crate) version_repository: Box<dyn VersionRepository>,

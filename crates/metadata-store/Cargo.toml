@@ -1,0 +1,34 @@
+[package]
+name = "restate-metadata-store"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+test-util = ["restate-types/test-util"]
+grpc-client = ["tonic/transport", "prost"]
+grpc-server = ["tonic", "prost"]
+
+[dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+restate-types = { workspace = true }
+
+async-trait = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+humantime = { workspace = true }
+metrics = { workspace = true }
+prost = { workspace = true, optional = true }
+static_assertions = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true, optional = true, features = ["codegen", "prost", "gzip", "zstd"] }
+tracing = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

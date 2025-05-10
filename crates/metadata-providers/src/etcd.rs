@@ -16,17 +16,21 @@ use etcd_client::{
     TxnOp,
 };
 
+use restate_metadata_store::ProvisionedMetadataStore;
+use restate_metadata_store::{ReadError, WriteError};
+use restate_types::Version;
 use restate_types::config::MetadataClientOptions;
 use restate_types::errors::GenericError;
+use restate_types::metadata::{Precondition, VersionedValue};
+use restate_types::net::connect_opts::CommonClientConnectionOptions;
 
-use crate::metadata_store::{
-    Precondition, ProvisionedMetadataStore, ReadError, Version, VersionedValue, WriteError,
-};
-use crate::network::net_util::CommonClientConnectionOptions;
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+struct Error(#[from] EtcdError);
 
-impl From<EtcdError> for ReadError {
-    fn from(value: EtcdError) -> Self {
-        match value {
+impl From<Error> for ReadError {
+    fn from(value: Error) -> Self {
+        match value.0 {
             err @ EtcdError::IoError(_) => Self::retryable(err),
             err @ EtcdError::TransportError(_) => Self::retryable(err),
             any => Self::terminal(any),
@@ -34,9 +38,9 @@ impl From<EtcdError> for ReadError {
     }
 }
 
-impl From<EtcdError> for WriteError {
-    fn from(value: EtcdError) -> Self {
-        match value {
+impl From<Error> for WriteError {
+    fn from(value: Error) -> Self {
+        match value.0 {
             err @ EtcdError::IoError(_) => Self::retryable(err),
             err @ EtcdError::TransportError(_) => Self::retryable(err),
             any => Self::terminal(any),
@@ -116,7 +120,7 @@ impl EtcdMetadataStore {
             TxnOp::delete(version_key, None),
         ]);
 
-        let response = client.txn(txn).await?;
+        let response = client.txn(txn).await.map_err(Error)?;
 
         Ok(response.succeeded())
     }
@@ -134,7 +138,7 @@ impl EtcdMetadataStore {
             TxnOp::put(version_key, value.version.to_vec(), None),
         ]);
 
-        client.txn(txn).await?;
+        client.txn(txn).await.map_err(Error)?;
 
         Ok(())
     }
@@ -147,7 +151,7 @@ impl EtcdMetadataStore {
             TxnOp::delete(version_key, None),
         ]);
 
-        client.txn(txn).await?;
+        client.txn(txn).await.map_err(Error)?;
 
         Ok(())
     }
@@ -181,7 +185,7 @@ impl EtcdMetadataStore {
             TxnOp::put(version_key, value.version.to_vec(), None),
         ]);
 
-        let response = client.txn(txn).await?;
+        let response = client.txn(txn).await.map_err(Error)?;
 
         Ok(response.succeeded())
     }
@@ -205,7 +209,10 @@ impl ProvisionedMetadataStore for EtcdMetadataStore {
             .with_range(version_key.clone())
             .with_prefix();
 
-        let mut response = client.get(key.clone(), Some(options)).await?;
+        let mut response = client
+            .get(key.clone(), Some(options))
+            .await
+            .map_err(Error)?;
 
         let mut version = None;
         let mut value = None;
@@ -237,7 +244,7 @@ impl ProvisionedMetadataStore for EtcdMetadataStore {
         let key = key.into_bytes();
         let version_key = Self::version_key(&key);
 
-        let mut response = client.get(version_key, None).await?;
+        let mut response = client.get(version_key, None).await.map_err(Error)?;
 
         // return first value because this suppose to be an exact match
         // not a scan

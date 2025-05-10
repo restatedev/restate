@@ -13,10 +13,10 @@ use std::sync::Arc;
 use anyhow::Context;
 use tracing::{debug, instrument, warn};
 
-use restate_core::metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
+use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_types::GenerationalNodeId;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
