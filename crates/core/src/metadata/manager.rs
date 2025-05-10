@@ -16,6 +16,7 @@ use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tracing::{debug, info, trace};
 
+use restate_metadata_store::MetadataStoreClient;
 use restate_types::live::Pinned;
 use restate_types::logs::metadata::Logs;
 use restate_types::net::RpcRequest;
@@ -31,7 +32,6 @@ use super::MetadataBuilder;
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
 use crate::cancellation_watcher;
 use crate::metadata::update_task::GlobalMetadataUpdateTask;
-use crate::metadata_store::MetadataStoreClient;
 use crate::network::{
     MessageRouterBuilder, Oneshot, Reciprocal, ServiceMessage, ServiceReceiver, Verdict,
 };

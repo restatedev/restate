@@ -21,6 +21,7 @@ use tokio::task::JoinSet;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, error, trace};
 
+use restate_metadata_store::{MetadataStoreClient, ReadError, retry_on_retryable_error};
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::metadata::GlobalMetadata;
@@ -28,7 +29,6 @@ use restate_types::net::metadata::{Extraction, GetMetadataRequest};
 use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::{GenerationalNodeId, Version};
 
-use crate::metadata_store::{MetadataStoreClient, ReadError, retry_on_retryable_error};
 use crate::network::UnboundedConnectionRef;
 use crate::{ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher};
 
