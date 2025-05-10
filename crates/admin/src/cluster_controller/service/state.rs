@@ -47,25 +47,30 @@ impl<T> ClusterControllerState<T>
 where
     T: TransportConnect,
 {
-    pub fn update(&mut self, service: &Service<T>) -> anyhow::Result<()> {
+    pub fn update(
+        &mut self,
+        service: &Service<T>,
+        cs: &restate_core::cluster_state::ClusterState,
+    ) -> anyhow::Result<()> {
         let maybe_leader = {
             let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
-            nodes_config
+            let admin_nodes: Vec<_> = nodes_config
                 .get_admin_nodes()
-                .filter(|node| {
-                    service
-                        .observed_cluster_state
-                        .is_node_alive(node.current_generation)
-                })
-                .map(|node| node.current_generation)
+                .map(|c| c.current_generation)
                 .sorted()
+                .collect();
+            let states = cs.map_from_ids(admin_nodes.iter().map(Into::into));
+
+            admin_nodes
+                .iter()
+                .zip(states)
+                .filter_map(|(node_id, state)| state.is_alive().then_some(*node_id))
                 .next()
         };
 
         // A Cluster Controller is a leader if the node holds the smallest PlainNodeID
-        // If no other node was found to take leadership, we assume leadership
         let is_leader = match maybe_leader {
-            None => true,
+            None => false,
             Some(leader) => leader == my_node_id(),
         };
 

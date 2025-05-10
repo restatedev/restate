@@ -729,7 +729,7 @@ mod tests {
         for _ in 0..num_scheduling_rounds {
             let cluster_state = random_cluster_state(&node_ids, num_partitions);
 
-            observed_cluster_state.update(&cluster_state);
+            observed_cluster_state.update_partitions(&cluster_state);
             scheduler
                 .on_observed_cluster_state(
                     &observed_cluster_state,
@@ -928,7 +928,7 @@ mod tests {
         control_messages: Vec<(GenerationalNodeId, Incoming<Unary<ControlProcessors>>)>,
     ) -> ObservedClusterState {
         let mut observed_cluster_state = ObservedClusterState::default();
-        observed_cluster_state.update(cluster_state);
+        observed_cluster_state.update_partitions(cluster_state);
 
         // apply commands
         for (target_node, control_processors) in control_messages {

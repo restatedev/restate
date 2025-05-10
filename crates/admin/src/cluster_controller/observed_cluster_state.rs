@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
+use restate_types::cluster::cluster_state::{ClusterState, RunMode};
 use restate_types::identifiers::PartitionId;
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
@@ -37,16 +37,22 @@ impl ObservedClusterState {
         }
     }
 
-    pub fn update(&mut self, cluster_state: &ClusterState) {
-        // In case nodes were removed and no longer exists in the cluster_state;
-        // we make sure they are completely removed from both dead and alive sets.
-        //
+    pub fn update_liveness(&mut self, cs: &restate_core::cluster_state::ClusterState) {
         // todo: this need to be optimized. most of the time this will retain
         // everything only burning cpu cycles.
-        self.alive_nodes
-            .retain(|id, _| cluster_state.nodes.contains_key(id));
-        self.dead_nodes
-            .retain(|id| cluster_state.nodes.contains_key(id));
+        self.alive_nodes.clear();
+        self.dead_nodes.clear();
+
+        for (node_id, state) in cs.all() {
+            if state.is_alive() {
+                self.alive_nodes.insert(node_id.as_plain(), node_id);
+            } else {
+                self.dead_nodes.insert(node_id.as_plain());
+            }
+        }
+    }
+
+    pub fn update_partitions(&mut self, cluster_state: &ClusterState) {
         self.nodes_to_partitions
             .retain(|id, _| cluster_state.nodes.contains_key(id));
         for partition_state in self.partitions.values_mut() {
@@ -54,29 +60,6 @@ impl ObservedClusterState {
                 .partition_processors
                 .retain(|id, _| cluster_state.nodes.contains_key(id));
         }
-
-        self.update_nodes(cluster_state);
-        self.update_partitions(cluster_state);
-    }
-
-    /// Update observed cluster state with given [`ClusterState`]
-    fn update_nodes(&mut self, cluster_state: &ClusterState) {
-        for (node_id, node_state) in &cluster_state.nodes {
-            match node_state {
-                NodeState::Alive(alive_node) => {
-                    self.dead_nodes.remove(node_id);
-                    self.alive_nodes
-                        .insert(*node_id, alive_node.generational_node_id);
-                }
-                NodeState::Dead(_) => {
-                    self.alive_nodes.remove(node_id);
-                    self.dead_nodes.insert(*node_id);
-                }
-            }
-        }
-    }
-
-    fn update_partitions(&mut self, cluster_state: &ClusterState) {
         // remove dead nodes
         for dead_node in cluster_state.dead_nodes() {
             if let Some(partitions) = self.nodes_to_partitions.remove(dead_node) {
@@ -289,7 +272,7 @@ mod tests {
             .collect(),
         };
 
-        observed_cluster_state.update(&cluster_state);
+        observed_cluster_state.update_partitions(&cluster_state);
 
         assert_that!(
             observed_cluster_state
@@ -353,7 +336,7 @@ mod tests {
             .collect(),
         };
 
-        observed_cluster_state.update(&cluster_state);
+        observed_cluster_state.update_partitions(&cluster_state);
 
         assert_that!(
             observed_cluster_state

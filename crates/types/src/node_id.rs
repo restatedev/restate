@@ -64,6 +64,18 @@ impl From<crate::protobuf::common::GenerationalNodeId> for GenerationalNodeId {
     }
 }
 
+impl From<&GenerationalNodeId> for NodeId {
+    fn from(value: &GenerationalNodeId) -> Self {
+        NodeId::Generational(*value)
+    }
+}
+
+impl From<&PlainNodeId> for NodeId {
+    fn from(value: &PlainNodeId) -> Self {
+        NodeId::Plain(*value)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("invalid plain node id: {0}")]
 pub struct MalformedPlainNodeId(String);
