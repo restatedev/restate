@@ -62,4 +62,29 @@ pub trait JournalTable: ReadOnlyJournalTable {
         invocation_id: InvocationId,
         length: EntryIndex,
     ) -> impl Future<Output = Result<()>> + Send;
+
+    /// This operation rewrites the journal, truncating from `truncation_starting_point`, while retaining the given `entries_to_retain_after_trim_point`.
+    /// It also cleanups the internal notification indexes by looking at the ids in `notification_ids_to_cleanup`.
+    ///
+    /// ## Arguments
+    ///
+    /// * `truncation_starting_point`: Starting point of the truncation, included. Everything before will be left untouched.
+    /// * `entries_to_retain_after_trim_point`: Entries to retain. Invariant: Each entry index in this slice MUST be >= truncation_starting_point
+    /// * `notification_ids_to_cleanup`: Hint of notification ids to cleanup. This should include notification ids of notifications trimmed after the truncation point.
+    ///   This is **required** to cleanup the internal notification indexes.
+    /// * `journal_length`: Total journal length when this operation is fired up.
+    ///
+    /// ## Example
+    ///
+    /// 1. Starting journal: `[0, 1, 2, 3, 4, 5]`
+    /// 2. Rewrite journal with `truncation_starting_point = 2` and `notifications_to_retain = [3, 4]`
+    /// 3. Final journal: `[0, 1, 3, 4]`
+    fn rewrite_journal(
+        &mut self,
+        invocation_id: InvocationId,
+        truncation_starting_point: EntryIndex,
+        entries_to_retain_after_trim_point: &[EntryIndex],
+        notification_ids_to_cleanup: &[NotificationId],
+        journal_length: EntryIndex,
+    ) -> impl Future<Output = Result<()>> + Send;
 }

@@ -25,7 +25,7 @@ async fn fence_old_calls_and_completions() {
         .modify_invocation_status(invocation_id, |is| {
             let im = is.get_invocation_metadata_mut().unwrap();
             im.current_invocation_epoch += 1;
-            im.completion_range_epoch_map.add_trim_point(2, 1);
+            im.completion_range_epoch_map.add_truncation_point(2, 1);
         })
         .await;
 
@@ -186,7 +186,7 @@ async fn fence_old_sleep_and_completions() {
         .modify_invocation_status(invocation_id, |is| {
             let im = is.get_invocation_metadata_mut().unwrap();
             im.current_invocation_epoch += 1;
-            im.completion_range_epoch_map.add_trim_point(1, 1);
+            im.completion_range_epoch_map.add_truncation_point(1, 1);
         })
         .await;
 

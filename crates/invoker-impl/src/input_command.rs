@@ -33,7 +33,7 @@ pub(crate) struct InvokeCommand {
 pub(crate) enum InputCommand<SR> {
     Invoke(InvokeCommand),
     // TODO remove this when we remove journal v1
-    // Journal V1 doesn't support epochs nor trim and restart
+    // Journal V1 doesn't support epochs nor reset invocation
     Completion {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,

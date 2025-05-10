@@ -832,6 +832,40 @@ impl SpanRelation {
     }
 }
 
+/// Flavor of the [`ResetInvocationRequest`].
+#[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TruncateFrom {
+    EntryIndex {
+        /// Entry index **inclusive**.
+        ///
+        /// Note: the index MUST correspond to a [`journal_v2::Command`] or a [`journal_v2::Signal`],
+        /// otherwise the command will be ignored.
+        entry_index: EntryIndex,
+    },
+}
+
+/// Reset an invocation.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ResetInvocationRequest {
+    pub invocation_id: InvocationId,
+    pub truncate_from: TruncateFrom,
+}
+
+impl ResetInvocationRequest {
+    pub const fn by_entry_index(invocation_id: InvocationId, entry_index: EntryIndex) -> Self {
+        Self {
+            invocation_id,
+            truncate_from: TruncateFrom::EntryIndex { entry_index },
+        }
+    }
+}
+
+impl WithInvocationId for ResetInvocationRequest {
+    fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
+    }
+}
+
 /// Message to terminate an invocation.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationTermination {
