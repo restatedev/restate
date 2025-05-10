@@ -27,7 +27,7 @@ use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNu
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
-    InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext,
+    InvocationTarget, RestateVersion, ServiceInvocation, ServiceInvocationSpanContext,
 };
 use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
 use restate_types::net::codec::WireEncode;
@@ -116,6 +116,7 @@ pub fn generate_envelope() -> Arc<Envelope> {
         submit_notification_sink: Some(
             restate_types::invocation::SubmitNotificationSink::Ingress { request_id },
         ),
+        restate_version: RestateVersion::current(),
     });
 
     Envelope::new(header, command).into()

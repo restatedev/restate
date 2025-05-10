@@ -181,6 +181,7 @@ rocksdb = { version = "0.40.0-restate.1", package = "rust-rocksdb", features = [
 rstest = "0.24.0"
 rustls = { version = "0.23.11", default-features = false, features = ["ring"] }
 schemars = { version = "0.8", features = ["bytes", "enumset"] }
+semver = {  version = "1.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_with = "3.8"

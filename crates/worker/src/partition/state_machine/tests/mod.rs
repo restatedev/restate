@@ -880,10 +880,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
 
     let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
-            invocation_id,
-            invocation_target: invocation_target.clone(),
             argument: Default::default(),
-            source: Source::Ingress(request_id_1),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),
@@ -893,6 +890,11 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
             completion_retention_duration: None,
             idempotency_key: None,
             submit_notification_sink: None,
+            ..ServiceInvocation::initialize(
+                invocation_id,
+                invocation_target.clone(),
+                Source::Ingress(request_id_1),
+            )
         }))
         .await;
     assert_that!(
