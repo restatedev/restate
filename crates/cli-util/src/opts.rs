@@ -14,7 +14,7 @@ use clap::{Args, ValueEnum};
 use clap_verbosity_flag::{LogLevel, VerbosityFilter};
 use cling::Collect;
 
-use restate_core::network::net_util::CommonClientConnectionOptions;
+use restate_types::net::connect_opts::CommonClientConnectionOptions;
 
 const DEFAULT_CONNECT_TIMEOUT: u64 = 3_000;
 const DEFAULT_REQUEST_TIMEOUT: u64 = 13_000;

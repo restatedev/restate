@@ -16,10 +16,10 @@ use itertools::Itertools;
 use rand::seq::IteratorRandom;
 use tracing::{Level, debug, enabled, info, instrument, trace, warn};
 
-use restate_core::metadata_store::{ReadError, ReadWriteError, WriteError};
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_futures_util::overdue::OverdueLoggingExt;
+use restate_metadata_store::{ReadError, ReadWriteError, WriteError};
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::identifiers::PartitionId;
 use restate_types::locality::LocationScope;

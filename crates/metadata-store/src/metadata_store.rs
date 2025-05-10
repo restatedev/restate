@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod providers;
-mod test_util;
-
 use std::future::Future;
 use std::sync::Arc;
 
@@ -31,14 +28,14 @@ use restate_types::retries::RetryPolicy;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, StorageEncodeError};
 use restate_types::{Version, Versioned};
 
-#[cfg(any(test, feature = "test-util"))]
-use crate::metadata_store::test_util::InMemoryMetadataStore;
 use crate::metric_definitions::{
     METADATA_CLIENT_DELETE_DURATION, METADATA_CLIENT_DELETE_TOTAL, METADATA_CLIENT_GET_DURATION,
     METADATA_CLIENT_GET_TOTAL, METADATA_CLIENT_GET_VERSION_DURATION,
     METADATA_CLIENT_GET_VERSION_TOTAL, METADATA_CLIENT_PUT_DURATION, METADATA_CLIENT_PUT_TOTAL,
-    STATUS_COMPLETED, STATUS_FAILED,
+    STATUS_COMPLETED, STATUS_FAILED, describe_metrics,
 };
+#[cfg(feature = "test-util")]
+use crate::test_util::InMemoryMetadataStore;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
@@ -262,6 +259,7 @@ impl MetadataStoreClient {
     where
         S: MetadataStore + Send + Sync + 'static,
     {
+        describe_metrics();
         Self {
             inner: Arc::new(metadata_store),
             backoff_policy,
@@ -272,7 +270,7 @@ impl MetadataStoreClient {
         Arc::clone(&self.inner)
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(feature = "test-util")]
     pub fn new_in_memory() -> Self {
         MetadataStoreClient::new(
             InMemoryMetadataStore::default(),

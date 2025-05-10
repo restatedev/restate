@@ -23,9 +23,9 @@ use tracing::{Instrument, Level, debug, enabled, error, info, trace_span};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BifrostError};
-use restate_core::metadata_store::WriteError;
 use restate_core::{Metadata, MetadataKind, MetadataWriter, ShutdownError, TaskCenterFutureExt};
 use restate_futures_util::overdue::OverdueLoggingExt;
+use restate_metadata_store::WriteError;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;

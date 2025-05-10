@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::cluster_marker::mark_cluster_as_provisioned;
-use restate_core::metadata_store::{MetadataStoreClient, ReadWriteError};
 use restate_core::{MetadataWriter, ShutdownError, cancellation_token};
+use restate_metadata_store::{MetadataStoreClient, ReadWriteError};
 use restate_types::PlainNodeId;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::MaybeRetryableError;

@@ -26,6 +26,7 @@ use enum_map::EnumMap;
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::instrument;
 
+use restate_metadata_store::{MetadataStoreClient, ReadError};
 use restate_types::live::{Live, Pinned};
 use restate_types::logs::metadata::Logs;
 use restate_types::net::metadata::{self, MetadataContainer};
@@ -34,7 +35,6 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
 use restate_types::{GenerationalNodeId, Version, Versioned};
 
-use crate::metadata_store::{MetadataStoreClient, ReadError};
 use crate::network::{PeerAddress, UnboundedConnectionRef};
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 

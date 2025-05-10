@@ -19,15 +19,16 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_stream::StreamExt;
 use tracing::info;
 
-use super::Loglet;
-use crate::loglet::{AppendError, FindTailOptions};
-use crate::loglet_wrapper::LogletWrapper;
-use restate_core::metadata_store::retry_on_retryable_error;
 use restate_core::{TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind};
+use restate_metadata_store::retry_on_retryable_error;
 use restate_test_util::let_assert;
 use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber, TailState};
 use restate_types::retries::RetryPolicy;
+
+use super::Loglet;
+use crate::loglet::{AppendError, FindTailOptions};
+use crate::loglet_wrapper::LogletWrapper;
 
 async fn wait_for_trim(loglet: &LogletWrapper, required_trim_point: Lsn) -> anyhow::Result<()> {
     for _ in 0..3 {

@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::create_client;
-use crate::raft::RaftMetadataServer;
-use crate::tests::Value;
+use std::collections::HashMap;
+
 use bytestring::ByteString;
 use futures::TryFutureExt;
 use googletest::IntoTestResult;
 use rand::RngCore;
 use rand::distr::{Alphanumeric, SampleString};
-use restate_core::metadata_store::serialize_value;
+
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataBuilder, TaskCenter, TaskKind, cancellation_token};
+use restate_metadata_providers::create_client;
+use restate_metadata_store::serialize_value;
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
     CommonOptions, Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
@@ -35,7 +36,9 @@ use restate_types::nodes_config::{
     Role,
 };
 use restate_types::{PlainNodeId, Version};
-use std::collections::HashMap;
+
+use crate::raft::RaftMetadataServer;
+use crate::tests::Value;
 
 #[test_log::test(restate_core::test)]
 async fn migration_local_to_replicated() -> googletest::Result<()> {
