@@ -261,6 +261,7 @@ where
         }
 
         let address = match deployment_metadata.ty {
+            DeploymentType::Unknown => unreachable!("unknown deployment type"),
             DeploymentType::Lambda {
                 arn,
                 assume_role_arn,

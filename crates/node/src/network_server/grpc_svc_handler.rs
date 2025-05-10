@@ -146,6 +146,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             .map_err(|err: anyhow::Error| Status::invalid_argument(err.to_string()))?;
         let mut encoded = BytesMut::new();
         match kind {
+            MetadataKind::Unknown => return Err(Status::invalid_argument("unknown metadata kind")),
             MetadataKind::NodesConfiguration => {
                 StorageCodec::encode(metadata.nodes_config_ref().as_ref(), &mut encoded)
                     .expect("We can always serialize");

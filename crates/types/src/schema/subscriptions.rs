@@ -11,6 +11,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use restate_encoding::BilrostAs;
+use restate_encoding::NetSerde;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::warn;
@@ -21,15 +23,24 @@ use crate::errors::GenericError;
 use crate::identifiers::SubscriptionId;
 use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, Default, BilrostAs, NetSerde)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[bilrost_as(dto::Source)]
 pub enum Source {
-    Kafka { cluster: String, topic: String },
+    #[default]
+    Unknown,
+    Kafka {
+        cluster: String,
+        topic: String,
+    },
 }
 
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Source::Unknown => {
+                write!(f, "unknown://")
+            }
             Source::Kafka { cluster, topic, .. } => {
                 write!(f, "kafka://{cluster}/{topic}")
             }
@@ -44,17 +55,20 @@ impl PartialEq<&str> for Source {
 }
 
 /// Specialized version of [super::service::ServiceType]
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Enumeration, NetSerde)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EventReceiverServiceType {
-    VirtualObject,
-    Workflow,
-    Service,
+    Service = 0,
+    VirtualObject = 1,
+    Workflow = 2,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, Default, BilrostAs, NetSerde)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[bilrost_as(dto::Sink)]
 pub enum Sink {
+    #[default]
+    Unknown,
     // Could not use the Rust built-in deprecated feature because some macros will fail with it and won't apply the #[allow(deprecated)] :(
     #[serde(rename = "Service")]
     DeprecatedService {
@@ -67,7 +81,7 @@ pub enum Sink {
     },
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, NetSerde)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EventInvocationTargetTemplate {
     Service {
@@ -89,6 +103,9 @@ pub enum EventInvocationTargetTemplate {
 impl fmt::Display for Sink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Sink::Unknown => {
+                write!(f, "unknown://")
+            }
             Sink::DeprecatedService { name, handler, .. } => {
                 write!(f, "service://{name}/{handler}")
             }
@@ -116,12 +133,16 @@ impl PartialEq<&str> for Sink {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message, NetSerde)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Subscription {
+    #[bilrost(1)]
     id: SubscriptionId,
+    #[bilrost(2)]
     source: Source,
+    #[bilrost(3)]
     sink: Sink,
+    #[bilrost(4)]
     metadata: HashMap<String, String>,
 }
 
@@ -220,7 +241,13 @@ impl SubscriptionValidator for IngressOptions {
 
     fn validate(&self, mut subscription: Subscription) -> Result<Subscription, Self::Error> {
         // Retrieve the cluster option and merge them with subscription metadata
-        let Source::Kafka { cluster, .. } = subscription.source();
+        let Source::Kafka { cluster, .. } = subscription.source() else {
+            return Err(ValidationError {
+                name: "source",
+                reason: "unknown subscription source",
+            });
+        };
+
         let cluster_options = &self.get_kafka_cluster(cluster).ok_or(ValidationError {
             name: "source",
             reason: "specified cluster in the source URI does not exist. Make sure it is defined in the KafkaOptions",
@@ -264,6 +291,187 @@ impl SubscriptionValidator for IngressOptions {
         }
 
         Ok(subscription)
+    }
+}
+
+mod dto {
+    use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
+
+    #[derive(bilrost::Message)]
+    struct KafkaSource {
+        cluster: String,
+        topic: String,
+    }
+
+    #[derive(bilrost::Message)]
+    pub(super) struct Source {
+        #[bilrost(1)]
+        kafka: Option<KafkaSource>,
+    }
+
+    impl From<&super::Source> for Source {
+        fn from(value: &super::Source) -> Self {
+            match value {
+                super::Source::Unknown => Self { kafka: None },
+                super::Source::Kafka { cluster, topic } => Self {
+                    kafka: Some(KafkaSource {
+                        cluster: cluster.clone(),
+                        topic: topic.clone(),
+                    }),
+                },
+            }
+        }
+    }
+
+    impl From<Source> for super::Source {
+        fn from(value: Source) -> Self {
+            match value.kafka {
+                None => Self::Unknown,
+                Some(KafkaSource { cluster, topic }) => Self::Kafka { cluster, topic },
+            }
+        }
+    }
+
+    #[derive(PartialEq, Eq, bilrost::Enumeration)]
+    enum EventReceiverServiceType {
+        Service = 0,
+        VirtualObject = 1,
+        SharedVirtualObject = 2,
+        Workflow = 3,
+        SharedWorkflow = 4,
+    }
+
+    #[derive(bilrost::Message)]
+    struct DeprecatedService {
+        name: String,
+        handler: String,
+        ty: super::EventReceiverServiceType,
+    }
+
+    #[derive(bilrost::Message)]
+    struct Invocation {
+        ty: EventReceiverServiceType,
+        name: String,
+        handler: String,
+    }
+
+    impl From<super::EventInvocationTargetTemplate> for Invocation {
+        fn from(value: super::EventInvocationTargetTemplate) -> Self {
+            use super::EventInvocationTargetTemplate as Template;
+            match value {
+                Template::Service { name, handler } => Invocation {
+                    ty: EventReceiverServiceType::Service,
+                    name,
+                    handler,
+                },
+                Template::VirtualObject {
+                    name,
+                    handler,
+                    handler_ty,
+                } => Invocation {
+                    ty: match handler_ty {
+                        VirtualObjectHandlerType::Shared => {
+                            EventReceiverServiceType::SharedVirtualObject
+                        }
+                        VirtualObjectHandlerType::Exclusive => {
+                            EventReceiverServiceType::VirtualObject
+                        }
+                    },
+                    name,
+                    handler,
+                },
+                Template::Workflow {
+                    name,
+                    handler,
+                    handler_ty,
+                } => Invocation {
+                    ty: match handler_ty {
+                        WorkflowHandlerType::Shared => EventReceiverServiceType::SharedWorkflow,
+                        WorkflowHandlerType::Workflow => EventReceiverServiceType::Workflow,
+                    },
+                    name,
+                    handler,
+                },
+            }
+        }
+    }
+
+    impl From<Invocation> for super::EventInvocationTargetTemplate {
+        fn from(value: Invocation) -> Self {
+            let Invocation { ty, name, handler } = value;
+
+            match ty {
+                EventReceiverServiceType::Service => Self::Service { name, handler },
+                EventReceiverServiceType::VirtualObject => Self::VirtualObject {
+                    name,
+                    handler,
+                    handler_ty: VirtualObjectHandlerType::Exclusive,
+                },
+                EventReceiverServiceType::SharedVirtualObject => Self::VirtualObject {
+                    name,
+                    handler,
+                    handler_ty: VirtualObjectHandlerType::Shared,
+                },
+                EventReceiverServiceType::Workflow => Self::Workflow {
+                    name,
+                    handler,
+                    handler_ty: WorkflowHandlerType::Workflow,
+                },
+                EventReceiverServiceType::SharedWorkflow => Self::Workflow {
+                    name,
+                    handler,
+                    handler_ty: WorkflowHandlerType::Shared,
+                },
+            }
+        }
+    }
+
+    #[derive(bilrost::Oneof)]
+    enum SinkInner {
+        Unknown,
+        #[bilrost(1)]
+        DeprecatedService(DeprecatedService),
+        #[bilrost(2)]
+        Invocation(Invocation),
+    }
+
+    #[derive(bilrost::Message)]
+    pub(super) struct Sink(#[bilrost(oneof(1, 2))] SinkInner);
+
+    impl From<&super::Sink> for Sink {
+        fn from(value: &super::Sink) -> Self {
+            let inner = match value {
+                super::Sink::Unknown => SinkInner::Unknown,
+                super::Sink::DeprecatedService { name, handler, ty } => {
+                    SinkInner::DeprecatedService(DeprecatedService {
+                        name: name.clone(),
+                        handler: handler.clone(),
+                        ty: ty.clone(),
+                    })
+                }
+                super::Sink::Invocation {
+                    event_invocation_target_template,
+                } => SinkInner::Invocation(event_invocation_target_template.clone().into()),
+            };
+
+            Self(inner)
+        }
+    }
+
+    impl From<Sink> for super::Sink {
+        fn from(value: Sink) -> Self {
+            match value.0 {
+                SinkInner::Unknown => Self::Unknown,
+                SinkInner::DeprecatedService(deprecated) => Self::DeprecatedService {
+                    name: deprecated.name,
+                    handler: deprecated.handler,
+                    ty: deprecated.ty,
+                },
+                SinkInner::Invocation(invocation) => Self::Invocation {
+                    event_invocation_target_template: invocation.into(),
+                },
+            }
+        }
     }
 }
 

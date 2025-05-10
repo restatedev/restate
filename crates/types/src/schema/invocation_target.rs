@@ -14,6 +14,7 @@ use crate::invocation::InvocationTargetType;
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
+use restate_encoding::{BilrostAs, BilrostDisplayFromStr, NetSerde};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::Duration;
@@ -22,15 +23,21 @@ use std::{cmp, fmt};
 pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 pub const DEFAULT_WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct InvocationTargetMetadata {
+    #[bilrost(1)]
     pub public: bool,
     /// Retention timer to be used for the completion. See [`InvocationTargetMetadata::compute_retention`] for more details.
+    #[bilrost(2)]
     pub completion_retention: Option<Duration>,
     /// Retention timer that should be used only if an idempotency key is set. See [`InvocationTargetMetadata::compute_retention`] for more details.
+    #[bilrost(3)]
     pub idempotency_retention: Duration,
+    #[bilrost(4)]
     pub target_ty: InvocationTargetType,
+    #[bilrost(5)]
     pub input_rules: InputRules,
+    #[bilrost(6)]
     pub output_rules: OutputRules,
 }
 
@@ -89,9 +96,10 @@ pub enum InputValidationError {
     ContentTypeNotMatching(String, InputContentType),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct InputRules {
     /// Input validation will try each of these rules. Validation passes if at least one rule matches.
+    #[bilrost(1)]
     pub input_validation_rules: Vec<InputValidationRule>,
 }
 
@@ -173,9 +181,11 @@ impl fmt::Display for InputRules {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, BilrostAs, NetSerde)]
+#[bilrost_as(dto::InputValidationRule)]
 pub enum InputValidationRule {
     // Input and content-type must be empty
+    #[default]
     NoBodyAndContentType,
 
     // Validates only the content-type, not the content
@@ -190,6 +200,7 @@ pub enum InputValidationRule {
         content_type: InputContentType,
         // Right now we don't use this schema for anything except printing,
         // so no need to use a more specialized type (we validate the schema is valid inside the schema registry updater)
+        #[net_serde(skip)]
         schema: Option<serde_json::Value>,
     },
 }
@@ -248,7 +259,8 @@ impl InputValidationRule {
 }
 
 /// Describes a content type in the same format of the [`Accept` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, BilrostAs, NetSerde)]
+#[bilrost_as(BilrostDisplayFromStr)]
 pub enum InputContentType {
     /// `*/*`
     #[default]
@@ -351,10 +363,12 @@ impl FromStr for InputContentType {
 
 // --- Output rules
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, BilrostAs, NetSerde)]
+#[bilrost_as(dto::OutputRules)]
 pub struct OutputRules {
     pub content_type_rule: OutputContentTypeRule,
     // Json schema, if present
+    #[net_serde(skip)]
     pub json_schema: Option<serde_json::Value>,
 }
 
@@ -387,11 +401,13 @@ impl fmt::Display for OutputRules {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BilrostAs, NetSerde)]
+#[bilrost_as(dto::OutputContentTypeRule)]
 pub enum OutputContentTypeRule {
     None,
     Set {
         #[serde(with = "serde_with::As::<restate_serde_util::HeaderValueSerde>")]
+        #[net_serde(skip)]
         content_type: http::HeaderValue,
         // If true, sets the content-type even if the output is empty.
         // Otherwise, don't set the content-type.
@@ -502,6 +518,178 @@ pub mod test_util {
     }
 }
 
+mod dto {
+    use std::str::FromStr;
+
+    use bytes::Bytes;
+    use http::HeaderValue;
+    use serde_json::Value;
+
+    use super::InputContentType;
+
+    #[derive(bilrost::Message)]
+    struct OutputContentTypeRuleInner {
+        #[bilrost(1)]
+        content_type: Bytes,
+        #[bilrost(2)]
+        set_content_type_if_empty: bool,
+        #[bilrost(3)]
+        #[deprecated]
+        has_json_schema: bool,
+    }
+
+    #[derive(bilrost::Message)]
+    pub(super) struct OutputContentTypeRule {
+        #[bilrost(1)]
+        inner: Option<OutputContentTypeRuleInner>,
+    }
+
+    impl From<&super::OutputContentTypeRule> for OutputContentTypeRule {
+        fn from(value: &super::OutputContentTypeRule) -> Self {
+            #[allow(deprecated)]
+            let inner = match value {
+                super::OutputContentTypeRule::None => None,
+                super::OutputContentTypeRule::Set {
+                    content_type,
+                    set_content_type_if_empty,
+                    has_json_schema,
+                } => Some(OutputContentTypeRuleInner {
+                    content_type: Bytes::copy_from_slice(content_type.as_bytes()),
+                    set_content_type_if_empty: *set_content_type_if_empty,
+                    has_json_schema: *has_json_schema,
+                }),
+            };
+
+            Self { inner }
+        }
+    }
+
+    impl From<OutputContentTypeRule> for super::OutputContentTypeRule {
+        fn from(value: OutputContentTypeRule) -> Self {
+            #[allow(deprecated)]
+            match value.inner {
+                None => Self::None,
+                Some(inner) => Self::Set {
+                    content_type: HeaderValue::from_bytes(&inner.content_type)
+                        .expect("valid header value"),
+                    set_content_type_if_empty: inner.set_content_type_if_empty,
+                    has_json_schema: inner.has_json_schema,
+                },
+            }
+        }
+    }
+
+    #[derive(bilrost::Message)]
+    pub(super) struct OutputRules {
+        content_type_rule: super::OutputContentTypeRule,
+        json_schema: Option<String>,
+    }
+
+    impl From<&super::OutputRules> for OutputRules {
+        fn from(value: &super::OutputRules) -> Self {
+            let super::OutputRules {
+                content_type_rule,
+                json_schema,
+            } = value;
+
+            Self {
+                content_type_rule: content_type_rule.clone(),
+                json_schema: json_schema.as_ref().map(|schema| schema.to_string()),
+            }
+        }
+    }
+
+    impl From<OutputRules> for super::OutputRules {
+        fn from(value: OutputRules) -> Self {
+            let OutputRules {
+                content_type_rule,
+                json_schema,
+            } = value;
+
+            Self {
+                content_type_rule,
+                json_schema: json_schema
+                    .map(|str| serde_json::Value::from_str(&str))
+                    .transpose()
+                    .expect("valid json"),
+            }
+        }
+    }
+
+    #[derive(bilrost::Message)]
+    struct ValidationRuleContentType {
+        content_type: InputContentType,
+    }
+
+    #[derive(bilrost::Message)]
+    struct ValidationRuleJsonSchema {
+        // Can use wildcards
+        content_type: InputContentType,
+        // Right now we don't use this schema for anything except printing,
+        // so no need to use a more specialized type (we validate the schema is valid inside the schema registry updater)
+        schema: Option<String>,
+    }
+
+    #[derive(Default, bilrost::Oneof)]
+    enum InputValidationRuleInner {
+        #[default]
+        NoBodyAndContentType,
+        #[bilrost(1)]
+        ContentType(ValidationRuleContentType),
+        #[bilrost(2)]
+        JsonSchema(ValidationRuleJsonSchema),
+    }
+
+    #[derive(bilrost::Message)]
+    pub(super) struct InputValidationRule {
+        #[bilrost(oneof(1, 2))]
+        inner: InputValidationRuleInner,
+    }
+
+    impl From<&super::InputValidationRule> for InputValidationRule {
+        fn from(value: &super::InputValidationRule) -> Self {
+            let inner = match value {
+                super::InputValidationRule::NoBodyAndContentType => {
+                    InputValidationRuleInner::NoBodyAndContentType
+                }
+                super::InputValidationRule::ContentType { content_type } => {
+                    InputValidationRuleInner::ContentType(ValidationRuleContentType {
+                        content_type: content_type.clone(),
+                    })
+                }
+                super::InputValidationRule::JsonValue {
+                    content_type,
+                    schema,
+                } => InputValidationRuleInner::JsonSchema(ValidationRuleJsonSchema {
+                    content_type: content_type.clone(),
+                    schema: schema.as_ref().map(|value| value.to_string()),
+                }),
+            };
+
+            Self { inner }
+        }
+    }
+
+    impl From<InputValidationRule> for super::InputValidationRule {
+        fn from(value: InputValidationRule) -> Self {
+            let InputValidationRule { inner } = value;
+            match inner {
+                InputValidationRuleInner::NoBodyAndContentType => Self::NoBodyAndContentType,
+                InputValidationRuleInner::ContentType(inner) => Self::ContentType {
+                    content_type: inner.content_type,
+                },
+                InputValidationRuleInner::JsonSchema(inner) => Self::JsonValue {
+                    content_type: inner.content_type,
+                    schema: inner
+                        .schema
+                        .map(|schema| Value::from_str(&schema))
+                        .transpose()
+                        .expect("valid json schema"),
+                },
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

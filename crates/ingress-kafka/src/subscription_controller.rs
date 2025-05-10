@@ -121,7 +121,9 @@ impl Service {
     ) -> anyhow::Result<()> {
         let mut client_config = rdkafka::ClientConfig::new();
 
-        let Source::Kafka { cluster, topic, .. } = subscription.source();
+        let Source::Kafka { cluster, topic, .. } = subscription.source() else {
+            anyhow::bail!("Unknown subscription source");
+        };
 
         // Copy cluster options and subscription metadata into client_config
         let cluster_options = options

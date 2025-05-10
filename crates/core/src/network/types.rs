@@ -83,6 +83,7 @@ impl PeerMetadataVersion {
     /// Get the metadata version for a given kind
     pub fn get(&self, kind: MetadataKind) -> Version {
         match kind {
+            MetadataKind::Unknown => Version::INVALID,
             MetadataKind::Logs => self.logs,
             MetadataKind::NodesConfiguration => self.nodes_config,
             MetadataKind::PartitionTable => self.partition_table,

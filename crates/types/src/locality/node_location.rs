@@ -11,6 +11,7 @@
 use std::str::FromStr;
 
 use itertools::Itertools;
+use restate_encoding::{BilrostAs, BilrostDisplayFromStr, NetSerde};
 
 use crate::PlainNodeId;
 
@@ -46,12 +47,21 @@ const NODE_DELIMITER: &str = ":";
 /// improve cache-friendlyness. It's a fixed-size array of labels, where each label is a highly-likely
 /// stack-inlined `SmartString`.
 #[derive(
-    Clone, Default, PartialEq, Eq, serde_with::DeserializeFromStr, serde_with::SerializeDisplay,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    serde_with::DeserializeFromStr,
+    serde_with::SerializeDisplay,
+    BilrostAs,
+    NetSerde,
 )]
+#[bilrost_as(BilrostDisplayFromStr)]
 pub struct NodeLocation {
     /// Internal storage for labels of all scopes, the order of scopes in the array
     /// is the reverse order of their type value: largest scope (i.e. Region) gets
     /// stored at index 0, and so on...
+    #[net_serde(skip)]
     labels: [SmartString; LocationScope::num_scopes()],
     /// number of (non-empty) scope labels specified
     num_defined_scopes: u8,

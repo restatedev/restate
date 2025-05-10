@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use bilrost::{Message, OwnedMessage};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
@@ -17,9 +17,17 @@ use restate_types::{
     cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode},
     identifiers::PartitionId,
     logs::Lsn,
-    net::node::NodeStateResponse,
+    net::{
+        metadata::{MetadataContainer, MetadataUpdate},
+        node::NodeStateResponse,
+    },
+    nodes_config::NodesConfiguration,
+    schema::Schema,
     time::MillisSinceEpoch,
 };
+
+const SCHEMA_METADATA: &[u8] = include_bytes!("./assets/schema_dump.json");
+const NODES_METADATA: &[u8] = include_bytes!("./assets/nodes_dump.json");
 
 const NUM_PARTITIONS: u16 = 256;
 
@@ -58,17 +66,17 @@ pub fn gen_node_state_response() -> NodeStateResponse {
     }
 }
 
-pub fn flexbuffer_serialization(c: &mut Criterion) {
+pub fn flexbuffer_node_state_serialization(c: &mut Criterion) {
     let message = gen_node_state_response();
 
     let serialized = flexbuffers::to_vec(&message).expect("serializes");
     println!("Flexbuffers Message Size: {}", serialized.len());
 
-    c.bench_function("flexbuffers-serialize", |b| {
+    c.bench_function("flexbuffers-node-state-serialize", |b| {
         b.iter(|| black_box(flexbuffers::to_vec(&message)));
     });
 
-    c.bench_function("flexbuffers-deserialize", |b| {
+    c.bench_function("flexbuffers-node-state-deserialize", |b| {
         b.iter(|| {
             black_box(
                 flexbuffers::from_slice::<NodeStateResponse>(&serialized).expect("deserializes"),
@@ -77,16 +85,16 @@ pub fn flexbuffer_serialization(c: &mut Criterion) {
     });
 }
 
-pub fn bilrost_serialization(c: &mut Criterion) {
+pub fn bilrost_node_state_serialization(c: &mut Criterion) {
     let message = gen_node_state_response();
 
     let serialized = message.encode_to_bytes();
     println!("Bilrost Message Size: {}", serialized.len());
-    c.bench_function("bilrost-serialize", |b| {
+    c.bench_function("bilrost-node-state-serialize", |b| {
         b.iter(|| black_box(message.encode_to_bytes()));
     });
 
-    c.bench_function("bilrost-deserialize", |b| {
+    c.bench_function("bilrost-node-state-deserialize", |b| {
         b.iter(|| {
             black_box(<NodeStateResponse as OwnedMessage>::decode(
                 serialized.clone(),
@@ -95,10 +103,111 @@ pub fn bilrost_serialization(c: &mut Criterion) {
     });
 }
 
+pub fn flexbuffer_schema_metadata_serialization(c: &mut Criterion) {
+    let schema: Schema = serde_json::from_slice(SCHEMA_METADATA).expect("valid schema object");
+
+    let message = MetadataUpdate {
+        container: MetadataContainer::Schema(Arc::new(schema)),
+    };
+
+    let serialized = flexbuffers::to_vec(&message).expect("serializes");
+    println!("Flexbuffers Message Size: {}", serialized.len());
+
+    c.bench_function("flexbuffers-schema-metadata-serialize", |b| {
+        b.iter(|| black_box(flexbuffers::to_vec(&message)));
+    });
+
+    c.bench_function("flexbuffers-schema-metadata-deserialize", |b| {
+        b.iter(|| {
+            black_box(
+                flexbuffers::from_slice::<MetadataUpdate>(&(serialized.clone()))
+                    .expect("deserializes"),
+            )
+        });
+    });
+}
+
+pub fn bilrost_schema_metadata_serialization(c: &mut Criterion) {
+    let schema: Schema = serde_json::from_slice(SCHEMA_METADATA).expect("valid schema object");
+
+    let message = MetadataUpdate {
+        container: MetadataContainer::Schema(Arc::new(schema)),
+    };
+
+    let rev = message.encode_fast();
+    let serialized = bytes::Bytes::from(rev.into_vec());
+    // let serialized = message.encode_to_bytes();
+    println!("Bilrost Message Size: {}", serialized.len());
+    c.bench_function("bilrost-schema-metadata-serialize", |b| {
+        b.iter(|| {
+            let buf = black_box(message.encode_fast());
+            black_box(buf.into_vec());
+        });
+    });
+
+    c.bench_function("bilrost-schema-metadata-deserialize", |b| {
+        b.iter(|| black_box(<MetadataUpdate as OwnedMessage>::decode(serialized.clone())));
+    });
+}
+
+pub fn flexbuffer_nodes_metadata_serialization(c: &mut Criterion) {
+    let nodes: NodesConfiguration =
+        serde_json::from_slice(NODES_METADATA).expect("valid schema object");
+
+    let message = MetadataUpdate {
+        container: MetadataContainer::NodesConfiguration(Arc::new(nodes)),
+    };
+
+    let serialized = flexbuffers::to_vec(&message).expect("serializes");
+    println!("Flexbuffers Message Size: {}", serialized.len());
+
+    c.bench_function("flexbuffers-schema-metadata-serialize", |b| {
+        b.iter(|| black_box(flexbuffers::to_vec(&message)));
+    });
+
+    c.bench_function("flexbuffers-schema-metadata-deserialize", |b| {
+        b.iter(|| {
+            black_box(
+                flexbuffers::from_slice::<MetadataUpdate>(&(serialized.clone()))
+                    .expect("deserializes"),
+            )
+        });
+    });
+}
+
+pub fn bilrost_nodes_metadata_serialization(c: &mut Criterion) {
+    let nodes: NodesConfiguration =
+        serde_json::from_slice(NODES_METADATA).expect("valid schema object");
+
+    let message = MetadataUpdate {
+        container: MetadataContainer::NodesConfiguration(Arc::new(nodes)),
+    };
+
+    let rev = message.encode_fast();
+    let serialized = bytes::Bytes::from(rev.into_vec());
+    // let serialized = message.encode_to_bytes();
+    println!("Bilrost Message Size: {}", serialized.len());
+    c.bench_function("bilrost-schema-metadata-serialize", |b| {
+        b.iter(|| {
+            let buf = black_box(message.encode_fast());
+            black_box(buf.into_vec());
+        });
+    });
+
+    c.bench_function("bilrost-schema-metadata-deserialize", |b| {
+        b.iter(|| black_box(<MetadataUpdate as OwnedMessage>::decode(serialized.clone())));
+    });
+}
+
 criterion_group!(
     name=benches;
     config=Criterion::default();
-    targets=flexbuffer_serialization, bilrost_serialization
+    targets=flexbuffer_node_state_serialization,
+            bilrost_node_state_serialization,
+            flexbuffer_schema_metadata_serialization,
+            bilrost_schema_metadata_serialization,
+            flexbuffer_nodes_metadata_serialization,
+            bilrost_nodes_metadata_serialization
 );
 
 criterion_main!(benches);

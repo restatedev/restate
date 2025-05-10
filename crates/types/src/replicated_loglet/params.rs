@@ -13,7 +13,7 @@ use crate::logs::LogletId;
 use crate::replication::{NodeSet, ReplicationProperty};
 
 /// Configuration parameters of a replicated loglet segment
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, bilrost::Message)]
 pub struct ReplicatedLogletParams {
     /// Unique identifier for this loglet
     pub loglet_id: LogletId,

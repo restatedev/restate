@@ -24,7 +24,7 @@ pub fn bilrost_as(input: TokenStream) -> TokenStream {
     bilrost::bilrost_as(input)
 }
 
-#[proc_macro_derive(NetSerde)]
+#[proc_macro_derive(NetSerde, attributes(net_serde))]
 pub fn network_message(item: TokenStream) -> TokenStream {
     net::net_serde(item)
 }

@@ -20,7 +20,11 @@ struct SomeMessage {
     b: String,
     c: (bool, u64),
     d: Inner,
+    #[net_serde(skip)]
+    f: NotSendable,
 }
+
+struct NotSendable;
 
 #[allow(dead_code)]
 #[derive(NetSerde)]

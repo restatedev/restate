@@ -1,0 +1,403 @@
+{
+    "version": 2,
+    "deployments": [
+        [
+            "dp_14MOkJLlmEzq1PWbFU3jIJj",
+            {
+                "metadata": {
+                    "created_at": 1745652694762,
+                    "delivery_options": {
+                        "additional_headers": {}
+                    },
+                    "supported_protocol_versions": {
+                        "end": 5,
+                        "start": 5
+                    },
+                    "ty": {
+                        "Http": {
+                            "address": "http://localhost:9090/",
+                            "http_version": "HTTP/2.0",
+                            "protocol_type": "BidiStream"
+                        }
+                    }
+                },
+                "services": [
+                    {
+                        "deployment_id": "dp_14MOkJLlmEzq1PWbFU3jIJj",
+                        "handlers": [
+                            {
+                                "input_description": "JSON string",
+                                "input_json_schema": {
+                                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                                    "type": "string"
+                                },
+                                "name": "Unlock",
+                                "output_description": "none",
+                                "ty": "Shared"
+                            },
+                            {
+                                "input_description": "JSON string",
+                                "input_json_schema": {
+                                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                                    "type": "string"
+                                },
+                                "name": "Run",
+                                "output_description": "JSON string",
+                                "output_json_schema": {
+                                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                                    "type": "string"
+                                },
+                                "ty": "Workflow"
+                            }
+                        ],
+                        "idempotency_retention": "1day",
+                        "name": "MyWorkflow",
+                        "public": true,
+                        "revision": 2,
+                        "ty": "Workflow",
+                        "workflow_completion_retention": "1day"
+                    },
+                    {
+                        "deployment_id": "dp_14MOkJLlmEzq1PWbFU3jIJj",
+                        "handlers": [
+                            {
+                                "input_description": "none",
+                                "name": "Greet",
+                                "output_description": "application/json",
+                                "output_json_schema": {
+                                    "$defs": {
+                                        "Result": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                                "Counter": {
+                                                    "type": "integer"
+                                                }
+                                            },
+                                            "required": [
+                                                "Counter"
+                                            ],
+                                            "type": "object"
+                                        }
+                                    },
+                                    "$ref": "#/$defs/Result",
+                                    "$schema": "https://json-schema.org/draft/2020-12/schema"
+                                },
+                                "ty": "Exclusive"
+                            },
+                            {
+                                "input_description": "none",
+                                "name": "Bye",
+                                "output_description": "application/json",
+                                "output_json_schema": {
+                                    "$defs": {
+                                        "Result": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                                "Counter": {
+                                                    "type": "integer"
+                                                }
+                                            },
+                                            "required": [
+                                                "Counter"
+                                            ],
+                                            "type": "object"
+                                        }
+                                    },
+                                    "$ref": "#/$defs/Result",
+                                    "$schema": "https://json-schema.org/draft/2020-12/schema"
+                                },
+                                "ty": "Exclusive"
+                            },
+                            {
+                                "input_description": "none",
+                                "name": "Count",
+                                "output_description": "application/json",
+                                "output_json_schema": {
+                                    "$defs": {
+                                        "Result": {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                                "Counter": {
+                                                    "type": "integer"
+                                                }
+                                            },
+                                            "required": [
+                                                "Counter"
+                                            ],
+                                            "type": "object"
+                                        }
+                                    },
+                                    "$ref": "#/$defs/Result",
+                                    "$schema": "https://json-schema.org/draft/2020-12/schema"
+                                },
+                                "ty": "Shared"
+                            }
+                        ],
+                        "idempotency_retention": "1day",
+                        "name": "Greeter",
+                        "public": true,
+                        "revision": 2,
+                        "ty": "VirtualObject"
+                    }
+                ]
+            }
+        ]
+    ],
+    "services": {
+        "Greeter": {
+            "abort_timeout": null,
+            "handlers": {
+                "Bye": {
+                    "target_meta": {
+                        "completion_retention": null,
+                        "idempotency_retention": {
+                            "nanos": 0,
+                            "secs": 86400
+                        },
+                        "input_rules": {
+                            "input_validation_rules": [
+                                "NoBodyAndContentType"
+                            ]
+                        },
+                        "output_rules": {
+                            "content_type_rule": {
+                                "Set": {
+                                    "content_type": "application/json",
+                                    "has_json_schema": true,
+                                    "set_content_type_if_empty": false
+                                }
+                            },
+                            "json_schema": {
+                                "$defs": {
+                                    "Result": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                            "Counter": {
+                                                "type": "integer"
+                                            }
+                                        },
+                                        "required": [
+                                            "Counter"
+                                        ],
+                                        "type": "object"
+                                    }
+                                },
+                                "$ref": "#/$defs/Result",
+                                "$schema": "https://json-schema.org/draft/2020-12/schema"
+                            }
+                        },
+                        "public": true,
+                        "target_ty": {
+                            "VirtualObject": "Exclusive"
+                        }
+                    }
+                },
+                "Count": {
+                    "target_meta": {
+                        "completion_retention": null,
+                        "idempotency_retention": {
+                            "nanos": 0,
+                            "secs": 86400
+                        },
+                        "input_rules": {
+                            "input_validation_rules": [
+                                "NoBodyAndContentType"
+                            ]
+                        },
+                        "output_rules": {
+                            "content_type_rule": {
+                                "Set": {
+                                    "content_type": "application/json",
+                                    "has_json_schema": true,
+                                    "set_content_type_if_empty": false
+                                }
+                            },
+                            "json_schema": {
+                                "$defs": {
+                                    "Result": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                            "Counter": {
+                                                "type": "integer"
+                                            }
+                                        },
+                                        "required": [
+                                            "Counter"
+                                        ],
+                                        "type": "object"
+                                    }
+                                },
+                                "$ref": "#/$defs/Result",
+                                "$schema": "https://json-schema.org/draft/2020-12/schema"
+                            }
+                        },
+                        "public": true,
+                        "target_ty": {
+                            "VirtualObject": "Shared"
+                        }
+                    }
+                },
+                "Greet": {
+                    "target_meta": {
+                        "completion_retention": null,
+                        "idempotency_retention": {
+                            "nanos": 0,
+                            "secs": 86400
+                        },
+                        "input_rules": {
+                            "input_validation_rules": [
+                                "NoBodyAndContentType"
+                            ]
+                        },
+                        "output_rules": {
+                            "content_type_rule": {
+                                "Set": {
+                                    "content_type": "application/json",
+                                    "has_json_schema": true,
+                                    "set_content_type_if_empty": false
+                                }
+                            },
+                            "json_schema": {
+                                "$defs": {
+                                    "Result": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                            "Counter": {
+                                                "type": "integer"
+                                            }
+                                        },
+                                        "required": [
+                                            "Counter"
+                                        ],
+                                        "type": "object"
+                                    }
+                                },
+                                "$ref": "#/$defs/Result",
+                                "$schema": "https://json-schema.org/draft/2020-12/schema"
+                            }
+                        },
+                        "public": true,
+                        "target_ty": {
+                            "VirtualObject": "Exclusive"
+                        }
+                    }
+                }
+            },
+            "idempotency_retention": {
+                "nanos": 0,
+                "secs": 86400
+            },
+            "inactivity_timeout": null,
+            "location": {
+                "latest_deployment": "dp_14MOkJLlmEzq1PWbFU3jIJj",
+                "public": true
+            },
+            "revision": 2,
+            "ty": "VirtualObject",
+            "workflow_completion_retention": null
+        },
+        "MyWorkflow": {
+            "abort_timeout": null,
+            "handlers": {
+                "Run": {
+                    "target_meta": {
+                        "completion_retention": {
+                            "nanos": 0,
+                            "secs": 86400
+                        },
+                        "idempotency_retention": {
+                            "nanos": 0,
+                            "secs": 86400
+                        },
+                        "input_rules": {
+                            "input_validation_rules": [
+                                {
+                                    "JsonValue": {
+                                        "content_type": {
+                                            "MimeTypeAndSubtype": [
+                                                "application",
+                                                "json"
+                                            ]
+                                        },
+                                        "schema": {
+                                            "$schema": "https://json-schema.org/draft/2020-12/schema",
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                        "output_rules": {
+                            "content_type_rule": {
+                                "Set": {
+                                    "content_type": "application/json",
+                                    "has_json_schema": true,
+                                    "set_content_type_if_empty": false
+                                }
+                            },
+                            "json_schema": {
+                                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                                "type": "string"
+                            }
+                        },
+                        "public": true,
+                        "target_ty": {
+                            "Workflow": "Workflow"
+                        }
+                    }
+                },
+                "Unlock": {
+                    "target_meta": {
+                        "completion_retention": null,
+                        "idempotency_retention": {
+                            "nanos": 0,
+                            "secs": 86400
+                        },
+                        "input_rules": {
+                            "input_validation_rules": [
+                                {
+                                    "JsonValue": {
+                                        "content_type": {
+                                            "MimeTypeAndSubtype": [
+                                                "application",
+                                                "json"
+                                            ]
+                                        },
+                                        "schema": {
+                                            "$schema": "https://json-schema.org/draft/2020-12/schema",
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                        "output_rules": {
+                            "content_type_rule": "None",
+                            "json_schema": null
+                        },
+                        "public": true,
+                        "target_ty": {
+                            "Workflow": "Shared"
+                        }
+                    }
+                }
+            },
+            "idempotency_retention": {
+                "nanos": 0,
+                "secs": 86400
+            },
+            "inactivity_timeout": null,
+            "location": {
+                "latest_deployment": "dp_14MOkJLlmEzq1PWbFU3jIJj",
+                "public": true
+            },
+            "revision": 2,
+            "ty": "Workflow",
+            "workflow_completion_retention": {
+                "nanos": 0,
+                "secs": 86400
+            }
+        }
+    },
+    "subscriptions": []
+}

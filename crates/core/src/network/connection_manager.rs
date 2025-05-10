@@ -808,7 +808,7 @@ mod tests {
             node_id,
             NodeLocation::default(),
             AdvertisedAddress::Uds("foobar1".into()),
-            Role::Worker.into(),
+            Role::Worker,
             LogServerConfig::default(),
             MetadataServerConfig::default(),
         );

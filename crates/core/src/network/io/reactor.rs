@@ -789,6 +789,7 @@ impl MetadataVersions {
         let logs_metadata = metadata.updateable_logs_metadata();
 
         let versions = enum_map! {
+            MetadataKind::Unknown => Version::INVALID,
             MetadataKind::NodesConfiguration => Version::INVALID,
             MetadataKind::Schema => Version::INVALID,
             MetadataKind::PartitionTable => Version::INVALID,
@@ -813,6 +814,7 @@ impl MetadataVersions {
 
     fn get_latest_version(&mut self, kind: MetadataKind) -> Version {
         match kind {
+            MetadataKind::Unknown => Version::INVALID,
             MetadataKind::NodesConfiguration => self.nodes_config.live_load().version(),
             MetadataKind::Schema => self.schema.live_load().version(),
             MetadataKind::PartitionTable => self.partition_table.live_load().version(),

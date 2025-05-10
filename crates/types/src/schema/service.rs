@@ -16,7 +16,9 @@ use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use crate::schema::openapi::ServiceOpenAPI;
+use crate::{NetHumanDuration, NetJsonValue};
 use arc_swap::ArcSwapOption;
+use restate_encoding::{BilrostAs, BilrostSkip, NetSerde};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
@@ -25,63 +27,65 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ServiceMetadata {
     /// # Name
     ///
     /// Fully qualified name of the service
+    #[bilrost(1)]
     pub name: String,
 
+    #[bilrost(2)]
     pub handlers: Vec<HandlerMetadata>,
 
+    #[bilrost(3)]
     pub ty: ServiceType,
 
     /// # Documentation
     ///
     /// Documentation of the service, as propagated by the SDKs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(4)]
     pub documentation: Option<String>,
     /// # Metadata
     ///
     /// Additional service metadata, as propagated by the SDKs.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    #[bilrost(5)]
     pub metadata: HashMap<String, String>,
 
     /// # Deployment Id
     ///
     /// Deployment exposing the latest revision of the service.
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    #[bilrost(6)]
     pub deployment_id: DeploymentId,
 
     /// # Revision
     ///
     /// Latest revision of the service.
+    #[bilrost(7)]
     pub revision: ServiceRevision,
 
     /// # Public
     ///
     /// If true, the service can be invoked through the ingress.
     /// If false, the service can be invoked only from another Restate service.
+    #[bilrost(8)]
     pub public: bool,
 
     /// # Idempotency retention
     ///
     /// The retention duration of idempotent requests for this service.
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub idempotency_retention: humantime::Duration,
+    #[bilrost(9)]
+    pub idempotency_retention: NetHumanDuration,
 
     /// # Workflow completion retention
     ///
     /// The retention duration of workflows. Only available on workflow services.
-    #[serde(
-        with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub workflow_completion_retention: Option<humantime::Duration>,
+    #[bilrost(10)]
+    pub workflow_completion_retention: Option<NetHumanDuration>,
 
     /// # Inactivity timeout
     ///
@@ -95,13 +99,8 @@ pub struct ServiceMetadata {
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     ///
     /// This overrides the default inactivity timeout set in invoker options.
-    #[serde(
-        with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub inactivity_timeout: Option<humantime::Duration>,
+    #[bilrost(11)]
+    pub inactivity_timeout: Option<NetHumanDuration>,
 
     /// # Abort timeout
     ///
@@ -116,22 +115,17 @@ pub struct ServiceMetadata {
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     ///
     /// This overrides the default abort timeout set in invoker options.
-    #[serde(
-        with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub abort_timeout: Option<humantime::Duration>,
+    #[bilrost(12)]
+    pub abort_timeout: Option<NetHumanDuration>,
 }
 
 // This type is used only for exposing the handler metadata, and not internally. See [ServiceAndHandlerType].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, bilrost::Enumeration, NetSerde)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum HandlerMetadataType {
-    Exclusive,
-    Shared,
-    Workflow,
+    Exclusive = 0,
+    Shared = 1,
+    Workflow = 2,
 }
 
 impl From<InvocationTargetType> for Option<HandlerMetadataType> {
@@ -151,46 +145,54 @@ impl From<InvocationTargetType> for Option<HandlerMetadataType> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct HandlerMetadata {
+    #[bilrost(1)]
     pub name: String,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(2)]
     pub ty: Option<HandlerMetadataType>,
 
     /// # Documentation
     ///
     /// Documentation of the handler, as propagated by the SDKs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(3)]
     pub documentation: Option<String>,
     /// # Metadata
     ///
     /// Additional handler metadata, as propagated by the SDKs.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    #[bilrost(4)]
     pub metadata: HashMap<String, String>,
 
     /// # Human readable input description
     ///
     /// If empty, no schema was provided by the user at discovery time.
+    #[bilrost(5)]
     pub input_description: String,
 
     /// # Human readable output description
     ///
     /// If empty, no schema was provided by the user at discovery time.
+    #[bilrost(6)]
     pub output_description: String,
 
     /// # Input JSON Schema
     ///
     /// JSON Schema of the handler input
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_json_schema: Option<serde_json::Value>,
+    #[bilrost(7)]
+    pub input_json_schema: Option<NetJsonValue>,
 
     /// # Output JSON Schema
     ///
     /// JSON Schema of the handler output
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_json_schema: Option<serde_json::Value>,
+    #[bilrost(8)]
+    pub output_json_schema: Option<NetJsonValue>,
 }
 
 /// This API will return services registered by the user.
@@ -207,11 +209,14 @@ pub trait ServiceMetadataResolver {
     fn list_services(&self) -> Vec<ServiceMetadata>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct HandlerSchemas {
+    #[bilrost(1)]
     pub target_meta: InvocationTargetMetadata,
+    #[bilrost(2)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<String>,
+    #[bilrost(3)]
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
 }
@@ -225,30 +230,48 @@ impl HandlerSchemas {
             metadata: self.metadata.clone(),
             input_description: self.target_meta.input_rules.to_string(),
             output_description: self.target_meta.output_rules.to_string(),
-            input_json_schema: self.target_meta.input_rules.json_schema(),
-            output_json_schema: self.target_meta.output_rules.json_schema(),
+            input_json_schema: self.target_meta.input_rules.json_schema().map(Into::into),
+            output_json_schema: self.target_meta.output_rules.json_schema().map(Into::into),
         }
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Default, derive_more::From, derive_more::Into, derive_more::Deref, BilrostAs,
+)]
+#[bilrost_as(BilrostSkip)]
+pub struct ServiceOpenAPIProxy(Arc<ArcSwapOption<ServiceOpenAPI>>);
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message, NetSerde)]
 pub struct ServiceSchemas {
+    #[bilrost(1)]
     pub revision: ServiceRevision,
+    #[bilrost(2)]
     pub handlers: HashMap<String, HandlerSchemas>,
+    #[bilrost(3)]
     pub ty: ServiceType,
+    #[bilrost(4)]
     pub location: ServiceLocation,
+    #[bilrost(5)]
     pub idempotency_retention: Duration,
+    #[bilrost(6)]
     pub workflow_completion_retention: Option<Duration>,
+    #[bilrost(7)]
     pub inactivity_timeout: Option<Duration>,
+    #[bilrost(8)]
     pub abort_timeout: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(9)]
     pub documentation: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    #[bilrost(10)]
     pub metadata: HashMap<String, String>,
 
     /// This is a cache for the computed value of ServiceOpenAPI
     #[serde(skip)]
-    pub service_openapi_cache: Arc<ArcSwapOption<ServiceOpenAPI>>,
+    #[net_serde(skip)]
+    #[bilrost(11)]
+    pub service_openapi_cache: ServiceOpenAPIProxy,
 }
 
 impl ServiceSchemas {
@@ -305,9 +328,11 @@ impl ServiceSchemas {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message, NetSerde)]
 pub struct ServiceLocation {
+    #[bilrost(1)]
     pub latest_deployment: DeploymentId,
+    #[bilrost(2)]
     pub public: bool,
 }
 

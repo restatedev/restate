@@ -22,6 +22,7 @@ pub(crate) fn append_deployment_row(
     row.id(format_using(output, &deployment.id));
 
     match deployment.metadata.ty {
+        DeploymentType::Unknown => row.ty("unknown"),
         DeploymentType::Http { .. } => {
             row.ty("http");
         }

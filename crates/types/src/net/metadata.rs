@@ -12,6 +12,8 @@ use anyhow::bail;
 use bytes::Bytes;
 use enum_map::Enum;
 use prost_dto::{FromProst, IntoProst};
+use restate_encoding::BilrostAs;
+use restate_encoding::NetSerde;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use strum::EnumIter;
@@ -46,6 +48,7 @@ pub enum MetadataMessage {
     GetMetadataRequest(GetMetadataRequest),
     MetadataUpdate(MetadataUpdate),
 }
+
 default_wire_codec!(MetadataMessage);
 
 pub struct MetadataManagerService;
@@ -72,9 +75,10 @@ impl WireEncode for GetMetadataRequest {
             ));
         }
 
-        Bytes::from(codec::encode_as_flexbuffers(self, protocol_version))
+        codec::encode_as_bilrost(self, protocol_version)
     }
 }
+
 impl WireDecode for GetMetadataRequest {
     type Error = anyhow::Error;
     fn try_decode(
@@ -93,7 +97,8 @@ impl WireDecode for GetMetadataRequest {
             }
             bail!("Invalid message type");
         }
-        codec::decode_as_flexbuffers(buf, protocol_version)
+
+        codec::decode_as_bilrost(buf, protocol_version)
     }
 }
 
@@ -106,9 +111,11 @@ impl WireEncode for MetadataUpdate {
                 protocol_version,
             ));
         }
-        Bytes::from(codec::encode_as_flexbuffers(self, protocol_version))
+
+        codec::encode_as_bilrost(self, protocol_version)
     }
 }
+
 impl WireDecode for MetadataUpdate {
     type Error = anyhow::Error;
     fn try_decode(
@@ -127,7 +134,7 @@ impl WireDecode for MetadataUpdate {
             }
             bail!("Invalid message type");
         }
-        codec::decode_as_flexbuffers(buf, protocol_version)
+        codec::decode_as_bilrost(buf, protocol_version)
     }
 }
 
@@ -147,13 +154,16 @@ impl WireDecode for MetadataUpdate {
     strum::EnumCount,
     IntoProst,
     FromProst,
+    bilrost::Enumeration,
+    NetSerde,
 )]
 #[prost(target = "crate::protobuf::common::MetadataKind")]
 pub enum MetadataKind {
-    NodesConfiguration,
-    Schema,
-    PartitionTable,
-    Logs,
+    Unknown = 0,
+    NodesConfiguration = 1,
+    Schema = 2,
+    PartitionTable = 3,
+    Logs = 4,
 }
 
 // todo remove once prost_dto supports TryFromProst
@@ -175,28 +185,35 @@ impl TryFrom<crate::protobuf::common::MetadataKind> for MetadataKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, derive_more::From)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::From, Default, BilrostAs, NetSerde)]
+#[bilrost_as(dto::MetadataContainer)]
 pub enum MetadataContainer {
+    #[default]
+    Unknown,
     NodesConfiguration(Arc<NodesConfiguration>),
     PartitionTable(Arc<PartitionTable>),
     Logs(Arc<Logs>),
     Schema(Arc<Schema>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct GetMetadataRequest {
+    #[bilrost(1)]
     pub metadata_kind: MetadataKind,
+    #[bilrost(2)]
     pub min_version: Option<crate::Version>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct MetadataUpdate {
+    #[bilrost(1)]
     pub container: MetadataContainer,
 }
 
 impl MetadataContainer {
     pub fn version(&self) -> Version {
         match self {
+            MetadataContainer::Unknown => unreachable!("invalid metadata container kind"),
             MetadataContainer::NodesConfiguration(c) => c.version(),
             MetadataContainer::PartitionTable(p) => p.version(),
             MetadataContainer::Logs(l) => l.version(),
@@ -206,6 +223,7 @@ impl MetadataContainer {
 
     pub fn kind(&self) -> MetadataKind {
         match self {
+            MetadataContainer::Unknown => unreachable!("invalid metadata container kind"),
             MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
             MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
             MetadataContainer::Logs(_) => MetadataKind::Logs,
@@ -271,6 +289,88 @@ impl Extraction for Logs {
             Some(v)
         } else {
             None
+        }
+    }
+}
+
+pub mod dto {
+
+    use std::{borrow::Cow, sync::Arc};
+
+    use bilrost::{Message, OwnedMessage};
+    use bytes::Bytes;
+
+    use crate::{
+        logs::metadata::Logs, nodes_config::NodesConfiguration, partition_table::PartitionTable,
+        schema::Schema,
+    };
+
+    #[derive(Debug, Clone, bilrost::Oneof)]
+    enum MetadataContainerInner {
+        Unknown,
+        #[bilrost(1)]
+        NodesConfiguration(Bytes),
+        #[bilrost(2)]
+        PartitionTable(Bytes),
+        #[bilrost(3)]
+        Logs(Bytes),
+        #[bilrost(4)]
+        Schema(Bytes),
+    }
+
+    #[derive(bilrost::Message)]
+    pub(super) struct MetadataContainer {
+        #[bilrost(oneof(1, 2, 3, 4))]
+        inner: MetadataContainerInner,
+    }
+
+    #[derive(bilrost::Message)]
+    struct LogsWrapper<'a>(#[bilrost(1)] Cow<'a, Logs>);
+
+    impl From<&super::MetadataContainer> for MetadataContainer {
+        fn from(value: &super::MetadataContainer) -> Self {
+            // we avoid copying the inner value (T from the Arc<T>) by directly
+            // serializing it directly to a byte array and then
+            // send this data instead.
+            let inner = match value {
+                super::MetadataContainer::Unknown => MetadataContainerInner::Unknown,
+                super::MetadataContainer::NodesConfiguration(inner) => {
+                    MetadataContainerInner::NodesConfiguration(
+                        inner.encode_fast().into_vec().into(),
+                    )
+                }
+                super::MetadataContainer::PartitionTable(inner) => {
+                    MetadataContainerInner::PartitionTable(inner.encode_fast().into_vec().into())
+                }
+                super::MetadataContainer::Logs(inner) => {
+                    MetadataContainerInner::Logs(inner.encode_fast().into_vec().into())
+                }
+                super::MetadataContainer::Schema(inner) => {
+                    MetadataContainerInner::Schema(inner.encode_fast().into_vec().into())
+                }
+            };
+
+            Self { inner }
+        }
+    }
+
+    impl From<MetadataContainer> for super::MetadataContainer {
+        fn from(value: MetadataContainer) -> Self {
+            match value.inner {
+                MetadataContainerInner::Unknown => Self::Unknown,
+                MetadataContainerInner::NodesConfiguration(inner) => Self::NodesConfiguration(
+                    Arc::new(NodesConfiguration::decode(inner).expect("valid nodes config")),
+                ),
+                MetadataContainerInner::PartitionTable(inner) => Self::PartitionTable(Arc::new(
+                    PartitionTable::decode(inner).expect("valid partition table"),
+                )),
+                MetadataContainerInner::Logs(inner) => {
+                    Self::Logs(Arc::new(Logs::decode(inner).expect("valid logs")))
+                }
+                MetadataContainerInner::Schema(inner) => {
+                    Self::Schema(Arc::new(Schema::decode(inner).expect("valid schema")))
+                }
+            }
         }
     }
 }

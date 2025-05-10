@@ -1,0 +1,90 @@
+{
+    "version": 127,
+    "cluster_fingerprint": null,
+    "cluster_name": "localcluster",
+    "name_lookup": {
+        "node-1": 1,
+        "node-2": 2,
+        "node-3": 3
+    },
+    "nodes": [
+        [
+            1,
+            {
+                "Node": {
+                    "address": "http://127.0.0.1:5122/",
+                    "current_generation": [
+                        1,
+                        40
+                    ],
+                    "location": "",
+                    "log_server_config": {
+                        "storage_state": "read-write"
+                    },
+                    "metadata_server_config": {
+                        "metadata_server_state": "member"
+                    },
+                    "name": "node-1",
+                    "roles": [
+                        "worker",
+                        "admin",
+                        "metadata-server",
+                        "log-server"
+                    ]
+                }
+            }
+        ],
+        [
+            3,
+            {
+                "Node": {
+                    "address": "http://127.0.0.1:7122/",
+                    "current_generation": [
+                        3,
+                        39
+                    ],
+                    "location": "",
+                    "log_server_config": {
+                        "storage_state": "read-write"
+                    },
+                    "metadata_server_config": {
+                        "metadata_server_state": "member"
+                    },
+                    "name": "node-3",
+                    "roles": [
+                        "worker",
+                        "admin",
+                        "metadata-server",
+                        "log-server"
+                    ]
+                }
+            }
+        ],
+        [
+            2,
+            {
+                "Node": {
+                    "address": "http://127.0.0.1:6122/",
+                    "current_generation": [
+                        2,
+                        43
+                    ],
+                    "location": "",
+                    "log_server_config": {
+                        "storage_state": "read-write"
+                    },
+                    "metadata_server_config": {
+                        "metadata_server_state": "member"
+                    },
+                    "name": "node-2",
+                    "roles": [
+                        "worker",
+                        "admin",
+                        "metadata-server",
+                        "log-server"
+                    ]
+                }
+            }
+        ]
+    ]
+}

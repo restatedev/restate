@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_encoding::{BilrostNewType, NetSerde};
+
 /// A type used for versioned metadata.
 #[derive(
     Clone,
@@ -23,7 +25,8 @@
     derive_more::AddAssign,
     serde::Serialize,
     serde::Deserialize,
-    restate_encoding::BilrostNewType,
+    BilrostNewType,
+    NetSerde,
 )]
 #[display("v{}", _0)]
 #[debug("v{}", _0)]

@@ -18,6 +18,7 @@ use ahash::AHasher;
 use itertools::Itertools;
 use rand::distr::Uniform;
 use rand::prelude::*;
+use restate_encoding::{BilrostAs, NetSerde};
 
 use crate::{Merge, PlainNodeId};
 
@@ -39,8 +40,11 @@ type IndexSet<T> = indexmap::IndexSet<T, BuildHasherDefault<AHasher>>;
     derive_more::Index,
     derive_more::IntoIterator,
     derive_more::From,
+    BilrostAs,
+    NetSerde,
 )]
-pub struct NodeSet(IndexSet<PlainNodeId>);
+#[bilrost_as(dto::NodeSet)]
+pub struct NodeSet(#[net_serde(skip)] IndexSet<PlainNodeId>);
 
 impl NodeSet {
     pub fn new() -> Self {
@@ -255,6 +259,12 @@ impl From<Vec<u32>> for NodeSet {
     }
 }
 
+impl From<Vec<PlainNodeId>> for NodeSet {
+    fn from(value: Vec<PlainNodeId>) -> Self {
+        Self(value.into_iter().collect())
+    }
+}
+
 impl From<NodeSet> for Box<[PlainNodeId]> {
     fn from(value: NodeSet) -> Self {
         value.0.into_iter().collect()
@@ -403,6 +413,24 @@ fn write_nodes<'a>(
         }
     }
     write!(f, "]")
+}
+
+mod dto {
+    use crate::PlainNodeId;
+
+    #[derive(bilrost::Message)]
+    pub(super) struct NodeSet(Vec<PlainNodeId>);
+    impl From<&super::NodeSet> for NodeSet {
+        fn from(value: &super::NodeSet) -> Self {
+            Self(value.clone().into())
+        }
+    }
+
+    impl From<NodeSet> for super::NodeSet {
+        fn from(value: NodeSet) -> Self {
+            Self::from(value.0)
+        }
+    }
 }
 
 #[cfg(test)]

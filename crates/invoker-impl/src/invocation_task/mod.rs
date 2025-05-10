@@ -346,7 +346,11 @@ where
                     .ok_or_else(|| {
                         InvokerError::IncompatibleServiceEndpoint(
                             deployment.id,
-                            deployment.metadata.supported_protocol_versions.clone(),
+                            deployment
+                                .metadata
+                                .supported_protocol_versions
+                                .clone()
+                                .into(),
                         )
                     })
                 );

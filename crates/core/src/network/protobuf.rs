@@ -20,8 +20,8 @@ pub mod network {
 
     use opentelemetry::propagation::{Extractor, Injector};
 
-    use restate_types::GenerationalNodeId;
     use restate_types::net::metadata::MetadataKind;
+    use restate_types::{GenerationalNodeId, Version};
 
     use restate_types::net::{
         CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, ProtocolVersion,
@@ -81,6 +81,7 @@ pub mod network {
         #[must_use]
         pub fn metadata_version(&self, kind: MetadataKind) -> restate_types::Version {
             match kind {
+                MetadataKind::Unknown => Version::INVALID,
                 MetadataKind::NodesConfiguration => self.my_nodes_config_version.into(),
                 MetadataKind::Schema => self.my_schema_version.into(),
                 MetadataKind::PartitionTable => self.my_partition_table_version.into(),

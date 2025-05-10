@@ -12,8 +12,8 @@ use std::num::NonZeroU32;
 use std::ops::Deref;
 
 use super::metadata::{
-    Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, LookupIndex, MaybeSegment,
-    ProviderKind, SegmentIndex,
+    Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, LogsInner, LookupIndex,
+    MaybeSegment, ProviderKind, SegmentIndex,
 };
 use super::{LogId, Lsn};
 use crate::Version;
@@ -21,7 +21,7 @@ use crate::replicated_loglet::ReplicatedLogletParams;
 
 #[derive(Debug, Default, Clone)]
 pub struct LogsBuilder {
-    inner: Logs,
+    inner: LogsInner,
     modified: bool,
 }
 
@@ -78,12 +78,13 @@ impl LogsBuilder {
 
     /// Bumps the version and returns the constructed log metadata.
     pub fn build(self) -> Logs {
-        Logs {
+        LogsInner {
             version: self.inner.version.next(),
             logs: self.inner.logs,
             lookup_index: self.inner.lookup_index,
             config: self.inner.config,
         }
+        .into()
     }
 
     pub fn set_version(&mut self, version: NonZeroU32) {
@@ -101,33 +102,30 @@ impl LogsBuilder {
     }
 
     pub fn configuration(&self) -> &LogsConfiguration {
-        self.inner.configuration()
+        &self.inner.config
     }
 
     pub fn build_if_modified(self) -> Option<Logs> {
         if self.modified {
-            Some(Logs {
-                version: self.inner.version.next(),
-                logs: self.inner.logs,
-                lookup_index: self.inner.lookup_index,
-                config: self.inner.config,
-            })
+            Some(
+                LogsInner {
+                    version: self.inner.version.next(),
+                    logs: self.inner.logs,
+                    lookup_index: self.inner.lookup_index,
+                    config: self.inner.config,
+                }
+                .into(),
+            )
         } else {
             None
         }
     }
 }
 
-impl AsRef<Logs> for LogsBuilder {
-    fn as_ref(&self) -> &Logs {
-        &self.inner
-    }
-}
-
 impl From<Logs> for LogsBuilder {
     fn from(value: Logs) -> LogsBuilder {
         LogsBuilder {
-            inner: value,
+            inner: value.into(),
             modified: false,
         }
     }

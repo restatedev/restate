@@ -62,7 +62,8 @@ impl_net_serde!(
     String,
     bytes::Bytes,
     bytestring::ByteString,
-    std::time::Duration
+    std::time::Duration,
+    std::path::PathBuf
 );
 
 macro_rules! impl_net_serde_tuple {
@@ -99,6 +100,7 @@ impl<Idx> NetSerde for RangeInclusive<Idx> where Idx: NetSerde {}
 impl<T> NetSerde for Arc<T> where T: NetSerde {}
 impl<T> NetSerde for Arc<[T]> where T: NetSerde {}
 impl<T> NetSerde for Box<T> where T: NetSerde {}
+impl<T, const N: usize> NetSerde for [T; N] where T: NetSerde {}
 
 #[cfg(test)]
 mod test {

@@ -90,7 +90,11 @@ impl EffectiveNodeSet {
         Self(
             nodeset
                 .into_iter()
-                .filter(|node_id| !nodes_config.get_log_server_storage_state(node_id).empty())
+                .filter(|node_id| {
+                    !nodes_config
+                        .get_log_server_storage_state(node_id)
+                        .is_empty()
+                })
                 .collect(),
         )
     }

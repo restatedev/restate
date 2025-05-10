@@ -666,7 +666,7 @@ mod tests {
                         .parse()
                         .unwrap(),
                 ),
-                Role::Worker.into(),
+                Role::Worker,
                 LogServerConfig::default(),
                 MetadataServerConfig::default(),
             );

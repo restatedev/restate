@@ -234,6 +234,7 @@ impl MetadataManager {
         callback: Option<oneshot::Sender<Version>>,
     ) {
         match value {
+            MetadataContainer::Unknown => {}
             MetadataContainer::NodesConfiguration(value) => {
                 let _ = updaters
                     .nodes_config
@@ -264,6 +265,9 @@ impl MetadataManager {
         min_version: Option<Version>,
     ) {
         match metadata_kind {
+            MetadataKind::Unknown => {
+                // drop silently
+            }
             MetadataKind::NodesConfiguration => self.send_nodes_config(to, min_version),
             MetadataKind::PartitionTable => self.send_partition_table(to, min_version),
             MetadataKind::Logs => self.send_logs(to, min_version),

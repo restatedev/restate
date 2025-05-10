@@ -14,6 +14,7 @@ use anyhow::Context;
 use bilrost::OwnedMessage;
 use bytes::Buf;
 use bytes::Bytes;
+use restate_encoding::NetSerde;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -100,7 +101,7 @@ pub fn decode_as_flexbuffers<T: DeserializeOwned>(
     flexbuffers::from_slice(buf.chunk()).context("failed decoding V1 (flexbuffers) network message")
 }
 
-pub fn encode_as_bilrost<T: bilrost::Message>(
+pub fn encode_as_bilrost<T: bilrost::Message + NetSerde>(
     value: &T,
     protocol_version: ProtocolVersion,
 ) -> Bytes {
@@ -113,7 +114,7 @@ pub fn encode_as_bilrost<T: bilrost::Message>(
     Bytes::from(buf.into_vec())
 }
 
-pub fn decode_as_bilrost<T: OwnedMessage>(
+pub fn decode_as_bilrost<T: OwnedMessage + NetSerde>(
     buf: impl Buf,
     protocol_version: ProtocolVersion,
 ) -> Result<T, anyhow::Error> {

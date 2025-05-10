@@ -17,6 +17,7 @@ pub mod subscriptions;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use restate_encoding::NetSerde;
 use serde_with::serde_as;
 
 use self::deployment::DeploymentSchemas;
@@ -32,15 +33,19 @@ use crate::net::metadata::MetadataKind;
 
 /// The schema information
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message, NetSerde)]
 pub struct Schema {
+    #[bilrost(1)]
     pub version: Version,
+    #[bilrost(2)]
     pub services: HashMap<String, ServiceSchemas>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    #[bilrost(3)]
     pub deployments: HashMap<DeploymentId, DeploymentSchemas>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    #[bilrost(4)]
     pub subscriptions: HashMap<SubscriptionId, Subscription>,
 }
 

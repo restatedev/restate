@@ -153,6 +153,7 @@ impl Metadata {
 
     pub fn version(&self, metadata_kind: MetadataKind) -> Version {
         match metadata_kind {
+            MetadataKind::Unknown => Version::INVALID,
             MetadataKind::NodesConfiguration => self.nodes_config_version(),
             MetadataKind::Schema => self.schema_version(),
             MetadataKind::PartitionTable => self.partition_table_version(),
@@ -277,6 +278,7 @@ impl MetadataInner {
 
     fn version(&self, metadata_kind: MetadataKind) -> Version {
         match metadata_kind {
+            MetadataKind::Unknown => Version::INVALID,
             MetadataKind::NodesConfiguration => self.nodes_config.load().version(),
             MetadataKind::Schema => self.schema.load().version(),
             MetadataKind::PartitionTable => self.partition_table.load().version(),
@@ -290,6 +292,7 @@ impl MetadataInner {
         T: GlobalMetadata + metadata::Extraction<Output = T>,
     {
         let container = match metadata_kind {
+            MetadataKind::Unknown => unreachable!(),
             MetadataKind::NodesConfiguration => self.nodes_config.load_full().into_container(),
             MetadataKind::Schema => self.schema.load_full().into_container(),
             MetadataKind::PartitionTable => self.partition_table.load_full().into_container(),
