@@ -16,16 +16,16 @@ use tracing::{Instrument, debug, instrument, trace};
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenterFutureExt};
 use restate_types::PlainNodeId;
+use restate_types::logs::TailOffsetWatch;
 use restate_types::net::log_server::{
     GetLogletInfo, LogServerRequestHeader, LogServerResponseHeader, LogletInfo, Status,
 };
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
+use restate_types::replication::NodeSetChecker;
 use restate_types::retries::RetryPolicy;
 
 use super::util::Disposition;
-use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::log_server_manager::RemoteLogServerManager;
-use crate::providers::replicated_loglet::replication::NodeSetChecker;
 use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
 
 /// Attempts to detect if the loglet has been sealed or if there is a seal in progress by

@@ -1,0 +1,23 @@
+[package]
+name = "restate-log-server-grpc"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+grpc-client = []
+grpc-server = []
+
+[dependencies]
+restate-types = { workspace = true }
+
+prost = { workspace = true }
+tonic = { workspace = true, features = ["codegen", "prost", "gzip"] }
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+[build-dependencies]
+tonic-build = { workspace = true }

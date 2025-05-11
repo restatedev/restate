@@ -13,6 +13,7 @@ use std::sync::Arc;
 use ahash::HashMap;
 use metrics::Histogram;
 
+use restate_types::logs::TailOffsetWatch;
 use restate_types::{
     PlainNodeId,
     logs::{LogletOffset, SequenceNumber, TailState},
@@ -20,7 +21,6 @@ use restate_types::{
 };
 
 use super::metric_definitions::BIFROST_SEQ_STORE_DURATION;
-use crate::loglet::util::TailOffsetWatch;
 
 /// LogServer instance
 #[derive(Clone)]

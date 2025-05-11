@@ -17,7 +17,7 @@ use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
-use restate_log_server::protobuf::{GetLogletInfoRequest, new_log_server_client};
+use restate_log_server_grpc::{GetLogletInfoRequest, new_log_server_client};
 use restate_types::PlainNodeId;
 use restate_types::logs::LogletId;
 use restate_types::logs::metadata::{LogletRef, Logs};

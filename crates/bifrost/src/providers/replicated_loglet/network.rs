@@ -18,7 +18,7 @@ use restate_core::network::{
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskKind};
 use restate_types::Version;
 use restate_types::errors::MaybeRetryableError;
-use restate_types::logs::{LogletOffset, SequenceNumber};
+use restate_types::logs::{LogletOffset, SequenceNumber, TailOffsetWatch};
 use restate_types::net::RpcRequest;
 use restate_types::net::replicated_loglet::{
     Append, Appended, CommonRequestHeader, CommonResponseHeader, GetSequencerState,
@@ -28,7 +28,6 @@ use restate_types::net::replicated_loglet::{
 use super::error::ReplicatedLogletError;
 use super::loglet::{FindTailFlags, ReplicatedLoglet};
 use super::provider::ReplicatedLogletProvider;
-use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{AppendError, Loglet, LogletCommit, OperationError};
 
 macro_rules! return_error_status {

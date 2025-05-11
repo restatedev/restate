@@ -82,6 +82,7 @@ tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tiny-gradient = { version = "0.1.0" }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
+tokio-stream = { workspace = true, features = ["sync"] }
 toml = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
@@ -90,6 +91,7 @@ ulid = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
+restate-types = {path = ".", default-features = false, features = ["memory-loglet", "test-util"]}
 restate-test-util = { workspace = true }
 
 criterion = { workspace = true, features = ["async_tokio"] }

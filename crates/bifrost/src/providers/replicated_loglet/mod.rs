@@ -23,4 +23,4 @@ mod tasks;
 pub mod test_util;
 
 pub use provider::Factory;
-pub use provider::logserver_candidate_filter;
+pub use restate_types::replicated_loglet::logserver_candidate_filter;
