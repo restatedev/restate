@@ -16,16 +16,12 @@ formula = "restatectl"
 
 [features]
 default = ["no-trace-logging"]
-memory-loglet = ["restate-types/memory-loglet", "restate-admin?/memory-loglet"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 dump-local-log = ["restate-metadata-server", "restate-rocksdb", "restate-bifrost", "restate-wal-protocol", "rlimit"]
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
-# admin isn't needed, but without it, workspace builds fail because the memory-loglet feature is not enabled, and unification
-# brings in admin for other binaries which need it
-# NOTE: This is removed in the next PR
-restate-admin = { workspace = true, optional = true }
+
 restate-cli-util = { workspace = true }
 restate-core = { workspace = true }
 restate-log-server-grpc = { workspace = true, features = ["grpc-client"] }
