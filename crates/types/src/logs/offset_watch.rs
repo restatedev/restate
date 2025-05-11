@@ -11,10 +11,12 @@
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
-use restate_core::ShutdownError;
-use restate_types::logs::TailState;
-
 use super::LogletOffset;
+use super::TailState;
+
+#[derive(Debug, thiserror::Error)]
+#[error("tail watch terminated")]
+pub struct WatchTerminated;
 
 #[derive(Clone)]
 pub struct TailOffsetWatch {
@@ -67,20 +69,20 @@ impl TailOffsetWatch {
         self.sender.borrow().is_sealed()
     }
 
-    pub async fn wait_for_seal(&self) -> Result<(), ShutdownError> {
+    pub async fn wait_for_seal(&self) -> Result<(), WatchTerminated> {
         let mut receiver = self.sender.subscribe();
         receiver.mark_changed();
         receiver
             .wait_for(|tail| tail.is_sealed())
             .await
-            .map_err(|_| ShutdownError)?;
+            .map_err(|_| WatchTerminated)?;
         Ok(())
     }
 
     pub async fn wait_for_offset(
         &self,
         offset: LogletOffset,
-    ) -> Result<TailState<LogletOffset>, ShutdownError> {
+    ) -> Result<TailState<LogletOffset>, WatchTerminated> {
         let mut receiver = self.sender.subscribe();
         receiver.mark_changed();
         receiver
@@ -89,13 +91,13 @@ impl TailOffsetWatch {
             })
             .await
             .map(|m| *m)
-            .map_err(|_| ShutdownError)
+            .map_err(|_| WatchTerminated)
     }
 
     pub async fn wait_for_offset_or_seal(
         &self,
         offset: LogletOffset,
-    ) -> Result<TailState<LogletOffset>, ShutdownError> {
+    ) -> Result<TailState<LogletOffset>, WatchTerminated> {
         let mut receiver = self.sender.subscribe();
         receiver.mark_changed();
         receiver
@@ -106,7 +108,7 @@ impl TailOffsetWatch {
             })
             .await
             .map(|m| *m)
-            .map_err(|_| ShutdownError)
+            .map_err(|_| WatchTerminated)
     }
 
     pub fn subscribe(&self) -> watch::Receiver<TailState<LogletOffset>> {

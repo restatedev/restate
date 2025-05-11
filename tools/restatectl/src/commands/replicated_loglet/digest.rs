@@ -13,17 +13,17 @@ use std::collections::HashMap;
 use cling::prelude::*;
 use tracing::{info, warn};
 
-use restate_bifrost::loglet::util::TailOffsetWatch;
-use restate_bifrost::providers::replicated_loglet::replication::NodeSetChecker;
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_log_server::protobuf::{GetDigestRequest, GetLogletInfoRequest, new_log_server_client};
+use restate_log_server_grpc::{GetDigestRequest, GetLogletInfoRequest, new_log_server_client};
 use restate_types::PlainNodeId;
+use restate_types::logs::TailOffsetWatch;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::log_server::RecordStatus;
 use restate_types::nodes_config::Role;
 use restate_types::replicated_loglet::LogNodeSetExt;
+use restate_types::replication::NodeSetChecker;
 
 use crate::commands::replicated_loglet::digest_util::DigestsHelper;
 use crate::commands::replicated_loglet::info::gen_loglet_info_table;

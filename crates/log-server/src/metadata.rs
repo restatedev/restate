@@ -16,9 +16,8 @@ use tokio::sync::watch;
 
 use crate::logstore::LogStore;
 use restate_bifrost::loglet::OperationError;
-use restate_bifrost::loglet::util::TailOffsetWatch;
 use restate_core::ShutdownError;
-use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailOffsetWatch, TailState};
 use restate_types::storage::StorageMarker;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 

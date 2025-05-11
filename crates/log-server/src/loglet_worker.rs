@@ -436,14 +436,14 @@ impl<S: LogStore> LogletWorker<S> {
                     tokio::select! {
                         res = global_tail_tracker.wait_for_offset(target_global_tail) => { res.map(|_|()) },
                         // Are we locally sealed?
-                        res = local_tail_watch.wait_for_seal() => { res },
+                        res = local_tail_watch.wait_for_seal() => { res.map_err(|_| ShutdownError) },
                     }?;
                 }
                 TailUpdateQuery::LocalOrGlobal(target_offset) => {
                     let global_tail_tracker = loglet_state.get_global_tail_tracker();
                     tokio::select! {
-                        res = global_tail_tracker.wait_for_offset(target_offset) => { res.map(|_|()) },
-                        res = local_tail_watch.wait_for_offset_or_seal(target_offset) => { res.map(|_|()) },
+                        res = global_tail_tracker.wait_for_offset(target_offset) => { res.map(|_|()).map_err(|_| ShutdownError) },
+                        res = local_tail_watch.wait_for_offset_or_seal(target_offset) => { res.map(|_|()).map_err(|_| ShutdownError) },
                     }?;
                 }
             };

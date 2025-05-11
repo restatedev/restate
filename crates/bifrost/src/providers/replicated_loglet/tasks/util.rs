@@ -17,11 +17,10 @@ use restate_core::ShutdownError;
 use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
+use restate_types::logs::TailOffsetWatch;
 use restate_types::net::RpcRequest;
 use restate_types::net::log_server::{LogServerMessage, LogServerResponse};
 use restate_types::retries::RetryPolicy;
-
-use crate::loglet::util::TailOffsetWatch;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TaskError {
