@@ -13,7 +13,6 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::Parser;
 use cling::{Collect, Run};
-use enumset::EnumSet;
 use itertools::Itertools;
 use tonic::{Code, IntoRequest};
 use tracing::{error, warn};
@@ -111,7 +110,7 @@ async fn compact_cluster_status(
     for (node_id, node_config) in nodes_config.iter().sorted_by_key(|(id, _)| *id) {
         let mut row = NodeRow::default();
         row.with_name(node_config.name.clone())
-            .with_roles(&node_config.roles);
+            .with_roles(node_config.roles.iter());
 
         let Some(node_state) = cluster_state.nodes.get(&u32::from(node_id)) else {
             continue;
@@ -342,10 +341,8 @@ impl NodeRow {
         self
     }
 
-    fn with_roles(&mut self, roles: &EnumSet<Role>) -> &mut Self {
-        self.roles = Some(Cell::new(
-            roles.iter().map(|r| r.to_string()).sorted().join(" | "),
-        ));
+    fn with_roles(&mut self, roles: impl Iterator<Item = Role>) -> &mut Self {
+        self.roles = Some(Cell::new(roles.map(|r| r.to_string()).sorted().join(" | ")));
         self
     }
 

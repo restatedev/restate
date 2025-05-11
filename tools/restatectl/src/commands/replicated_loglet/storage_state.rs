@@ -12,17 +12,16 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use cling::prelude::*;
+
+use restate_cli_util::c_println;
 use restate_metadata_store::MetadataStoreClient;
 use restate_metadata_store::protobuf::metadata_proxy_svc::client::MetadataStoreProxy;
-
-use restate_bifrost::providers::replicated_loglet::logserver_candidate_filter;
-use restate_bifrost::providers::replicated_loglet::replication::NodeSetChecker;
-use restate_cli_util::c_println;
 use restate_types::config::MetadataClientOptions;
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{NodesConfiguration, Role, StorageState};
-use restate_types::replication::{NodeSetSelector, NodeSetSelectorOptions};
+use restate_types::replicated_loglet::logserver_candidate_filter;
+use restate_types::replication::{NodeSetChecker, NodeSetSelector, NodeSetSelectorOptions};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use crate::connection::{ConnectionInfo, NodeOperationError};

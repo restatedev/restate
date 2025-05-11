@@ -15,13 +15,13 @@ use std::{
 };
 
 use anyhow::Context as AnyhowContext;
+use arrow::ipc::reader::StreamDecoder;
 use arrow::{
     array::RecordBatch,
     buffer::Buffer,
     error::ArrowError,
     util::display::{ArrayFormatter, FormatOptions},
 };
-use arrow_ipc::reader::StreamDecoder;
 use cling::prelude::*;
 use futures::{Stream, StreamExt, ready};
 use restate_cli_util::{
@@ -152,7 +152,7 @@ impl Stream for RecordBatchStream {
                     return Poll::Ready(Some(Err(err.into())));
                 }
                 Some(Ok(batch)) => {
-                    self.buffer = Some(Buffer::from(batch.encoded));
+                    self.buffer = Some(Buffer::from(&*batch.encoded));
                 }
             }
         }

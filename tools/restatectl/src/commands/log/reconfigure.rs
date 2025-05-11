@@ -106,7 +106,6 @@ async fn inner_reconfigure(
                 ..Default::default()
             }
         }
-        #[cfg(any(test, feature = "memory-loglet"))]
         (ProviderKind::InMemory, _) => {
             if opts.sequencer.is_some() || !opts.nodeset.is_empty() {
                 bail!("'sequencer' or 'nodeset' are only allowed with 'replicated' provider");

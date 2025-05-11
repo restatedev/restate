@@ -175,7 +175,7 @@ impl NodesConfiguration {
         self.version += Version::from(1);
     }
 
-    #[cfg(any(test, feature = "test-util"))]
+    #[cfg(feature = "test-util")]
     pub fn set_version(&mut self, version: Version) {
         self.version = version;
     }

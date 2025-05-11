@@ -333,7 +333,6 @@ fn try_provisioning(
             let log_id = LogletId::new(log_id, SegmentIndex::OLDEST);
             Some(LogletConfiguration::Local(log_id.into()))
         }
-        #[cfg(any(test, feature = "memory-loglet"))]
         ProviderConfiguration::InMemory => {
             let log_id = LogletId::new(log_id, SegmentIndex::OLDEST);
             Some(LogletConfiguration::Memory(log_id.into()))
@@ -397,7 +396,7 @@ pub fn build_new_replicated_loglet_configuration(
     let selection = NodeSetSelector::select(
         nodes_config,
         &replication,
-        restate_bifrost::providers::replicated_loglet::logserver_candidate_filter,
+        restate_types::replicated_loglet::logserver_candidate_filter,
         logserver_writeable_node_filter(observed_cluster_state),
         opts,
     );
@@ -436,7 +435,6 @@ pub fn build_new_replicated_loglet_configuration(
 enum LogletConfiguration {
     Replicated(ReplicatedLogletParams),
     Local(u64),
-    #[cfg(any(test, feature = "memory-loglet"))]
     Memory(u64),
 }
 
@@ -445,7 +443,6 @@ impl LogletConfiguration {
         match self {
             LogletConfiguration::Replicated(_) => ProviderKind::Replicated,
             LogletConfiguration::Local(_) => ProviderKind::Local,
-            #[cfg(any(test, feature = "memory-loglet"))]
             LogletConfiguration::Memory(_) => ProviderKind::InMemory,
         }
     }
@@ -458,7 +455,6 @@ impl LogletConfiguration {
         observed_cluster_state: &ObservedClusterState,
     ) -> bool {
         match (self, &logs_configuration.default_provider) {
-            #[cfg(any(test, feature = "memory-loglet"))]
             (Self::Memory(_), ProviderConfiguration::InMemory) => false,
             (Self::Local(_), ProviderConfiguration::Local) => false,
             (Self::Replicated(params), ProviderConfiguration::Replicated(config)) => {
@@ -485,7 +481,7 @@ impl LogletConfiguration {
                 let Ok(selection) = NodeSetSelector::select(
                     nodes_config,
                     &params.replication,
-                    restate_bifrost::providers::replicated_loglet::logserver_candidate_filter,
+                    restate_types::replicated_loglet::logserver_candidate_filter,
                     logserver_writeable_node_filter(observed_cluster_state),
                     opts,
                 ) else {
@@ -554,7 +550,6 @@ impl LogletConfiguration {
                     .map_err(|err| LogsControllerError::ConfigurationToLogletParams(err.into()))?,
             ),
             LogletConfiguration::Local(id) => LogletParams::from(id.to_string()),
-            #[cfg(any(test, feature = "memory-loglet"))]
             LogletConfiguration::Memory(id) => LogletParams::from(id.to_string()),
         })
     }
@@ -570,7 +565,6 @@ impl LogletConfiguration {
         let next_loglet_id = LogletId::new(log_id, last_segment_index.next());
 
         match logs_configuration.default_provider {
-            #[cfg(any(test, feature = "memory-loglet"))]
             ProviderConfiguration::InMemory => {
                 Some(LogletConfiguration::Memory(next_loglet_id.into()))
             }
@@ -601,7 +595,6 @@ impl LogletConfiguration {
                 itertools::Either::Left(configuration.nodeset.iter())
             }
             LogletConfiguration::Local(_) => itertools::Either::Right(iter::empty()),
-            #[cfg(any(test, feature = "memory-loglet"))]
             LogletConfiguration::Memory(_) => itertools::Either::Right(iter::empty()),
         }
     }
@@ -610,7 +603,6 @@ impl LogletConfiguration {
         match self {
             LogletConfiguration::Replicated(configuration) => Some(configuration.sequencer),
             LogletConfiguration::Local(_) => None,
-            #[cfg(any(test, feature = "memory-loglet"))]
             LogletConfiguration::Memory(_) => None,
         }
     }
@@ -622,7 +614,6 @@ impl TryFrom<&LogletConfig> for LogletConfiguration {
     fn try_from(value: &LogletConfig) -> Result<Self, Self::Error> {
         match value.kind {
             ProviderKind::Local => Ok(LogletConfiguration::Local(value.params.parse()?)),
-            #[cfg(any(test, feature = "memory-loglet"))]
             ProviderKind::InMemory => Ok(LogletConfiguration::Memory(value.params.parse()?)),
             ProviderKind::Replicated => {
                 ReplicatedLogletParams::deserialize_from(value.params.as_bytes())

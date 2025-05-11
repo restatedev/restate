@@ -26,12 +26,12 @@ use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
 };
 use restate_types::logs::{
-    KeyFilter, LogId, LogletId, LogletOffset, MatchKeyQuery, Record, SequenceNumber, TailState,
+    KeyFilter, LogId, LogletId, LogletOffset, MatchKeyQuery, Record, SequenceNumber,
+    TailOffsetWatch, TailState,
 };
 
 use crate::LogEntry;
 use crate::Result;
-use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
     FindTailOptions, Loglet, LogletCommit, LogletProvider, LogletProviderFactory, LogletReadStream,
     OperationError, SendableLogletReadStream,
