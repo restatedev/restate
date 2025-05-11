@@ -16,16 +16,20 @@ formula = "restatectl"
 
 [features]
 default = ["no-trace-logging"]
-memory-loglet = ["restate-types/memory-loglet", "restate-admin?/memory-loglet"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
-dump-local-log = ["restate-metadata-server", "restate-rocksdb", "restate-bifrost", "restate-wal-protocol", "rlimit"]
+dump-local-log = [
+    "restate-metadata-server",
+    "restate-rocksdb",
+    "restate-bifrost",
+    "restate-wal-protocol",
+    "rlimit",
+    "futures-util",
+    "tempfile",
+]
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
-# admin isn't needed, but without it, workspace builds fail because the memory-loglet feature is not enabled, and unification
-# brings in admin for other binaries which need it
-# NOTE: This is removed in the next PR
-restate-admin = { workspace = true, optional = true }
+
 restate-cli-util = { workspace = true }
 restate-core = { workspace = true }
 restate-log-server-grpc = { workspace = true, features = ["grpc-client"] }
@@ -37,6 +41,9 @@ restate-bifrost = { workspace = true, optional = true, features = ["local-loglet
 restate-metadata-server = { workspace = true, optional = true }
 restate-rocksdb = { workspace = true, optional = true }
 restate-wal-protocol = { workspace = true, optional = true }
+rlimit = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 arrow = { workspace = true }
@@ -51,21 +58,16 @@ cling = { workspace = true }
 crossterm = { version = "0.27.0" }
 ctrlc = { version = "3.4" }
 diff = "0.1.13"
-enumset = { workspace = true }
 futures = { workspace = true }
-futures-util = { workspace = true }
 itertools = { workspace = true }
 json-patch = "2.0.0"
 humantime = { workspace = true }
 lambda_runtime = "0.13.0"
 prost-types = { workspace = true }
 rand = { workspace = true }
-rlimit = { workspace = true, optional = true }
 rustls = { workspace = true, features = ["aws-lc-rs"]}
 serde = { workspace = true }
 serde_json = { workspace = true }
-strum = { workspace = true }
-tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport", "prost", "zstd", "gzip"] }

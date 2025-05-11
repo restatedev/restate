@@ -8,18 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::commands::config::cluster_config_string;
-use crate::connection::ConnectionInfo;
-use crate::util::grpc_channel;
+use std::cmp::Ordering;
+
 use clap::Parser;
 use cling::{Collect, Run};
+use tonic::Code;
+
 use restate_cli_util::ui::console::confirm_or_exit;
 use restate_cli_util::{c_error, c_println, c_warn};
 use restate_core::protobuf::node_ctl_svc::{ProvisionClusterRequest, new_node_ctl_client};
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
 use restate_types::replication::ReplicationProperty;
-use std::cmp::Ordering;
-use tonic::Code;
+
+use crate::commands::config::cluster_config_string;
+use crate::connection::ConnectionInfo;
+use crate::util::grpc_channel;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "provision_cluster")]
@@ -105,7 +108,6 @@ async fn provision_cluster(
         let default_provider = ProviderConfiguration::try_from(default_provider.clone())?;
 
         match default_provider {
-            #[cfg(feature = "memory-loglet")]
             ProviderConfiguration::InMemory => {
                 c_warn!(
                     "You are about to provision a cluster with a Bifrost provider that only supports a single node cluster."

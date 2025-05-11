@@ -715,7 +715,6 @@ impl SealAndExtendTask {
         let provider_config = match &self.extension {
             None => logs.configuration().default_provider.clone(),
             Some(ext) => match ext.provider_kind {
-                #[cfg(any(test, feature = "memory-loglet"))]
                 ProviderKind::InMemory => ProviderConfiguration::InMemory,
                 ProviderKind::Local => ProviderConfiguration::Local,
                 ProviderKind::Replicated => {
@@ -754,7 +753,6 @@ impl SealAndExtendTask {
             });
 
         let (provider, params) = match &provider_config {
-            #[cfg(any(test, feature = "memory-loglet"))]
             ProviderConfiguration::InMemory => (
                 ProviderKind::InMemory,
                 u64::from(next_loglet_id).to_string().into(),
