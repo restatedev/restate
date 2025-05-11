@@ -19,7 +19,7 @@ use crate::node::{HealthCheck, HealthError, Node, NodeStartError, StartedNode};
 use futures::StreamExt;
 use futures::future::{self};
 use futures::stream::FuturesUnordered;
-use restate_metadata_server::MetadataServerConfiguration;
+use restate_metadata_server_grpc::MetadataServerConfiguration;
 use restate_types::PlainNodeId;
 use restate_types::errors::GenericError;
 use serde::{Deserialize, Serialize};

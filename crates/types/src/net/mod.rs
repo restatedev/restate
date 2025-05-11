@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 pub mod codec;
+pub mod connect_opts;
 pub mod log_server;
 pub mod metadata;
 pub mod node;

@@ -16,12 +16,13 @@ use googletest::IntoTestResult;
 use googletest::internal::test_outcome::TestAssertionFailure;
 
 use restate_bifrost::{Bifrost, loglet::Loglet};
+use restate_core::MetadataWriter;
 use restate_core::TaskCenter;
-use restate_core::{MetadataWriter, metadata_store::MetadataStoreClient};
 use restate_local_cluster_runner::{
     cluster::{Cluster, MaybeTempDir, StartedCluster},
     node::{BinarySource, Node},
 };
+use restate_metadata_store::MetadataStoreClient;
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::logs::LogletId;

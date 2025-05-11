@@ -17,7 +17,7 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
-restate-metadata-server = { workspace = true }
+restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 

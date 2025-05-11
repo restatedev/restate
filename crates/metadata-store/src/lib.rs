@@ -8,8 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod etcd;
-mod objstore;
+#![deny(clippy::perf)]
+#![warn(
+    clippy::large_futures,
+    clippy::large_types_passed_by_value,
+    clippy::use_debug,
+    clippy::mutex_atomic
+)]
 
-pub use etcd::EtcdMetadataStore;
-pub use objstore::create_object_store_based_meta_store;
+mod metadata_store;
+mod metric_definitions;
+
+pub mod protobuf;
+pub use metadata_store::*;
+
+#[cfg(feature = "test-util")]
+mod test_util;

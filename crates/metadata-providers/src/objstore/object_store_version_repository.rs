@@ -17,11 +17,9 @@ use tracing::info;
 use url::Url;
 
 use restate_object_store_util::create_object_store_client;
-
-use crate::metadata_store::providers::objstore::version_repository::{
-    Tag, TaggedValue, VersionRepository, VersionRepositoryError,
-};
 use restate_types::config::MetadataClientKind;
+
+use super::version_repository::{Tag, TaggedValue, VersionRepository, VersionRepositoryError};
 
 #[derive(Debug)]
 pub(crate) struct ObjectStoreVersionRepository {
@@ -256,12 +254,13 @@ impl VersionRepository for ObjectStoreVersionRepository {
 
 #[cfg(test)]
 mod tests {
-    use crate::metadata_store::providers::objstore::object_store_version_repository::ObjectStoreVersionRepository;
-    use crate::metadata_store::providers::objstore::version_repository::{
-        VersionRepository, VersionRepositoryError,
-    };
+    use super::*;
+
+    use crate::objstore::version_repository::{VersionRepository, VersionRepositoryError};
+
     use bytes::{Buf, Bytes};
     use bytestring::ByteString;
+
     use std::sync::Arc;
     use tokio::task::JoinSet;
 

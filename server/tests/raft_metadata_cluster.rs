@@ -16,12 +16,12 @@ use googletest::prelude::err;
 use googletest::{IntoTestResult, assert_that, pat};
 use rand::Rng;
 use rand::seq::IndexedMutRandom;
-use restate_core::metadata_store::{MetadataStoreClient, WriteError, retry_on_retryable_error};
 use restate_core::{TaskCenter, TaskKind, cancellation_token};
 use restate_local_cluster_runner::cluster::{Cluster, StartedCluster};
 use restate_local_cluster_runner::node::{BinarySource, HealthCheck, Node};
-use restate_metadata_server::create_client;
+use restate_metadata_providers::create_client;
 use restate_metadata_server::tests::Value;
+use restate_metadata_store::{MetadataStoreClient, WriteError, retry_on_retryable_error};
 use restate_types::config::{
     Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind, RaftOptions,
 };
