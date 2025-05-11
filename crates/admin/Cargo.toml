@@ -9,7 +9,6 @@ publish = false
 
 [features]
 default = ["serve-web-ui"]
-clients = []
 options_schema = ["restate-service-client/options_schema"]
 memory-loglet = ["restate-bifrost/memory-loglet"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
@@ -26,6 +25,7 @@ restate-core = { workspace = true, features = ["options_schema"] }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
+restate-metadata-store = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }

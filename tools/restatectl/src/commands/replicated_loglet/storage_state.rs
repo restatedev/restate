@@ -12,8 +12,8 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use cling::prelude::*;
-use restate_core::protobuf::metadata_proxy_svc::MetadataStoreProxy;
-use restate_metadata_server::MetadataStoreClient;
+use restate_metadata_store::MetadataStoreClient;
+use restate_metadata_store::protobuf::metadata_proxy_svc::client::MetadataStoreProxy;
 
 use restate_bifrost::providers::replicated_loglet::logserver_candidate_filter;
 use restate_bifrost::providers::replicated_loglet::replication::NodeSetChecker;
