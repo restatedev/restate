@@ -20,11 +20,11 @@ use restate_core::my_node_id;
 use restate_core::network::{Networking, TransportConnect};
 use restate_types::logs::metadata::{ProviderKind, SegmentIndex};
 use restate_types::logs::{
-    KeyFilter, LogId, LogletId, LogletOffset, Record, RecordCache, SequenceNumber, TailState,
+    KeyFilter, LogId, LogletId, LogletOffset, Record, RecordCache, SequenceNumber, TailOffsetWatch,
+    TailState,
 };
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
-use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
     FindTailOptions, Loglet, LogletCommit, OperationError, SendableLogletReadStream,
 };

@@ -14,11 +14,10 @@ use tracing::{Instrument, debug, error, info, warn};
 
 use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenterFutureExt};
-use restate_types::logs::{KeyFilter, LogletOffset, RecordCache, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogletOffset, RecordCache, SequenceNumber, TailOffsetWatch};
 use restate_types::net::log_server::{GetDigest, LogServerRequestHeader};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
-use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::read_path::ReadStreamTask;
 
 use super::digests::Digests;

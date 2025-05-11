@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use tracing::warn;
 
-use restate_bifrost::loglet::util::TailOffsetWatch;
 use restate_types::PlainNodeId;
+use restate_types::logs::TailOffsetWatch;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{Digest, LogServerResponseHeader, RecordStatus, Status};
 use restate_types::replicated_loglet::ReplicatedLogletParams;
