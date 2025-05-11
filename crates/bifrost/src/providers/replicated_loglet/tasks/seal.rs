@@ -16,14 +16,12 @@ use restate_core::network::{Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenterFutureExt};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
-use restate_types::logs::{LogletOffset, SequenceNumber};
+use restate_types::logs::{LogletOffset, SequenceNumber, TailOffsetWatch};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
-use restate_types::replication::DecoratedNodeSet;
+use restate_types::replication::{DecoratedNodeSet, NodeSetChecker};
 
-use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::error::{NodeSealStatus, ReplicatedLogletError};
-use crate::providers::replicated_loglet::replication::NodeSetChecker;
 use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
 
 use super::util::Disposition;

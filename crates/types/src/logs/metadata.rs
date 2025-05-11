@@ -124,7 +124,7 @@ impl LookupIndex {
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderConfiguration {
-    #[cfg(any(test, feature = "memory-loglet"))]
+    #[cfg(feature = "memory-loglet")]
     InMemory,
     Local,
     Replicated(ReplicatedLogletConfig),
@@ -142,7 +142,7 @@ impl Default for ProviderConfiguration {
 impl ProviderConfiguration {
     pub fn kind(&self) -> ProviderKind {
         match self {
-            #[cfg(any(test, feature = "memory-loglet"))]
+            #[cfg(feature = "memory-loglet")]
             Self::InMemory => ProviderKind::InMemory,
             Self::Local => ProviderKind::Local,
             Self::Replicated(_) => ProviderKind::Replicated,
@@ -165,7 +165,7 @@ impl ProviderConfiguration {
 
     pub fn replication(&self) -> Option<&ReplicationProperty> {
         match self {
-            #[cfg(any(test, feature = "memory-loglet"))]
+            #[cfg(feature = "memory-loglet")]
             ProviderConfiguration::InMemory => None,
             ProviderConfiguration::Local => None,
             ProviderConfiguration::Replicated(config) => Some(&config.replication_property),
@@ -174,7 +174,7 @@ impl ProviderConfiguration {
 
     pub fn target_nodeset_size(&self) -> Option<NodeSetSize> {
         match self {
-            #[cfg(any(test, feature = "memory-loglet"))]
+            #[cfg(feature = "memory-loglet")]
             ProviderConfiguration::InMemory => None,
             ProviderConfiguration::Local => None,
             ProviderConfiguration::Replicated(config) => Some(config.target_nodeset_size),
@@ -192,7 +192,7 @@ impl From<(ProviderKind, ReplicationProperty, NodeSetSize)> for ProviderConfigur
     ) -> Self {
         match provider_kind {
             ProviderKind::Local => ProviderConfiguration::Local,
-            #[cfg(any(test, feature = "memory-loglet"))]
+            #[cfg(feature = "memory-loglet")]
             ProviderKind::InMemory => ProviderConfiguration::InMemory,
             ProviderKind::Replicated => ProviderConfiguration::Replicated(ReplicatedLogletConfig {
                 replication_property: log_replication,
@@ -210,7 +210,7 @@ impl From<ProviderConfiguration> for crate::protobuf::cluster::BifrostProvider {
 
         match value {
             ProviderConfiguration::Local => result.provider = ProviderKind::Local.to_string(),
-            #[cfg(any(test, feature = "memory-loglet"))]
+            #[cfg(feature = "memory-loglet")]
             ProviderConfiguration::InMemory => result.provider = ProviderKind::InMemory.to_string(),
             ProviderConfiguration::Replicated(config) => {
                 result.provider = ProviderKind::Replicated.to_string();
@@ -232,7 +232,7 @@ impl TryFrom<crate::protobuf::cluster::BifrostProvider> for ProviderConfiguratio
 
         match provider_kind {
             ProviderKind::Local => Ok(Self::Local),
-            #[cfg(any(test, feature = "memory-loglet"))]
+            #[cfg(feature = "memory-loglet")]
             ProviderKind::InMemory => Ok(Self::InMemory),
             ProviderKind::Replicated => {
                 let config = value.replication_property.ok_or_else(|| {
@@ -495,7 +495,7 @@ pub struct LogletConfig {
 }
 
 impl LogletConfig {
-    #[cfg(any(test, feature = "memory-loglet"))]
+    #[cfg(feature = "memory-loglet")]
     pub fn for_testing() -> Self {
         Self {
             kind: ProviderKind::InMemory,
@@ -548,7 +548,7 @@ pub enum ProviderKind {
     /// A local rocksdb-backed loglet.
     Local,
     /// An in-memory loglet, primarily for testing.
-    #[cfg(any(test, feature = "memory-loglet"))]
+    #[cfg(feature = "memory-loglet")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     InMemory,
     /// Replicated loglets are restate's native log replication system. This requires
@@ -561,7 +561,7 @@ impl FromStr for ProviderKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "local" => Ok(Self::Local),
-            #[cfg(any(test, feature = "memory-loglet"))]
+            #[cfg(feature = "memory-loglet")]
             "in-memory" | "in_memory" | "memory" => Ok(Self::InMemory),
             "replicated" => Ok(Self::Replicated),
             _ => anyhow::bail!("Unknown provider kind"),
@@ -777,7 +777,7 @@ pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletPa
             let loglet_id = rand::rng().next_u64().to_string();
             LogletParams::from(loglet_id)
         }
-        #[cfg(any(test, feature = "memory-loglet"))]
+        #[cfg(feature = "memory-loglet")]
         ProviderKind::InMemory => {
             use rand::RngCore;
             let loglet_id = rand::rng().next_u64().to_string();

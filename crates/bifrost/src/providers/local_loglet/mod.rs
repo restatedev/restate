@@ -25,11 +25,12 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use metrics::{Histogram, counter, histogram};
-use restate_types::logs::metadata::ProviderKind;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use restate_core::ShutdownError;
+use restate_types::logs::TailOffsetWatch;
+use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
 
 use self::log_store::LogStoreError;
@@ -38,7 +39,6 @@ use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
 use crate::Result;
-use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
     FindTailOptions, Loglet, LogletCommit, OperationError, SendableLogletReadStream,
 };

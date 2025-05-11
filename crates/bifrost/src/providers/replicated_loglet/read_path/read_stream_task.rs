@@ -18,14 +18,15 @@ use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnec
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, my_node_id};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
-use restate_types::logs::{KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber};
+use restate_types::logs::{
+    KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber, TailOffsetWatch,
+};
 use restate_types::net::log_server::{GetRecords, LogServerRequestHeader, MaybeRecord};
 use restate_types::replicated_loglet::{EffectiveNodeSet, LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::NodeSet;
 
 use crate::LogEntry;
 use crate::loglet::OperationError;
-use crate::loglet::util::TailOffsetWatch;
 use crate::providers::replicated_loglet::metric_definitions::{
     BIFROST_REPLICATED_READ_CACHE_FILTERED, BIFROST_REPLICATED_READ_CACHE_HIT,
     BIFROST_REPLICATED_READ_TOTAL,

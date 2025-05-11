@@ -17,13 +17,14 @@ use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use itertools::Itertools;
 use tracing::trace;
 
-use restate_types::Merge;
-use restate_types::PlainNodeId;
-use restate_types::locality::{LocationScope, NodeLocation};
-use restate_types::nodes_config::NodesConfigError;
-use restate_types::nodes_config::{NodesConfiguration, StorageState};
-use restate_types::replication::DecoratedNodeSet;
-use restate_types::replication::{NodeSet, ReplicationProperty};
+use crate::Merge;
+use crate::PlainNodeId;
+use crate::locality::{LocationScope, NodeLocation};
+use crate::nodes_config::NodesConfigError;
+use crate::nodes_config::{NodesConfiguration, StorageState};
+
+use super::DecoratedNodeSet;
+use super::{NodeSet, ReplicationProperty};
 
 type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
@@ -780,10 +781,10 @@ mod tests {
 
     use googletest::prelude::*;
 
-    use restate_types::nodes_config::{
+    use crate::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
-    use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+    use crate::{GenerationalNodeId, PlainNodeId, Version};
 
     fn generate_logserver_node(
         id: impl Into<PlainNodeId>,
