@@ -21,11 +21,13 @@ use crate::storage::StorageEncode;
 pub mod builder;
 mod loglet;
 pub mod metadata;
+mod offset_watch;
 mod record;
 mod record_cache;
 mod tail;
 
 pub use loglet::*;
+pub use offset_watch::*;
 pub use record::Record;
 pub use record_cache::RecordCache;
 pub use tail::*;

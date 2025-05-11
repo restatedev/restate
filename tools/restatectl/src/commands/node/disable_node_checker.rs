@@ -108,7 +108,6 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
                 self.logs.configuration().default_provider.kind(),
             ));
         }
-        #[cfg(feature = "memory-loglet")]
         if matches!(
             self.logs.configuration().default_provider.kind(),
             ProviderKind::InMemory
@@ -124,7 +123,6 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
                 match segment.config.kind {
                     // we assume that the given node runs the local and memory loglet and, therefore,
                     // cannot be disabled
-                    #[cfg(feature = "memory-loglet")]
                     ProviderKind::InMemory => {
                         return Err(DisableNodeError::LocalLoglet {
                             provider_kind: segment.config.kind,

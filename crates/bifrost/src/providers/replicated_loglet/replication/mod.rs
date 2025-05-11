@@ -8,7 +8,4 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod checker;
 pub mod spread_selector;
-
-pub use checker::*;

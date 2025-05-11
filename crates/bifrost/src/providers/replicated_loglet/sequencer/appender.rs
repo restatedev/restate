@@ -28,7 +28,7 @@ use restate_types::{
     live::Live,
     logs::{LogletOffset, Record, SequenceNumber, TailState},
     net::log_server::{LogServerRequestHeader, Status, Store, StoreFlags, Stored},
-    replication::{DecoratedNodeSet, NodeSet},
+    replication::{DecoratedNodeSet, NodeSet, NodeSetChecker},
     time::MillisSinceEpoch,
 };
 
@@ -42,7 +42,6 @@ use crate::{
         metric_definitions::{
             BIFROST_SEQ_RECORDS_COMMITTED_BYTES, BIFROST_SEQ_RECORDS_COMMITTED_TOTAL,
         },
-        replication::NodeSetChecker,
     },
 };
 
