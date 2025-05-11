@@ -28,7 +28,7 @@ use restate_core::{
 use restate_types::{
     GenerationalNodeId,
     config::Configuration,
-    logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber},
+    logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber, TailOffsetWatch},
     replicated_loglet::ReplicatedLogletParams,
     replication::{NodeSet, ReplicationProperty},
 };
@@ -38,7 +38,7 @@ use super::{
     log_server_manager::RemoteLogServerManager,
     replication::spread_selector::{SelectorStrategy, SpreadSelector},
 };
-use crate::loglet::{LogletCommit, OperationError, util::TailOffsetWatch};
+use crate::loglet::{LogletCommit, OperationError};
 
 /// A soft-limit of the actual number of records we want to allow in a loglet, this
 /// leaves plenty of space for slop in the overflow check. The actual loglet records are allowed to

@@ -12,7 +12,7 @@ mod error;
 #[cfg(any(test, feature = "test-util"))]
 pub mod loglet_tests;
 mod provider;
-pub mod util;
+pub use restate_types::logs::TailOffsetWatch;
 
 // exports
 pub use error::*;

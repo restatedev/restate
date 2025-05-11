@@ -28,7 +28,7 @@ options_schema = [
     "restate-tracing-instrumentation/options_schema",
     "restate-types/schemars",
 ]
-memory-loglet = ["restate-node/memory-loglet", "restate-admin/memory-loglet"]
+memory-loglet = ["restate-node/memory-loglet"]
 crate_per_service = ["restate-tracing-instrumentation/service_per_crate"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 metadata-api = ["restate-admin/metadata-api"]
@@ -75,7 +75,6 @@ url = { version = "2.5.4", features = [] }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
-restate-admin = { workspace = true, features = ["memory-loglet"] }
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-local-cluster-runner = { workspace = true }

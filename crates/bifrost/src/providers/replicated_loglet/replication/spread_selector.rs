@@ -17,9 +17,7 @@ use rand::prelude::*;
 
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::replicated_loglet::Spread;
-use restate_types::replication::{NodeSet, ReplicationProperty};
-
-use crate::providers::replicated_loglet::replication::NodeSetChecker;
+use restate_types::replication::{NodeSet, NodeSetChecker, ReplicationProperty};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum SpreadSelectorError {

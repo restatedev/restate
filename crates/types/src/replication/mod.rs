@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod checker;
 mod nodeset;
 mod nodeset_selector;
 mod replication_property;
 
+pub use checker::*;
 pub use nodeset::*;
 pub use nodeset_selector::DomainAwareNodeSetSelector as NodeSetSelector;
 pub use nodeset_selector::{NodeSelectorError, NodeSetSelectorOptions};

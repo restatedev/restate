@@ -28,15 +28,13 @@ use restate_core::{
 use restate_types::{
     config::Configuration,
     errors::MaybeRetryableError,
-    logs::{LogId, Record, metadata::SegmentIndex},
+    logs::{LogId, Record, TailOffsetWatch, metadata::SegmentIndex},
     net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
     replicated_loglet::ReplicatedLogletParams,
 };
 use tracing::instrument;
 
-use crate::loglet::{
-    AppendError, LogletCommit, LogletCommitResolver, OperationError, util::TailOffsetWatch,
-};
+use crate::loglet::{AppendError, LogletCommit, LogletCommitResolver, OperationError};
 
 pub struct RemoteSequencer<T> {
     log_id: LogId,
@@ -465,7 +463,7 @@ mod test {
     };
     use restate_types::{
         GenerationalNodeId,
-        logs::{LogId, LogletOffset, Record, SequenceNumber, TailState},
+        logs::{LogId, LogletOffset, Record, SequenceNumber, TailOffsetWatch, TailState},
         net::{
             RpcRequest,
             replicated_loglet::{
@@ -477,7 +475,7 @@ mod test {
     };
 
     use super::RemoteSequencer;
-    use crate::loglet::{AppendError, util::TailOffsetWatch};
+    use crate::loglet::AppendError;
 
     struct SequencerMockHandler {
         offset: AtomicU32,

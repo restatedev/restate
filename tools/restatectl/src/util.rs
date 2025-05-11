@@ -34,7 +34,6 @@ pub fn write_default_provider<W: fmt::Write>(
 ) -> Result<(), fmt::Error> {
     let title = "Logs Provider";
     match provider {
-        #[cfg(any(test, feature = "memory-loglet"))]
         ProviderConfiguration::InMemory => {
             write_leaf(w, depth, true, title, "in-memory")?;
         }

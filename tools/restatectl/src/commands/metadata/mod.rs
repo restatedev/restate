@@ -12,8 +12,6 @@ mod get;
 mod patch;
 mod put;
 
-use std::path::PathBuf;
-
 use cling::prelude::*;
 
 use restate_metadata_store::protobuf::metadata_proxy_svc::{
@@ -37,28 +35,7 @@ pub enum Metadata {
 
 #[derive(Args, Clone, Debug)]
 #[clap()]
-pub struct MetadataCommonOpts {
-    /// Service type for access mode = "remote"
-    #[arg(long, default_value_t)]
-    remote_service_type: RemoteServiceType,
-
-    /// Restate configuration file for access mode = "direct"
-    #[arg(
-        short,
-        long = "config-file",
-        env = "RESTATE_CONFIG",
-        value_name = "FILE"
-    )]
-    config_file: Option<PathBuf>,
-}
-
-#[derive(clap::ValueEnum, Clone, Default, Debug, strum::Display, PartialEq)]
-#[strum(serialize_all = "kebab-case")]
-enum RemoteServiceType {
-    #[default]
-    Restate,
-    Etcd,
-}
+pub struct MetadataCommonOpts;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GenericMetadataValue {
