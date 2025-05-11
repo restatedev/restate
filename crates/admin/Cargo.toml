@@ -10,8 +10,8 @@ publish = false
 [features]
 default = ["serve-web-ui"]
 clients = []
-options_schema = ["restate-service-client/options_schema"]
-memory-loglet = ["restate-bifrost/memory-loglet"]
+options_schema = ["restate-service-client/options_schema", "restate-types/schemars"]
+memory-loglet = ["restate-bifrost/memory-loglet", "restate-types/memory-loglet"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
 storage-query = []
 metadata-api = []
@@ -30,7 +30,7 @@ restate-metadata-store = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
-restate-types = { workspace = true, features = ["schemars"] }
+restate-types = { workspace = true }
 restate-utoipa = { workspace = true }
 restate-wal-protocol = { workspace = true }
 restate-web-ui = { git = "https://github.com/restatedev/restate-web-ui-crate", optional = true, version = "0.0.68", tag = "v0.0.68" }
