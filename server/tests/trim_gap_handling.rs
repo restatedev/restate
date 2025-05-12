@@ -70,7 +70,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let mut cluster = Cluster::builder()
         .cluster_name("fast-forward-over-trim-gap")
         .nodes(nodes)
-        .temp_base_dir()
+        .temp_base_dir("fast_forward_over_trim_gap")
         .build()
         .start()
         .await?;
