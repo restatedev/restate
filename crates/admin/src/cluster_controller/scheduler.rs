@@ -98,9 +98,8 @@ impl<T: TransportConnect> Scheduler<T> {
     ) -> Result<(), Error> {
         trace!(?observed_cluster_state, "On observed cluster state");
         let alive_workers = observed_cluster_state
-            .alive_nodes
-            .keys()
-            .cloned()
+            .alive_nodes()
+            .map(|node_id| (*node_id).as_plain())
             .filter(|node_id| nodes_config.has_worker_role(node_id))
             .collect();
 
@@ -451,8 +450,7 @@ impl<T: TransportConnect> Scheduler<T> {
     ) {
         // todo: Avoid cloning of node_set if this becomes measurable
         let mut observed_state = observed_cluster_state
-            .partitions
-            .get(partition_id)
+            .partition_state(partition_id)
             .map(|state| state.partition_processors.clone())
             .unwrap_or_default();
 
@@ -556,8 +554,6 @@ mod tests {
     use std::time::Duration;
 
     use futures::StreamExt;
-    use googletest::prelude::*;
-    use itertools::Itertools;
     use rand::Rng;
     use rand::prelude::ThreadRng;
     use test_log::test;
@@ -588,6 +584,7 @@ mod tests {
 
     use crate::cluster_controller::logs_controller::tests::MockNodes;
     use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+    use crate::cluster_controller::observed_cluster_state::tests::matches_partition_table;
     use crate::cluster_controller::scheduler::{
         PartitionProcessorPlacementHints, Scheduler, TargetPartitionPlacementState,
     };
@@ -733,9 +730,10 @@ mod tests {
         let mut control_recv = std::pin::pin!(UnboundedReceiverStream::new(control_recv));
 
         for _ in 0..num_scheduling_rounds {
-            let cluster_state = random_cluster_state(&node_ids, num_partitions);
+            let (cluster_state, cs) = random_cluster_state(&node_ids, num_partitions);
 
-            observed_cluster_state.update(&cluster_state);
+            observed_cluster_state.update_liveness(&cs);
+            observed_cluster_state.update_partitions(&cluster_state);
             scheduler
                 .on_observed_cluster_state(
                     &observed_cluster_state,
@@ -896,45 +894,12 @@ mod tests {
         Ok(partition_table_builder.build())
     }
 
-    fn matches_partition_table(
-        partition_table: &PartitionTable,
-        observed_state: &ObservedClusterState,
-    ) -> googletest::Result<()> {
-        assert_that!(observed_state.partitions.len(), eq(partition_table.len()));
-
-        for (partition_id, partition) in partition_table.iter() {
-            let Some(observed_state) = observed_state.partitions.get(partition_id) else {
-                panic!("partition {partition_id} not found in observed state");
-            };
-            assert_that!(
-                observed_state.partition_processors.len(),
-                eq(partition.placement.len())
-            );
-
-            for (position, node_id) in partition.placement.iter().with_position() {
-                let run_mode = if matches!(
-                    position,
-                    itertools::Position::First | itertools::Position::Only
-                ) {
-                    RunMode::Leader
-                } else {
-                    RunMode::Follower
-                };
-                assert_that!(
-                    observed_state.partition_processors.get(node_id),
-                    eq(Some(&run_mode))
-                );
-            }
-        }
-        Ok(())
-    }
-
     fn derive_observed_cluster_state(
         cluster_state: &ClusterState,
         control_messages: Vec<(GenerationalNodeId, Incoming<Unary<ControlProcessors>>)>,
     ) -> ObservedClusterState {
         let mut observed_cluster_state = ObservedClusterState::default();
-        observed_cluster_state.update(cluster_state);
+        observed_cluster_state.update_partitions(cluster_state);
 
         // apply commands
         for (target_node, control_processors) in control_messages {
@@ -971,16 +936,38 @@ mod tests {
     fn random_cluster_state(
         node_ids: &Vec<GenerationalNodeId>,
         num_partitions: u16,
-    ) -> ClusterState {
+    ) -> (ClusterState, restate_core::cluster_state::ClusterState) {
         let nodes = random_nodes_state(node_ids, num_partitions);
 
-        ClusterState {
-            last_refreshed: None,
-            nodes_config_version: Version::MIN,
-            partition_table_version: Version::MIN,
-            logs_metadata_version: Version::MIN,
-            nodes,
+        let cs = restate_core::cluster_state::ClusterState::default();
+        let mut updater = cs.clone().updater();
+
+        let mut write_guard = updater.write();
+
+        for (node_id, state) in &nodes {
+            match state {
+                NodeState::Alive(alive) => {
+                    write_guard.upsert_node_state(
+                        alive.generational_node_id,
+                        restate_core::cluster_state::NodeState::Alive,
+                    );
+                }
+                NodeState::Dead(_) => {
+                    write_guard.remove_node(*node_id);
+                }
+            }
         }
+
+        (
+            ClusterState {
+                last_refreshed: None,
+                nodes_config_version: Version::MIN,
+                partition_table_version: Version::MIN,
+                logs_metadata_version: Version::MIN,
+                nodes,
+            },
+            cs,
+        )
     }
 
     fn random_nodes_state(
