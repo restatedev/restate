@@ -58,7 +58,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
     let cluster = Cluster::builder()
         .cluster_name("cluster-1")
         .nodes(nodes)
-        .temp_base_dir()
+        .temp_base_dir("replicated_loglet")
         .build()
         .start()
         .await?;
@@ -115,7 +115,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
     let mut cluster = Cluster::builder()
         .cluster_name("cluster_chaos_test")
         .nodes(nodes)
-        .temp_base_dir()
+        .temp_base_dir("cluster_chaos_test")
         .build()
         .start()
         .await?;
