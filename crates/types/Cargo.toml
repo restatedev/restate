@@ -37,6 +37,7 @@ bincode = { workspace = true, default-features = false, features = ["std", "serd
 chrono = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
 codederror = { workspace = true }
+dashmap = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 downcast-rs = { workspace = true }

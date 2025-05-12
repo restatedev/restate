@@ -32,6 +32,7 @@ use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::retries::RetryPolicy;
 
@@ -64,6 +65,7 @@ impl<T: TransportConnect> AdminRole<T> {
         bifrost: Bifrost,
         updateable_config: Live<Configuration>,
         partition_routing: PartitionRouting,
+        replica_set_states: PartitionReplicaSetStates,
         networking: Networking<T>,
         metadata: Metadata,
         metadata_writer: MetadataWriter,
@@ -112,6 +114,7 @@ impl<T: TransportConnect> AdminRole<T> {
                 cluster_controller::Service::create(
                     updateable_config.clone(),
                     health_status,
+                    replica_set_states,
                     bifrost,
                     networking,
                     server_builder,
