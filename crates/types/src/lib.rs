@@ -39,6 +39,7 @@ pub mod metadata_store;
 pub mod net;
 pub mod nodes_config;
 pub mod partition_table;
+pub mod partitions;
 pub mod protobuf;
 pub mod replicated_loglet;
 pub mod replication;

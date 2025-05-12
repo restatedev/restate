@@ -31,12 +31,14 @@ pub enum ProcessorsManagerCommand {
     GetState(oneshot::Sender<BTreeMap<PartitionId, PartitionProcessorStatus>>),
 }
 
-#[derive(Debug, Clone)]
-pub struct ProcessorsManagerHandle(mpsc::Sender<ProcessorsManagerCommand>);
+#[derive(Clone)]
+pub struct ProcessorsManagerHandle {
+    sender: mpsc::Sender<ProcessorsManagerCommand>,
+}
 
 impl ProcessorsManagerHandle {
     pub fn new(sender: mpsc::Sender<ProcessorsManagerCommand>) -> Self {
-        Self(sender)
+        Self { sender }
     }
 
     pub async fn create_snapshot(
@@ -45,7 +47,7 @@ impl ProcessorsManagerHandle {
         min_target_lsn: Option<Lsn>,
     ) -> SnapshotResult {
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.sender
             .send(ProcessorsManagerCommand::CreateSnapshot {
                 partition_id,
                 min_target_lsn,
@@ -67,7 +69,7 @@ impl ProcessorsManagerHandle {
         &self,
     ) -> Result<BTreeMap<PartitionId, PartitionProcessorStatus>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.sender
             .send(ProcessorsManagerCommand::GetState(tx))
             .await
             .map_err(|_| ShutdownError)?;
