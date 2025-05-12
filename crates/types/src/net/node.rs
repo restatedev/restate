@@ -22,6 +22,7 @@ use crate::net::{
     bilrost_wire_codec, bilrost_wire_codec_with_v1_fallback, define_rpc, define_service,
     define_unary_message,
 };
+use crate::partitions::state::ReplicaSetState;
 use crate::time::MillisSinceEpoch;
 use crate::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
 
@@ -92,8 +93,8 @@ bitflags! {
         ///
         /// This is *not* a `Special` message
         const FeelingLonely = 1 << 4;
-        /// This gossip message contains extra information about the nodes in the cluster.
-        /// The field _extras_ can be respected.
+        /// This gossip message contains the merged partition state, otherwise, extra
+        /// fields like `partitions` should be ignored.
         const Enriched = 1 << 5;
     }
 }
@@ -120,7 +121,7 @@ pub struct Gossip {
     /// Extra optional information about the nodes in the cluster
     /// Ignored if `Enriched` flag is not set on the message.
     #[bilrost(5)]
-    pub extras: Vec<Extras>,
+    pub partitions: Vec<PartitionReplicaSet>,
 }
 
 #[derive(Debug, Clone, bilrost::Message, NetSerde)]
@@ -138,6 +139,8 @@ pub struct Node {
 }
 
 #[derive(Debug, Clone, bilrost::Message, NetSerde)]
-pub struct Extras {
-    // todo!()
+pub struct PartitionReplicaSet {
+    pub id: PartitionId,
+    pub observed_current_membership: ReplicaSetState,
+    pub observed_next_membership: Option<ReplicaSetState>,
 }

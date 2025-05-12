@@ -34,6 +34,7 @@ use restate_types::live::LiveLoad;
 use restate_types::net::node::Gossip;
 use restate_types::net::node::GossipFlags;
 use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{
     config::GossipOptions,
@@ -48,8 +49,11 @@ use self::fd_state::FdState;
 pub struct FailureDetector<T> {
     networking: T,
     processor_manager_handle: Option<ProcessorsManagerHandle>,
+    replica_set_states: PartitionReplicaSetStates,
     gossip_svc_rx: ServiceReceiver<GossipService>,
     gossip_interval: tokio::time::Interval,
+    // when did we send the last gossip message with extras
+    intervals_since_last_extras: u32,
     last_dumped: Instant,
 }
 
@@ -58,6 +62,7 @@ impl<T: NetworkSender> FailureDetector<T> {
         opts: &GossipOptions,
         networking: T,
         router_builder: &mut MessageRouterBuilder,
+        replica_set_states: PartitionReplicaSetStates,
         processor_manager_handle: Option<ProcessorsManagerHandle>,
     ) -> Self {
         let gossip_svc_rx = router_builder.register_service(128, BackPressureMode::Lossy);
@@ -67,8 +72,10 @@ impl<T: NetworkSender> FailureDetector<T> {
         Self {
             networking,
             processor_manager_handle,
+            replica_set_states,
             gossip_svc_rx,
             gossip_interval,
+            intervals_since_last_extras: u32::MAX,
             last_dumped: Instant::now(),
         }
     }
@@ -107,7 +114,12 @@ impl<T: NetworkSender> FailureDetector<T> {
         let mut shutting_down = false;
         let (my_node_health, cs_updater) =
             TaskCenter::with_current(|tc| (tc.health().clone(), tc.cluster_state_updater()));
-        let mut fd_state = FdState::new(my_node_id, nodes_config.live_load(), cs_updater);
+        let mut fd_state = FdState::new(
+            my_node_id,
+            nodes_config.live_load(),
+            self.replica_set_states.clone(),
+            cs_updater,
+        );
         // We are starting up. let others know as early as possible so they can update their
         // nodes configuration, and implicitly start the suspect timer for this node.
         let mut my_node_status_watch = my_node_health.node_status().subscribe();
@@ -215,12 +227,13 @@ impl<T: NetworkSender> FailureDetector<T> {
         // At least one interval has passed, let's send a gossip round
         if interval_passed {
             let mut sent = 0;
-            // todo 1: include extras every N intervals.
-            //
+            let include_extras = self.intervals_since_last_extras
+                >= opts.gossip_extras_exchange_frequency.get()
+                && nodes_config.len() > 1;
             // What to do with V1 nodes? Those don't have the unary handler for
             // GossipService so messages will be lost. It's relatively low-risk until more nodes
             // are started up.
-            let msg = state.make_gossip_message(opts, false, nodes_config);
+            let msg = state.make_gossip_message(opts, include_extras, nodes_config);
             for target_node in state.select_targets_for_gossip(nodes_config, &self.networking) {
                 match target_node.send_gossip(&self.networking, msg.clone()) {
                     Err(err) => {
@@ -239,6 +252,13 @@ impl<T: NetworkSender> FailureDetector<T> {
                 trace!(
                     "Finished a full round of attempts without finding a suitable target node to gossip to!"
                 );
+            }
+
+            if sent > 0 && include_extras {
+                self.intervals_since_last_extras = 0;
+            } else {
+                self.intervals_since_last_extras =
+                    self.intervals_since_last_extras.saturating_add(1);
             }
         }
 
@@ -268,7 +288,7 @@ impl<T: NetworkSender> FailureDetector<T> {
             return;
         }
         trace!(%peer, "Received a gossip message {:?}", msg);
-        state.update_from_gossip_message(opts, peer, peer_nc_version, &msg);
+        state.update_from_gossip_message(opts, peer, peer_nc_version, msg);
     }
 
     /// Handle V1's GetNodeState rpc request
@@ -309,7 +329,7 @@ impl<T: NetworkSender> FailureDetector<T> {
             sent_at: MillisSinceEpoch::now(),
             flags,
             nodes: Vec::new(),
-            extras: Vec::new(),
+            partitions: Vec::new(),
         };
 
         for (_, node) in state.peers() {
@@ -326,7 +346,7 @@ impl<T: NetworkSender> FailureDetector<T> {
             sent_at: MillisSinceEpoch::now(),
             flags,
             nodes: Vec::new(),
-            extras: Vec::new(),
+            partitions: Vec::new(),
         };
 
         for (_, node) in state.peers() {
