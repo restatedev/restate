@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use futures::future;
-use futures::never::Never;
 use rand::prelude::IteratorRandom;
 use rand::rng;
 use std::collections::HashMap;
@@ -26,7 +25,6 @@ use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_core::{Metadata, MetadataKind, MetadataWriter, ShutdownError, TaskCenterFutureExt};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_metadata_store::WriteError;
-use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Pinned;
 use restate_types::logs::builder::LogsBuilder;
@@ -55,10 +53,6 @@ const FALLBACK_MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
 pub enum LogsControllerError {
     #[error("failed creating logs: {0}")]
     LogsBuilder(#[from] logs::builder::BuilderError),
-    #[error("failed creating loglet params from loglet configuration: {0}")]
-    ConfigurationToLogletParams(GenericError),
-    #[error("failed creating loglet configuration from loglet params: {0}")]
-    LogletParamsToConfiguration(GenericError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }
@@ -220,12 +214,12 @@ impl LogState {
         observed_cluster_state: &ObservedClusterState,
         log_builder: &mut LogsBuilder,
         node_set_selector_hints: impl NodeSetSelectorHints,
-    ) -> Result<()> {
+    ) {
         match self {
             LogState::Provisioning { log_id } => {
                 if log_builder.chain(*log_id).is_some() {
                     // already configured
-                    return Ok(());
+                    return;
                 }
 
                 if let Some(loglet_configuration) = try_provisioning(
@@ -236,7 +230,7 @@ impl LogState {
                 ) {
                     let chain = Chain::new(
                         loglet_configuration.as_provider(),
-                        loglet_configuration.to_loglet_params()?,
+                        loglet_configuration.to_loglet_params(),
                     );
                     log_builder
                         .add_log(*log_id, chain)
@@ -251,12 +245,8 @@ impl LogState {
                 }
             }
             // nothing to do :-)
-            LogState::Sealing { .. } | LogState::Sealed { .. } | LogState::Available { .. } => {
-                return Ok(());
-            }
+            LogState::Sealing { .. } | LogState::Sealed { .. } | LogState::Available { .. } => {}
         };
-
-        Ok(())
     }
 
     fn try_reconfiguring<F, G>(
@@ -292,7 +282,7 @@ impl LogState {
                     let segment_index = append_segment(
                         *seal_lsn,
                         loglet_configuration.as_provider(),
-                        loglet_configuration.to_loglet_params()?,
+                        loglet_configuration.to_loglet_params(),
                     )?;
 
                     *self = LogState::Available {
@@ -357,7 +347,7 @@ fn logserver_writeable_node_filter(
         matches!(
             config.log_server_config.storage_state,
             StorageState::ReadWrite
-        ) && observed_cluster_state.is_node_alive(node_id)
+        ) && observed_cluster_state.is_node_alive(node_id).is_some()
     }
 }
 /// Build a new segment configuration for a replicated loglet based on the observed cluster state
@@ -378,20 +368,20 @@ pub fn build_new_replicated_loglet_configuration(
 
     let replication = replicated_loglet_config.replication_property.clone();
 
-    let &sequencer = preferred_sequencer
-        .and_then(|node_id| {
-            // map to a known alive node
-            observed_cluster_state.alive_nodes.get(&node_id.id())
-        })
+    let sequencer = preferred_sequencer
+        .and_then(|node_id| observed_cluster_state.is_node_alive(node_id))
         .or_else(|| {
             // we can place the sequencer on any alive node
-            observed_cluster_state.alive_nodes.values().choose(&mut rng)
+            observed_cluster_state
+                .alive_nodes()
+                .choose(&mut rng)
+                .cloned()
         })?;
 
     let opts = NodeSetSelectorOptions::new(u32::from(log_id) as u64)
         .with_target_size(replicated_loglet_config.target_nodeset_size)
         .with_preferred_nodes_opt(preferred_nodes)
-        .with_top_priority_node(sequencer);
+        .with_top_priority_node(sequencer.id());
 
     let selection = NodeSetSelector::select(
         nodes_config,
@@ -439,6 +429,30 @@ enum LogletConfiguration {
 }
 
 impl LogletConfiguration {
+    /// Creates a [`LogletConfiguration`] from a [`LogletConfig`]. This method panics if the loglet
+    /// params could not be parsed.
+    fn from_loglet_config(loglet_config: &LogletConfig) -> Self {
+        match loglet_config.kind {
+            ProviderKind::Local => LogletConfiguration::Local(
+                loglet_config
+                    .params
+                    .parse()
+                    .expect("Invalid local loglet params"),
+            ),
+            ProviderKind::InMemory => LogletConfiguration::Memory(
+                loglet_config
+                    .params
+                    .parse()
+                    .expect("Invalid in-memory loglet params"),
+            ),
+            ProviderKind::Replicated => {
+                ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())
+                    .map(LogletConfiguration::Replicated)
+                    .expect("Invalid replicated loglet params")
+            }
+        }
+    }
+
     fn as_provider(&self) -> ProviderKind {
         match self {
             LogletConfiguration::Replicated(_) => ProviderKind::Replicated,
@@ -458,9 +472,10 @@ impl LogletConfiguration {
             (Self::Memory(_), ProviderConfiguration::InMemory) => false,
             (Self::Local(_), ProviderConfiguration::Local) => false,
             (Self::Replicated(params), ProviderConfiguration::Replicated(config)) => {
-                let sequencer_change_required = !observed_cluster_state
+                let sequencer_change_required = observed_cluster_state
                     .is_node_alive(params.sequencer)
-                    && !observed_cluster_state.alive_nodes.is_empty();
+                    .is_none()
+                    && !observed_cluster_state.alive_nodes_empty();
 
                 if sequencer_change_required {
                     debug!(
@@ -542,16 +557,16 @@ impl LogletConfiguration {
         }
     }
 
-    fn to_loglet_params(&self) -> Result<LogletParams> {
-        Ok(match self {
+    fn to_loglet_params(&self) -> LogletParams {
+        match self {
             LogletConfiguration::Replicated(configuration) => LogletParams::from(
                 configuration
                     .serialize()
-                    .map_err(|err| LogsControllerError::ConfigurationToLogletParams(err.into()))?,
+                    .expect("Failed to serialize replicated loglet params"),
             ),
             LogletConfiguration::Local(id) => LogletParams::from(id.to_string()),
             LogletConfiguration::Memory(id) => LogletParams::from(id.to_string()),
-        })
+        }
     }
 
     fn try_reconfiguring(
@@ -604,22 +619,6 @@ impl LogletConfiguration {
             LogletConfiguration::Replicated(configuration) => Some(configuration.sequencer),
             LogletConfiguration::Local(_) => None,
             LogletConfiguration::Memory(_) => None,
-        }
-    }
-}
-
-impl TryFrom<&LogletConfig> for LogletConfiguration {
-    type Error = GenericError;
-
-    fn try_from(value: &LogletConfig) -> Result<Self, Self::Error> {
-        match value.kind {
-            ProviderKind::Local => Ok(LogletConfiguration::Local(value.params.parse()?)),
-            ProviderKind::InMemory => Ok(LogletConfiguration::Memory(value.params.parse()?)),
-            ProviderKind::Replicated => {
-                ReplicatedLogletParams::deserialize_from(value.params.as_bytes())
-                    .map(LogletConfiguration::Replicated)
-                    .map_err(Into::into)
-            }
         }
     }
 }
@@ -699,19 +698,16 @@ struct LogsControllerInner {
 }
 
 impl LogsControllerInner {
-    fn new(
-        current_logs: Arc<Logs>,
-        retry_policy: RetryPolicy,
-    ) -> Result<Self, LogsControllerError> {
+    fn new(current_logs: Arc<Logs>, retry_policy: RetryPolicy) -> Self {
         let mut logs_state = HashMap::with_capacity(current_logs.num_logs());
-        Self::update_logs_state(&mut logs_state, current_logs.as_ref())?;
+        Self::update_logs_state(&mut logs_state, current_logs.as_ref());
 
-        Ok(Self {
+        Self {
             current_logs,
             logs_state,
             logs_write_in_progress: None,
             retry_policy,
-        })
+        }
     }
 
     fn on_observed_cluster_state_update(
@@ -733,7 +729,7 @@ impl LogsControllerInner {
             observed_cluster_state,
             &mut builder,
             &node_set_selector_hints,
-        )?;
+        );
         self.reconfigure_logs(
             observed_cluster_state,
             &mut builder,
@@ -792,17 +788,15 @@ impl LogsControllerInner {
         observed_cluster_state: &ObservedClusterState,
         logs_builder: &mut LogsBuilder,
         node_set_selector_hints: impl NodeSetSelectorHints,
-    ) -> Result<()> {
+    ) {
         for log_state in self.logs_state.values_mut() {
             log_state.try_provisioning(
                 self.current_logs.configuration(),
                 observed_cluster_state,
                 logs_builder,
                 &node_set_selector_hints,
-            )?;
+            );
         }
-
-        Ok(())
     }
 
     fn reconfigure_logs(
@@ -835,7 +829,7 @@ impl LogsControllerInner {
         event: Event,
         effects: &mut Vec<Effect>,
         metadata_writer: &mut MetadataWriter,
-    ) -> Result<()> {
+    ) {
         match event {
             Event::WriteLogsSucceeded(version) => {
                 self.on_logs_written(version);
@@ -857,7 +851,7 @@ impl LogsControllerInner {
                 }
             }
             Event::NewLogs => {
-                self.on_logs_update(Metadata::with_current(|m| m.logs_ref()), effects)?;
+                self.on_logs_update(Metadata::with_current(|m| m.logs_ref()), effects);
             }
             Event::SealSucceeded {
                 log_id,
@@ -885,8 +879,6 @@ impl LogsControllerInner {
                 self.on_logs_tail_updates(&updates);
             }
         }
-
-        Ok(())
     }
 
     fn on_logs_written(&mut self, version: Version) {
@@ -896,7 +888,7 @@ impl LogsControllerInner {
         }
     }
 
-    fn on_logs_update(&mut self, logs: Pinned<Logs>, effects: &mut Vec<Effect>) -> Result<()> {
+    fn on_logs_update(&mut self, logs: Pinned<Logs>, effects: &mut Vec<Effect>) {
         // rebuild the internal state if we receive a newer logs or one with a version we were
         // supposed to write (race condition)
         if logs.version() > self.current_logs.version()
@@ -909,19 +901,14 @@ impl LogsControllerInner {
             self.logs_state
                 .retain(|_, state| matches!(state, LogState::Provisioning { .. }));
 
-            Self::update_logs_state(&mut self.logs_state, self.current_logs.as_ref())?;
+            Self::update_logs_state(&mut self.logs_state, self.current_logs.as_ref());
 
             // check whether we have a pending seal operation for any of the logs
             effects.push(Effect::FindLogsTail);
         }
-
-        Ok(())
     }
 
-    fn update_logs_state(
-        logs_state: &mut HashMap<LogId, LogState>,
-        logs: &Logs,
-    ) -> Result<(), LogsControllerError> {
+    fn update_logs_state(logs_state: &mut HashMap<LogId, LogState>, logs: &Logs) {
         for (log_id, chain) in logs.iter() {
             let tail = chain.tail();
 
@@ -930,10 +917,7 @@ impl LogsControllerInner {
                 logs_state.insert(
                     *log_id,
                     LogState::Sealed {
-                        configuration: tail
-                            .config
-                            .try_into()
-                            .map_err(LogsControllerError::LogletParamsToConfiguration)?,
+                        configuration: LogletConfiguration::from_loglet_config(tail.config),
                         segment_index: tail.index(),
                         seal_lsn,
                     },
@@ -943,18 +927,12 @@ impl LogsControllerInner {
                 logs_state.insert(
                     *log_id,
                     LogState::Available {
-                        configuration: Some(
-                            tail.config
-                                .try_into()
-                                .map_err(LogsControllerError::LogletParamsToConfiguration)?,
-                        ),
+                        configuration: Some(LogletConfiguration::from_loglet_config(tail.config)),
                         segment_index: tail.index(),
                     },
                 );
             }
         }
-
-        Ok(())
     }
 
     fn on_logs_tail_updates(&mut self, updates: &LogsTailUpdates) {
@@ -1011,10 +989,7 @@ pub struct LogsController {
 }
 
 impl LogsController {
-    pub fn new(
-        bifrost: Bifrost,
-        metadata_writer: MetadataWriter,
-    ) -> Result<Self, LogsControllerError> {
+    pub fn new(bifrost: Bifrost, metadata_writer: MetadataWriter) -> Self {
         //todo(azmy): make configurable
         let retry_policy = RetryPolicy::exponential(
             Duration::from_millis(10),
@@ -1028,7 +1003,7 @@ impl LogsController {
             inner: LogsControllerInner::new(
                 Metadata::with_current(|m| m.logs_snapshot()),
                 retry_policy,
-            )?,
+            ),
             bifrost,
             metadata_writer,
             async_operations: JoinSet::default(),
@@ -1036,7 +1011,7 @@ impl LogsController {
         };
 
         this.find_logs_tail();
-        Ok(this)
+        this
     }
 
     pub fn find_logs_tail(&mut self) {
@@ -1132,12 +1107,10 @@ impl LogsController {
         self.inner.on_partition_table_update(partition_table);
     }
 
-    pub fn on_logs_update(&mut self, logs: Pinned<Logs>) -> Result<()> {
+    pub fn on_logs_update(&mut self, logs: Pinned<Logs>) {
         self.inner
-            .on_logs_update(logs, self.effects.as_mut().expect("to be present"))?;
+            .on_logs_update(logs, self.effects.as_mut().expect("to be present"));
         self.apply_effects();
-
-        Ok(())
     }
 
     fn apply_effects(&mut self) {
@@ -1264,7 +1237,7 @@ impl LogsController {
         ).expect("to spawn seal-log task");
     }
 
-    pub async fn run_async_operations(&mut self) -> Result<Never> {
+    pub async fn run_async_operations(&mut self) {
         loop {
             if self.async_operations.is_empty() {
                 futures::future::pending().await
@@ -1279,7 +1252,7 @@ impl LogsController {
                     event,
                     self.effects.as_mut().expect("to be present"),
                     &mut self.metadata_writer,
-                )?;
+                );
                 self.apply_effects();
             }
         }
@@ -1394,10 +1367,8 @@ pub mod tests {
             storage_state: StorageState,
         ) {
             let node_id = node_id.into();
-            self.observed_state.dead_nodes.remove(&node_id);
             self.observed_state
-                .alive_nodes
-                .insert(node_id, node_id.with_generation(1));
+                .add_alive_node(node_id.with_generation(1));
             self.nodes_config
                 .upsert_node(node(node_id, roles, storage_state));
         }
@@ -1405,10 +1376,9 @@ pub mod tests {
         pub fn kill_node(&mut self, node_id: impl Into<PlainNodeId>) {
             let node_id = node_id.into();
             assert!(
-                self.observed_state.alive_nodes.remove(&node_id).is_some(),
+                self.observed_state.remove_node(&node_id).is_some(),
                 "node not found"
             );
-            self.observed_state.dead_nodes.insert(node_id);
         }
 
         pub fn kill_nodes<const N: usize>(&mut self, ids: [impl Into<PlainNodeId>; N]) {
@@ -1418,11 +1388,9 @@ pub mod tests {
         }
 
         pub fn revive_node(&mut self, (node_id, generation): (u32, u32)) {
-            let id = node_id.into();
-            assert!(self.observed_state.dead_nodes.remove(&id), "node not found");
+            let node_id = PlainNodeId::new(node_id);
             self.observed_state
-                .alive_nodes
-                .insert(id, id.with_generation(generation));
+                .add_alive_node(node_id.with_generation(generation));
         }
 
         pub fn revive_nodes<const N: usize>(&mut self, ids: [(u32, u32); N]) {
@@ -1444,12 +1412,10 @@ pub mod tests {
             roles: impl Into<EnumSet<Role>>,
             storage_state: StorageState,
         ) -> Self {
-            let id = node_id.into();
+            let id = PlainNodeId::new(node_id);
             self.nodes_config
                 .upsert_node(node(node_id, roles.into(), storage_state));
-            self.observed_state
-                .alive_nodes
-                .insert(id, id.with_generation(1));
+            self.observed_state.add_alive_node(id.with_generation(1));
 
             self
         }
@@ -1462,9 +1428,9 @@ pub mod tests {
             storage_state: StorageState,
         ) -> Self {
             let id = node_id.into();
+            self.observed_state.remove_node(&id);
             self.nodes_config
                 .upsert_node(node(node_id, roles, storage_state));
-            self.observed_state.dead_nodes.insert(id);
 
             self
         }
@@ -1484,8 +1450,7 @@ pub mod tests {
         pub fn dead_nodes<const N: usize>(mut self, ids: [u32; N]) -> Self {
             for id in ids {
                 let id = id.into();
-                self.observed_state.alive_nodes.remove(&id);
-                self.observed_state.dead_nodes.insert(id);
+                self.observed_state.remove_node(&id);
             }
             self
         }

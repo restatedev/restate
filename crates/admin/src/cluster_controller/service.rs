@@ -325,6 +325,10 @@ impl<T: TransportConnect> Service<T> {
         let mut state: ClusterControllerState<T> = ClusterControllerState::Follower;
 
         let cs = TaskCenter::with_current(|tc| tc.cluster_state().clone());
+        let mut cs_changed = std::pin::pin!(cs.changed());
+
+        // initialize the state based on the initial cluster state
+        state.update(&self, &cs);
 
         loop {
             tokio::select! {
@@ -332,19 +336,20 @@ impl<T: TransportConnect> Service<T> {
                     // Ignore error if system is shutting down
                     let _ = self.cluster_state_refresher.schedule_refresh();
                 },
-                () = cs.changed() => {
+                () = &mut cs_changed => {
+                    // register waiting for the next update
+                    cs_changed.set(cs.changed());
+
+                    state.update(&self, &cs);
+
                     self.observed_cluster_state.update_liveness(&cs);
+                    if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state).await {
+                        warn!(%err, "Failed to handle observed cluster state. This can impair the overall cluster operations");
+                    }
                 },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
-                    self.observed_cluster_state.update_liveness(&cs);
                     self.observed_cluster_state.update_partitions(&cluster_state);
                     trace!(observed_cluster_state = ?self.observed_cluster_state, "Observed cluster state updated");
-                    // todo quarantine this cluster controller if errors re-occur too often so that
-                    //  another cluster controller can take over
-                    if let Err(err) = state.update(&self, &cs) {
-                        warn!(%err, "Failed to update cluster state. This can impair the overall cluster operations");
-                        continue;
-                    }
 
                     if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state).await {
                         warn!(%err, "Failed to handle observed cluster state. This can impair the overall cluster operations");
@@ -360,18 +365,7 @@ impl<T: TransportConnect> Service<T> {
                     self.heartbeat_interval = Self::create_heartbeat_interval(&configuration.admin);
                     state.reconfigure(configuration);
                 }
-                result = state.run() => {
-                    let leader_event = match result {
-                        Ok(leader_event) => leader_event,
-                        Err(err) => {
-                            warn!(
-                                %err,
-                                "Failed to run cluster controller operations. This can impair the overall cluster operations"
-                            );
-                            continue;
-                        }
-                    };
-
+                leader_event = state.run() => {
                     if let Err(err) = state.on_leader_event(&self.observed_cluster_state, leader_event).await {
                         warn!(
                             %err,
@@ -1360,17 +1354,22 @@ mod tests {
 
         let cluster_state_watcher = svc.cluster_state_refresher.cluster_state_watcher();
 
+        let mut cs_updater = TaskCenter::with_current(|h| h.cluster_state_updater());
+        let mut write_guard = cs_updater.write();
+
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
         for i in 1..=num_nodes {
+            let node_id = GenerationalNodeId::new(i as u32, i as u32);
             nodes_config.upsert_node(NodeConfig::new(
                 format!("node-{}", i),
-                GenerationalNodeId::new(i as u32, i as u32),
+                node_id,
                 NodeLocation::default(),
                 AdvertisedAddress::Uds(format!("{}.sock", i).into()),
                 Role::Admin | Role::Worker,
                 LogServerConfig::default(),
                 MetadataServerConfig::default(),
             ));
+            write_guard.upsert_node_state(node_id, restate_core::cluster_state::NodeState::Alive);
         }
         let builder = modify_builder(builder.set_nodes_config(nodes_config));
 

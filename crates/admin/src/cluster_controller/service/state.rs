@@ -47,11 +47,7 @@ impl<T> ClusterControllerState<T>
 where
     T: TransportConnect,
 {
-    pub fn update(
-        &mut self,
-        service: &Service<T>,
-        cs: &restate_core::cluster_state::ClusterState,
-    ) -> anyhow::Result<()> {
+    pub fn update(&mut self, service: &Service<T>, cs: &restate_core::cluster_state::ClusterState) {
         let maybe_leader = {
             let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
             let admin_nodes: Vec<_> = nodes_config
@@ -81,7 +77,7 @@ where
             }
             (true, ClusterControllerState::Follower) => {
                 info!("Cluster controller switching to leader mode");
-                *self = ClusterControllerState::Leader(Leader::from_service(service)?);
+                *self = ClusterControllerState::Leader(Leader::from_service(service));
             }
             (false, ClusterControllerState::Leader(_)) => {
                 info!(
@@ -91,8 +87,6 @@ where
                 *self = ClusterControllerState::Follower;
             }
         };
-
-        Ok(())
     }
 
     pub async fn on_leader_event(
@@ -112,9 +106,9 @@ where
 
     /// Runs the cluster controller state related tasks. It returns [`LeaderEvent`] which need to
     /// be processed by calling [`Self::on_leader_event`].
-    pub async fn run(&mut self) -> anyhow::Result<LeaderEvent> {
+    pub async fn run(&mut self) -> LeaderEvent {
         match self {
-            Self::Follower => futures::future::pending::<anyhow::Result<_>>().await,
+            Self::Follower => futures::future::pending().await,
             Self::Leader(leader) => leader.run().await,
         }
     }
@@ -166,13 +160,13 @@ impl<T> Leader<T>
 where
     T: TransportConnect,
 {
-    fn from_service(service: &Service<T>) -> anyhow::Result<Leader<T>> {
+    fn from_service(service: &Service<T>) -> Leader<T> {
         let configuration = service.configuration.pinned();
 
         let scheduler = Scheduler::new(service.metadata_writer.clone(), service.networking.clone());
 
         let logs_controller =
-            LogsController::new(service.bifrost.clone(), service.metadata_writer.clone())?;
+            LogsController::new(service.bifrost.clone(), service.metadata_writer.clone());
 
         let log_trim_check_interval = create_log_trim_check_interval(&configuration.admin);
 
@@ -196,7 +190,7 @@ where
         leader.logs_watcher.mark_changed();
         leader.partition_table_watcher.mark_changed();
 
-        Ok(leader)
+        leader
     }
 
     async fn on_observed_cluster_state(
@@ -227,23 +221,23 @@ where
         self.log_trim_check_interval = create_log_trim_check_interval(&configuration.admin);
     }
 
-    async fn run(&mut self) -> anyhow::Result<LeaderEvent> {
+    async fn run(&mut self) -> LeaderEvent {
         loop {
             tokio::select! {
                 _ = self.find_logs_tail_interval.tick() => {
                     self.logs_controller.find_logs_tail();
                 }
                 Some(_) = OptionFuture::from(self.log_trim_check_interval.as_mut().map(|interval| interval.tick())) => {
-                    return Ok(LeaderEvent::TrimLogs);
+                    return LeaderEvent::TrimLogs;
                 }
                 result = self.logs_controller.run_async_operations() => {
-                    result?;
+                    result
                 }
                 Ok(_) = self.logs_watcher.changed() => {
-                    return Ok(LeaderEvent::LogsUpdate);
+                    return LeaderEvent::LogsUpdate;
                 }
                 Ok(_) = self.partition_table_watcher.changed() => {
-                    return Ok(LeaderEvent::PartitionTableUpdate);
+                    return LeaderEvent::PartitionTableUpdate;
                 }
             }
         }
@@ -275,7 +269,7 @@ where
         observed_cluster_state: &ObservedClusterState,
     ) -> anyhow::Result<()> {
         self.logs_controller
-            .on_logs_update(Metadata::with_current(|m| m.logs_ref()))?;
+            .on_logs_update(Metadata::with_current(|m| m.logs_ref()));
 
         self.scheduler
             .on_observed_cluster_state(
