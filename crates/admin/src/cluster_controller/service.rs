@@ -45,6 +45,7 @@ use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Sna
 use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, ReplicationProperty};
@@ -68,6 +69,7 @@ pub struct Service<T> {
     networking: Networking<T>,
     bifrost: Bifrost,
     cluster_state_refresher: ClusterStateRefresher<T>,
+    _replica_set_states: PartitionReplicaSetStates,
     configuration: Live<Configuration>,
     metadata_writer: MetadataWriter,
 
@@ -87,6 +89,7 @@ where
     pub async fn create(
         mut configuration: Live<Configuration>,
         health_status: HealthStatus<AdminStatus>,
+        replica_set_states: PartitionReplicaSetStates,
         bifrost: Bifrost,
         networking: Networking<T>,
         server_builder: &mut NetworkServerBuilder,
@@ -117,6 +120,7 @@ where
                     bifrost.clone(),
                     metadata_writer.clone(),
                     cluster_query_context,
+                    replica_set_states.clone(),
                 )
                 .into_server(),
                 WaitForReady::new(health_status.clone(), AdminStatus::Ready),
@@ -130,6 +134,7 @@ where
             networking,
             bifrost,
             cluster_state_refresher,
+            _replica_set_states: replica_set_states,
             metadata_writer,
             processor_manager_client,
             command_tx,
@@ -793,6 +798,7 @@ mod tests {
 
     use googletest::assert_that;
     use googletest::matchers::eq;
+    use restate_types::partitions::state::PartitionReplicaSetStates;
     use test_log::test;
     use tracing::info;
 
@@ -830,9 +836,12 @@ mod tests {
             .with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
 
+        let replica_set_states = PartitionReplicaSetStates::default();
+
         let svc = Service::create(
             Live::from_value(Configuration::default()),
             HealthStatus::default(),
+            replica_set_states,
             bifrost.clone(),
             builder.networking.clone(),
             &mut NetworkServerBuilder::default(),
@@ -1341,10 +1350,12 @@ mod tests {
         let bifrost = bifrost_svc.handle();
 
         let mut server_builder = NetworkServerBuilder::default();
+        let replica_set_states = PartitionReplicaSetStates::default();
 
         let svc = Service::create(
             Configuration::live(),
             HealthStatus::default(),
+            replica_set_states,
             bifrost.clone(),
             builder.networking.clone(),
             &mut server_builder,

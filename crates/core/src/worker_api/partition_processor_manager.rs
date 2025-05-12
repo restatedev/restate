@@ -31,7 +31,7 @@ pub enum ProcessorsManagerCommand {
     GetState(oneshot::Sender<BTreeMap<PartitionId, PartitionProcessorStatus>>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProcessorsManagerHandle(mpsc::Sender<ProcessorsManagerCommand>);
 
 impl ProcessorsManagerHandle {

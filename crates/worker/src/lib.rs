@@ -45,6 +45,7 @@ use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -114,6 +115,7 @@ impl Worker {
         health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
         partition_routing: PartitionRouting,
+        replica_set_states: PartitionReplicaSetStates,
         networking: Networking<T>,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
@@ -152,6 +154,7 @@ impl Worker {
             live_config_clone,
             metadata_store_client,
             partition_store_manager.clone(),
+            replica_set_states,
             router_builder,
             bifrost,
             SnapshotRepository::create_if_configured(

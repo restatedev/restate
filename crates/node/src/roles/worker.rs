@@ -25,6 +25,7 @@ use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::subscriptions::SubscriptionResolver;
 use restate_worker::SubscriptionController;
@@ -74,6 +75,7 @@ impl WorkerRole {
         health_status: HealthStatus<WorkerStatus>,
         metadata: Metadata,
         partition_routing: PartitionRouting,
+        replica_set_states: PartitionReplicaSetStates,
         updateable_config: Live<Configuration>,
         router_builder: &mut MessageRouterBuilder,
         networking: Networking<T>,
@@ -85,6 +87,7 @@ impl WorkerRole {
             health_status,
             metadata.clone(),
             partition_routing,
+            replica_set_states,
             networking,
             bifrost,
             router_builder,

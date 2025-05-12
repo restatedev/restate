@@ -20,8 +20,9 @@ use restate_core::network::{ConnectThrottle, NetworkSender};
 use restate_types::config::GossipOptions;
 use restate_types::net::node::{Gossip, GossipFlags};
 use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+use restate_types::{GenerationalNodeId, PlainNodeId, Version, net};
 
 use crate::metric_definitions::{
     GOSSIP_INSTANCE, GOSSIP_LONELY, GOSSIP_NODES, GOSSIP_RECEIVED, STATE_ALIVE, STATE_DEAD,
@@ -78,6 +79,8 @@ pub struct FdState {
     num_gossip_received: usize,
     node_states: HashMap<PlainNodeId, Node>,
     #[debug(skip)]
+    replica_set_states: PartitionReplicaSetStates,
+    #[debug(skip)]
     cs_updater: ClusterStateUpdater,
 }
 
@@ -85,6 +88,7 @@ impl FdState {
     pub fn new(
         my_node_id: GenerationalNodeId,
         nodes_config: &NodesConfiguration,
+        replica_set_states: PartitionReplicaSetStates,
         cs_updater: ClusterStateUpdater,
     ) -> Self {
         let now = Instant::now();
@@ -97,6 +101,7 @@ impl FdState {
             last_gossip_tick: now,
             num_gossip_received: 0,
             node_states: HashMap::with_capacity(nodes_config.len()),
+            replica_set_states,
             cs_updater,
         };
         // make sure that our state is pre-seeded with our exact generation
@@ -199,6 +204,7 @@ impl FdState {
             .div_duration_f32(*opts.gossip_tick_interval)
             .floor() as u32;
         if full_intervals > 0 {
+            // update node states
             for node in self.node_states.values_mut() {
                 if node.gen_node_id.as_plain() == self.my_node_id.as_plain() {
                     // keeping ourselves alive
@@ -207,6 +213,7 @@ impl FdState {
                     node.gossip_age = node.gossip_age.saturating_add(full_intervals);
                 }
             }
+
             self.last_gossip_tick = now;
             true
         } else {
@@ -267,7 +274,7 @@ impl FdState {
         opts: &GossipOptions,
         sender_id: GenerationalNodeId,
         sender_nc_version: Version,
-        msg: &Gossip,
+        msg: Gossip,
     ) {
         let is_sender_lonely = msg.flags.intersects(GossipFlags::FeelingLonely);
         let is_sender_in_failover = msg.flags.intersects(GossipFlags::FailingOver);
@@ -372,6 +379,16 @@ impl FdState {
             }
         }
 
+        if msg.flags.intersects(GossipFlags::Enriched) {
+            for partition in msg.partitions.into_iter() {
+                self.replica_set_states.note_observed_membership(
+                    partition.id,
+                    &partition.observed_current_membership,
+                    &partition.observed_next_membership,
+                );
+            }
+        }
+
         let left_until_stable = (opts.gossip_fd_stability_threshold.get() as usize)
             .checked_sub(self.num_gossip_received);
         if let Some(left_until_stable) = left_until_stable {
@@ -428,14 +445,15 @@ impl FdState {
     }
 
     pub fn make_gossip_message(
-        &self,
+        &mut self,
         opts: &GossipOptions,
         include_extras: bool,
         nodes_config: &NodesConfiguration,
     ) -> Gossip {
         let mut flags = GossipFlags::empty();
+
+        // do not include extras if we don't have a valid partition table
         if include_extras {
-            // todo!()
             flags |= GossipFlags::Enriched;
         }
 
@@ -473,13 +491,31 @@ impl FdState {
                 }
             })
             .collect();
+
+        let partitions = if include_extras {
+            self.make_partition_state_list()
+        } else {
+            Vec::new()
+        };
+
         Gossip {
             instance_ts: self.my_instance_ts,
             sent_at: MillisSinceEpoch::now(),
             flags,
             nodes,
-            extras: Vec::new(),
+            partitions,
         }
+    }
+
+    fn make_partition_state_list(&mut self) -> Vec<net::node::PartitionReplicaSet> {
+        self.replica_set_states
+            .iter()
+            .map(|(id, state)| net::node::PartitionReplicaSet {
+                id,
+                observed_current_membership: state.observed_current_membership,
+                observed_next_membership: state.observed_next_membership,
+            })
+            .collect()
     }
 
     pub fn update_my_node_state(&mut self, opts: &GossipOptions) {
