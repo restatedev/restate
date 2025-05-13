@@ -86,9 +86,17 @@ jobs:
 
       - name: Run verify
         run: just verify
+        id: justVerify
         env:
           LOCAL_CLUSTER_RUNNER_FORWARD_LOGS: "true"
           LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR: "true"
+          LOCAL_CLUSTER_RUNNER_TEMPDIR: ${{ runner.temp }}/lcr
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local-cluster-runner
+          path: ${{ runner.temp }}/lcr
 
   docker:
     name: Create docker image

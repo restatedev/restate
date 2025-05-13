@@ -40,9 +40,11 @@ pub struct Cluster {
 impl<C, N> ClusterBuilder<(C, N, ())> {
     /// Use a tempdir as the basedir; this will be removed on Cluster/StartedCluster drop.
     /// You may set LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true to instead log it out and retain
-    /// it.
-    pub fn temp_base_dir(self) -> ClusterBuilder<(C, N, (MaybeTempDir,))> {
-        let maybe_temp_dir = tempfile::tempdir().expect("to create a tempdir").into();
+    /// it, and use LOCAL_CLUSTER_RUNNER_TEMPDIR to set the base dir.
+    /// dir_name is the subdirectory's name inside the base dir, and used as node's base dir.
+    pub fn temp_base_dir(self, dir_name: &str) -> ClusterBuilder<(C, N, (MaybeTempDir,))> {
+        let maybe_temp_dir = MaybeTempDir::new(&dir_name);
+
         let base_dir = (maybe_temp_dir,);
         let (cluster_name, nodes, ()) = self.fields;
         ClusterBuilder {
@@ -245,6 +247,24 @@ pub enum MaybeTempDir {
 }
 
 impl MaybeTempDir {
+    pub fn new<P: AsRef<Path>>(path: &P) -> MaybeTempDir {
+        if let Ok("true" | "1") = std::env::var("LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR").as_deref() {
+            let dir = match std::env::var("LOCAL_CLUSTER_RUNNER_TEMPDIR") {
+                Ok(v) => Path::new(&v).join(path).to_path_buf(),
+                Err(_) => tempfile::tempdir()
+                    .expect("to create a tempdir")
+                    .into_path(),
+            };
+            eprintln!(
+                "Will retain local cluster runner tempdir upon cluster drop: {}",
+                dir.display()
+            );
+            Self::PathBuf(dir)
+        } else {
+            Self::TempDir(Arc::new(tempfile::tempdir().expect("to create a tempdir")))
+        }
+    }
+
     pub fn as_path(&self) -> &Path {
         match self {
             MaybeTempDir::PathBuf(p) => p.as_path(),
@@ -256,20 +276,6 @@ impl MaybeTempDir {
 impl From<PathBuf> for MaybeTempDir {
     fn from(value: PathBuf) -> Self {
         Self::PathBuf(value)
-    }
-}
-
-impl From<tempfile::TempDir> for MaybeTempDir {
-    fn from(value: tempfile::TempDir) -> Self {
-        if let Ok("true" | "1") = std::env::var("LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR").as_deref() {
-            eprintln!(
-                "Will retain local cluster runner tempdir upon cluster drop: {}",
-                value.path().display()
-            );
-            Self::PathBuf(value.into_path())
-        } else {
-            Self::TempDir(Arc::new(value))
-        }
     }
 }
 

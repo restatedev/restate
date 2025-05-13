@@ -94,6 +94,7 @@ pub async fn run_in_test_env<F, O>(
     sequencer: GenerationalNodeId,
     replication: ReplicationProperty,
     log_server_count: u32,
+    dir_name: &str,
     mut future: F,
 ) -> googletest::Result<()>
 where
@@ -112,7 +113,7 @@ where
 
     // ensure base dir lives longer than the node, otherwise it sees shutdown errors
     // this will still respect LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true
-    let base_dir: MaybeTempDir = tempfile::tempdir()?.into();
+    let base_dir = MaybeTempDir::new(&dir_name);
 
     RocksDbManager::init(Configuration::map_live(|c| &c.common));
 
