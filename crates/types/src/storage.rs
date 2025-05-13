@@ -187,7 +187,7 @@ macro_rules! flexbuffers_storage_encode_decode {
 }
 
 /// A polymorphic container of a buffer or a cached storage-encodeable object
-#[derive(Clone, derive_more::Debug, BilrostAs)]
+#[derive(Clone, derive_more::Debug, BilrostAs, NetSerde)]
 #[bilrost_as(dto::PolyBytes)]
 pub enum PolyBytes {
     /// Raw bytes backed by (Bytes), so it's cheap to clone
@@ -195,6 +195,7 @@ pub enum PolyBytes {
     Bytes(bytes::Bytes),
     /// A cached deserialized value that can be downcasted to the original type
     #[debug("Typed")]
+    #[net_serde(skip)]
     Typed(Arc<dyn StorageEncode>),
 }
 
@@ -205,8 +206,6 @@ impl Default for PolyBytes {
         Self::Bytes(bytes::Bytes::default())
     }
 }
-// implement NetSerde for PolyBytes manually
-impl NetSerde for PolyBytes {}
 
 impl PolyBytes {
     /// Returns true if we are holding raw encoded bytes

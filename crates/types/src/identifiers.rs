@@ -700,12 +700,25 @@ impl WithInvocationId for JournalEntryId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, serde_with::SerializeDisplay, serde_with::DeserializeFromStr)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
+    bilrost::Message,
+    NetSerde,
+)]
 pub struct LambdaARN {
+    #[bilrost(1)]
     partition: ByteString,
+    #[bilrost(2)]
     region: ByteString,
+    #[bilrost(3)]
     account_id: ByteString,
+    #[bilrost(4)]
     name: ByteString,
+    #[bilrost(5)]
     version: ByteString,
 }
 
@@ -909,10 +922,12 @@ macro_rules! ulid_backed_id {
                 Ord,
                 serde_with::SerializeDisplay,
                 serde_with::DeserializeFromStr,
-                ::restate_encoding::BilrostAs
+                ::restate_encoding::BilrostAs,
             )]
             #[bilrost_as([< $res_name IdMessage >])]
             pub struct [< $res_name Id >](pub(crate) Ulid);
+
+            impl ::restate_encoding::NetSerde for [< $res_name Id >] {}
 
             impl [< $res_name Id >] {
                 pub fn new() -> Self {

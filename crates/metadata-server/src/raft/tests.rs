@@ -70,7 +70,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
         PlainNodeId::from(0).with_generation(my_generation),
         NodeLocation::default(),
         advertised_address.clone(),
-        Role::MetadataServer.into(),
+        Role::MetadataServer,
         LogServerConfig::default(),
         MetadataServerConfig::default(),
     );

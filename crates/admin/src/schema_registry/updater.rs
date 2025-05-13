@@ -297,8 +297,12 @@ impl SchemaUpdater {
                     existing_deployment
                         .metadata
                         .supported_protocol_versions
-                        .clone(),
-                    deployment_metadata.supported_protocol_versions.clone(),
+                        .clone()
+                        .into(),
+                    deployment_metadata
+                        .supported_protocol_versions
+                        .clone()
+                        .into(),
                 ),
             ));
         };

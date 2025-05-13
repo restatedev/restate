@@ -15,28 +15,34 @@ use std::ops::RangeInclusive;
 use bytestring::ByteString;
 use http::Uri;
 use http::header::{HeaderName, HeaderValue};
+use restate_encoding::{BilrostAs, NetSerde};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+use crate::NetRangeInclusive;
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
 use crate::schema::Schema;
 use crate::schema::service::ServiceMetadata;
 use crate::time::MillisSinceEpoch;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Enumeration, NetSerde,
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ProtocolType {
-    RequestResponse,
-    BidiStream,
+    RequestResponse = 0,
+    BidiStream = 1,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BilrostAs, NetSerde)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[bilrost_as(dto::DeliveryOptions)]
 pub struct DeliveryOptions {
     #[serde(
         with = "serde_with::As::<serde_with::FromInto<restate_serde_util::SerdeableHeaderHashMap>>"
     )]
     #[cfg_attr(feature = "schemars", schemars(with = "HashMap<String, String>"))]
+    #[net_serde(skip)]
     pub additional_headers: HashMap<HeaderName, HeaderValue>,
 }
 
@@ -54,29 +60,39 @@ pub struct Deployment {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DeploymentMetadata {
+    #[bilrost(1)]
     pub ty: DeploymentType,
+    #[bilrost(2)]
     pub delivery_options: DeliveryOptions,
-    pub supported_protocol_versions: RangeInclusive<i32>,
+    #[bilrost(3)]
+    pub supported_protocol_versions: NetRangeInclusive<i32>,
     /// Declared SDK during discovery
+    #[bilrost(4)]
     pub sdk_version: Option<String>,
+    #[bilrost(5)]
     pub created_at: MillisSinceEpoch,
 }
 
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, BilrostAs, NetSerde)]
 #[serde(from = "DeploymentTypeShadow")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[bilrost_as(dto::DeploymentType)]
 pub enum DeploymentType {
+    #[default]
+    Unknown,
     Http {
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+        #[net_serde(skip)]
         address: Uri,
         protocol_type: ProtocolType,
         #[serde(with = "serde_with::As::<restate_serde_util::VersionSerde>")]
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+        #[net_serde(skip)]
         http_version: http::Version,
     },
     Lambda {
@@ -207,6 +223,7 @@ impl DeploymentType {
 
     pub fn protocol_type(&self) -> ProtocolType {
         match self {
+            DeploymentType::Unknown => unreachable!("unknown deployment type"),
             DeploymentType::Http { protocol_type, .. } => *protocol_type,
             DeploymentType::Lambda { .. } => ProtocolType::RequestResponse,
         }
@@ -214,6 +231,7 @@ impl DeploymentType {
 
     pub fn normalized_address(&self) -> String {
         match self {
+            DeploymentType::Unknown => unreachable!("unknown deployment type"),
             DeploymentType::Http { address, .. } => {
                 // We use only authority and path, as those uniquely identify the deployment.
                 format!(
@@ -244,7 +262,7 @@ impl DeploymentMetadata {
             },
             delivery_options,
             created_at: MillisSinceEpoch::now(),
-            supported_protocol_versions,
+            supported_protocol_versions: supported_protocol_versions.into(),
             sdk_version,
         }
     }
@@ -263,7 +281,7 @@ impl DeploymentMetadata {
             },
             delivery_options,
             created_at: MillisSinceEpoch::now(),
-            supported_protocol_versions,
+            supported_protocol_versions: supported_protocol_versions.into(),
             sdk_version,
         }
     }
@@ -275,6 +293,7 @@ impl DeploymentMetadata {
         impl Display for Wrapper<'_> {
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
                 match self {
+                    Wrapper(DeploymentType::Unknown) => write!(f, "unknown"),
                     Wrapper(DeploymentType::Http { address, .. }) => address.fmt(f),
                     Wrapper(DeploymentType::Lambda { arn, .. }) => arn.fmt(f),
                 }
@@ -415,12 +434,14 @@ pub mod test_util {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message, NetSerde)]
 pub struct DeploymentSchemas {
+    #[bilrost(1)]
     pub metadata: DeploymentMetadata,
 
     // We need to store ServiceMetadata here only for queries
     // We could optimize the memory impact of this by reading these info from disk
+    #[bilrost(2)]
     pub services: Vec<ServiceMetadata>,
 }
 
@@ -479,5 +500,145 @@ impl DeploymentResolver for Schema {
                 )
             })
             .collect()
+    }
+}
+
+mod dto {
+    use std::{collections::HashMap, str::FromStr};
+
+    use bytes::Bytes;
+    use bytestring::ByteString;
+    use http::{HeaderName, HeaderValue};
+
+    use crate::identifiers::LambdaARN;
+
+    #[derive(PartialEq, Eq, bilrost::Enumeration)]
+    enum DeploymentKind {
+        Unknown = 0,
+        Http = 1,
+        Lambda = 2,
+    }
+
+    #[derive(bilrost::Message)]
+    struct HttpDeployment {
+        address: String,
+        protocol_type: super::ProtocolType,
+        http_version: String,
+    }
+
+    #[derive(bilrost::Message)]
+    struct LambdaDeployment {
+        #[bilrost(1)]
+        arn: LambdaARN,
+        #[bilrost(2)]
+        assume_role_arn: Option<ByteString>,
+    }
+
+    #[derive(bilrost::Oneof)]
+    enum DeploymentTypeInner {
+        Unknown,
+        #[bilrost(1)]
+        Http(HttpDeployment),
+        #[bilrost(2)]
+        Lambda(LambdaDeployment),
+    }
+
+    #[derive(bilrost::Message)]
+    pub(super) struct DeploymentType {
+        #[bilrost(oneof(1, 2))]
+        inner: DeploymentTypeInner,
+    }
+
+    impl From<&super::DeploymentType> for DeploymentType {
+        fn from(value: &super::DeploymentType) -> Self {
+            let inner = match value {
+                super::DeploymentType::Unknown => DeploymentTypeInner::Unknown,
+                super::DeploymentType::Lambda {
+                    arn,
+                    assume_role_arn,
+                } => DeploymentTypeInner::Lambda(LambdaDeployment {
+                    arn: arn.clone(),
+                    assume_role_arn: assume_role_arn.clone(),
+                }),
+                super::DeploymentType::Http {
+                    address,
+                    protocol_type,
+                    http_version,
+                } => DeploymentTypeInner::Http(HttpDeployment {
+                    address: address.to_string(),
+                    protocol_type: *protocol_type,
+                    http_version: format!("{http_version:?}"),
+                }),
+            };
+
+            Self { inner }
+        }
+    }
+
+    impl From<DeploymentType> for super::DeploymentType {
+        fn from(value: DeploymentType) -> Self {
+            let DeploymentType { inner } = value;
+
+            match inner {
+                DeploymentTypeInner::Unknown => Self::Unknown,
+                DeploymentTypeInner::Lambda(inner) => Self::Lambda {
+                    arn: inner.arn,
+                    assume_role_arn: inner.assume_role_arn,
+                },
+                DeploymentTypeInner::Http(inner) => Self::Http {
+                    address: inner.address.parse().expect("valid uri"),
+                    protocol_type: inner.protocol_type,
+                    http_version: {
+                        match inner.http_version.as_str() {
+                            "HTTP/0.9" => http::Version::HTTP_09,
+                            "HTTP/1.0" => http::Version::HTTP_10,
+                            "HTTP/1.1" => http::Version::HTTP_11,
+                            "HTTP/2.0" => http::Version::HTTP_2,
+                            "HTTP/3.0" => http::Version::HTTP_3,
+                            _ => panic!("invalid http version {}", inner.http_version),
+                        }
+                    },
+                },
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Default, bilrost::Message)]
+    pub struct DeliveryOptions {
+        #[bilrost(1)]
+        pub additional_headers: HashMap<String, Bytes>,
+    }
+
+    impl From<&super::DeliveryOptions> for DeliveryOptions {
+        fn from(value: &super::DeliveryOptions) -> Self {
+            let super::DeliveryOptions { additional_headers } = value;
+
+            let mut headers = HashMap::with_capacity(additional_headers.len());
+            for (header, value) in additional_headers {
+                headers.insert(header.to_string(), Bytes::copy_from_slice(value.as_bytes()));
+            }
+
+            Self {
+                additional_headers: headers,
+            }
+        }
+    }
+
+    impl From<DeliveryOptions> for super::DeliveryOptions {
+        fn from(value: DeliveryOptions) -> Self {
+            let DeliveryOptions { additional_headers } = value;
+
+            let mut headers = HashMap::with_capacity(additional_headers.len());
+            for (key, value) in additional_headers {
+                headers.insert(
+                    HeaderName::from_str(&key).expect("valid header name"),
+                    HeaderValue::from_bytes(&value).expect("valid header value"),
+                );
+            }
+
+            Self {
+                additional_headers: headers,
+            }
+        }
     }
 }

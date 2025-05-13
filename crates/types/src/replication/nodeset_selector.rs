@@ -629,7 +629,7 @@ pub mod tests {
             GenerationalNodeId::new(id.into(), 1),
             location.parse().unwrap(),
             format!("unix:/tmp/my_socket-{id}").parse().unwrap(),
-            role.into(),
+            role,
             LogServerConfig { storage_state },
             MetadataServerConfig::default(),
         )

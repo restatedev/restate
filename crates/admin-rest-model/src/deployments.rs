@@ -67,6 +67,7 @@ pub enum Deployment {
 impl From<DeploymentMetadata> for Deployment {
     fn from(value: DeploymentMetadata) -> Self {
         match value.ty {
+            DeploymentType::Unknown => unreachable!("unknown deployment type"),
             DeploymentType::Http {
                 address,
                 protocol_type,

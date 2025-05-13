@@ -551,7 +551,7 @@ impl Node {
         let _ = TaskCenter::spawn(TaskKind::Disposable, "status-report", async move {
             let health = TaskCenter::with_current(|tc| tc.health().clone());
             trace!("Node-to-node networking is ready");
-            for role in my_roles {
+            for role in my_roles.iter() {
                 match role {
                     Role::Worker => {
                         health

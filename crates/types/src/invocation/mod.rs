@@ -24,6 +24,7 @@ use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
+use restate_encoding::{BilrostAs, NetSerde};
 use serde_with::{FromInto, serde_as};
 use std::fmt;
 use std::hash::Hash;
@@ -34,12 +35,23 @@ use std::time::Duration;
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry::trace::TraceId;
 
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Enumeration,
+    NetSerde,
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ServiceType {
-    Service,
-    VirtualObject,
-    Workflow,
+    Service = 0,
+    VirtualObject = 1,
+    Workflow = 2,
 }
 
 impl ServiceType {
@@ -59,7 +71,7 @@ impl fmt::Display for ServiceType {
 }
 
 #[derive(
-    Eq, Hash, PartialEq, Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize,
+    Eq, Hash, PartialEq, Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize, NetSerde,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum VirtualObjectHandlerType {
@@ -75,7 +87,7 @@ impl fmt::Display for VirtualObjectHandlerType {
 }
 
 #[derive(
-    Eq, Hash, PartialEq, Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize,
+    Eq, Hash, PartialEq, Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize, NetSerde,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum WorkflowHandlerType {
@@ -90,9 +102,23 @@ impl fmt::Display for WorkflowHandlerType {
     }
 }
 
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    BilrostAs,
+    Default,
+    NetSerde,
+)]
+#[bilrost_as(dto::InvocationTargetType)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum InvocationTargetType {
+    #[default]
     Service,
     VirtualObject(VirtualObjectHandlerType),
     Workflow(WorkflowHandlerType),
@@ -1317,6 +1343,68 @@ mod serde_hacks {
     }
 }
 
+mod dto {
+    use super::{VirtualObjectHandlerType, WorkflowHandlerType};
+
+    #[derive(PartialEq, Eq, bilrost::Enumeration)]
+    enum InvocationTargetTypeKind {
+        Service = 0,
+        VirtualObject = 1,
+        SharedVirtualObject = 2,
+        Workflow = 3,
+        SharedWorkflow = 4,
+    }
+
+    #[derive(bilrost::Message)]
+    pub(super) struct InvocationTargetType {
+        #[bilrost(1)]
+        kind: InvocationTargetTypeKind,
+    }
+
+    impl From<&super::InvocationTargetType> for InvocationTargetType {
+        fn from(value: &super::InvocationTargetType) -> Self {
+            match value {
+                super::InvocationTargetType::Service => Self {
+                    kind: InvocationTargetTypeKind::Service,
+                },
+                super::InvocationTargetType::VirtualObject(ty) => Self {
+                    kind: match ty {
+                        VirtualObjectHandlerType::Exclusive => {
+                            InvocationTargetTypeKind::VirtualObject
+                        }
+                        VirtualObjectHandlerType::Shared => {
+                            InvocationTargetTypeKind::SharedVirtualObject
+                        }
+                    },
+                },
+                super::InvocationTargetType::Workflow(ty) => Self {
+                    kind: match ty {
+                        WorkflowHandlerType::Workflow => InvocationTargetTypeKind::Workflow,
+                        WorkflowHandlerType::Shared => InvocationTargetTypeKind::SharedWorkflow,
+                    },
+                },
+            }
+        }
+    }
+
+    impl From<InvocationTargetType> for super::InvocationTargetType {
+        fn from(value: InvocationTargetType) -> Self {
+            match value.kind {
+                InvocationTargetTypeKind::Service => Self::Service,
+                InvocationTargetTypeKind::VirtualObject => {
+                    Self::VirtualObject(VirtualObjectHandlerType::Exclusive)
+                }
+                InvocationTargetTypeKind::SharedVirtualObject => {
+                    Self::VirtualObject(VirtualObjectHandlerType::Shared)
+                }
+                InvocationTargetTypeKind::Workflow => Self::Workflow(WorkflowHandlerType::Workflow),
+                InvocationTargetTypeKind::SharedWorkflow => {
+                    Self::Workflow(WorkflowHandlerType::Shared)
+                }
+            }
+        }
+    }
+}
 #[cfg(any(test, feature = "test-util"))]
 mod mocks {
     use super::*;

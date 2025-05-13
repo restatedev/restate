@@ -8,17 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZero;
 use std::sync::Arc;
 
-use enumset::{EnumSet, EnumSetType};
+use enumset::EnumSetType;
+use restate_encoding::{BilrostAs, NetSerde};
 use serde_with::serde_as;
 
 use crate::locality::NodeLocation;
 use crate::metadata::GlobalMetadata;
 use crate::net::AdvertisedAddress;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
-use crate::{GenerationalNodeId, NodeId, PlainNodeId, flexbuffers_storage_encode_decode};
+use crate::{
+    GenerationalNodeId, NetEnumSet, NodeId, OptionNonZero, PlainNodeId,
+    flexbuffers_storage_encode_decode,
+};
 use crate::{Version, Versioned};
 use ahash::HashMap;
 
@@ -33,39 +36,51 @@ pub enum NodesConfigError {
 }
 
 // PartialEq+Eq+Clone+Copy are implemented by EnumSetType
-#[derive(Debug, Hash, EnumSetType, strum::Display, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Hash,
+    EnumSetType,
+    strum::Display,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Enumeration,
+    NetSerde,
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[enumset(serialize_repr = "list")]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
+#[repr(u8)]
 pub enum Role {
     /// A worker runs partition processor (journal, state, and drives invocations)
-    Worker,
+    Worker = 1,
     /// Admin runs cluster controller and user-facing admin APIs
-    Admin,
+    Admin = 2,
     /// Serves the metadata store
     // For backwards-compatibility also accept the old name
     #[serde(alias = "metadata-store")]
     #[serde(rename(serialize = "metadata-server"))]
-    MetadataServer,
+    MetadataServer = 3,
     /// Serves a log-server for replicated loglets
-    LogServer,
+    LogServer = 4,
     /// [EXPERIMENTAL FEATURE] Serves HTTP ingress requests (requires
     /// `experimental-feature-enable-separate-ingress-role` to be enabled)
-    HttpIngress,
+    HttpIngress = 5,
 }
 
 #[serde_as]
-#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(
+    derive_more::Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message, NetSerde,
+)]
 pub struct NodesConfiguration {
     version: Version,
     cluster_name: String,
     // a unique fingerprint for this cluster. Introduced in v1.3 for forward compatibility. Will be
     // used to uniquely identify this cluster instance in future versions.
     #[serde(default)]
-    cluster_fingerprint: Option<NonZero<u64>>,
+    cluster_fingerprint: OptionNonZero<u64>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     nodes: HashMap<PlainNodeId, MaybeNode>,
@@ -77,7 +92,7 @@ impl Default for NodesConfiguration {
     fn default() -> Self {
         Self {
             version: Version::INVALID,
-            cluster_fingerprint: None,
+            cluster_fingerprint: None.into(),
             cluster_name: "Unspecified".to_owned(),
             nodes: Default::default(),
             name_lookup: Default::default(),
@@ -95,18 +110,33 @@ impl GlobalMetadata for NodesConfiguration {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, strum::EnumIs, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    strum::EnumIs,
+    serde::Serialize,
+    serde::Deserialize,
+    Default,
+    BilrostAs,
+    NetSerde,
+)]
+#[bilrost_as(dto::MaybeNode)]
 enum MaybeNode {
+    #[default]
     Tombstone,
     Node(NodeConfig),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Message, NetSerde,
+)]
 pub struct NodeConfig {
     pub name: String,
     pub current_generation: GenerationalNodeId,
     pub address: AdvertisedAddress,
-    pub roles: EnumSet<Role>,
+    pub roles: NetEnumSet<Role>,
     #[serde(default)]
     pub log_server_config: LogServerConfig,
     #[serde(default)]
@@ -116,12 +146,12 @@ pub struct NodeConfig {
 }
 
 impl NodeConfig {
-    pub fn new(
+    pub fn new<R: Into<NetEnumSet<Role>>>(
         name: String,
         current_generation: GenerationalNodeId,
         location: NodeLocation,
         address: AdvertisedAddress,
-        roles: EnumSet<Role>,
+        roles: R,
         log_server_config: LogServerConfig,
         metadata_server_config: MetadataServerConfig,
     ) -> Self {
@@ -129,7 +159,7 @@ impl NodeConfig {
             name,
             current_generation,
             address,
-            roles,
+            roles: roles.into(),
             log_server_config,
             location,
             metadata_server_config,
@@ -145,7 +175,7 @@ impl NodesConfiguration {
     pub fn new(version: Version, cluster_name: String) -> Self {
         Self {
             version,
-            cluster_fingerprint: None,
+            cluster_fingerprint: None.into(),
             cluster_name,
             nodes: HashMap::default(),
             name_lookup: HashMap::default(),
@@ -353,6 +383,8 @@ impl Versioned for NodesConfiguration {
     serde::Serialize,
     serde::Deserialize,
     strum::Display,
+    bilrost::Enumeration,
+    NetSerde,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
@@ -376,7 +408,7 @@ pub enum StorageState {
     /// - can write to: **yes** but excluded from new node sets; if you see it in a nodeset, try writing to it
     /// - new node sets: **excluded**
     #[default]
-    Provisioning,
+    Provisioning = 0,
 
     // [authoritative empty]
     /// Node's storage is not expected to be accessed for reads or writes. The node is not
@@ -386,7 +418,7 @@ pub enum StorageState {
     ///
     /// - should read from: **no**
     /// - can write to: **no**
-    Disabled,
+    Disabled = 1,
 
     // [authoritative]
     /// Node is not picked for new write sets, but it may still accept writes on existing nodesets,
@@ -396,7 +428,7 @@ pub enum StorageState {
     /// - can write to: **yes**
     /// - should write to: **no**
     /// - new node sets: **excluded**
-    ReadOnly,
+    ReadOnly = 2,
 
     // [authoritative]
     /// Gone is logically equivalent to ReadOnly but it signifies that the node has been
@@ -404,7 +436,7 @@ pub enum StorageState {
     /// Future versions of restate can decide to not even attempt to read from Gone nodes.
     ///
     /// - new node sets: **excluded**
-    Gone,
+    Gone = 3,
 
     // [authoritative]
     /// Can be picked up in new write sets and accepts writes in existing write sets.
@@ -412,7 +444,7 @@ pub enum StorageState {
     /// - should read from: **yes**
     /// - can write to: **yes**
     /// - new node sets: **included**
-    ReadWrite,
+    ReadWrite = 4,
 
     // **[non-authoritative]**
     /// Node detected that some/all of its local storage has been lost. It cannot be used as an
@@ -424,7 +456,7 @@ pub enum StorageState {
     ///
     /// - should read from: **may (non-quorum reads only)**
     /// - can write to: **no**
-    DataLoss,
+    DataLoss = 5,
 }
 
 impl StorageState {
@@ -454,7 +486,7 @@ impl StorageState {
     }
 
     /// Empty nodes are considered not part of the nodeset and they'll never join back.
-    pub fn empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         matches!(self, StorageState::Disabled)
     }
 }
@@ -472,30 +504,85 @@ impl StorageState {
     serde::Serialize,
     serde::Deserialize,
     strum::Display,
+    bilrost::Enumeration,
+    NetSerde,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum MetadataServerState {
     /// The server is not considered as part of the metadata store cluster. Node can be safely
     /// decommissioned.
-    Standby,
+    Standby = 0,
     /// The server is an active member of the metadata store cluster.
     #[default]
-    Member,
+    Member = 1,
 }
 
-#[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Default,
+    Debug,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Message,
+    NetSerde,
+)]
 pub struct LogServerConfig {
+    #[bilrost(1)]
     pub storage_state: StorageState,
 }
 
-#[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Default,
+    Debug,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Message,
+    NetSerde,
+)]
 pub struct MetadataServerConfig {
+    #[bilrost(1)]
     pub metadata_server_state: MetadataServerState,
 }
 
 flexbuffers_storage_encode_decode!(NodesConfiguration);
 
+pub mod dto {
+    use restate_encoding::NetSerde;
+
+    #[derive(Debug, Clone, bilrost::Message, NetSerde)]
+    pub struct MaybeNode {
+        #[bilrost(1)]
+        node: Option<super::NodeConfig>,
+    }
+
+    impl From<&super::MaybeNode> for MaybeNode {
+        fn from(value: &super::MaybeNode) -> Self {
+            match value {
+                super::MaybeNode::Tombstone => Self { node: None },
+                super::MaybeNode::Node(node) => Self {
+                    node: Some(node.clone()),
+                },
+            }
+        }
+    }
+
+    impl From<MaybeNode> for super::MaybeNode {
+        fn from(value: MaybeNode) -> Self {
+            let MaybeNode { node } = value;
+
+            match node {
+                None => Self::Tombstone,
+                Some(node) => Self::Node(node),
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,7 +593,7 @@ mod tests {
     fn test_upsert_node() {
         let mut config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
         let address: AdvertisedAddress = "unix:/tmp/my_socket".parse().unwrap();
-        let roles = EnumSet::only(Role::Worker);
+        let roles = Role::Worker;
         let current_gen = GenerationalNodeId::new(1, 1);
         let node = NodeConfig::new(
             "node1".to_owned(),
@@ -597,7 +684,7 @@ mod tests {
             GenerationalNodeId::new(1, 1),
             "region1.zone1".parse().unwrap(),
             address.clone(),
-            Role::Worker.into(),
+            Role::Worker,
             LogServerConfig::default(),
             MetadataServerConfig::default(),
         );
@@ -606,7 +693,7 @@ mod tests {
             GenerationalNodeId::new(2, 1),
             "region1.zone1".parse().unwrap(),
             address.clone(),
-            Role::Worker.into(),
+            Role::Worker,
             LogServerConfig::default(),
             MetadataServerConfig::default(),
         );

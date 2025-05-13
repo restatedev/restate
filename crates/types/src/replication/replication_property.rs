@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 use crate::locality::LocationScope;
 use anyhow::Context;
 use regex::Regex;
+use restate_encoding::{BilrostAs, BilrostDisplayFromStr, NetSerde};
 use serde::{Deserialize, Deserializer};
 use serde_with::{DeserializeAs, SerializeAs};
 
@@ -35,8 +36,16 @@ static REPLICATION_PROPERTY_EXTRACTOR: LazyLock<Regex> = LazyLock::new(|| {
 pub struct ReplicationPropertyError(String);
 
 /// The replication policy for appends
-#[derive(serde::Serialize, serde::Deserialize, Clone, Eq, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Eq, PartialEq, BilrostAs, NetSerde)]
+#[bilrost_as(BilrostDisplayFromStr)]
 pub struct ReplicationProperty(BTreeMap<LocationScope, u8>);
+
+/// The default implementation is only for Bilrost empty state
+impl Default for ReplicationProperty {
+    fn default() -> Self {
+        ReplicationProperty::new_unchecked(1)
+    }
+}
 
 impl ReplicationProperty {
     pub fn new(replication_factor: NonZeroU8) -> Self {
@@ -283,6 +292,42 @@ impl SerializeAs<ReplicationProperty> for ReplicationPropertyFromTo {
     }
 }
 
+pub mod dto {
+    use std::collections::BTreeMap;
+
+    use crate::{errors::ConversionError, locality::LocationScope};
+
+    #[derive(Debug, Clone, bilrost::Message)]
+    /// A shadow type for replication property used with bilrost
+    pub struct ReplicationProperty(Vec<u16>);
+
+    impl From<super::ReplicationProperty> for ReplicationProperty {
+        fn from(value: super::ReplicationProperty) -> Self {
+            let mut inner = Vec::with_capacity(value.0.len());
+            for (scope, replication) in value.iter() {
+                let entry = u16::from(*scope as u8) << 8 | (*replication as u16);
+                inner.push(entry);
+            }
+
+            Self(inner)
+        }
+    }
+
+    impl TryFrom<ReplicationProperty> for super::ReplicationProperty {
+        type Error = ConversionError;
+
+        fn try_from(value: ReplicationProperty) -> Result<Self, Self::Error> {
+            let mut inner = BTreeMap::new();
+            for entry in value.0 {
+                let scope = LocationScope::from_u8((entry >> 8) as u8)
+                    .ok_or_else(|| ConversionError::invalid_data("scope"))?;
+                inner.insert(scope, entry as u8);
+            }
+
+            Ok(super::ReplicationProperty(inner))
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +382,17 @@ mod tests {
         assert_that!(r.copies_at_scope(LocationScope::Zone), some(eq(2)));
         assert_that!(r.copies_at_scope(LocationScope::Region), none());
         Ok(())
+    }
+
+    #[test]
+    fn test_replication_property_bilrost_dto() {
+        let replication_property_1: ReplicationProperty =
+            "{node:5, zone:3, region: 2}".parse().expect("parses");
+
+        let dto = dto::ReplicationProperty::from(replication_property_1.clone());
+        let replication_property_2 =
+            ReplicationProperty::try_from(dto).expect("can be converted back");
+
+        assert_eq!(replication_property_2, replication_property_1);
     }
 }

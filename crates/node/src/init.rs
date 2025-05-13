@@ -263,7 +263,7 @@ impl<'a> NodeInit<'a> {
                         }
 
                         // update node_config
-                        node_config.roles = common_opts.roles;
+                        node_config.roles = common_opts.roles.into();
                         node_config.address = common_opts.advertised_address.clone();
                         node_config.current_generation.bump_generation();
 
@@ -313,7 +313,7 @@ mod tests {
     use restate_core::TestCoreEnvBuilder;
     use restate_types::config::{Configuration, set_current_config};
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
-    use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+    use restate_types::{GenerationalNodeId, NetEnumSet, PlainNodeId, Version};
 
     #[test_log::test(restate_core::test)]
     async fn node_id_mismatch() -> googletest::Result<()> {
@@ -330,7 +330,7 @@ mod tests {
             GenerationalNodeId::INITIAL_NODE_ID,
             Default::default(),
             "http://localhost:1337".parse().unwrap(),
-            Default::default(),
+            NetEnumSet::default(),
             Default::default(),
             Default::default(),
         );

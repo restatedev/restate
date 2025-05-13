@@ -819,7 +819,7 @@ impl PartitionProcessorManager {
                     debug!(%partition_id, "Starting new partition processor to run as {}", control_processor.command);
                     let starting_task = self.create_start_partition_processor_task(
                         partition_id,
-                        partition_key_range.clone(),
+                        partition_key_range.clone().into(),
                     );
 
                     self.asynchronous_operations

@@ -284,6 +284,11 @@ where
     }
 }
 
+impl<Idx> NetSerde for NetRangeInclusive<Idx> where
+    Idx: Copy + EmptyState + ValueEncoder<General> + ValueDecoder<General>
+{
+}
+
 #[derive(bilrost::Message)]
 struct RangeInclusiveMessage<Idx>((Idx, Idx))
 where
@@ -322,10 +327,11 @@ where
     serde::Serialize,
     serde::Deserialize,
     BilrostAs,
+    NetSerde,
 )]
 #[bilrost_as(BilrostDisplayFromStr)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub struct NetJsonValue(serde_json::Value);
+pub struct NetJsonValue(#[net_serde(skip)] serde_json::Value);
 
 impl Default for NetJsonValue {
     fn default() -> Self {
@@ -347,12 +353,14 @@ impl Default for NetJsonValue {
     serde::Serialize,
     serde::Deserialize,
     BilrostAs,
+    NetSerde,
 )]
 #[bilrost_as(BilrostDisplayFromStr)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NetHumanDuration(
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    #[net_serde(skip)]
     humantime::Duration,
 );
 

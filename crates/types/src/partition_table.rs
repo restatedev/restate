@@ -13,6 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use restate_encoding::{BilrostAs, BilrostDisplayFromStr, BilrostNewType, NetSerde};
 use serde_with::serde_as;
 
 use crate::identifiers::{PartitionId, PartitionKey};
@@ -20,7 +21,9 @@ use crate::logs::LogId;
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::replication::{NodeSet, ReplicationProperty};
-use crate::{PlainNodeId, Version, Versioned, flexbuffers_storage_encode_decode};
+use crate::{
+    NetRangeInclusive, PlainNodeId, Version, Versioned, flexbuffers_storage_encode_decode,
+};
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -52,8 +55,11 @@ impl From<KeyRange> for RangeInclusive<PartitionKey> {
 
 /// Specified how partitions are replicated across the cluster.
 #[serde_as]
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, BilrostAs, NetSerde,
+)]
 #[serde(rename_all = "kebab-case")]
+#[bilrost_as(dto::PartitionReplication)]
 pub enum PartitionReplication {
     /// All partitions are replicated on all nodes in the cluster.
     ///
@@ -68,21 +74,32 @@ pub enum PartitionReplication {
     Limit(#[serde_as(as = "crate::replication::ReplicationPropertyFromTo")] ReplicationProperty),
 }
 
+impl Default for PartitionReplication {
+    fn default() -> Self {
+        Self::Limit(ReplicationProperty::new_unchecked(1))
+    }
+}
+
 impl From<ReplicationProperty> for PartitionReplication {
     fn from(value: ReplicationProperty) -> Self {
         Self::Limit(value)
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Message, NetSerde,
+)]
 #[serde(try_from = "PartitionTableShadow", into = "PartitionTableShadow")]
 pub struct PartitionTable {
+    #[bilrost(1)]
     version: Version,
+    #[bilrost(2)]
     partitions: BTreeMap<PartitionId, Partition>,
     // Interval-map like structure which maps the inclusive end partition key of a partition to its
     // [`PartitionId`]. To validate that a partition key falls into a partition one also needs to
     // verify that the start partition key is smaller or equal than the given key, because holes
     // are not visible from this index structure.
+    #[bilrost(3)]
     partition_key_index: BTreeMap<PartitionKey, PartitionId>,
 
     replication: PartitionReplication,
@@ -216,6 +233,8 @@ impl FindPartition for PartitionTable {
     derive_more::AsRef,
     derive_more::Deref,
     derive_more::DerefMut,
+    BilrostNewType,
+    NetSerde,
 )]
 #[serde(transparent)]
 pub struct PartitionPlacement(NodeSet);
@@ -251,8 +270,21 @@ impl PartialEq for PartitionPlacement {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct DbName(SmartString);
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    derive_more::Display,
+    derive_more::FromStr,
+    BilrostAs,
+    NetSerde,
+)]
+#[bilrost_as(BilrostDisplayFromStr)]
+pub struct DbName(#[net_serde(skip)] SmartString);
 
 impl Default for DbName {
     fn default() -> Self {
@@ -260,8 +292,22 @@ impl Default for DbName {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct CfName(SmartString);
+#[derive(
+    Clone,
+    Default,
+    Debug,
+    Eq,
+    PartialEq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    derive_more::Display,
+    derive_more::FromStr,
+    BilrostAs,
+    NetSerde,
+)]
+#[bilrost_as(BilrostDisplayFromStr)]
+pub struct CfName(#[net_serde(skip)] SmartString);
 
 impl CfName {
     pub fn for_partition(partition_id: PartitionId) -> Self {
@@ -269,10 +315,12 @@ impl CfName {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Message, NetSerde,
+)]
 pub struct Partition {
     pub partition_id: PartitionId,
-    pub key_range: RangeInclusive<PartitionKey>,
+    pub key_range: NetRangeInclusive<PartitionKey>,
     #[serde(default)]
     pub placement: PartitionPlacement,
     log_id: Option<LogId>,
@@ -284,7 +332,7 @@ impl Partition {
     pub fn new(partition_id: PartitionId, key_range: RangeInclusive<PartitionKey>) -> Self {
         Self {
             partition_id,
-            key_range,
+            key_range: key_range.into(),
             placement: PartitionPlacement::default(),
             log_id: None,
             db_name: None,
@@ -494,7 +542,7 @@ impl From<PartitionTable> for PartitionTableShadow {
                     .map(|(partition_id, partition)| {
                         let partition_shadow = PartitionShadow {
                             log_id: partition.log_id,
-                            key_range: partition.key_range,
+                            key_range: partition.key_range.into(),
                             cf_name: partition.cf_name,
                             db_name: partition.db_name,
                             placement: partition.placement,
@@ -525,7 +573,7 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
                     let partition = Partition {
                         partition_id,
                         log_id: partition_shadow.log_id,
-                        key_range: partition_shadow.key_range,
+                        key_range: partition_shadow.key_range.into(),
                         placement: partition_shadow.placement,
                         db_name: partition_shadow.db_name,
                         cf_name: partition_shadow.cf_name,
@@ -599,6 +647,37 @@ impl Iterator for EqualSizedPartitionPartitioner {
             Some((partition_id, partition_range))
         } else {
             None
+        }
+    }
+}
+
+mod dto {
+    use crate::replication::ReplicationProperty;
+
+    #[derive(Clone, Debug, bilrost::Message)]
+    pub(super) struct PartitionReplication {
+        replication_property: Option<ReplicationProperty>,
+    }
+
+    impl From<&super::PartitionReplication> for PartitionReplication {
+        fn from(value: &super::PartitionReplication) -> Self {
+            match value {
+                super::PartitionReplication::Everywhere => Self {
+                    replication_property: None,
+                },
+                super::PartitionReplication::Limit(replication_property) => Self {
+                    replication_property: Some(replication_property.clone()),
+                },
+            }
+        }
+    }
+
+    impl From<PartitionReplication> for super::PartitionReplication {
+        fn from(value: PartitionReplication) -> Self {
+            match value.replication_property {
+                None => Self::Everywhere,
+                Some(replication_property) => Self::Limit(replication_property),
+            }
         }
     }
 }

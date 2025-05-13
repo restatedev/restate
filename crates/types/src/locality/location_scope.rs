@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_encoding::NetSerde;
+
 /// [`LocationScope`] specifies the location of a node in the cluster. The location
 /// is expressed by a set of hierarchical scopes. Restate assumes the cluster topology
 /// to be a tree-like structure.
@@ -25,6 +27,7 @@
     strum::EnumString,
     serde::Serialize,
     serde::Deserialize,
+    NetSerde,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(ascii_case_insensitive)]

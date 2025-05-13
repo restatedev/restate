@@ -16,6 +16,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use bytestring::ByteString;
 use enum_map::Enum;
+use restate_encoding::{BilrostAs, BilrostNewType, NetSerde};
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use smallvec::SmallVec;
@@ -46,6 +47,8 @@ use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
     derive_more::Into,
     derive_more::Display,
     derive_more::Debug,
+    BilrostNewType,
+    NetSerde,
 )]
 #[repr(transparent)]
 #[serde(transparent)]
@@ -121,7 +124,10 @@ impl LookupIndex {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, BilrostAs, NetSerde,
+)]
+#[bilrost_as(dto::ProviderConfiguration)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderConfiguration {
     #[cfg(any(test, feature = "memory-loglet"))]
@@ -254,12 +260,16 @@ impl TryFrom<crate::protobuf::cluster::BifrostProvider> for ProviderConfiguratio
 }
 
 #[serde_as]
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Message, NetSerde,
+)]
 pub struct ReplicatedLogletConfig {
+    #[bilrost(1)]
     #[serde_as(as = "DisplayFromStr")]
     pub replication_property: ReplicationProperty,
     /// The default target for new nodesets. 0 (default) auto-chooses a nodeset-size that
     /// balances read and write availability. It's a reasonable default for most cases.
+    #[bilrost(2)]
     pub target_nodeset_size: NodeSetSize,
 }
 
@@ -274,6 +284,8 @@ pub struct ReplicatedLogletConfig {
     Eq,
     PartialEq,
     derive_more::Display,
+    BilrostNewType,
+    NetSerde,
 )]
 #[serde(try_from = "u16", into = "u16")]
 #[display("{_0}")]
@@ -331,23 +343,50 @@ impl TryFrom<u32> for NodeSetSize {
 pub struct NodeSetSizeError;
 
 #[derive(
-    Debug, Clone, Eq, PartialEq, Default, derive_more::From, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    Default,
+    derive_more::From,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Message,
+    NetSerde,
 )]
 pub struct LogsConfiguration {
+    #[bilrost(1)]
     pub default_provider: ProviderConfiguration,
 }
 
-#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Default,
+    derive_more::Debug,
+    Clone,
+    serde::Serialize,
+    serde::Deserialize,
+    derive_more::Deref,
+    derive_more::DerefMut,
+    derive_more::From,
+    derive_more::Into,
+    bilrost::Message,
+    NetSerde,
+)]
+pub struct Logs(pub(super) LogsInner);
+
+#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize, BilrostAs, NetSerde)]
+#[bilrost_as(dto::LogsInner)]
 #[serde(try_from = "LogsSerde", into = "LogsSerde")]
-pub struct Logs {
+pub struct LogsInner {
     pub(super) version: Version,
     pub(super) logs: HashMap<LogId, Chain>,
     #[debug(skip)]
+    #[net_serde(skip)]
     pub(super) lookup_index: LookupIndex,
     pub(super) config: LogsConfiguration,
 }
 
-impl Default for Logs {
+impl Default for LogsInner {
     fn default() -> Self {
         Self {
             version: Version::INVALID,
@@ -368,8 +407,8 @@ impl GlobalMetadata for Logs {
     }
 }
 
-impl From<Logs> for LogsSerde {
-    fn from(value: Logs) -> Self {
+impl From<LogsInner> for LogsSerde {
+    fn from(value: LogsInner) -> Self {
         Self {
             version: value.version,
             logs: value.logs.into_iter().collect(),
@@ -378,7 +417,7 @@ impl From<Logs> for LogsSerde {
     }
 }
 
-impl TryFrom<LogsSerde> for Logs {
+impl TryFrom<LogsSerde> for LogsInner {
     type Error = anyhow::Error;
 
     fn try_from(value: LogsSerde) -> Result<Self, Self::Error> {
@@ -428,7 +467,7 @@ impl TryFrom<LogsSerde> for Logs {
 /// Metadata updates are versioned and atomic.
 ///
 /// This structure is what gets serialized in metadata store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 struct LogsSerde {
     version: Version,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
@@ -436,12 +475,24 @@ struct LogsSerde {
     config: Option<LogsConfiguration>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq, derive_more::IsVariant)]
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    Serialize,
+    Deserialize,
+    Eq,
+    PartialEq,
+    derive_more::IsVariant,
+    bilrost::Oneof,
+    NetSerde,
+)]
 pub enum ChainState {
     /// Chain is allowed to grow
     #[default]
     Open,
     /// Chain is sealed. No new segments can be added.
+    #[bilrost(1)]
     Sealed {
         /// The LSN of the virtually impossible next segment, akin to the first lsn of the next
         /// segment in an open chain.
@@ -451,12 +502,14 @@ pub enum ChainState {
 
 /// the chain is a list of segments in (from Lsn) order.
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct Chain {
     #[serde(default)]
+    #[bilrost(oneof(1))]
     pub(super) state: ChainState,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    #[bilrost(2)]
     pub(super) chain: BTreeMap<Lsn, LogletConfig>,
 }
 
@@ -479,9 +532,11 @@ impl<'a> Segment<'a> {
 }
 
 /// A segment in the chain of loglet instances.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct LogletConfig {
+    #[bilrost(1)]
     pub kind: ProviderKind,
+    #[bilrost(2)]
     pub params: LogletParams,
     /// This is a cheap and collision-free way to identify loglets within the same log without
     /// using random numbers. Globally, the tuple (log_id, index) is unique.
@@ -491,6 +546,7 @@ pub struct LogletConfig {
     // only expect logs with 1 segment. Therefore, a default of 0 matches what we create on new
     // loglet chains already.
     #[serde(default)]
+    #[bilrost(3)]
     index: SegmentIndex,
 }
 
@@ -510,7 +566,17 @@ impl LogletConfig {
 /// and start-lsn. It's provided by bifrost on loglet creation. This allows the
 /// parameters to be shared between segments and logs if needed.
 #[derive(
-    Debug, Clone, Hash, Eq, PartialEq, derive_more::From, derive_more::Deref, Serialize, Deserialize,
+    Debug,
+    Clone,
+    Hash,
+    Eq,
+    PartialEq,
+    derive_more::From,
+    derive_more::Deref,
+    Serialize,
+    Deserialize,
+    BilrostNewType,
+    NetSerde,
 )]
 pub struct LogletParams(ByteString);
 
@@ -539,6 +605,8 @@ impl From<&'static str> for LogletParams {
     Enum,
     strum::EnumIter,
     strum::Display,
+    bilrost::Enumeration,
+    NetSerde,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -546,14 +614,14 @@ impl From<&'static str> for LogletParams {
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum ProviderKind {
     /// A local rocksdb-backed loglet.
-    Local,
+    Local = 0,
     /// An in-memory loglet, primarily for testing.
     #[cfg(any(test, feature = "memory-loglet"))]
     #[cfg_attr(feature = "schemars", schemars(skip))]
-    InMemory,
+    InMemory = 1,
     /// Replicated loglets are restate's native log replication system. This requires
     /// `log-server` role to run on enough nodes in the cluster.
-    Replicated,
+    Replicated = 2,
 }
 
 impl FromStr for ProviderKind {
@@ -591,11 +659,11 @@ impl Logs {
     }
 
     pub fn with_logs_configuration(logs_configuration: LogsConfiguration) -> Self {
-        Logs {
+        Self(LogsInner {
             config: logs_configuration,
             version: Version::MIN,
             ..Default::default()
-        }
+        })
     }
 
     /// empty metadata with an invalid version
@@ -821,6 +889,132 @@ pub fn bootstrap_logs_metadata(
     });
 
     builder.build()
+}
+
+mod dto {
+    use std::collections::HashMap;
+
+    use crate::{Version, logs::LogId, replicated_loglet::ReplicatedLogletParams};
+
+    use super::ProviderKind;
+
+    #[derive(Debug, Clone, PartialEq, Eq, bilrost::Enumeration)]
+    pub enum ProviderConfigurationKind {
+        InMemory = 0,
+        Local = 1,
+        Replicated = 2,
+    }
+
+    #[derive(Debug, Clone, bilrost::Message)]
+    pub struct ProviderConfiguration {
+        #[bilrost(1)]
+        kind: ProviderConfigurationKind,
+        #[bilrost(2)]
+        config: Option<super::ReplicatedLogletConfig>,
+    }
+
+    impl From<&super::ProviderConfiguration> for ProviderConfiguration {
+        fn from(value: &super::ProviderConfiguration) -> Self {
+            match value {
+                #[cfg(any(test, feature = "memory-loglet"))]
+                super::ProviderConfiguration::InMemory => Self {
+                    kind: ProviderConfigurationKind::InMemory,
+                    config: None,
+                },
+                super::ProviderConfiguration::Local => Self {
+                    kind: ProviderConfigurationKind::Local,
+                    config: None,
+                },
+                super::ProviderConfiguration::Replicated(config) => Self {
+                    kind: ProviderConfigurationKind::Replicated,
+                    config: Some(config.clone()),
+                },
+            }
+        }
+    }
+
+    impl From<ProviderConfiguration> for super::ProviderConfiguration {
+        fn from(value: ProviderConfiguration) -> Self {
+            let ProviderConfiguration { kind, config } = value;
+
+            match kind {
+                ProviderConfigurationKind::InMemory => {
+                    #[cfg(any(test, feature = "memory-loglet"))]
+                    {
+                        Self::InMemory
+                    }
+                    #[cfg(not(any(test, feature = "memory-loglet")))]
+                    panic!("in-memory provider is not supported");
+                }
+                ProviderConfigurationKind::Local => Self::Local,
+                ProviderConfigurationKind::Replicated => {
+                    let config = config.expect("is set");
+                    Self::Replicated(config)
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, bilrost::Message)]
+    pub struct LogsInner {
+        #[bilrost(1)]
+        version: Version,
+        #[bilrost(2)]
+        logs: HashMap<LogId, super::Chain>,
+        #[bilrost(3)]
+        config: super::LogsConfiguration,
+    }
+
+    impl From<&super::LogsInner> for LogsInner {
+        fn from(value: &super::LogsInner) -> Self {
+            let super::LogsInner {
+                version,
+                logs,
+                config,
+                lookup_index: _,
+            } = value;
+
+            Self {
+                version: *version,
+                config: config.clone(),
+                logs: logs.clone(),
+            }
+        }
+    }
+
+    impl From<LogsInner> for super::LogsInner {
+        fn from(value: LogsInner) -> Self {
+            let LogsInner {
+                config,
+                version,
+                logs,
+            } = value;
+
+            let mut lookup_index = super::LookupIndex::default();
+
+            for (log_id, chain) in &logs {
+                for loglet_config in chain.chain.values() {
+                    // needed if other loglets than the replicated one are enabled
+                    #[allow(irrefutable_let_patterns)]
+                    if let ProviderKind::Replicated = loglet_config.kind {
+                        let params = ReplicatedLogletParams::deserialize_from(
+                            loglet_config.params.as_bytes(),
+                        )
+                        .expect("valid replicated loglet params");
+
+                        lookup_index.add_replicated_loglet(*log_id, loglet_config.index, params);
+                    }
+                }
+            }
+
+            Self {
+                version,
+                logs,
+                lookup_index,
+                config,
+            }
+        }
+    }
 }
 
 #[cfg(test)]

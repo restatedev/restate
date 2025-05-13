@@ -237,7 +237,7 @@ where
         let range = partition.key_range.clone();
         let stream = self
             .scanner
-            .scan_partition(*partition_id, range, self.projected_schema.clone())
+            .scan_partition(*partition_id, range.into(), self.projected_schema.clone())
             .map_err(|e| DataFusionError::External(e.into()))?;
         Ok(stream)
     }

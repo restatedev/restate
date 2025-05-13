@@ -67,6 +67,9 @@ impl KafkaIngressEvent {
         };
 
         let invocation_target = match subscription.sink() {
+            Sink::Unknown => {
+                anyhow::bail!("Unknown subscription sink")
+            }
             Sink::DeprecatedService { name, handler, ty } => match ty {
                 EventReceiverServiceType::VirtualObject => InvocationTarget::virtual_object(
                     &**name,
