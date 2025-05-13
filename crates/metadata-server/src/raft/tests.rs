@@ -27,14 +27,10 @@ use restate_types::config::{
 };
 use restate_types::health::Health;
 use restate_types::live::Constant;
-use restate_types::locality::NodeLocation;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::{AdvertisedAddress, BindAddress};
-use restate_types::nodes_config::{
-    LogServerConfig, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
-    Role,
-};
+use restate_types::nodes_config::{MetadataServerState, NodeConfig, NodesConfiguration, Role};
 use restate_types::{PlainNodeId, Version};
 
 use crate::raft::RaftMetadataServer;
@@ -67,16 +63,15 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     let zero_plain_node_id = PlainNodeId::from(0);
     let mut nodes_configuration =
         NodesConfiguration::new(Version::MIN, "migration-local-to-replicated".to_owned());
-    let my_node_config = NodeConfig::new(
-        Configuration::pinned().common.node_name().to_owned(),
-        // configure a zero node id to test the migration path for zero node ids
-        PlainNodeId::from(0).with_generation(my_generation),
-        NodeLocation::default(),
-        advertised_address.clone(),
-        Role::MetadataServer.into(),
-        LogServerConfig::default(),
-        MetadataServerConfig::default(),
-    );
+    let my_node_config = NodeConfig::builder()
+        .name(Configuration::pinned().common.node_name().to_owned())
+        .current_generation(
+            // configure a zero node id to test the migration path for zero node ids
+            PlainNodeId::from(0).with_generation(my_generation),
+        )
+        .address(advertised_address.clone())
+        .roles(Role::MetadataServer.into())
+        .build();
     nodes_configuration.upsert_node(my_node_config);
 
     let serialized_nodes_configuration = serialize_value(&nodes_configuration)?;

@@ -11,15 +11,14 @@
 use codederror::CodedError;
 
 use restate_bifrost::Bifrost;
-use restate_core::TaskCenter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{Metadata, MetadataKind, cancellation_watcher};
+use restate_core::{MetadataWriter, TaskCenter};
 use restate_core::{ShutdownError, TaskKind};
-use restate_metadata_server::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::Version;
 use restate_types::config::Configuration;
@@ -80,7 +79,7 @@ impl WorkerRole {
         router_builder: &mut MessageRouterBuilder,
         networking: Networking<T>,
         bifrost: Bifrost,
-        metadata_store_client: MetadataStoreClient,
+        metadata_writer: MetadataWriter,
     ) -> Result<Self, WorkerRoleBuildError> {
         let worker = Worker::create(
             updateable_config,
@@ -91,7 +90,7 @@ impl WorkerRole {
             networking,
             bifrost,
             router_builder,
-            metadata_store_client,
+            metadata_writer,
         )
         .await?;
 

@@ -782,7 +782,7 @@ mod tests {
     use googletest::prelude::*;
 
     use crate::nodes_config::{
-        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
+        LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
     use crate::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -792,15 +792,14 @@ mod tests {
         location: &str,
     ) -> NodeConfig {
         let id: PlainNodeId = id.into();
-        NodeConfig::new(
-            format!("node-{id}"),
-            GenerationalNodeId::new(id.into(), 1),
-            location.parse().unwrap(),
-            format!("unix:/tmp/my_socket-{id}").parse().unwrap(),
-            Role::LogServer.into(),
-            LogServerConfig { storage_state },
-            MetadataServerConfig::default(),
-        )
+        NodeConfig::builder()
+            .name(format!("node-{id}"))
+            .current_generation(GenerationalNodeId::new(id.into(), 1))
+            .location(location.parse().unwrap())
+            .address(format!("unix:/tmp/my_socket-{id}").parse().unwrap())
+            .roles(Role::LogServer.into())
+            .log_server_config(LogServerConfig { storage_state })
+            .build()
     }
 
     #[test]

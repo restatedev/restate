@@ -560,15 +560,12 @@ mod tests {
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
     use restate_types::identifiers::PartitionId;
-    use restate_types::locality::NodeLocation;
     use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
     use restate_types::net::partition_processor_manager::{
         ControlProcessors, PartitionManagerService, ProcessorCommand,
     };
     use restate_types::net::{AdvertisedAddress, UnaryMessage};
-    use restate_types::nodes_config::{
-        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
-    };
+    use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role, StorageState};
     use restate_types::partition_table::{
         PartitionPlacement, PartitionReplication, PartitionTable, PartitionTableBuilder,
     };
@@ -657,19 +654,16 @@ mod tests {
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
 
         for node_id in &node_ids {
-            let node_config = NodeConfig::new(
-                format!("{node_id}"),
-                *node_id,
-                NodeLocation::default(),
-                AdvertisedAddress::Http(
+            let node_config = NodeConfig::builder()
+                .name(format!("{node_id}"))
+                .current_generation(*node_id)
+                .address(AdvertisedAddress::Http(
                     format!("http://localhost-{}:5122", node_id.id())
                         .parse()
                         .unwrap(),
-                ),
-                Role::Worker.into(),
-                LogServerConfig::default(),
-                MetadataServerConfig::default(),
-            );
+                ))
+                .roles(Role::Worker.into())
+                .build();
             nodes_config.upsert_node(node_config);
         }
 

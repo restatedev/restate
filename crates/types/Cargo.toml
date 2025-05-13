@@ -87,6 +87,7 @@ toml = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+typed-builder = { workspace = true }
 ulid = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 

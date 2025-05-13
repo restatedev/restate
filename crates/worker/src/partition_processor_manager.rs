@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ahash::HashMap;
+use anyhow::{Context, bail};
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
 use metrics::gauge;
@@ -29,6 +30,20 @@ use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, info_span, instrument, warn};
 
+use crate::metric_definitions::PARTITION_IS_ACTIVE;
+use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
+use crate::metric_definitions::PARTITION_LABEL;
+use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
+use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
+use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
+use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
+use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_LAST_APPLIED_LSN_LAG};
+use crate::partition::ProcessorError;
+use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
+use crate::partition_processor_manager::processor_state::{
+    LeaderEpochToken, ProcessorState, StartedProcessor,
+};
+use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
 use restate_core::network::{
@@ -39,13 +54,14 @@ use restate_core::worker_api::{
     SnapshotResult,
 };
 use restate_core::{
-    Metadata, ShutdownError, TaskCenterFutureExt, TaskHandle, TaskKind, cancellation_watcher,
-    my_node_id,
+    Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt, TaskHandle, TaskKind,
+    cancellation_watcher, my_node_id,
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
+use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::PartitionSnapshotMetadata;
 use restate_types::cluster::cluster_state::ReplayStatus;
@@ -65,26 +81,12 @@ use restate_types::net::partition_processor_manager::{
     PartitionManagerService, ProcessorCommand, Snapshot, SnapshotError as NetSnapshotError,
 };
 use restate_types::net::{RpcRequest as _, UnaryMessage};
+use restate_types::nodes_config::{NodesConfigError, NodesConfiguration, WorkerState};
 use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString, Version};
-
-use crate::metric_definitions::PARTITION_IS_ACTIVE;
-use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
-use crate::metric_definitions::PARTITION_LABEL;
-use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
-use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
-use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
-use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
-use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_LAST_APPLIED_LSN_LAG};
-use crate::partition::ProcessorError;
-use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
-use crate::partition_processor_manager::processor_state::{
-    LeaderEpochToken, ProcessorState, StartedProcessor,
-};
-use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 
 pub struct PartitionProcessorManager {
     health_status: HealthStatus<WorkerStatus>,
@@ -92,7 +94,7 @@ pub struct PartitionProcessorManager {
     processor_states: BTreeMap<PartitionId, ProcessorState>,
     name_cache: BTreeMap<PartitionId, SharedString>,
 
-    metadata_store_client: MetadataStoreClient,
+    metadata_writer: MetadataWriter,
     partition_store_manager: PartitionStoreManager,
     ppm_svc_rx: ServiceReceiver<PartitionManagerService>,
     pp_rpc_rx: ServiceReceiver<PartitionLeaderService>,
@@ -180,7 +182,7 @@ impl PartitionProcessorManager {
     pub fn new(
         health_status: HealthStatus<WorkerStatus>,
         updateable_config: Live<Configuration>,
-        metadata_store_client: MetadataStoreClient,
+        metadata_writer: MetadataWriter,
         partition_store_manager: PartitionStoreManager,
         replica_set_states: PartitionReplicaSetStates,
         router_builder: &mut MessageRouterBuilder,
@@ -196,7 +198,7 @@ impl PartitionProcessorManager {
             updateable_config,
             processor_states: BTreeMap::default(),
             name_cache: Default::default(),
-            metadata_store_client,
+            metadata_writer,
             partition_store_manager,
             ppm_svc_rx,
             pp_rpc_rx,
@@ -245,6 +247,9 @@ impl PartitionProcessorManager {
         let mut ppm_svc_rx = self.ppm_svc_rx.take().start();
         let mut pp_rpc_rx = self.pp_rpc_rx.take().start();
         self.health_status.update(WorkerStatus::Ready);
+
+        provision_worker(&self.metadata_writer).await?;
+
         loop {
             tokio::select! {
                 Some(command) = self.rx.recv() => {
@@ -401,7 +406,9 @@ impl PartitionProcessorManager {
                                             Self::obtain_new_leader_epoch(
                                                 partition_id,
                                                 leader_epoch_token,
-                                                self.metadata_store_client.clone(),
+                                                self.metadata_writer
+                                                    .raw_metadata_store_client()
+                                                    .clone(),
                                                 &mut self.asynchronous_operations,
                                             );
                                         }
@@ -784,7 +791,7 @@ impl PartitionProcessorManager {
                             Self::obtain_new_leader_epoch(
                                 partition_id,
                                 leader_epoch_token,
-                                self.metadata_store_client.clone(),
+                                self.metadata_writer.raw_metadata_store_client().clone(),
                                 &mut self.asynchronous_operations,
                             );
                         }
@@ -1183,6 +1190,97 @@ impl PartitionProcessorManager {
     }
 }
 
+/// Provisions the worker. This entails updating the [`WorkerState`] from provisioning to
+/// active in this node's [`NodeConfig`]. Any other [`WorkerState`] will be kept.
+async fn provision_worker(metadata_writer: &MetadataWriter) -> anyhow::Result<()> {
+    let (my_node_id, nodes_config) =
+        Metadata::with_current(|m| (m.my_node_id(), m.nodes_config_ref()));
+
+    let my_node_config = nodes_config.find_node_by_id(my_node_id).context("A newer version of myself must have been started somewhere else or I was removed in the meantime")?;
+
+    match my_node_config.worker_config.worker_state {
+        WorkerState::Provisioning => {
+            let retry_policy = Configuration::pinned()
+                .common
+                .network_error_retry_policy
+                .clone();
+            let mut first_attempt = true;
+
+            let metadata_client = metadata_writer.global_metadata();
+
+            if let Err(err) = retry_on_retryable_error(retry_policy, || {
+                metadata_client.read_modify_write(
+                    move |nodes_config: Option<Arc<NodesConfiguration>>| {
+                        let nodes_config = nodes_config.expect(
+                            "nodes config must be present if the node starts the worker role",
+                        );
+
+                        let node_config = nodes_config
+                            .find_node_by_id(my_node_id)
+                            .map_err(ProvisionWorkerError::NewerGenerationOrRemoved)?;
+
+                        if node_config.worker_config.worker_state != WorkerState::Provisioning {
+                            return if first_attempt {
+                                Err(ProvisionWorkerError::NotProvisioning(
+                                    node_config.worker_config.worker_state,
+                                ))
+                            } else {
+                                Err(ProvisionWorkerError::PreviousAttemptSucceeded)
+                            };
+                        }
+
+                        let mut my_node_config = node_config.clone();
+                        my_node_config.worker_config.worker_state = WorkerState::Active;
+
+                        let mut new_nodes_config = nodes_config.as_ref().clone();
+                        new_nodes_config.upsert_node(my_node_config);
+                        new_nodes_config.increment_version();
+
+                        first_attempt = false;
+
+                        Ok(new_nodes_config)
+                    },
+                )
+            })
+            .await
+            .map_err(|err| err.map(|err| err.transpose()))
+            {
+                match err {
+                    RetryError::RetriesExhausted(
+                        ProvisionWorkerError::PreviousAttemptSucceeded,
+                    )
+                    | RetryError::NotRetryable(ProvisionWorkerError::PreviousAttemptSucceeded) => {}
+                    err => {
+                        bail!("failed to update worker state: {}", err);
+                    }
+                }
+            }
+        }
+        WorkerState::Active | WorkerState::Draining | WorkerState::Disabled => {
+            // We are also starting the worker if it has been disabled. In this case, no
+            // partitions should be placed on this node so that the worker will be idle.
+            // However, it is possible to change the state back to active to place partitions on
+            // this node again.
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ProvisionWorkerError {
+    #[error(
+        "could not find my node config; this indicates a newer version of myself was started somewhere else or I was removed in the meantime: {0}"
+    )]
+    NewerGenerationOrRemoved(NodesConfigError),
+    #[error("worker state is not provisioning but {0}")]
+    NotProvisioning(WorkerState),
+    #[error("previous attempt succeeded")]
+    PreviousAttemptSucceeded,
+    #[error(transparent)]
+    MetadataClient(#[from] ReadWriteError),
+}
+
 struct AsynchronousEvent {
     partition_id: PartitionId,
     inner: EventKind,
@@ -1246,14 +1344,11 @@ mod tests {
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::{Constant, Live};
-    use restate_types::locality::NodeLocation;
     use restate_types::net::AdvertisedAddress;
     use restate_types::net::partition_processor_manager::{
         ControlProcessor, ControlProcessors, ProcessorCommand,
     };
-    use restate_types::nodes_config::{
-        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
-    };
+    use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::{GenerationalNodeId, Version};
     use std::time::Duration;
@@ -1266,19 +1361,17 @@ mod tests {
     async fn proper_partition_processor_lifecycle() -> googletest::Result<()> {
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
         let node_id = GenerationalNodeId::new(42, 42);
-        let node_config = NodeConfig::new(
-            "42".to_owned(),
-            node_id,
-            NodeLocation::default(),
-            AdvertisedAddress::Uds("foobar1".into()),
-            Role::Worker | Role::Admin,
-            LogServerConfig::default(),
-            MetadataServerConfig::default(),
-        );
+        let node_config = NodeConfig::builder()
+            .name("42".to_owned())
+            .current_generation(node_id)
+            .address(AdvertisedAddress::Uds("foobar1".into()))
+            .roles(Role::Worker | Role::Admin)
+            .build();
         nodes_config.upsert_node(node_config);
 
-        let mut env_builder =
-            TestCoreEnvBuilder::with_incoming_only_connector().set_nodes_config(nodes_config);
+        let mut env_builder = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_my_node_id(node_id)
+            .set_nodes_config(nodes_config);
         let health_status = HealthStatus::default();
 
         RocksDbManager::init(Constant::new(CommonOptions::default()));
@@ -1298,7 +1391,7 @@ mod tests {
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             Live::from_value(Configuration::default()),
-            env_builder.metadata_store_client.clone(),
+            env_builder.metadata_writer.clone(),
             partition_store_manager,
             replica_set_states,
             &mut env_builder.router_builder,

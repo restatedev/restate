@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_types::nodes_config::{
-    LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
+    LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
@@ -18,15 +18,14 @@ pub fn generate_logserver_node(
     storage_state: StorageState,
 ) -> NodeConfig {
     let id: PlainNodeId = id.into();
-    NodeConfig::new(
-        format!("node-{id}"),
-        GenerationalNodeId::new(id.into(), 1),
-        format!("region-{id}").parse().unwrap(),
-        format!("unix:/tmp/my_socket-{id}").parse().unwrap(),
-        Role::LogServer.into(),
-        LogServerConfig { storage_state },
-        MetadataServerConfig::default(),
-    )
+    NodeConfig::builder()
+        .name(format!("node-{id}"))
+        .current_generation(GenerationalNodeId::new(id.into(), 1))
+        .location(format!("region-{id}").parse().unwrap())
+        .address(format!("unix:/tmp/my_socket-{id}").parse().unwrap())
+        .roles(Role::LogServer.into())
+        .log_server_config(LogServerConfig { storage_state })
+        .build()
 }
 
 pub fn generate_logserver_nodes_config(

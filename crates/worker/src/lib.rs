@@ -22,17 +22,17 @@ mod subscription_integration;
 use std::time::Duration;
 
 use codederror::CodedError;
+
 use restate_bifrost::Bifrost;
-use restate_core::TaskCenter;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{Metadata, TaskKind};
+use restate_core::{MetadataWriter, TaskCenter};
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
-use restate_metadata_server::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
@@ -119,7 +119,7 @@ impl Worker {
         networking: Networking<T>,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
-        metadata_store_client: MetadataStoreClient,
+        metadata_writer: MetadataWriter,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
         health_status.update(WorkerStatus::StartingUp);
@@ -152,7 +152,7 @@ impl Worker {
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             live_config_clone,
-            metadata_store_client,
+            metadata_writer,
             partition_store_manager.clone(),
             replica_set_states,
             router_builder,
