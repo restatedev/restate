@@ -1276,6 +1276,7 @@ checksum = "815ed941f4e34d221bda5ac688ff1f80f579ca0c1b062d381347be6d53786e02"
 dependencies = [
  "bilrost-derive",
  "bytes",
+ "bytestring",
  "thin-vec",
 ]
 
@@ -7864,6 +7865,7 @@ dependencies = [
  "anyhow",
  "assert2",
  "async-trait",
+ "bilrost",
  "bytes",
  "bytestring",
  "codederror",
@@ -7872,8 +7874,10 @@ dependencies = [
  "enum-map",
  "flexbuffers",
  "googletest",
+ "prost",
  "restate-core",
  "restate-invoker-api",
+ "restate-partition-store",
  "restate-storage-api",
  "restate-test-util",
  "restate-types",
@@ -10389,9 +10393,11 @@ dependencies = [
  "aws-smithy-types",
  "axum",
  "axum-core",
+ "bilrost",
  "bitflags 2.8.0",
  "byteorder",
  "bytes",
+ "bytestring",
  "bzip2-sys",
  "cc",
  "chrono",

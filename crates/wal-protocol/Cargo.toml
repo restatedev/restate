@@ -15,6 +15,7 @@ serde = ["dep:serde", "enum-map/serde", "bytestring/serde", "restate-invoker-api
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 restate-core = { workspace = true }
 restate-invoker-api = { workspace = true }
+restate-partition-store = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 
@@ -22,6 +23,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+bilrost = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
@@ -32,6 +34,7 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
+prost = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

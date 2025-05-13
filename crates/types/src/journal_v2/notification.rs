@@ -299,10 +299,12 @@ pub struct GetInvocationOutputCompletion {
     pub completion_id: CompletionId,
     pub result: GetInvocationOutputResult,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof)]
 pub enum GetInvocationOutputResult {
     Void,
+    #[bilrost(2)]
     Success(Bytes),
+    #[bilrost(3)]
     Failure(Failure),
 }
 impl_completion_accessors!(GetInvocationOutput);

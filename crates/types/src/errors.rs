@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_encoding::BilrostNewType;
 use std::any::Any;
 use std::borrow::Cow;
 use std::convert::Into;
@@ -93,7 +94,7 @@ where
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, BilrostNewType)]
 #[serde(transparent)]
 pub struct InvocationErrorCode(u16);
 

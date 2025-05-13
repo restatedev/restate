@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 use std::mem;
 
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use serde::Serialize;
 
 use super::{StorageCodecKind, StorageEncodeError};
@@ -77,4 +77,9 @@ fn encode_serde_as_json<T: Serialize>(
     serde_json::to_writer(buf.writer(), value)?;
 
     Ok(())
+}
+
+/// Utility method to encode a [`bilrost::Message`] type
+pub fn encode_bilrost<T: bilrost::Message>(value: &T) -> Bytes {
+    value.encode_fast().into_vec().into()
 }

@@ -30,8 +30,10 @@ aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "htt
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.7", features = ["http2"] }
 axum-core = { version = "0.4", default-features = false, features = ["tracing"] }
+bilrost = { version = "0.1012", features = ["bytestring"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
+bytestring = { version = "1", default-features = false, features = ["serde"] }
 bzip2-sys = { version = "0.1", default-features = false, features = ["static"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
@@ -145,8 +147,10 @@ aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "htt
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.7", features = ["http2"] }
 axum-core = { version = "0.4", default-features = false, features = ["tracing"] }
+bilrost = { version = "0.1012", features = ["bytestring"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
+bytestring = { version = "1", default-features = false, features = ["serde"] }
 bzip2-sys = { version = "0.1", default-features = false, features = ["static"] }
 cc = { version = "1", default-features = false, features = ["parallel"] }
 chrono = { version = "0.4", features = ["serde"] }

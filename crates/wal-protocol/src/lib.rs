@@ -8,20 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytes::BufMut;
+use tracing::error;
+
 use restate_storage_api::deduplication_table::DedupInformation;
+use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, GetInvocationOutputResponse, InvocationResponse,
     InvocationTermination, NotifySignalRequest, PurgeInvocationRequest, ServiceInvocation,
 };
+use restate_types::logs::{HasRecordKeys, Keys, MatchKeyQuery};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
+use restate_types::storage::decode::decode_serde;
+use restate_types::storage::{
+    StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+};
 use restate_types::{PlainNodeId, Version, logs};
 
 use crate::control::AnnounceLeader;
 use crate::timer::TimerKeyValue;
-use restate_types::GenerationalNodeId;
-use restate_types::logs::{HasRecordKeys, Keys, MatchKeyQuery};
 
 pub mod control;
 pub mod timer;
@@ -57,7 +64,40 @@ impl Envelope {
 }
 
 #[cfg(feature = "serde")]
-restate_types::flexbuffers_storage_encode_decode!(Envelope);
+impl StorageEncode for Envelope {
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageCodecKind::Custom
+    }
+
+    fn encode(&self, buf: &mut ::bytes::BytesMut) -> Result<(), StorageEncodeError> {
+        buf.put_slice(&envelope::encode(self)?);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl StorageDecode for Envelope {
+    fn decode<B: ::bytes::Buf>(
+        buf: &mut B,
+        kind: StorageCodecKind,
+    ) -> Result<Self, StorageDecodeError>
+    where
+        Self: Sized,
+    {
+        match kind {
+            StorageCodecKind::Json
+            | StorageCodecKind::BincodeSerde
+            | StorageCodecKind::FlexbuffersSerde => decode_serde(buf, kind).map_err(|err| {
+                error!(%err, "{} decode failure (decoding Envelope)", kind);
+                err
+            }),
+            StorageCodecKind::LengthPrefixedRawBytes
+            | StorageCodecKind::Protobuf
+            | StorageCodecKind::Bilrost => Err(StorageDecodeError::UnsupportedCodecKind(kind)),
+            StorageCodecKind::Custom => envelope::decode(buf),
+        }
+    }
+}
 
 /// Header is set on every message
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,5 +263,276 @@ impl HasRecordKeys for Envelope {
 impl MatchKeyQuery for Envelope {
     fn matches_key_query(&self, query: &logs::KeyFilter) -> bool {
         self.record_keys().matches_key_query(query)
+    }
+}
+
+mod envelope {
+    use bilrost::{Message, OwnedMessage};
+    use bytes::{Buf, Bytes, BytesMut};
+    use serde::{Serialize, de::DeserializeOwned};
+
+    use restate_partition_store::protobuf_types::v1 as protobuf;
+    use restate_types::storage::{self, StorageCodecKind, StorageDecodeError, StorageEncodeError};
+
+    use crate::Command;
+
+    #[derive(Debug, thiserror::Error)]
+    enum DecodeError {
+        #[error("Missing field codec")]
+        MissingFieldCodec,
+        #[error("Unknown command kind")]
+        UnknownCommandKind,
+    }
+
+    impl From<DecodeError> for StorageDecodeError {
+        fn from(value: DecodeError) -> Self {
+            Self::DecodeValue(value.into())
+        }
+    }
+
+    #[derive(PartialEq, Eq, bilrost::Enumeration)]
+    enum CommandKind {
+        Unknown = 0,
+        AnnounceLeader = 1,                     // flexbuffers
+        PatchState = 2,                         // protobuf
+        TerminateInvocation = 3,                // bilrost
+        PurgeInvocation = 4,                    // bilrost
+        Invoke = 5,                             // protobuf
+        TruncateOutbox = 6,                     // flexbuffers
+        ProxyThrough = 7,                       // protobuf
+        AttachInvocation = 8,                   // protobuf
+        InvokerEffect = 9,                      // flexbuffers
+        Timer = 10,                             // flexbuffers
+        ScheduleTimer = 11,                     // flexbuffers
+        InvocationResponse = 12,                // protobuf
+        NotifyGetInvocationOutputResponse = 13, // bilrost
+        NotifySignal = 14,                      // protobuf
+    }
+
+    #[derive(bilrost::Message)]
+    struct Field {
+        #[bilrost(1)]
+        codec: Option<StorageCodecKind>,
+        #[bilrost(2)]
+        bytes: Bytes,
+    }
+
+    impl Field {
+        fn encode_serde<T: Serialize>(
+            codec: StorageCodecKind,
+            value: &T,
+        ) -> Result<Self, StorageEncodeError> {
+            let mut buf = BytesMut::new();
+            storage::encode::encode_serde(value, &mut buf, codec)?;
+
+            Ok(Self {
+                codec: Some(codec),
+                bytes: buf.freeze(),
+            })
+        }
+
+        fn encode_bilrost<T: bilrost::Message>(value: &T) -> Result<Self, StorageEncodeError> {
+            Ok(Self {
+                codec: Some(StorageCodecKind::Bilrost),
+                bytes: storage::encode::encode_bilrost(value),
+            })
+        }
+
+        fn encode_protobuf<T: prost::Message>(value: &T) -> Result<Self, StorageEncodeError> {
+            let mut buf = BytesMut::new();
+            value
+                .encode(&mut buf)
+                .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
+
+            Ok(Self {
+                codec: Some(StorageCodecKind::Protobuf),
+                bytes: buf.freeze(),
+            })
+        }
+
+        fn decode_serde<T: DeserializeOwned>(mut self) -> Result<T, StorageDecodeError> {
+            let codec = self.codec()?;
+            if !matches!(
+                codec,
+                StorageCodecKind::Json
+                    | StorageCodecKind::FlexbuffersSerde
+                    | StorageCodecKind::BincodeSerde
+            ) {
+                return Err(StorageDecodeError::UnsupportedCodecKind(codec));
+            }
+
+            storage::decode::decode_serde(
+                &mut self.bytes,
+                self.codec.ok_or(DecodeError::MissingFieldCodec)?,
+            )
+        }
+
+        fn decode_bilrosst<T: bilrost::OwnedMessage>(mut self) -> Result<T, StorageDecodeError> {
+            let codec = self.codec()?;
+            if codec != StorageCodecKind::Bilrost {
+                return Err(StorageDecodeError::UnsupportedCodecKind(codec));
+            }
+
+            storage::decode::decode_bilrost(&mut self.bytes)
+        }
+
+        fn decode_protobuf<T: prost::Message + Default>(self) -> Result<T, StorageDecodeError> {
+            let codec = self.codec()?;
+            if codec != StorageCodecKind::Protobuf {
+                return Err(StorageDecodeError::UnsupportedCodecKind(codec));
+            }
+
+            T::decode(self.bytes).map_err(|err| StorageDecodeError::DecodeValue(err.into()))
+        }
+
+        fn codec(&self) -> Result<StorageCodecKind, DecodeError> {
+            self.codec.ok_or(DecodeError::MissingFieldCodec)
+        }
+    }
+
+    #[derive(bilrost::Message)]
+    struct Envelope {
+        #[bilrost(1)]
+        header: Field,
+        #[bilrost(2)]
+        command_kind: CommandKind,
+        #[bilrost(3)]
+        command: Field,
+    }
+
+    pub fn encode(envelope: &super::Envelope) -> Result<Bytes, StorageEncodeError> {
+        // todo(azmy): avoid clone? this will require change to `From` implementation
+        let (command_kind, command) = match &envelope.command {
+            Command::AnnounceLeader(value) => (
+                CommandKind::AnnounceLeader,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
+            Command::PatchState(value) => {
+                let value = protobuf::StateMutation::from(value.clone());
+                (CommandKind::PatchState, Field::encode_protobuf(&value))
+            }
+            Command::TerminateInvocation(value) => (
+                CommandKind::TerminateInvocation,
+                Field::encode_bilrost(value),
+            ),
+            Command::PurgeInvocation(value) => {
+                (CommandKind::PurgeInvocation, Field::encode_bilrost(value))
+            }
+            Command::Invoke(value) => {
+                let value = protobuf::ServiceInvocation::from(value.clone());
+                (CommandKind::Invoke, Field::encode_protobuf(&value))
+            }
+            Command::TruncateOutbox(value) => (
+                CommandKind::TruncateOutbox,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
+            Command::ProxyThrough(value) => {
+                let value = protobuf::ServiceInvocation::from(value.clone());
+                (CommandKind::ProxyThrough, Field::encode_protobuf(&value))
+            }
+            Command::AttachInvocation(value) => {
+                let value = protobuf::outbox_message::AttachInvocationRequest::from(value.clone());
+                (
+                    CommandKind::AttachInvocation,
+                    Field::encode_protobuf(&value),
+                )
+            }
+            Command::InvokerEffect(value) => (
+                CommandKind::InvokerEffect,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
+            Command::Timer(value) => (
+                CommandKind::Timer,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
+            Command::ScheduleTimer(value) => (
+                CommandKind::ScheduleTimer,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
+            Command::InvocationResponse(value) => {
+                let value =
+                    protobuf::outbox_message::OutboxServiceInvocationResponse::from(value.clone());
+                (
+                    CommandKind::InvocationResponse,
+                    Field::encode_protobuf(&value),
+                )
+            }
+            Command::NotifyGetInvocationOutputResponse(value) => (
+                CommandKind::NotifyGetInvocationOutputResponse,
+                Field::encode_bilrost(value),
+            ),
+            Command::NotifySignal(value) => {
+                let value = protobuf::outbox_message::NotifySignal::from(value.clone());
+                (CommandKind::NotifySignal, Field::encode_protobuf(&value))
+            }
+        };
+
+        let dto = Envelope {
+            header: Field::encode_serde(StorageCodecKind::FlexbuffersSerde, &envelope.header)?,
+            command_kind,
+            command: command?,
+        };
+
+        Ok(dto.encode_fast().into_vec().into())
+    }
+
+    pub fn decode<B: Buf>(buf: B) -> Result<super::Envelope, StorageDecodeError> {
+        let envelope =
+            Envelope::decode(buf).map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+        // header is encoded with serde
+        let header = envelope.header.decode_serde::<super::Header>()?;
+
+        let command = match envelope.command_kind {
+            CommandKind::Unknown => return Err(DecodeError::UnknownCommandKind.into()),
+            CommandKind::AnnounceLeader => {
+                Command::AnnounceLeader(envelope.command.decode_serde()?)
+            }
+            CommandKind::PatchState => {
+                let value: protobuf::StateMutation = envelope.command.decode_protobuf()?;
+                Command::PatchState(value.try_into()?)
+            }
+            CommandKind::TerminateInvocation => {
+                Command::TerminateInvocation(envelope.command.decode_bilrosst()?)
+            }
+            CommandKind::PurgeInvocation => {
+                Command::PurgeInvocation(envelope.command.decode_bilrosst()?)
+            }
+            CommandKind::Invoke => {
+                let value: protobuf::ServiceInvocation = envelope.command.decode_protobuf()?;
+                Command::Invoke(value.try_into()?)
+            }
+            CommandKind::TruncateOutbox => {
+                Command::TruncateOutbox(envelope.command.decode_serde()?)
+            }
+            CommandKind::ProxyThrough => {
+                let value: protobuf::ServiceInvocation = envelope.command.decode_protobuf()?;
+                Command::ProxyThrough(value.try_into()?)
+            }
+            CommandKind::AttachInvocation => {
+                let value: protobuf::outbox_message::AttachInvocationRequest =
+                    envelope.command.decode_protobuf()?;
+                Command::AttachInvocation(value.try_into()?)
+            }
+            CommandKind::InvokerEffect => Command::InvokerEffect(envelope.command.decode_serde()?),
+            CommandKind::Timer => Command::Timer(envelope.command.decode_serde()?),
+            CommandKind::ScheduleTimer => Command::ScheduleTimer(envelope.command.decode_serde()?),
+            CommandKind::InvocationResponse => {
+                let value: protobuf::outbox_message::OutboxServiceInvocationResponse =
+                    envelope.command.decode_protobuf()?;
+                Command::InvocationResponse(value.try_into()?)
+            }
+            CommandKind::NotifyGetInvocationOutputResponse => {
+                Command::NotifyGetInvocationOutputResponse(envelope.command.decode_bilrosst()?)
+            }
+            CommandKind::NotifySignal => {
+                let value: protobuf::outbox_message::NotifySignal =
+                    envelope.command.decode_protobuf()?;
+
+                Command::NotifySignal(value.try_into()?)
+            }
+        };
+
+        Ok(super::Envelope { header, command })
     }
 }

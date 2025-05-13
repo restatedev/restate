@@ -13,9 +13,11 @@
 use crate::errors::{InvocationError, InvocationErrorCode};
 use bytestring::ByteString;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
 pub struct Failure {
+    #[bilrost(1)]
     pub code: InvocationErrorCode,
+    #[bilrost(2)]
     pub message: ByteString,
 }
 

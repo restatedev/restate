@@ -40,7 +40,9 @@ pub enum StorageDecodeError {
     UnsupportedCodecKind(StorageCodecKind),
 }
 
-#[derive(Debug, Copy, Clone, strum::FromRepr, derive_more::Display)]
+#[derive(
+    Debug, Copy, Clone, strum::FromRepr, derive_more::Display, PartialEq, Eq, bilrost::Enumeration,
+)]
 #[repr(u8)]
 pub enum StorageCodecKind {
     /// plain old protobuf
@@ -53,6 +55,11 @@ pub enum StorageCodecKind {
     BincodeSerde = 4,
     /// Json (no length prefix)
     Json = 5,
+    /// Bilrost (no length-prefixed)
+    Bilrost = 6,
+
+    /// Custom encoding
+    Custom = 0xff,
 }
 
 impl From<StorageCodecKind> for u8 {

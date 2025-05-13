@@ -101,6 +101,12 @@ impl From<ConversionError> for StorageError {
     }
 }
 
+impl From<ConversionError> for StorageDecodeError {
+    fn from(value: ConversionError) -> Self {
+        StorageDecodeError::DecodeValue(value.into())
+    }
+}
+
 pub mod v1 {
     #![allow(warnings)]
     #![allow(clippy::all)]
@@ -3194,6 +3200,211 @@ pub mod v1 {
             }
         }
 
+        impl From<restate_types::invocation::AttachInvocationRequest>
+            for outbox_message::AttachInvocationRequest
+        {
+            fn from(value: restate_types::invocation::AttachInvocationRequest) -> Self {
+                let restate_types::invocation::AttachInvocationRequest {
+                    block_on_inflight,
+                    response_sink,
+                    invocation_query,
+                } = value;
+
+                Self {
+                    block_on_inflight,
+                    query: Some(match invocation_query {
+                        restate_types::invocation::InvocationQuery::Invocation(id) => {
+                            outbox_message::attach_invocation_request::Query::InvocationId(
+                                id.into(),
+                            )
+                        }
+                        restate_types::invocation::InvocationQuery::IdempotencyId(id) => {
+                            outbox_message::attach_invocation_request::Query::IdempotencyId(
+                                id.into(),
+                            )
+                        }
+                        restate_types::invocation::InvocationQuery::Workflow(id) => {
+                            outbox_message::attach_invocation_request::Query::WorkflowId(id.into())
+                        }
+                    }),
+                    response_sink: Some(Some(response_sink).into()),
+                }
+            }
+        }
+
+        impl TryFrom<outbox_message::AttachInvocationRequest>
+            for restate_types::invocation::AttachInvocationRequest
+        {
+            type Error = ConversionError;
+
+            fn try_from(
+                value: outbox_message::AttachInvocationRequest,
+            ) -> Result<Self, Self::Error> {
+                let outbox_message::AttachInvocationRequest {
+                    block_on_inflight,
+                    response_sink,
+                    query,
+                } = value;
+
+                Ok(
+                    Self {
+                        invocation_query: match query
+                            .ok_or(ConversionError::missing_field("query"))?
+                        {
+                            outbox_message::attach_invocation_request::Query::InvocationId(id) => {
+                                restate_types::invocation::InvocationQuery::Invocation(
+                                    id.try_into()?,
+                                )
+                            }
+                            outbox_message::attach_invocation_request::Query::IdempotencyId(id) => {
+                                restate_types::invocation::InvocationQuery::IdempotencyId(
+                                    id.try_into()?,
+                                )
+                            }
+                            outbox_message::attach_invocation_request::Query::WorkflowId(id) => {
+                                restate_types::invocation::InvocationQuery::Workflow(id.try_into()?)
+                            }
+                        },
+                        block_on_inflight,
+                        response_sink: Option::<
+                            restate_types::invocation::ServiceInvocationResponseSink,
+                        >::try_from(
+                            response_sink.ok_or(ConversionError::missing_field("response_sink"))?,
+                        )
+                        .transpose()
+                        .ok_or(ConversionError::missing_field("response_sink"))??,
+                    },
+                )
+            }
+        }
+
+        impl From<restate_types::invocation::InvocationResponse>
+            for outbox_message::OutboxServiceInvocationResponse
+        {
+            fn from(value: restate_types::invocation::InvocationResponse) -> Self {
+                let restate_types::invocation::InvocationResponse { target, result } = value;
+
+                OutboxServiceInvocationResponse {
+                    entry_index: target.caller_completion_id,
+                    invocation_id: Some(InvocationId::from(target.caller_id)),
+                    response_result: Some(ResponseResult::from(result)),
+                    caller_invocation_epoch: target.caller_invocation_epoch,
+                }
+            }
+        }
+
+        impl TryFrom<outbox_message::OutboxServiceInvocationResponse>
+            for restate_types::invocation::InvocationResponse
+        {
+            type Error = ConversionError;
+
+            fn try_from(
+                value: outbox_message::OutboxServiceInvocationResponse,
+            ) -> Result<Self, Self::Error> {
+                let outbox_message::OutboxServiceInvocationResponse {
+                    caller_invocation_epoch,
+                    entry_index,
+                    invocation_id,
+                    response_result,
+                } = value;
+
+                Ok(Self {
+                    target: restate_types::invocation::JournalCompletionTarget {
+                        caller_id: restate_types::identifiers::InvocationId::try_from(
+                            invocation_id.ok_or(ConversionError::missing_field("invocation_id"))?,
+                        )?,
+                        caller_completion_id: entry_index,
+                        caller_invocation_epoch: caller_invocation_epoch,
+                    },
+                    result: restate_types::invocation::ResponseResult::try_from(
+                        response_result.ok_or(ConversionError::missing_field("response_result"))?,
+                    )?,
+                })
+            }
+        }
+
+        impl From<restate_types::invocation::NotifySignalRequest> for outbox_message::NotifySignal {
+            fn from(value: restate_types::invocation::NotifySignalRequest) -> Self {
+                let restate_types::invocation::NotifySignalRequest {
+                    invocation_id,
+                    signal,
+                } = value;
+
+                Self {
+                    invocation_id: Some(InvocationId::from(invocation_id)),
+                    signal_id: Some(match signal.id {
+                        journal_v2::SignalId::Index(idx) => {
+                            outbox_message::notify_signal::SignalId::Idx(idx)
+                        }
+                        journal_v2::SignalId::Name(name) => {
+                            outbox_message::notify_signal::SignalId::Name(name.to_string())
+                        }
+                    }),
+                    result: Some(match signal.result {
+                        journal_v2::SignalResult::Void => {
+                            outbox_message::notify_signal::Result::None(())
+                        }
+                        journal_v2::SignalResult::Success(b) => {
+                            outbox_message::notify_signal::Result::Success(b)
+                        }
+                        journal_v2::SignalResult::Failure(f) => {
+                            outbox_message::notify_signal::Result::Failure(
+                                outbox_message::notify_signal::Failure {
+                                    error_code: f.code.into(),
+                                    message: f.message.into(),
+                                },
+                            )
+                        }
+                    }),
+                }
+            }
+        }
+
+        impl TryFrom<outbox_message::NotifySignal> for restate_types::invocation::NotifySignalRequest {
+            type Error = ConversionError;
+
+            fn try_from(value: outbox_message::NotifySignal) -> Result<Self, Self::Error> {
+                let outbox_message::NotifySignal {
+                    invocation_id,
+                    signal_id,
+                    result,
+                } = value;
+
+                Ok(Self {
+                    invocation_id: restate_types::identifiers::InvocationId::try_from(
+                        expect_or_fail!(invocation_id)?,
+                    )?,
+                    signal: journal_v2::Signal::new(
+                        match expect_or_fail!(signal_id)? {
+                            outbox_message::notify_signal::SignalId::Idx(idx) => {
+                                journal_v2::SignalId::Index(idx)
+                            }
+                            outbox_message::notify_signal::SignalId::Name(name) => {
+                                journal_v2::SignalId::Name(name.into())
+                            }
+                        },
+                        match expect_or_fail!(result)? {
+                            outbox_message::notify_signal::Result::None(_) => {
+                                journal_v2::SignalResult::Void
+                            }
+                            outbox_message::notify_signal::Result::Success(b) => {
+                                journal_v2::SignalResult::Success(b)
+                            }
+                            outbox_message::notify_signal::Result::Failure(
+                                outbox_message::notify_signal::Failure {
+                                    error_code,
+                                    message,
+                                },
+                            ) => journal_v2::SignalResult::Failure(journal_v2::Failure {
+                                code: error_code.into(),
+                                message: message.into(),
+                            }),
+                        },
+                    ),
+                })
+            }
+        }
+
         impl TryFrom<OutboxMessage> for restate_storage_api::outbox_table::OutboxMessage {
             type Error = ConversionError;
 
@@ -3214,23 +3425,7 @@ pub mod v1 {
                     outbox_message::OutboxMessage::ServiceInvocationResponse(
                         invocation_response,
                     ) => restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
-                        restate_types::invocation::InvocationResponse {
-                            target: restate_types::invocation::JournalCompletionTarget {
-                                caller_id: restate_types::identifiers::InvocationId::try_from(
-                                    invocation_response
-                                        .invocation_id
-                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
-                                )?,
-                                caller_completion_id: invocation_response.entry_index,
-                                caller_invocation_epoch: invocation_response
-                                    .caller_invocation_epoch,
-                            },
-                            result: restate_types::invocation::ResponseResult::try_from(
-                                invocation_response
-                                    .response_result
-                                    .ok_or(ConversionError::missing_field("response_result"))?,
-                            )?,
-                        },
+                        invocation_response.try_into()?,
                     ),
                     outbox_message::OutboxMessage::Kill(outbox_kill) => {
                         restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
@@ -3255,81 +3450,15 @@ pub mod v1 {
                         )
                     }
                     outbox_message::OutboxMessage::AttachInvocationRequest(
-                        outbox_message::AttachInvocationRequest {
-                            block_on_inflight,
-                            response_sink,
-                            query,
-                        },
+                        attach_invocation_request,
                     ) => restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(
-                        restate_types::invocation::AttachInvocationRequest {
-                            invocation_query: match query
-                                .ok_or(ConversionError::missing_field("query"))?
-                            {
-                                outbox_message::attach_invocation_request::Query::InvocationId(
-                                    id,
-                                ) => restate_types::invocation::InvocationQuery::Invocation(
-                                    id.try_into()?,
-                                ),
-                                outbox_message::attach_invocation_request::Query::IdempotencyId(
-                                    id,
-                                ) => restate_types::invocation::InvocationQuery::IdempotencyId(
-                                    id.try_into()?,
-                                ),
-                                outbox_message::attach_invocation_request::Query::WorkflowId(
-                                    id,
-                                ) => restate_types::invocation::InvocationQuery::Workflow(
-                                    id.try_into()?,
-                                ),
-                            },
-                            block_on_inflight,
-                            response_sink: Option::<
-                                restate_types::invocation::ServiceInvocationResponseSink,
-                            >::try_from(
-                                response_sink
-                                    .ok_or(ConversionError::missing_field("response_sink"))?,
-                            )
-                            .transpose()
-                            .ok_or(ConversionError::missing_field("response_sink"))??,
-                        },
+                        attach_invocation_request.try_into()?,
                     ),
-                    outbox_message::OutboxMessage::NotifySignal(NotifySignal {
-                        invocation_id,
-                        signal_id,
-                        result,
-                    }) => restate_storage_api::outbox_table::OutboxMessage::NotifySignal(
-                        restate_types::invocation::NotifySignalRequest {
-                            invocation_id: restate_types::identifiers::InvocationId::try_from(
-                                expect_or_fail!(invocation_id)?,
-                            )?,
-                            signal: journal_v2::Signal::new(
-                                match expect_or_fail!(signal_id)? {
-                                    outbox_message::notify_signal::SignalId::Idx(idx) => {
-                                        journal_v2::SignalId::Index(idx)
-                                    }
-                                    outbox_message::notify_signal::SignalId::Name(name) => {
-                                        journal_v2::SignalId::Name(name.into())
-                                    }
-                                },
-                                match expect_or_fail!(result)? {
-                                    outbox_message::notify_signal::Result::None(_) => {
-                                        journal_v2::SignalResult::Void
-                                    }
-                                    outbox_message::notify_signal::Result::Success(b) => {
-                                        journal_v2::SignalResult::Success(b)
-                                    }
-                                    outbox_message::notify_signal::Result::Failure(
-                                        outbox_message::notify_signal::Failure {
-                                            error_code,
-                                            message,
-                                        },
-                                    ) => journal_v2::SignalResult::Failure(journal_v2::Failure {
-                                        code: error_code.into(),
-                                        message: message.into(),
-                                    }),
-                                },
-                            ),
-                        },
-                    ),
+                    outbox_message::OutboxMessage::NotifySignal(notify_signal) => {
+                        restate_storage_api::outbox_table::OutboxMessage::NotifySignal(
+                            notify_signal.try_into()?,
+                        )
+                    }
                 };
 
                 Ok(result)
@@ -3379,65 +3508,13 @@ pub mod v1 {
                         }
                     },
                     restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(
-                        restate_types::invocation::AttachInvocationRequest {
-                            invocation_query,
-                            block_on_inflight,
-                            response_sink,
-                        },
+                        attach_invocation_request,
                     ) => outbox_message::OutboxMessage::AttachInvocationRequest(
-                        outbox_message::AttachInvocationRequest {
-                            block_on_inflight,
-                            query: Some(match invocation_query {
-                                restate_types::invocation::InvocationQuery::Invocation(id) => {
-                                    outbox_message::attach_invocation_request::Query::InvocationId(
-                                        id.into(),
-                                    )
-                                }
-                                restate_types::invocation::InvocationQuery::IdempotencyId(id) => {
-                                    outbox_message::attach_invocation_request::Query::IdempotencyId(
-                                        id.into(),
-                                    )
-                                }
-                                restate_types::invocation::InvocationQuery::Workflow(id) => {
-                                    outbox_message::attach_invocation_request::Query::WorkflowId(
-                                        id.into(),
-                                    )
-                                }
-                            }),
-                            response_sink: Some(Some(response_sink).into()),
-                        },
+                        attach_invocation_request.into(),
                     ),
                     restate_storage_api::outbox_table::OutboxMessage::NotifySignal(
                         notify_signal,
-                    ) => {
-                        outbox_message::OutboxMessage::NotifySignal(outbox_message::NotifySignal {
-                            invocation_id: Some(InvocationId::from(notify_signal.invocation_id)),
-                            signal_id: Some(match notify_signal.signal.id {
-                                journal_v2::SignalId::Index(idx) => {
-                                    outbox_message::notify_signal::SignalId::Idx(idx)
-                                }
-                                journal_v2::SignalId::Name(name) => {
-                                    outbox_message::notify_signal::SignalId::Name(name.to_string())
-                                }
-                            }),
-                            result: Some(match notify_signal.signal.result {
-                                journal_v2::SignalResult::Void => {
-                                    outbox_message::notify_signal::Result::None(())
-                                }
-                                journal_v2::SignalResult::Success(b) => {
-                                    outbox_message::notify_signal::Result::Success(b)
-                                }
-                                journal_v2::SignalResult::Failure(f) => {
-                                    outbox_message::notify_signal::Result::Failure(
-                                        outbox_message::notify_signal::Failure {
-                                            error_code: f.code.into(),
-                                            message: f.message.into(),
-                                        },
-                                    )
-                                }
-                            }),
-                        })
-                    }
+                    ) => outbox_message::OutboxMessage::NotifySignal(notify_signal.into()),
                 };
 
                 OutboxMessage {
