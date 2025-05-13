@@ -7756,6 +7756,7 @@ dependencies = [
  "restate-types",
  "restate-utoipa",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
  "serde_path_to_error",

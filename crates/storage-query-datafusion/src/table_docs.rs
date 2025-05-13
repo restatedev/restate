@@ -155,8 +155,14 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
             .remove("created_at")
             .expect("created_at should exist"),
         sys_invocation_status
+            .remove("created_using_restate_version")
+            .expect("created_using_restate_version should exist"),
+        sys_invocation_status
             .remove("modified_at")
             .expect("modified_at should exist"),
+        sys_invocation_status
+            .remove("modified_using_restate_version")
+            .expect("modified_using_restate_version should exist"),
         sys_invocation_status
             .remove("inboxed_at")
             .expect("inboxed_at should exist"),

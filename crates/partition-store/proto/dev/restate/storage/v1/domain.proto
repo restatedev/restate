@@ -146,7 +146,9 @@ message InvocationStatusV2 {
 
   // Timestamps
   uint64 creation_time = 5;
+  string created_using_restate_version = 29;
   uint64 modification_time = 6;
+  string modified_using_restate_version = 30;
   optional uint64 inboxed_transition_time = 19;
   optional uint64 scheduled_transition_time = 20;
   optional uint64 running_transition_time = 21;
@@ -331,6 +333,7 @@ message ServiceInvocation {
   Duration completion_retention_time = 9;
   optional string idempotency_key = 10;
   SubmitNotificationSink submit_notification_sink = 11;
+  string restate_version = 12;
 }
 
 message StateMutation {

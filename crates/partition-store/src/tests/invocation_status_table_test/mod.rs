@@ -27,7 +27,8 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::{
-    InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
+    InvocationTarget, RestateVersion, ServiceInvocationSpanContext, Source,
+    VirtualObjectHandlerType,
 };
 use restate_types::time::MillisSinceEpoch;
 
@@ -82,7 +83,16 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
         pinned_deployment: None,
         response_sinks: HashSet::new(),
-        timestamps: StatusTimestamps::init(MillisSinceEpoch::new(0)),
+        timestamps: StatusTimestamps::new(
+            MillisSinceEpoch::new(0),
+            RestateVersion::current(),
+            MillisSinceEpoch::new(0),
+            RestateVersion::current(),
+            None,
+            None,
+            None,
+            None,
+        ),
         source: Source::Ingress(*RPC_REQUEST_ID),
         completion_retention_duration: Duration::ZERO,
         idempotency_key: None,
@@ -99,7 +109,16 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
             pinned_deployment: None,
             response_sinks: HashSet::new(),
-            timestamps: StatusTimestamps::init(MillisSinceEpoch::new(0)),
+            timestamps: StatusTimestamps::new(
+                MillisSinceEpoch::new(0),
+                RestateVersion::current(),
+                MillisSinceEpoch::new(0),
+                RestateVersion::current(),
+                None,
+                None,
+                None,
+                None,
+            ),
             source: Source::Ingress(*RPC_REQUEST_ID),
             completion_retention_duration: Duration::ZERO,
             idempotency_key: None,
@@ -189,7 +208,9 @@ async fn test_migration() {
     let mut rocksdb = storage_test_environment().await;
 
     let invocation_id = InvocationId::mock_random();
-    let status = InvocationStatus::Invoked(InFlightInvocationMetadata::mock());
+    let mut in_flight_invocation_status = InFlightInvocationMetadata::mock();
+    in_flight_invocation_status.timestamps = StatusTimestamps::init(RestateVersion::unknown());
+    let status = InvocationStatus::Invoked(in_flight_invocation_status);
 
     // Let's mock the old invocation status
     let mut txn = rocksdb.transaction();

@@ -99,6 +99,7 @@ criterion = { workspace = true, features = ["async_tokio"] }
 tempfile = { workspace = true }
 googletest = { workspace = true }
 rand = { workspace = true }
+semver = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 

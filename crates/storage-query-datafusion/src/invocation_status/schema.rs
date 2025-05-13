@@ -93,9 +93,15 @@ define_table!(sys_invocation_status(
     /// Timestamp indicating the start of this invocation.
     created_at: TimestampMillisecond,
 
+    /// restate-server version in use when this invocation was created.
+    created_using_restate_version: DataType::LargeUtf8,
+
     /// Timestamp indicating the last invocation status transition. For example, last time the
     /// status changed from `invoked` to `suspended`.
     modified_at: TimestampMillisecond,
+
+    /// restate-server version in use when this invocation was last modified.
+    modified_using_restate_version: DataType::LargeUtf8,
 
     /// Timestamp indicating when the invocation was inboxed, if ever.
     inboxed_at: TimestampMillisecond,

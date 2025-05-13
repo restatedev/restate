@@ -234,7 +234,7 @@ async fn complete_already_completed_invocation() {
             span_context: ServiceInvocationSpanContext::default(),
             source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
             idempotency_key: Some(idempotency_key.clone()),
-            timestamps: StatusTimestamps::now(),
+            timestamps: StatusTimestamps::mock(),
             response_result: ResponseResult::Success(response_bytes.clone()),
             completion_retention_duration: Default::default(),
         }),
