@@ -48,6 +48,7 @@ use restate_types::nodes_config::{
     LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
 };
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, NodeRpcStatus, WorkerStatus,
 };
@@ -201,6 +202,7 @@ impl Node {
         let networking = Networking::with_grpc_connector();
         metadata_manager.register_in_message_router(&mut router_builder);
         let partition_routing_refresher = PartitionRoutingRefresher::default();
+        let replica_set_states = PartitionReplicaSetStates::default();
 
         let record_cache = RecordCache::new(
             Configuration::pinned()
@@ -255,6 +257,7 @@ impl Node {
                     TaskCenter::with_current(|tc| tc.health().worker_status()),
                     metadata.clone(),
                     partition_routing_refresher.partition_routing(),
+                    replica_set_states.clone(),
                     updateable_config.clone(),
                     &mut router_builder,
                     networking.clone(),
@@ -309,6 +312,7 @@ impl Node {
                     bifrost.clone(),
                     updateable_config.clone(),
                     partition_routing_refresher.partition_routing(),
+                    replica_set_states.clone(),
                     networking.clone(),
                     metadata,
                     metadata_manager.writer(),
@@ -327,6 +331,7 @@ impl Node {
             &updateable_config.pinned().common.gossip,
             networking.clone(),
             &mut router_builder,
+            replica_set_states,
             worker_role
                 .as_ref()
                 .map(|role| role.partition_processor_manager_handle()),

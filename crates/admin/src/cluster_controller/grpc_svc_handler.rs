@@ -36,6 +36,7 @@ use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::partition_processor_manager::Snapshot;
 use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::cluster::ClusterConfiguration;
 use restate_types::storage::{StorageCodec, StorageEncode};
 use restate_types::{PlainNodeId, Version, Versioned};
@@ -50,6 +51,7 @@ pub(crate) struct ClusterCtrlSvcHandler {
     bifrost: Bifrost,
     metadata_writer: MetadataWriter,
     query_context: QueryContext,
+    _replica_set_states: PartitionReplicaSetStates,
 }
 
 impl ClusterCtrlSvcHandler {
@@ -58,12 +60,14 @@ impl ClusterCtrlSvcHandler {
         bifrost: Bifrost,
         metadata_writer: MetadataWriter,
         query_context: QueryContext,
+        replica_set_states: PartitionReplicaSetStates,
     ) -> Self {
         Self {
             controller_handle,
             bifrost,
             metadata_writer,
             query_context,
+            _replica_set_states: replica_set_states,
         }
     }
 

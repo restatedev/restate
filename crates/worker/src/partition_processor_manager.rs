@@ -66,6 +66,7 @@ use restate_types::net::partition_processor_manager::{
 };
 use restate_types::net::{RpcRequest as _, UnaryMessage};
 use restate_types::partition_table::PartitionTable;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString, Version};
@@ -99,6 +100,7 @@ pub struct PartitionProcessorManager {
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
 
+    _replica_set_states: PartitionReplicaSetStates,
     target_tail_lsns: HashMap<PartitionId, Lsn>,
     archived_lsns: HashMap<PartitionId, Lsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
@@ -180,6 +182,7 @@ impl PartitionProcessorManager {
         updateable_config: Live<Configuration>,
         metadata_store_client: MetadataStoreClient,
         partition_store_manager: PartitionStoreManager,
+        replica_set_states: PartitionReplicaSetStates,
         router_builder: &mut MessageRouterBuilder,
         bifrost: Bifrost,
         snapshot_repository: Option<SnapshotRepository>,
@@ -200,6 +203,7 @@ impl PartitionProcessorManager {
             bifrost,
             rx,
             tx,
+            _replica_set_states: replica_set_states,
             archived_lsns: HashMap::default(),
             target_tail_lsns: HashMap::default(),
             invokers_status_reader: MultiplexedInvokerStatusReader::default(),
@@ -1250,6 +1254,7 @@ mod tests {
     use restate_types::nodes_config::{
         LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
     };
+    use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::{GenerationalNodeId, Version};
     use std::time::Duration;
     use test_log::test;
@@ -1282,6 +1287,8 @@ mod tests {
             .with_factory(memory_loglet::Factory::default());
         let bifrost = bifrost_svc.handle();
 
+        let replica_set_states = PartitionReplicaSetStates::default();
+
         let partition_store_manager = PartitionStoreManager::create(
             Constant::new(StorageOptions::default()),
             &[(PartitionId::MIN, 0..=PartitionKey::MAX)],
@@ -1293,6 +1300,7 @@ mod tests {
             Live::from_value(Configuration::default()),
             env_builder.metadata_store_client.clone(),
             partition_store_manager,
+            replica_set_states,
             &mut env_builder.router_builder,
             bifrost,
             None,
