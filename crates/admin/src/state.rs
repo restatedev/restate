@@ -12,15 +12,21 @@ use crate::schema_registry::SchemaRegistry;
 use restate_bifrost::Bifrost;
 
 #[derive(Clone, derive_builder::Builder)]
-pub struct AdminServiceState<V> {
+pub struct AdminServiceState<V, IC> {
     pub schema_registry: SchemaRegistry<V>,
+    pub invocation_client: IC,
     pub bifrost: Bifrost,
 }
 
-impl<V> AdminServiceState<V> {
-    pub fn new(schema_registry: SchemaRegistry<V>, bifrost: Bifrost) -> Self {
+impl<V, IC> AdminServiceState<V, IC> {
+    pub fn new(
+        schema_registry: SchemaRegistry<V>,
+        invocation_client: IC,
+        bifrost: Bifrost,
+    ) -> Self {
         Self {
             schema_registry,
+            invocation_client,
             bifrost,
         }
     }

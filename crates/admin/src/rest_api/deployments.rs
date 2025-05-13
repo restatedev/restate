@@ -43,8 +43,8 @@ use serde::Deserialize;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_deployment<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn create_deployment<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Extension(version): Extension<AdminApiVersion>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
@@ -158,8 +158,8 @@ pub async fn create_deployment<V>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_deployment<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn get_deployment<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Extension(version): Extension<AdminApiVersion>,
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
@@ -184,8 +184,8 @@ pub async fn get_deployment<V>(
     operation_id = "list_deployments",
     tags = "deployment"
 )]
-pub async fn list_deployments<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn list_deployments<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
 ) -> Json<ListDeploymentsResponse> {
     let deployments = state
         .schema_registry
@@ -247,8 +247,8 @@ pub struct DeleteDeploymentParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_deployment<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn delete_deployment<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Path(deployment_id): Path<DeploymentId>,
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
 ) -> Result<StatusCode, MetaApiError> {
@@ -277,8 +277,8 @@ pub async fn delete_deployment<V>(
         schema = "std::string::String"
     ))
 )]
-pub async fn update_deployment<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn update_deployment<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Extension(version): Extension<AdminApiVersion>,
     Path(deployment_id): Path<DeploymentId>,
     #[request_body(required = true)] Json(payload): Json<UpdateDeploymentRequest>,
