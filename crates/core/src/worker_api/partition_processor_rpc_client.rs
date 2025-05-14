@@ -14,6 +14,7 @@ use crate::network::{NetworkSender, RpcReplyError, Swimlane};
 use crate::network::{Networking, TransportConnect};
 use crate::partitions::PartitionRouting;
 use assert2::let_assert;
+use restate_types::NodeId;
 use restate_types::identifiers::{
     InvocationId, PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -38,15 +39,30 @@ pub enum PartitionProcessorInvocationClientError {
     #[error("cannot find node for partition {0}")]
     UnknownNode(PartitionId),
     #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
+    #[error(transparent)]
+    Rpc(#[from] RpcError),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("rpc for partition {partition_id} at node {node_id} failed: {source}")]
+pub struct RpcError {
+    partition_id: PartitionId,
+    node_id: NodeId,
+    #[source]
+    source: RpcErrorKind,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RpcErrorKind {
+    #[error(transparent)]
     Connect(#[from] ConnectError),
     #[error("failed sending request")]
     SendFailed,
-    #[error(transparent)]
-    Shutdown(#[from] ShutdownError),
-    #[error("message has been routed to a node which is not the leader of the partition")]
+    #[error("not leader")]
     NotLeader,
-    #[error("message has been routed to a node which lost leadership for partition '{0}'")]
-    LostLeadership(PartitionId),
+    #[error("lost leadership")]
+    LostLeadership,
     #[error("rejecting rpc because the partition is too busy")]
     Busy,
     #[error("internal error: {0}")]
@@ -62,13 +78,34 @@ impl PartitionProcessorInvocationClientError {
     pub fn is_safe_to_retry(&self) -> bool {
         match self {
             PartitionProcessorInvocationClientError::UnknownPartition(_)
-            | PartitionProcessorInvocationClientError::Connect(_)
-            | PartitionProcessorInvocationClientError::UnknownNode(_)
-            | PartitionProcessorInvocationClientError::NotLeader
-            | PartitionProcessorInvocationClientError::Starting
-            | PartitionProcessorInvocationClientError::Busy
-            | PartitionProcessorInvocationClientError::SendFailed
-            | PartitionProcessorInvocationClientError::Stopping => {
+            | PartitionProcessorInvocationClientError::UnknownNode(_) => {
+                // These are pre-flight error that we can distinguish,
+                // and for which we know for certain that no message was proposed yet to the log.
+                true
+            }
+            PartitionProcessorInvocationClientError::Rpc(rpc) => rpc.is_safe_to_retry(),
+            _ => false,
+        }
+    }
+}
+
+impl RpcError {
+    fn from_err(partition_id: PartitionId, node_id: NodeId, err: impl Into<RpcErrorKind>) -> Self {
+        Self {
+            partition_id,
+            node_id,
+            source: err.into(),
+        }
+    }
+
+    fn is_safe_to_retry(&self) -> bool {
+        match self.source {
+            RpcErrorKind::Connect(_)
+            | RpcErrorKind::NotLeader
+            | RpcErrorKind::Starting
+            | RpcErrorKind::Busy
+            | RpcErrorKind::SendFailed
+            | RpcErrorKind::Stopping => {
                 // These are pre-flight error that we can distinguish,
                 // and for which we know for certain that no message was proposed yet to the log.
                 true
@@ -85,7 +122,7 @@ impl From<PartitionProcessorInvocationClientError> for InvocationClientError {
     }
 }
 
-impl From<RpcReplyError> for PartitionProcessorInvocationClientError {
+impl From<RpcReplyError> for RpcErrorKind {
     fn from(value: RpcReplyError) -> Self {
         match value {
             e @ RpcReplyError::Unknown(_) => Self::Internal(e.to_string()),
@@ -101,24 +138,14 @@ impl From<RpcReplyError> for PartitionProcessorInvocationClientError {
     }
 }
 
-impl From<PartitionProcessorRpcError> for PartitionProcessorInvocationClientError {
+impl From<PartitionProcessorRpcError> for RpcErrorKind {
     fn from(value: PartitionProcessorRpcError) -> Self {
         match value {
-            PartitionProcessorRpcError::NotLeader(_) => {
-                PartitionProcessorInvocationClientError::NotLeader
-            }
-            PartitionProcessorRpcError::LostLeadership(partition_id) => {
-                PartitionProcessorInvocationClientError::LostLeadership(partition_id)
-            }
-            PartitionProcessorRpcError::Internal(msg) => {
-                PartitionProcessorInvocationClientError::Internal(msg)
-            }
-            PartitionProcessorRpcError::Starting => {
-                PartitionProcessorInvocationClientError::Starting
-            }
-            PartitionProcessorRpcError::Stopping => {
-                PartitionProcessorInvocationClientError::Stopping
-            }
+            PartitionProcessorRpcError::NotLeader(_) => RpcErrorKind::NotLeader,
+            PartitionProcessorRpcError::LostLeadership(_) => RpcErrorKind::LostLeadership,
+            PartitionProcessorRpcError::Internal(msg) => RpcErrorKind::Internal(msg),
+            PartitionProcessorRpcError::Starting => RpcErrorKind::Starting,
+            PartitionProcessorRpcError::Stopping => RpcErrorKind::Stopping,
         }
     }
 }
@@ -178,11 +205,12 @@ where
         let connection = self
             .networking
             .get_connection(node_id, Swimlane::IngressData)
-            .await?;
+            .await
+            .map_err(|err| RpcError::from_err(partition_id, node_id, err))?;
         let permit = connection
             .reserve()
             .await
-            .ok_or(PartitionProcessorInvocationClientError::SendFailed)?;
+            .ok_or_else(|| RpcError::from_err(partition_id, node_id, RpcErrorKind::SendFailed))?;
         let rpc_result = permit
             .send_rpc(
                 PartitionProcessorRpcRequest {
@@ -192,7 +220,8 @@ where
                 },
                 Some(*partition_id as u64),
             )
-            .await?;
+            .await
+            .map_err(|err| RpcError::from_err(partition_id, node_id, err))?;
 
         if rpc_result.is_err() && rpc_result.as_ref().unwrap_err().likely_stale_route() {
             trace!(
@@ -203,7 +232,7 @@ where
             );
         }
 
-        Ok(rpc_result?)
+        Ok(rpc_result.map_err(|err| RpcError::from_err(partition_id, node_id, err))?)
     }
 }
 
