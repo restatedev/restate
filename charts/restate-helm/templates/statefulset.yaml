@@ -57,7 +57,7 @@ spec:
             - containerPort: 5122
               name: node
           env:
-            - name: POD_NAME
+            - name: RESTATE_NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: "metadata.name"
@@ -70,7 +70,7 @@ spec:
             - name: RESTATE_ADVERTISED_ADDRESS
               # Use the stable network identifier (dns resolvable) provided by the stateful set. The second part is the
               # serviceName of the stateful set.
-              value: http://$(POD_NAME).{{ include "restate.fullname" . }}-cluster:5122
+              value: http://$(RESTATE_NODE_NAME).{{ include "restate.fullname" . }}-cluster:5122
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
