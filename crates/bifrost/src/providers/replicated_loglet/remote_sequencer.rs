@@ -32,7 +32,7 @@ use restate_types::{
     net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
     replicated_loglet::ReplicatedLogletParams,
 };
-use tracing::instrument;
+use tracing::{instrument, trace};
 
 use crate::loglet::{AppendError, LogletCommit, LogletCommitResolver, OperationError};
 
@@ -114,6 +114,7 @@ where
         level="trace",
         skip_all,
         fields(
+            loglet_id = %self.params.loglet_id,
             otel.name = "replicated_loglet::remote_sequencer: append",
         )
     )]
@@ -164,6 +165,11 @@ where
             },
             payloads,
         };
+
+        trace!(
+            "Send append message to remote sequencer at {}",
+            connection.inner.peer()
+        );
 
         let reply_rx = permit.send_rpc(msg, Some(loglet_id.into()));
         let (commit_token, commit_resolver) = LogletCommit::deferred();

@@ -18,7 +18,7 @@ use futures::{FutureExt, Stream};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tokio::sync::{mpsc, oneshot};
-use tracing::Span;
+use tracing::{Span, trace};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use restate_types::Versioned;
@@ -481,6 +481,10 @@ impl EgressStream {
                     };
                     Decision::Ready(msg)
                 } else {
+                    trace!(
+                        rpc_id = %msg_id,
+                        "Sending RPC call: {service_tag}::{msg_type}",
+                    );
                     // V2+
                     self.reply_tracker.register_rpc(msg_id, reply_sender);
                     let body = Datagram {

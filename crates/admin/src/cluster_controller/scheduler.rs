@@ -431,6 +431,7 @@ impl<T: TransportConnect> Scheduler<T> {
                                 return Ok(());
                             };
                             permit.send_unary(control_processors, None);
+
                             Ok(())
                         }
                     },
