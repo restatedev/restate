@@ -1010,20 +1010,18 @@ impl LogsController {
             find_logs_tail_semaphore: Arc::new(Semaphore::new(1)),
         };
 
-        this.find_logs_tail();
+        this.find_log_tails();
         this
     }
 
-    pub fn find_logs_tail(&mut self) {
-        // none
+    pub fn find_log_tails(&mut self) {
         let Ok(permit) = self.find_logs_tail_semaphore.clone().try_acquire_owned() else {
-            // already a find tail job is running
-            return;
+            return; // already running
         };
 
         let logs = Arc::clone(&self.inner.current_logs);
         let bifrost = self.bifrost.clone();
-        let find_tail = async move {
+        let find_tails = async move {
             let updates = future::join_all(logs.iter().map(|(log_id, chain)| {
                 let log_id = *log_id;
                 let tail_segment = chain.tail();
@@ -1063,17 +1061,15 @@ impl LogsController {
                 }
             })).await.into_iter().flatten().collect();
 
-            // we explicitly drop the permit here to make sure
-            // it's moved to the future closure
-            drop(permit);
+            drop(permit); // moves find tails permit into the closure
             Event::LogsTailUpdates { updates }
         };
 
         self.async_operations
             .build_task()
-            .name("cc-find-tail")
+            .name("cc-find-tails")
             .spawn(
-                find_tail
+                find_tails
                     .log_slow_after(
                         Duration::from_secs(3),
                         tracing::Level::INFO,
@@ -1132,7 +1128,7 @@ impl LogsController {
                     self.seal_log(log_id, segment_index, debounce);
                 }
                 Effect::FindLogsTail => {
-                    self.find_logs_tail();
+                    self.find_log_tails();
                 }
             }
         }

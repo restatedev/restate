@@ -214,14 +214,14 @@ impl ClusterControllerHandle {
     ) -> Result<Result<(), anyhow::Error>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
-        let _ = self
-            .tx
+        self.tx
             .send(ClusterControllerCommand::TrimLog {
                 log_id,
                 trim_point,
                 response_tx,
             })
-            .await;
+            .await
+            .map_err(|_| ShutdownError)?;
 
         response_rx.await.map_err(|_| ShutdownError)
     }
@@ -381,9 +381,8 @@ impl<T: TransportConnect> Service<T> {
         }
     }
 
-    /// Triggers a snapshot creation for the given partition by issuing an RPC
-    /// to the node hosting the active leader.
-    async fn create_partition_snapshot(
+    /// Triggers a snapshot of the given partition by sending an RPC to an appropriate node.
+    fn spawn_create_partition_snapshot_task(
         &self,
         partition_id: PartitionId,
         min_target_lsn: Option<Lsn>,
@@ -440,119 +439,6 @@ impl<T: TransportConnect> Service<T> {
         };
     }
 
-    async fn update_cluster_configuration(
-        &self,
-        partition_replication: Option<ReplicationProperty>,
-        default_provider: ProviderConfiguration,
-        num_partitions: u16,
-    ) -> anyhow::Result<()> {
-        let logs = self
-            .metadata_writer
-            .global_metadata()
-            .read_modify_write(|current: Option<Arc<Logs>>| {
-                let logs = current.expect("logs should be initialized by BifrostService");
-
-                // allow to switch the default provider from a non-replicated loglet to the
-                // replicated loglet
-                if logs.configuration().default_provider.kind() != default_provider.kind()
-                    && default_provider.kind() != ProviderKind::Replicated
-                {
-                    return Err(ClusterConfigurationUpdateError::ChooseReplicatedLoglet(
-                        default_provider.kind(),
-                    ));
-                }
-
-                let mut builder = logs.as_ref().clone().into_builder();
-
-                builder.set_configuration(LogsConfiguration {
-                    default_provider: default_provider.clone(),
-                });
-
-                let Some(logs) = builder.build_if_modified() else {
-                    return Err(ClusterConfigurationUpdateError::Unchanged);
-                };
-
-                Ok(logs)
-            })
-            .await;
-
-        match logs {
-            Ok(_) => {}
-            Err(ReadModifyWriteError::FailedOperation(
-                ClusterConfigurationUpdateError::Unchanged,
-            )) => {
-                // nothing to do
-            }
-            Err(err) => return Err(err.into()),
-        };
-
-        let partition_table = self
-            .metadata_writer
-            .global_metadata()
-            .read_modify_write(
-                |current: Option<Arc<PartitionTable>>| {
-                    let partition_table =
-                        current.ok_or(ClusterConfigurationUpdateError::MissingPartitionTable)?;
-
-                    let mut builder = PartitionTableBuilder::from(partition_table.as_ref().clone());
-
-                    if let Some(partition_replication) = &partition_replication {
-                        if !matches!(builder.partition_replication(), PartitionReplication::Limit(current) if current == partition_replication) {
-                            builder.set_partition_replication(partition_replication.clone().into());
-                        }
-                    }
-
-
-                    if builder.num_partitions() != num_partitions {
-                        if builder.num_partitions() != 0 {
-                            return Err(ClusterConfigurationUpdateError::Repartitioning);
-                        }
-
-                        builder.with_equally_sized_partitions(num_partitions)?;
-                    }
-
-                    builder
-                        .build_if_modified()
-                        .ok_or(ClusterConfigurationUpdateError::Unchanged)
-                },
-            )
-            .await;
-
-        match partition_table {
-            Ok(_) => {}
-            Err(ReadModifyWriteError::FailedOperation(
-                ClusterConfigurationUpdateError::Unchanged,
-            )) => {
-                // nothing to do
-            }
-            Err(err) => return Err(err.into()),
-        };
-
-        Ok(())
-    }
-
-    fn seal_and_extend_chain(
-        &self,
-        log_id: LogId,
-        min_version: Version,
-        extension: Option<ChainExtension>,
-        response_tx: oneshot::Sender<anyhow::Result<SealedSegment>>,
-    ) {
-        let task = SealAndExtendTask {
-            log_id,
-            extension,
-            min_version,
-            bifrost: self.bifrost.clone(),
-            observed_cluster_state: self.observed_cluster_state.clone(),
-        };
-
-        _ = TaskCenter::spawn(TaskKind::Disposable, "seal-and-extend", async move {
-            let result = task.run().await;
-            _ = response_tx.send(result);
-            Ok(())
-        });
-    }
-
     async fn on_cluster_cmd(&self, command: ClusterControllerCommand) {
         match command {
             ClusterControllerCommand::GetClusterState(tx) => {
@@ -567,8 +453,16 @@ impl<T: TransportConnect> Service<T> {
                     ?log_id,
                     trim_point_inclusive = ?trim_point,
                     "Trim log command received");
-                let result = self.bifrost.admin().trim(log_id, trim_point).await;
-                let _ = response_tx.send(result.map_err(Into::into));
+                {
+                    let bifrost = self.bifrost.clone();
+
+                    // receiver will get error if response_tx is dropped
+                    let _ = TaskCenter::spawn(TaskKind::Disposable, "trim-log", async move {
+                        let result = bifrost.admin().trim(log_id, trim_point).await;
+                        let _ = response_tx.send(result.map_err(Into::into));
+                        Ok(())
+                    });
+                };
             }
             ClusterControllerCommand::CreateSnapshot {
                 partition_id,
@@ -576,8 +470,11 @@ impl<T: TransportConnect> Service<T> {
                 response_tx,
             } => {
                 info!(?partition_id, "Create snapshot command received");
-                self.create_partition_snapshot(partition_id, min_target_lsn, response_tx)
-                    .await;
+                self.spawn_create_partition_snapshot_task(
+                    partition_id,
+                    min_target_lsn,
+                    response_tx,
+                );
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
                 partition_replication,
@@ -585,33 +482,147 @@ impl<T: TransportConnect> Service<T> {
                 num_partitions,
                 response_tx,
             } => {
-                match tokio::time::timeout(
-                    Duration::from_secs(2),
-                    self.update_cluster_configuration(
-                        partition_replication,
-                        default_provider,
-                        num_partitions,
-                    ),
-                )
-                .await
-                {
-                    Ok(result) => {
-                        let _ = response_tx.send(result);
-                    }
-                    Err(_timeout) => {
-                        let _ =
-                            response_tx.send(Err(anyhow!("Timeout on writing to metadata store")));
-                    }
-                }
+                let metadata_writer = self.metadata_writer.clone();
+
+                // receiver will get error if response_tx is dropped
+                let _ =
+                    TaskCenter::spawn(TaskKind::Disposable, "update-cluster-config", async move {
+                        match tokio::time::timeout(
+                            Duration::from_secs(2),
+                            update_cluster_configuration(
+                                metadata_writer,
+                                partition_replication,
+                                default_provider,
+                                num_partitions,
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(result) => {
+                                let _ = response_tx.send(result);
+                            }
+                            Err(_timeout) => {
+                                let _ = response_tx.send(Err(anyhow!(
+                                    "Timeout writing updated configuration to metadata store"
+                                )));
+                            }
+                        }
+
+                        Ok(())
+                    });
             }
             ClusterControllerCommand::SealAndExtendChain {
                 log_id,
                 min_version,
                 extension,
                 response_tx,
-            } => self.seal_and_extend_chain(log_id, min_version, extension, response_tx),
+            } => {
+                let bifrost = self.bifrost.clone();
+                let observed_cluster_state = self.observed_cluster_state.clone();
+
+                // receiver will get error if response_tx is dropped
+                _ = TaskCenter::spawn(TaskKind::Disposable, "seal-and-extend", async move {
+                    let result = SealAndExtendTask {
+                        log_id,
+                        extension,
+                        min_version,
+                        bifrost,
+                        observed_cluster_state,
+                    }
+                    .run()
+                    .await;
+
+                    _ = response_tx.send(result);
+                    Ok(())
+                });
+            }
         }
     }
+}
+
+async fn update_cluster_configuration(
+    metadata_writer: MetadataWriter,
+    partition_replication: Option<ReplicationProperty>,
+    default_provider: ProviderConfiguration,
+    num_partitions: u16,
+) -> anyhow::Result<()> {
+    let logs = metadata_writer
+        .global_metadata()
+        .read_modify_write(|current: Option<Arc<Logs>>| {
+            let logs = current.expect("logs should be initialized by BifrostService");
+
+            // allow to switch the default provider from a non-replicated loglet to the
+            // replicated loglet
+            if logs.configuration().default_provider.kind() != default_provider.kind()
+                && default_provider.kind() != ProviderKind::Replicated
+            {
+                return Err(ClusterConfigurationUpdateError::ChooseReplicatedLoglet(
+                    default_provider.kind(),
+                ));
+            }
+
+            let mut builder = logs.as_ref().clone().into_builder();
+
+            builder.set_configuration(LogsConfiguration {
+                default_provider: default_provider.clone(),
+            });
+
+            let Some(logs) = builder.build_if_modified() else {
+                return Err(ClusterConfigurationUpdateError::Unchanged);
+            };
+
+            Ok(logs)
+        })
+        .await;
+
+    match logs {
+        Ok(_) => {}
+        Err(ReadModifyWriteError::FailedOperation(ClusterConfigurationUpdateError::Unchanged)) => {
+            // nothing to do
+        }
+        Err(err) => return Err(err.into()),
+    };
+
+    let partition_table = metadata_writer
+                .global_metadata()
+                .read_modify_write(
+                    |current: Option<Arc<PartitionTable>>| {
+                        let partition_table =
+                            current.ok_or(ClusterConfigurationUpdateError::MissingPartitionTable)?;
+
+                        let mut builder = PartitionTableBuilder::from(partition_table.as_ref().clone());
+
+                        if let Some(partition_replication) = &partition_replication {
+                            if !matches!(builder.partition_replication(), PartitionReplication::Limit(current) if current == partition_replication) {
+                                builder.set_partition_replication(partition_replication.clone().into());
+                            }
+                        }
+
+
+                        if builder.num_partitions() != num_partitions {
+                            if builder.num_partitions() != 0 {
+                                return Err(ClusterConfigurationUpdateError::Repartitioning);
+                            }
+
+                            builder.with_equally_sized_partitions(num_partitions)?;
+                        }
+
+                        builder
+                            .build_if_modified()
+                            .ok_or(ClusterConfigurationUpdateError::Unchanged)
+                    },
+                )
+                .await;
+
+    match partition_table {
+        Ok(_) => {}
+        Err(ReadModifyWriteError::FailedOperation(ClusterConfigurationUpdateError::Unchanged)) => {
+            // nothing to do
+        }
+        Err(err) => return Err(err.into()),
+    };
+
+    Ok(())
 }
 
 #[derive(thiserror::Error, Debug)]
