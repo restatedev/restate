@@ -480,8 +480,6 @@ impl<T: TransportConnect> Scheduler<T> {
     }
 }
 
-/// Placement hints for the [`logs_controller::LogsController`] based on the current
-/// [`SchedulingPlan`].
 pub struct PartitionTableNodeSetSelectorHints {
     partition_table: Arc<PartitionTable>,
 }
