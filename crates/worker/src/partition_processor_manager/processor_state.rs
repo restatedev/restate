@@ -144,6 +144,7 @@ impl ProcessorState {
     pub fn run_as_leader(&mut self) -> Option<LeaderEpochToken> {
         match self {
             ProcessorState::Starting { target_run_mode } => {
+                debug!("Starting partition processor as leader.");
                 *target_run_mode = RunMode::Leader;
                 None
             }
@@ -161,18 +162,22 @@ impl ProcessorState {
                                 .last_observed_leader_epoch()
                                 .unwrap_or(LeaderEpoch::INITIAL)
                         {
+                            debug!(old_leader_epoch = %leader_epoch, "Need a higher leader epoch to retake leadership.");
                             let leader_epoch_token = LeaderEpochToken::new();
                             *leader_state = LeaderState::AwaitingLeaderEpoch(leader_epoch_token);
                             Some(leader_epoch_token)
                         } else {
+                            debug!(%leader_epoch, "Trying to become leader with the current leader epoch since I haven't seen a higher one.");
                             None
                         }
                     }
                     LeaderState::AwaitingLeaderEpoch(_) => {
+                        debug!("Awaiting new leader epoch.");
                         // still waiting for pending leader epoch
                         None
                     }
                     LeaderState::Follower => {
+                        debug!("Need a leader epoch to become a leader.");
                         let leader_epoch_token = LeaderEpochToken::new();
                         *leader_state = LeaderState::AwaitingLeaderEpoch(leader_epoch_token);
                         Some(leader_epoch_token)
@@ -180,6 +185,7 @@ impl ProcessorState {
                 }
             }
             ProcessorState::Stopping { restart_as, .. } => {
+                debug!("Restarting partition processor as leader.");
                 *restart_as = Some(RunMode::Leader);
                 None
             }
