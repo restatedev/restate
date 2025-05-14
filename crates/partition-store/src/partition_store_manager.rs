@@ -15,8 +15,7 @@ use std::sync::Arc;
 use ahash::HashMap;
 use rocksdb::ExportImportFilesMetaData;
 use rocksdb::event_listener::EventListenerExt;
-use tokio::sync::Mutex;
-use tokio::sync::MutexGuard;
+use tokio::sync::{RwLock, RwLockWriteGuard, Semaphore};
 use tracing::{debug, info, warn};
 
 use restate_core::worker_api::SnapshotError;
@@ -48,9 +47,10 @@ pub enum OpenMode {
 
 #[derive(Clone, Debug)]
 pub struct PartitionStoreManager {
-    lookup: Arc<Mutex<PartitionLookup>>,
+    lookup: Arc<RwLock<PartitionLookup>>,
     persisted_lsns: Arc<PersistedLsnLookup>,
     rocksdb: Arc<RocksDb>,
+    snapshot_limiter: Arc<Semaphore>,
 }
 
 type PartitionLookup = HashMap<PartitionId, PartitionStore>;
@@ -64,6 +64,9 @@ impl PartitionStoreManager {
 
         let per_partition_memory_budget = options.rocksdb_memory_budget()
             / options.num_partitions_to_share_memory_budget() as usize;
+
+        let snapshot_limiter =
+            Semaphore::new(options.rocksdb.rocksdb_max_background_jobs().get() as usize);
 
         let mut db_opts = db_options();
 
@@ -89,22 +92,25 @@ impl PartitionStoreManager {
             .await?;
 
         Ok(Self {
-            rocksdb,
-            lookup: Arc::default(),
+            lookup: Default::default(),
             persisted_lsns,
+            rocksdb,
+            snapshot_limiter: Arc::new(snapshot_limiter),
         })
     }
 
     /// Check whether we have a partition store for the given partition id, irrespective of whether
     /// the store is open or not.
     pub async fn has_partition_store(&self, partition_id: PartitionId) -> bool {
-        let _guard = self.lookup.lock().await;
+        // Serializes with open/close operations; the lookup table is the source of truth for PSM,
+        // not just the underlying column family.
+        let _guard = self.lookup.read().await;
         let cf_name = cf_for_partition(partition_id);
         self.rocksdb.inner().cf_handle(&cf_name).is_some()
     }
 
     pub async fn get_partition_store(&self, partition_id: PartitionId) -> Option<PartitionStore> {
-        self.lookup.lock().await.get(&partition_id).cloned()
+        self.lookup.read().await.get(&partition_id).cloned()
     }
 
     pub async fn open_partition_store(
@@ -114,13 +120,12 @@ impl PartitionStoreManager {
         open_mode: OpenMode,
         opts: &RocksDbOptions,
     ) -> Result<PartitionStore, RocksError> {
-        let guard = self.lookup.lock().await;
+        let guard = self.lookup.write().await;
         if let Some(store) = guard.get(&partition_id) {
             return Ok(store.clone());
         }
         let cf_name = cf_for_partition(partition_id);
         let already_exists = self.rocksdb.inner().cf_handle(&cf_name).is_some();
-
         if !already_exists {
             if open_mode == OpenMode::CreateIfMissing {
                 debug!("Initializing storage for partition {}", partition_id);
@@ -144,7 +149,7 @@ impl PartitionStoreManager {
         snapshot: LocalPartitionSnapshot,
         opts: &RocksDbOptions,
     ) -> Result<PartitionStore, RocksError> {
-        let guard = self.lookup.lock().await;
+        let guard = self.lookup.write().await;
         if guard.contains_key(&partition_id) {
             warn!(
                 %partition_id,
@@ -199,7 +204,7 @@ impl PartitionStoreManager {
     /// Creates and registers a new partition store
     async fn create_partition_store(
         &self,
-        mut guard: MutexGuard<'_, PartitionLookup>,
+        mut guard: RwLockWriteGuard<'_, PartitionLookup>,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
         cf_name: CfName,
@@ -249,19 +254,26 @@ impl PartitionStoreManager {
         snapshot_id: SnapshotId,
         snapshot_base_path: &Path,
     ) -> Result<LocalPartitionSnapshot, SnapshotError> {
-        let guard = self.lookup.lock().await;
+        // Require a lock to prevent closing/reopening stores while a snapshot is ongoing. Failure
+        // to do so can lead to exporting a partially-initialized store.
+        let guard = self.lookup.read().await;
         let mut partition_store = guard
             .get(&partition_id)
             .cloned()
             .ok_or(SnapshotError::PartitionNotFound(partition_id))?;
 
+        let _permit = self
+            .snapshot_limiter
+            .acquire()
+            .await
+            .expect("we never close the semaphore");
         partition_store
             .create_snapshot(snapshot_base_path, min_target_lsn, snapshot_id)
             .await
     }
 
     pub async fn drop_partition(&self, partition_id: PartitionId) {
-        let mut guard = self.lookup.lock().await;
+        let mut guard = self.lookup.write().await;
         self.rocksdb
             .inner()
             .as_raw_db()
@@ -277,7 +289,7 @@ impl PartitionStoreManager {
         &self,
         partition_id: PartitionId,
     ) -> Result<(), restate_storage_api::StorageError> {
-        let mut guard = self.lookup.lock().await;
+        let mut guard = self.lookup.write().await;
         let live_store = guard.remove(&partition_id);
         // It's critical that we flush the CF, as we assume that all written
         // data are fully persisted if we reopen this partition store.
