@@ -46,6 +46,7 @@ use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
     derive_more::Into,
     derive_more::Display,
     derive_more::Debug,
+    bilrost::Message,
 )]
 #[repr(transparent)]
 #[serde(transparent)]

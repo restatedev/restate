@@ -13,12 +13,13 @@
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+use restate_encoding::BilrostAs;
 use serde::{Deserialize, Serialize};
 
 use super::ServiceTag;
 use crate::logs::metadata::SegmentIndex;
 use crate::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber, TailState};
-use crate::net::{default_wire_codec, define_rpc, define_service};
+use crate::net::{bilrost_wire_codec_with_v1_fallback, define_rpc, define_service};
 
 pub struct SequencerDataService;
 define_service! {
@@ -38,22 +39,24 @@ define_rpc! {
     @response = Appended,
     @service = SequencerDataService,
 }
-default_wire_codec!(Append);
-default_wire_codec!(Appended);
+bilrost_wire_codec_with_v1_fallback!(Append);
+bilrost_wire_codec_with_v1_fallback!(Appended);
 
 define_rpc! {
     @request = GetSequencerState,
     @response = SequencerState,
     @service = SequencerMetaService,
 }
-default_wire_codec!(GetSequencerState);
-default_wire_codec!(SequencerState);
+bilrost_wire_codec_with_v1_fallback!(GetSequencerState);
+bilrost_wire_codec_with_v1_fallback!(SequencerState);
 
 /// Status of sequencer response.
-#[derive(Debug, Clone, Serialize, Deserialize, derive_more::IsVariant)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::IsVariant, BilrostAs, Default)]
+#[bilrost_as(dto::SequencerStatus)]
 pub enum SequencerStatus {
     /// Ok is returned when request is accepted and processes
     /// successfully. Hence response body is valid
+    #[default]
     Ok,
     /// Sealed is returned when the sequencer cannot accept more
     /// [`Append`] requests because it's sealed
@@ -74,7 +77,7 @@ pub enum SequencerStatus {
     Error { retryable: bool, message: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct CommonRequestHeader {
     /// This is used only to locate the loglet params if this operation activates
     /// the remote loglet
@@ -84,7 +87,7 @@ pub struct CommonRequestHeader {
     pub loglet_id: LogletId,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct CommonResponseHeader {
     pub known_global_tail: Option<LogletOffset>,
     pub sealed: Option<bool>,
@@ -110,22 +113,33 @@ impl CommonResponseHeader {
 }
 
 // ** APPEND
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct Append {
     pub header: CommonRequestHeader,
-    pub payloads: Arc<[Record]>,
+    pub payloads: AppendPayloads,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BilrostAs, Default)]
+#[bilrost_as(dto::AppendPayloads)]
+pub struct AppendPayloads(pub Arc<[Record]>);
+
+impl From<Vec<Record>> for AppendPayloads {
+    fn from(payloads: Vec<Record>) -> Self {
+        Self(payloads.into())
+    }
 }
 
 impl Append {
     pub fn estimated_encode_size(&self) -> usize {
         self.payloads
+            .0
             .iter()
             .map(|p| p.estimated_encode_size())
             .sum()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct Appended {
     pub header: CommonResponseHeader,
     // INVALID if Status indicates that the append failed
@@ -168,13 +182,95 @@ impl Appended {
 }
 
 // ** GET_TAIL_INFO
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct GetSequencerState {
     pub header: CommonRequestHeader,
     pub force_seal_check: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct SequencerState {
     pub header: CommonResponseHeader,
+}
+
+mod dto {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
+    pub enum SequencerStatus {
+        Ok,
+        #[bilrost(2)]
+        Sealed(()),
+        #[bilrost(3)]
+        Gone(()),
+        #[bilrost(4)]
+        LogletIdMismatch(()),
+        #[bilrost(5)]
+        UnknownLogId(()),
+        #[bilrost(6)]
+        UnknownSegmentIndex(()),
+        #[bilrost(7)]
+        NotSequencer(()),
+        #[bilrost(8)]
+        Shutdown(()),
+        #[bilrost(9)]
+        Error((bool, String)),
+    }
+
+    impl From<&super::SequencerStatus> for SequencerStatus {
+        fn from(status: &super::SequencerStatus) -> Self {
+            match status {
+                super::SequencerStatus::Ok => SequencerStatus::Ok,
+                &super::SequencerStatus::Sealed => SequencerStatus::Sealed(()),
+                &super::SequencerStatus::Gone => SequencerStatus::Gone(()),
+                &super::SequencerStatus::LogletIdMismatch => SequencerStatus::LogletIdMismatch(()),
+                &super::SequencerStatus::UnknownLogId => SequencerStatus::UnknownLogId(()),
+                &super::SequencerStatus::UnknownSegmentIndex => {
+                    SequencerStatus::UnknownSegmentIndex(())
+                }
+                &super::SequencerStatus::NotSequencer => SequencerStatus::NotSequencer(()),
+                &super::SequencerStatus::Shutdown => SequencerStatus::Shutdown(()),
+                super::SequencerStatus::Error { retryable, message } => {
+                    SequencerStatus::Error((*retryable, message.clone()))
+                }
+            }
+        }
+    }
+
+    impl From<SequencerStatus> for super::SequencerStatus {
+        fn from(status: SequencerStatus) -> Self {
+            match status {
+                SequencerStatus::Ok => super::SequencerStatus::Ok,
+                SequencerStatus::Sealed(()) => super::SequencerStatus::Sealed,
+                SequencerStatus::Gone(()) => super::SequencerStatus::Gone,
+                SequencerStatus::LogletIdMismatch(()) => super::SequencerStatus::LogletIdMismatch,
+                SequencerStatus::UnknownLogId(()) => super::SequencerStatus::UnknownLogId,
+                SequencerStatus::UnknownSegmentIndex(()) => {
+                    super::SequencerStatus::UnknownSegmentIndex
+                }
+                SequencerStatus::NotSequencer(()) => super::SequencerStatus::NotSequencer,
+                SequencerStatus::Shutdown(()) => super::SequencerStatus::Shutdown,
+                SequencerStatus::Error((retryable, message)) => {
+                    super::SequencerStatus::Error { retryable, message }
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize, bilrost::Message)]
+    pub struct AppendPayloads(Vec<Record>);
+
+    impl From<&super::AppendPayloads> for AppendPayloads {
+        fn from(payloads: &super::AppendPayloads) -> Self {
+            let payloads = payloads.0.iter().cloned().collect::<Vec<_>>();
+            Self(payloads)
+        }
+    }
+
+    impl From<AppendPayloads> for super::AppendPayloads {
+        fn from(payloads: AppendPayloads) -> Self {
+            let payloads = payloads.0.into_iter().collect::<Arc<_>>();
+            super::AppendPayloads(payloads)
+        }
+    }
 }

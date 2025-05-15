@@ -32,7 +32,7 @@ use restate_types::invocation::{
 use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
 use restate_types::net::codec::WireEncode;
 use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
-use restate_types::net::replicated_loglet::{Append, CommonRequestHeader};
+use restate_types::net::replicated_loglet::{Append, AppendPayloads, CommonRequestHeader};
 use restate_types::net::{RpcRequest, Service};
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::{Command, Destination, Envelope};
@@ -166,7 +166,7 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
             segment_index: 2.into(),
             loglet_id: LogletId::new(12u16.into(), 4.into()),
         },
-        payloads,
+        payloads: AppendPayloads(payloads),
     };
 
     let body = Body::Datagram(Datagram {
