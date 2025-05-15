@@ -161,6 +161,8 @@ pub struct PartitionProcessorStatus {
     pub num_skipped_records: u64,
     #[bilrost(9)]
     pub replay_status: ReplayStatus,
+    /// Also known as Durable LSN. Old name kept for compatibility with V1 networking clients.
+    // todo: rename in 1.5 (or as soon as we no longer support interop with V1 cluster controllers)
     #[bilrost(10)]
     pub last_persisted_log_lsn: Option<Lsn>,
     #[bilrost(11)]
