@@ -353,13 +353,13 @@ fn create_log_trim_check_interval(options: &AdminOptions) -> Option<Interval> {
 }
 
 enum TrimMode {
-    /// Trim logs by the reported persisted LSN. This strategy is only appropriate for
-    /// single-node deployments.
-    PersistedLsn {
+    /// Trim logs based on partition processors' reported Durable LSN. This strategy is only
+    /// appropriate for single-node deployments.
+    DurableLsn {
         partition_status:
             BTreeMap<PartitionId, BTreeMap<GenerationalNodeId, PartitionProcessorStatus>>,
     },
-    /// Select safe trim points based on the maximum reported archived LSN per partition.
+    /// Trim logs based on the highest reported archived LSN per partition.
     ArchivedLsn {
         partition_status:
             BTreeMap<PartitionId, BTreeMap<GenerationalNodeId, PartitionProcessorStatus>>,
@@ -368,8 +368,8 @@ enum TrimMode {
 
 impl TrimMode {
     /// In clusters with more than one node, or on single nodes with a snapshot repository
-    /// configured, trimming is driven by archived LSN. The persisted LSN method is only
-    /// used on single-nodes with no snapshots configured.
+    /// configured, trimming is driven by archived LSN. The durable LSN method is only used on
+    /// single-nodes with no snapshots configured.
     fn from(snapshots_repository_configured: bool, cluster_state: &Arc<ClusterState>) -> TrimMode {
         let mut partition_status: BTreeMap<
             PartitionId,
@@ -400,7 +400,7 @@ impl TrimMode {
             }
             TrimMode::ArchivedLsn { partition_status }
         } else {
-            TrimMode::PersistedLsn { partition_status }
+            TrimMode::DurableLsn { partition_status }
         }
     }
 
@@ -423,7 +423,7 @@ impl TrimMode {
                     // that a slow applier may hold off trimming indefinitely.
                     let min_applied_lsn = processor_status
                         .values()
-                        .filter_map(|s| s.last_applied_log_lsn)
+                        .filter_map(|s| s.applied_lsn)
                         .min()
                         .unwrap_or(Lsn::INVALID);
 
@@ -432,7 +432,7 @@ impl TrimMode {
                     // safe to take the max reported archived LSN across the board as the safe trim level.
                     let archived_lsn = processor_status
                         .values()
-                        .filter_map(|s| s.last_archived_log_lsn)
+                        .filter_map(|s| s.archived_lsn)
                         .max()
                         .unwrap_or(Lsn::INVALID);
 
@@ -448,26 +448,26 @@ impl TrimMode {
                     }
                 }
             }
-            TrimMode::PersistedLsn {
+            TrimMode::DurableLsn {
                 partition_status, ..
             } => {
                 // If no partitions are reporting archived LSN, we fall back to using the
-                // min(persisted LSN) across the board as the safe trim point. Note that at this
-                // point we know that there are no known dead nodes, so it's safe to take the min of
-                // persisted LSNs reported by all the partition processors as the safe trim point.
+                // min(durable_lsn) across the board as the safe trim point. Note that at this point
+                // we know that there are no known dead nodes, so it's safe to take the min of all
+                // durable LSNs reported by all the partition processors as the safe trim point.
                 for (partition_id, processor_status) in partition_status.iter() {
                     let log_id = LogId::from(*partition_id);
-                    let min_persisted_lsn = processor_status
+                    let min_durable_lsn = processor_status
                         .values()
-                        .map(|s| s.last_persisted_log_lsn.unwrap_or(Lsn::INVALID))
+                        .map(|s| s.durable_lsn.unwrap_or(Lsn::INVALID))
                         .min()
                         .unwrap_or(Lsn::INVALID);
 
                     trace!(
                         ?partition_id,
-                        "Safe trim point for log {}: {:?}", log_id, min_persisted_lsn
+                        "Safe trim point for log {}: {:?}", log_id, min_durable_lsn
                     );
-                    safe_trim_points.insert(log_id, (min_persisted_lsn, *partition_id));
+                    safe_trim_points.insert(log_id, (min_durable_lsn, *partition_id));
                 }
             }
         }
@@ -502,9 +502,9 @@ mod tests {
             p1,
             ProcessorStatus {
                 mode: Leader,
-                applied: Some(Lsn::new(10)),
-                persisted: Some(Lsn::new(10)),
-                archived: None,
+                applied_lsn: Some(Lsn::new(10)),
+                durable_lsn: Some(Lsn::new(10)),
+                archived_lsn: None,
             }
             .into(),
         )]
@@ -516,9 +516,9 @@ mod tests {
             p2,
             ProcessorStatus {
                 mode: Follower,
-                applied: Some(Lsn::new(10)),
-                persisted: Some(Lsn::new(10)),
-                archived: None,
+                applied_lsn: Some(Lsn::new(10)),
+                durable_lsn: Some(Lsn::new(10)),
+                archived_lsn: None,
             }
             .into(),
         )]
@@ -562,9 +562,9 @@ mod tests {
                 p1,
                 ProcessorStatus {
                     mode: Leader,
-                    applied: Some(Lsn::new(10)),
-                    persisted: Some(Lsn::new(10)),
-                    archived: None,
+                    applied_lsn: Some(Lsn::new(10)),
+                    durable_lsn: Some(Lsn::new(10)),
+                    archived_lsn: None,
                 }
                 .into(),
             ),
@@ -572,9 +572,9 @@ mod tests {
                 p2,
                 ProcessorStatus {
                     mode: Follower,
-                    applied: Some(Lsn::new(10)),
-                    persisted: Some(Lsn::new(5)),
-                    archived: None,
+                    applied_lsn: Some(Lsn::new(10)),
+                    durable_lsn: Some(Lsn::new(5)),
+                    archived_lsn: None,
                 }
                 .into(),
             ),
@@ -610,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn single_node_may_trim_by_persisted_lsn() {
+    fn single_node_may_trim_by_durable_lsn() {
         let p1 = PartitionId::from(0);
         let p2 = PartitionId::from(1);
         let p3 = PartitionId::from(2);
@@ -621,9 +621,9 @@ mod tests {
                 p1,
                 ProcessorStatus {
                     mode: Leader,
-                    applied: Some(Lsn::new(10)),
-                    persisted: None,
-                    archived: None,
+                    applied_lsn: Some(Lsn::new(10)),
+                    durable_lsn: None,
+                    archived_lsn: None,
                 }
                 .into(),
             ),
@@ -631,9 +631,9 @@ mod tests {
                 p2,
                 ProcessorStatus {
                     mode: Follower,
-                    applied: Some(Lsn::new(10)),
-                    persisted: Some(Lsn::new(5)),
-                    archived: None,
+                    applied_lsn: Some(Lsn::new(10)),
+                    durable_lsn: Some(Lsn::new(5)),
+                    archived_lsn: None,
                 }
                 .into(),
             ),
@@ -641,9 +641,9 @@ mod tests {
                 p3,
                 ProcessorStatus {
                     mode: Leader,
-                    applied: Some(Lsn::new(10)),
-                    persisted: Some(Lsn::new(10)),
-                    archived: None,
+                    applied_lsn: Some(Lsn::new(10)),
+                    durable_lsn: Some(Lsn::new(10)),
+                    archived_lsn: None,
                 }
                 .into(),
             ),
@@ -662,7 +662,7 @@ mod tests {
         let trim_mode = TrimMode::from(false, &cluster_state);
         let trim_points = trim_mode.calculate_safe_trim_points();
 
-        assert!(matches!(trim_mode, TrimMode::PersistedLsn { .. }));
+        assert!(matches!(trim_mode, TrimMode::DurableLsn { .. }));
         assert_eq!(
             trim_points,
             BTreeMap::from([
@@ -670,7 +670,7 @@ mod tests {
                 (LogId::from(p2), (Lsn::new(5), p2)),
                 (LogId::from(p3), (Lsn::new(10), p3)),
             ]),
-            "Use min persisted LSN per partition as the safe point in single-node mode when not archiving"
+            "Use min durable LSN per partition as the safe point in single-node mode when not archiving"
         );
     }
 
@@ -686,9 +686,9 @@ mod tests {
                 p1,
                 ProcessorStatus {
                     mode: Leader,
-                    applied: Some(Lsn::new(10)),
-                    persisted: Some(Lsn::new(10)), // should not make any difference
-                    archived: None,
+                    applied_lsn: Some(Lsn::new(10)),
+                    durable_lsn: Some(Lsn::new(10)), // should not make any difference
+                    archived_lsn: None,
                 }
                 .into(),
             ),
@@ -696,9 +696,9 @@ mod tests {
                 p2,
                 ProcessorStatus {
                     mode: Follower,
-                    applied: Some(Lsn::new(18)),
-                    persisted: Some(Lsn::new(15)), // should not make any difference
-                    archived: None,
+                    applied_lsn: Some(Lsn::new(18)),
+                    durable_lsn: Some(Lsn::new(15)), // should not make any difference
+                    archived_lsn: None,
                 }
                 .into(),
             ),
@@ -712,9 +712,9 @@ mod tests {
                 p2,
                 ProcessorStatus {
                     mode: Leader,
-                    applied: Some(Lsn::new(20)),
-                    persisted: None,
-                    archived: Some(Lsn::new(10)),
+                    applied_lsn: Some(Lsn::new(20)),
+                    durable_lsn: None,
+                    archived_lsn: Some(Lsn::new(10)),
                 }
                 .into(),
             ),
@@ -722,9 +722,9 @@ mod tests {
                 p3,
                 ProcessorStatus {
                     mode: Follower,
-                    applied: Some(Lsn::new(10)),
-                    persisted: None,
-                    archived: Some(Lsn::new(5)),
+                    applied_lsn: Some(Lsn::new(10)),
+                    durable_lsn: None,
+                    archived_lsn: Some(Lsn::new(5)),
                 }
                 .into(),
             ),
@@ -768,9 +768,9 @@ mod tests {
             p1,
             ProcessorStatus {
                 mode: Leader,
-                applied: Some(Lsn::new(15)),
-                persisted: None,
-                archived: Some(Lsn::new(10)),
+                applied_lsn: Some(Lsn::new(15)),
+                durable_lsn: None,
+                archived_lsn: Some(Lsn::new(10)),
             }
             .into(),
         )]
@@ -782,9 +782,9 @@ mod tests {
             p1,
             ProcessorStatus {
                 mode: Leader,
-                applied: Some(Lsn::new(5)), // behind the archived LSN reported by n1
-                persisted: None,
-                archived: None,
+                applied_lsn: Some(Lsn::new(5)), // behind the archived LSN reported by n1
+                durable_lsn: None,
+                archived_lsn: None,
             }
             .into(),
         )]
@@ -827,9 +827,9 @@ mod tests {
                 p1,
                 ProcessorStatus {
                     mode: Leader,
-                    applied: Some(Lsn::new(10)),
-                    persisted: Some(Lsn::new(10)), // should not make any difference
-                    archived: None,
+                    applied_lsn: Some(Lsn::new(10)),
+                    durable_lsn: Some(Lsn::new(10)), // should not make any difference
+                    archived_lsn: None,
                 }
                 .into(),
             ),
@@ -837,9 +837,9 @@ mod tests {
                 p2,
                 ProcessorStatus {
                     mode: Follower,
-                    applied: Some(Lsn::new(18)),
-                    persisted: Some(Lsn::new(15)), // should not make any difference
-                    archived: None,
+                    applied_lsn: Some(Lsn::new(18)),
+                    durable_lsn: Some(Lsn::new(15)), // should not make any difference
+                    archived_lsn: None,
                 }
                 .into(),
             ),
@@ -853,9 +853,9 @@ mod tests {
                 p2,
                 ProcessorStatus {
                     mode: Leader,
-                    applied: Some(Lsn::new(20)),
-                    persisted: None,
-                    archived: Some(Lsn::new(10)),
+                    applied_lsn: Some(Lsn::new(20)),
+                    durable_lsn: None,
+                    archived_lsn: Some(Lsn::new(10)),
                 }
                 .into(),
             ),
@@ -863,9 +863,9 @@ mod tests {
                 p3,
                 ProcessorStatus {
                     mode: Follower,
-                    applied: Some(Lsn::new(10)),
-                    persisted: None,
-                    archived: Some(Lsn::new(5)),
+                    applied_lsn: Some(Lsn::new(10)),
+                    durable_lsn: None,
+                    archived_lsn: Some(Lsn::new(5)),
                 }
                 .into(),
             ),
@@ -903,19 +903,19 @@ mod tests {
 
     struct ProcessorStatus {
         mode: RunMode,
-        applied: Option<Lsn>,
-        persisted: Option<Lsn>,
-        archived: Option<Lsn>,
+        applied_lsn: Option<Lsn>,
+        durable_lsn: Option<Lsn>,
+        archived_lsn: Option<Lsn>,
     }
 
     impl From<ProcessorStatus> for PartitionProcessorStatus {
-        fn from(val: ProcessorStatus) -> Self {
+        fn from(status: ProcessorStatus) -> Self {
             PartitionProcessorStatus {
-                planned_mode: val.mode,
-                effective_mode: val.mode,
-                last_applied_log_lsn: val.applied,
-                last_persisted_log_lsn: val.persisted,
-                last_archived_log_lsn: val.archived,
+                planned_mode: status.mode,
+                effective_mode: status.mode,
+                applied_lsn: status.applied_lsn,
+                durable_lsn: status.durable_lsn,
+                archived_lsn: status.archived_lsn,
                 ..PartitionProcessorStatus::default()
             }
         }

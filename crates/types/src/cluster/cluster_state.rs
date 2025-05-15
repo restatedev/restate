@@ -159,7 +159,7 @@ pub struct PartitionProcessorStatus {
     #[bilrost(5)]
     pub last_observed_leader_node: Option<GenerationalNodeId>,
     #[bilrost(6)]
-    pub last_applied_log_lsn: Option<Lsn>,
+    pub applied_lsn: Option<Lsn>,
     #[bilrost(7)]
     pub last_record_applied_at: Option<MillisSinceEpoch>,
     #[bilrost(8)]
@@ -167,9 +167,9 @@ pub struct PartitionProcessorStatus {
     #[bilrost(9)]
     pub replay_status: ReplayStatus,
     #[bilrost(10)]
-    pub last_persisted_log_lsn: Option<Lsn>,
+    pub durable_lsn: Option<Lsn>,
     #[bilrost(11)]
-    pub last_archived_log_lsn: Option<Lsn>,
+    pub archived_lsn: Option<Lsn>,
     // Set if replay_status is CatchingUp
     #[bilrost(12)]
     pub target_tail_lsn: Option<Lsn>,
@@ -183,12 +183,12 @@ impl Default for PartitionProcessorStatus {
             effective_mode: RunMode::Follower,
             last_observed_leader_epoch: None,
             last_observed_leader_node: None,
-            last_applied_log_lsn: None,
+            applied_lsn: None,
             last_record_applied_at: None,
             num_skipped_records: 0,
             replay_status: ReplayStatus::Starting,
-            last_persisted_log_lsn: None,
-            last_archived_log_lsn: None,
+            durable_lsn: None,
+            archived_lsn: None,
             target_tail_lsn: None,
         }
     }

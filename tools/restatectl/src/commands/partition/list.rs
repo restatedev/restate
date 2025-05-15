@@ -138,7 +138,7 @@ pub async fn list_partitions(
         "EPOCH",
         "SEQUENCER",
         "APPLIED-LSN",
-        "PERSISTED-LSN",
+        "DURABLE-LSN",
         "SKIPPED-RECORDS",
         "ARCHIVED-LSN",
         "LSN-LAG",
@@ -177,7 +177,7 @@ pub async fn list_partitions(
                     let tail = chain.tail();
                     let in_tail = processor
                         .status
-                        .last_applied_log_lsn
+                        .applied_lsn
                         .map(Lsn::from)
                         .is_some_and(|applied_lsn| applied_lsn.ge(&tail.base_lsn));
                     if in_tail {
@@ -258,14 +258,14 @@ pub async fn list_partitions(
                 Cell::new(
                     processor
                         .status
-                        .last_applied_log_lsn
+                        .applied_lsn
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
                 ),
                 Cell::new(
                     processor
                         .status
-                        .last_persisted_log_lsn
+                        .durable_lsn
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
                 ),
@@ -273,7 +273,7 @@ pub async fn list_partitions(
                 Cell::new(
                     processor
                         .status
-                        .last_archived_log_lsn
+                        .archived_lsn
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
                 ),
@@ -281,7 +281,7 @@ pub async fn list_partitions(
                     processor
                         .status
                         .target_tail_lsn
-                        .zip(processor.status.last_applied_log_lsn)
+                        .zip(processor.status.applied_lsn)
                         .map(|(tail, applied)| {
                             // (tail - 1) - applied_lsn = tail - (applied_lsn + 1)
                             tail.value.saturating_sub(applied.value + 1).to_string()

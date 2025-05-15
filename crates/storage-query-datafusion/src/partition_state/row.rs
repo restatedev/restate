@@ -41,7 +41,7 @@ pub(crate) fn append_partition_row(
         row.leader(format_using(output, leader));
     }
 
-    if let Some(lsn) = state.last_applied_log_lsn {
+    if let Some(lsn) = state.applied_lsn {
         row.applied_log_lsn(lsn.into());
     }
 
@@ -51,11 +51,11 @@ pub(crate) fn append_partition_row(
 
     row.skipped_records(state.num_skipped_records);
     row.replay_status(format_using(output, &state.replay_status));
-    if let Some(lsn) = state.last_persisted_log_lsn {
-        row.persisted_log_lsn(lsn.into());
+    if let Some(lsn) = state.durable_lsn {
+        row.durable_log_lsn(lsn.into());
     }
 
-    if let Some(lsn) = state.last_archived_log_lsn {
+    if let Some(lsn) = state.archived_lsn {
         row.archived_log_lsn(lsn.into());
     }
 
