@@ -862,7 +862,7 @@ impl Member {
         };
 
         match node_config.metadata_server_config.metadata_server_state {
-            MetadataServerState::Standby => {
+            MetadataServerState::Standby | MetadataServerState::Provisioning => {
                 let is_member = self.is_member(self.my_member_id);
 
                 if is_member {
