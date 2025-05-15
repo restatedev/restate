@@ -255,20 +255,17 @@ pub struct StorageOptions {
     /// partitions. The divisor is defined in `num-partitions-to-share-memory-budget`
     rocksdb_memory_ratio: f32,
 
-    /// # Persist lsn interval
+    /// # Persist LSN interval (deprecated)
     ///
-    /// Controls the interval at which worker tries to persist the last applied lsn. Lsn persisting
-    /// can be disabled by setting it to "0s".
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    persist_lsn_interval: humantime::Duration,
+    /// This configuration option is deprecated and ignored in Restate >= 1.3.3.
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    persist_lsn_interval: Option<humantime::Duration>,
 
-    /// # Persist lsn threshold
+    /// # Persist LSN threshold (deprecated)
     ///
-    /// Minimum number of applied log entries before persisting the lsn. The worker will only
-    /// persist a lsn if the partition processor has applied at least #threshold log entries since
-    /// the last persisting. This prevents the worker from flushing the RocksDB memtables too often.
-    pub persist_lsn_threshold: u64,
+    /// This configuration option is deprecated and ignored in Restate >= 1.3.3.
+    pub persist_lsn_threshold: Option<u64>,
 
     /// Whether to perform commits in background IO thread pools eagerly or not
     #[cfg_attr(feature = "schemars", schemars(skip))]
@@ -331,14 +328,6 @@ impl StorageOptions {
     pub fn snapshots_staging_dir(&self) -> PathBuf {
         super::data_dir("pp-snapshots")
     }
-
-    pub fn persist_lsn_interval(&self) -> Option<Duration> {
-        if self.persist_lsn_interval.is_zero() {
-            None
-        } else {
-            Some(*self.persist_lsn_interval)
-        }
-    }
 }
 
 impl Default for StorageOptions {
@@ -354,10 +343,11 @@ impl Default for StorageOptions {
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
-            // persist the lsn every hour
-            persist_lsn_interval: Duration::from_secs(60 * 60).into(),
-            persist_lsn_threshold: 1000,
             always_commit_in_background: false,
+
+            // deprecated
+            persist_lsn_interval: None,
+            persist_lsn_threshold: None,
         }
     }
 }
