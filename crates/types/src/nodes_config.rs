@@ -278,6 +278,17 @@ impl NodesConfiguration {
         }
     }
 
+    pub fn get_worker_state(&self, node_id: &PlainNodeId) -> WorkerState {
+        let maybe = self.nodes.get(node_id);
+        let Some(maybe) = maybe else {
+            return WorkerState::Provisioning;
+        };
+        match maybe {
+            MaybeNode::Tombstone => WorkerState::Disabled,
+            MaybeNode::Node(found) => found.worker_config.worker_state,
+        }
+    }
+
     pub fn get_metadata_server_state(&self, node_id: &PlainNodeId) -> MetadataServerState {
         let maybe = self.nodes.get(node_id);
         let Some(maybe) = maybe else {
@@ -529,6 +540,16 @@ pub enum WorkerState {
     Draining,
     /// Worker is no longer part of any replica sets and it won't be added to new replica sets.
     Disabled,
+}
+
+impl WorkerState {
+    pub fn can_become_active(&self) -> bool {
+        use WorkerState::*;
+        match *self {
+            Provisioning | Active => true,
+            Draining | Disabled => false,
+        }
+    }
 }
 
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
