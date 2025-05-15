@@ -53,7 +53,7 @@ define_table!(
         /// Replay status
         replay_status: DataType::Utf8,
 
-        /// Last persisted log LSN
+        /// Durable log LSN (previously, persisted log LSN)
         persisted_log_lsn: DataType::UInt64,
 
         /// Last archived log LSN

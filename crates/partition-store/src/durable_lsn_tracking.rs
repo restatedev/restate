@@ -94,19 +94,19 @@ impl TablePropertiesCollectorFactory for AppliedLsnCollectorFactory {
     }
 }
 
-pub type PersistedLsnLookup = DashMap<PartitionId, Lsn>;
+pub type DurableLsnLookup = DashMap<PartitionId, Lsn>;
 
-/// Event listener tracking persisted LSNs across
+/// Event listener tracking durable LSNs across
 ///
 /// This listener works in conjunction with the [`AppliedLsnCollector`] to track the high watermark
 /// applied LSNs per partition, once tables are flushed to disk. The event listener will only track
-/// partitions for which there are already entries in the [`persisted_lsns`] map.
+/// partitions for which there are already entries in the [`durable_lsns`] map.
 #[derive(Default)]
-pub(crate) struct PersistedLsnEventListener {
-    pub(crate) persisted_lsns: Arc<PersistedLsnLookup>,
+pub(crate) struct DurableLsnEventListener {
+    pub(crate) durable_lsns: Arc<DurableLsnLookup>,
 }
 
-impl EventListener for PersistedLsnEventListener {
+impl EventListener for DurableLsnEventListener {
     fn on_flush_completed(&self, flush_job_info: FlushJobInfo) {
         for key in flush_job_info.get_user_collected_property_keys(APPLIED_LSNS_PROPERTY_PREFIX) {
             let partition_id = key[APPLIED_LSNS_PROPERTY_PREFIX.len()..]
@@ -123,10 +123,10 @@ impl EventListener for PersistedLsnEventListener {
                 // Note: we only modify entries, never insert, from the event listener. If we don't find
                 // an existing entry for the partition, that means that the PartitionStoreManager has
                 // already closed or dropped it.
-                self.persisted_lsns
+                self.durable_lsns
                     .entry(*partition_id)
-                    .and_modify(|persisted| {
-                        *persisted = *lsn;
+                    .and_modify(|durable_lsn| {
+                        *durable_lsn = *lsn;
                     });
             } else {
                 warn!(

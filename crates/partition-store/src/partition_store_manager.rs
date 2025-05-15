@@ -32,7 +32,7 @@ use restate_types::logs::SequenceNumber;
 
 use crate::PartitionStore;
 use crate::cf_options;
-use crate::persisted_lsn_tracking::{PersistedLsnEventListener, PersistedLsnLookup};
+use crate::durable_lsn_tracking::{DurableLsnEventListener, DurableLsnLookup};
 use crate::snapshots::LocalPartitionSnapshot;
 
 const DB_NAME: &str = "db";
@@ -48,7 +48,7 @@ pub enum OpenMode {
 #[derive(Clone, Debug)]
 pub struct PartitionStoreManager {
     lookup: Arc<RwLock<PartitionLookup>>,
-    persisted_lsns: Arc<PersistedLsnLookup>,
+    durable_lsns: Arc<DurableLsnLookup>,
     rocksdb: Arc<RocksDb>,
     snapshot_limiter: Arc<Semaphore>,
 }
@@ -70,8 +70,8 @@ impl PartitionStoreManager {
 
         let mut db_opts = db_options();
 
-        let event_listener = PersistedLsnEventListener::default();
-        let persisted_lsns = event_listener.persisted_lsns.clone();
+        let event_listener = DurableLsnEventListener::default();
+        let durable_lsns = event_listener.durable_lsns.clone();
         db_opts.add_event_listener(event_listener);
 
         let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), options.data_dir(), db_opts)
@@ -93,7 +93,7 @@ impl PartitionStoreManager {
 
         Ok(Self {
             lookup: Default::default(),
-            persisted_lsns,
+            durable_lsns,
             rocksdb,
             snapshot_limiter: Arc::new(snapshot_limiter),
         })
@@ -220,7 +220,7 @@ impl PartitionStoreManager {
         // are no unflushed writes to the underlying column family on open. This holds as long as
         // all writes to the underlying CF happen through a partition store tracked in the lookup
         // map, and one partition store handles all writes to the underlying CF. If this changes,
-        // the persisted LSN determination logic below must be updated appropriately.
+        // the durable LSN determination logic below must be updated appropriately.
         let live_store = guard.insert(partition_id, partition_store.clone());
         assert!(
             live_store.is_none(),
@@ -238,13 +238,13 @@ impl PartitionStoreManager {
                 Lsn::INVALID
             }
         };
-        self.persisted_lsns.insert(partition_id, applied_lsn);
+        self.durable_lsns.insert(partition_id, applied_lsn);
 
         Ok(partition_store)
     }
 
-    pub fn get_persisted_lsn(&self, partition_id: PartitionId) -> Option<Lsn> {
-        self.persisted_lsns.get(&partition_id).map(|lsn| *lsn)
+    pub fn get_durable_lsn(&self, partition_id: PartitionId) -> Option<Lsn> {
+        self.durable_lsns.get(&partition_id).map(|lsn| *lsn)
     }
 
     pub async fn export_partition_snapshot(
@@ -285,7 +285,7 @@ impl PartitionStoreManager {
             .unwrap();
 
         guard.remove(&partition_id);
-        self.persisted_lsns.remove(&partition_id);
+        self.durable_lsns.remove(&partition_id);
     }
 
     #[cfg(test)]
@@ -300,7 +300,7 @@ impl PartitionStoreManager {
         if let Some(partition_store) = live_store {
             partition_store.flush_memtables(true).await?;
         }
-        self.persisted_lsns.remove(&partition_id);
+        self.durable_lsns.remove(&partition_id);
         Ok(())
     }
 }
