@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
+use restate_types::cluster::cluster_state::{ClusterState, RunMode};
 use restate_types::identifiers::PartitionId;
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
@@ -18,76 +18,77 @@ use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 /// information and the target scheduling plan to instruct nodes to start/stop partition processors.
 #[derive(Debug, Default, Clone)]
 pub struct ObservedClusterState {
-    pub partitions: HashMap<PartitionId, ObservedPartitionState>,
-    pub alive_nodes: HashMap<PlainNodeId, GenerationalNodeId>,
-    pub dead_nodes: HashSet<PlainNodeId>,
-    pub nodes_to_partitions: HashMap<PlainNodeId, HashSet<PartitionId>>,
+    partitions: HashMap<PartitionId, ObservedPartitionState>,
+    // The logic that uses ObservedClusterState assumes that it has a snapshot of the current alive
+    // nodes. We could use restate_core::cluster_state::ClusterState directly, if we kept the read
+    // lock. However, since ObservedClusterState is held across await points, this would prevent
+    // any concurrent updates to the ClusterState. Therefore, we keep a separate copy of the alive
+    // nodes here until the users of ObservedClusterState no longer require a snapshot.
+    alive_nodes: HashMap<PlainNodeId, GenerationalNodeId>,
+    nodes_to_partitions: HashMap<PlainNodeId, HashSet<PartitionId>>,
 }
 
 impl ObservedClusterState {
-    pub fn is_node_alive(&self, node_id: impl Into<NodeId>) -> bool {
+    pub fn partition_state(&self, partition_id: &PartitionId) -> Option<&ObservedPartitionState> {
+        self.partitions.get(partition_id)
+    }
+
+    pub fn alive_nodes(&self) -> impl Iterator<Item = &GenerationalNodeId> {
+        self.alive_nodes.values()
+    }
+
+    pub fn alive_nodes_empty(&self) -> bool {
+        self.alive_nodes.is_empty()
+    }
+
+    /// Returns the generational node id if the given node_id is alive. If a plain node id is
+    /// provided, then the method returns the currently alive generational node id. If a
+    /// generational node id is provided, then it will return this id if it is alive.
+    pub fn alive_generation(&self, node_id: impl Into<NodeId>) -> Option<GenerationalNodeId> {
         let node_id = node_id.into();
 
         match node_id {
-            NodeId::Plain(plain_node_id) => self.alive_nodes.contains_key(&plain_node_id),
+            NodeId::Plain(plain_node_id) => self.alive_nodes.get(&plain_node_id).cloned(),
             NodeId::Generational(generational_node_id) => self
                 .alive_nodes
                 .get(&generational_node_id.as_plain())
-                .is_some_and(|node_id| *node_id == generational_node_id),
+                .filter(|node_id| **node_id == generational_node_id)
+                .copied(),
         }
     }
 
-    pub fn update(&mut self, cluster_state: &ClusterState) {
-        // In case nodes were removed and no longer exists in the cluster_state;
-        // we make sure they are completely removed from both dead and alive sets.
-        //
-        // todo: this need to be optimized. most of the time this will retain
-        // everything only burning cpu cycles.
-        self.alive_nodes
-            .retain(|id, _| cluster_state.nodes.contains_key(id));
-        self.dead_nodes
-            .retain(|id| cluster_state.nodes.contains_key(id));
-        self.nodes_to_partitions
-            .retain(|id, _| cluster_state.nodes.contains_key(id));
-        for partition_state in self.partitions.values_mut() {
-            partition_state
-                .partition_processors
-                .retain(|id, _| cluster_state.nodes.contains_key(id));
-        }
+    pub fn update_liveness(&mut self, cs: &restate_core::cluster_state::ClusterState) {
+        let mut unknown_nodes: HashSet<_> = self.nodes_to_partitions.keys().cloned().collect();
 
-        self.update_nodes(cluster_state);
-        self.update_partitions(cluster_state);
-    }
-
-    /// Update observed cluster state with given [`ClusterState`]
-    fn update_nodes(&mut self, cluster_state: &ClusterState) {
-        for (node_id, node_state) in &cluster_state.nodes {
-            match node_state {
-                NodeState::Alive(alive_node) => {
-                    self.dead_nodes.remove(node_id);
-                    self.alive_nodes
-                        .insert(*node_id, alive_node.generational_node_id);
-                }
-                NodeState::Dead(_) => {
-                    self.alive_nodes.remove(node_id);
-                    self.dead_nodes.insert(*node_id);
-                }
+        for (node_id, state) in cs.all() {
+            if state.is_alive() {
+                self.alive_nodes.insert(node_id.as_plain(), node_id);
+            } else {
+                // remove dead nodes from other indices
+                self.remove_node(&node_id.as_plain());
             }
+
+            unknown_nodes.remove(&node_id.as_plain());
+        }
+
+        for unknown_node in unknown_nodes {
+            self.remove_node(&unknown_node);
         }
     }
 
-    fn update_partitions(&mut self, cluster_state: &ClusterState) {
-        // remove dead nodes
-        for dead_node in cluster_state.dead_nodes() {
-            if let Some(partitions) = self.nodes_to_partitions.remove(dead_node) {
-                for partition_id in partitions {
-                    if let Some(partition) = self.partitions.get_mut(&partition_id) {
-                        partition.remove_partition_processor(dead_node);
-                    }
+    pub fn remove_node(&mut self, node_id: &PlainNodeId) -> Option<GenerationalNodeId> {
+        if let Some(partitions) = self.nodes_to_partitions.remove(node_id) {
+            for partition in partitions {
+                if let Some(observed_partition) = self.partitions.get_mut(&partition) {
+                    observed_partition.remove_partition_processor(node_id);
                 }
             }
         }
 
+        self.alive_nodes.remove(node_id)
+    }
+
+    pub fn update_partitions(&mut self, cluster_state: &ClusterState) {
         // update node_sets and leaders of partitions
         for alive_node in cluster_state.alive_nodes() {
             let mut current_partitions = HashSet::default();
@@ -136,20 +137,61 @@ impl ObservedPartitionState {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use crate::cluster_controller::observed_cluster_state::{
         ObservedClusterState, ObservedPartitionState,
     };
     use googletest::prelude::{empty, eq};
     use googletest::{assert_that, elements_are, unordered_elements_are};
+    use itertools::Itertools;
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
     };
     use restate_types::identifiers::PartitionId;
+    use restate_types::partition_table::PartitionTable;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
     use std::collections::{BTreeMap, HashMap};
     use std::time::Duration;
+
+    impl ObservedClusterState {
+        pub fn add_alive_node(&mut self, node_id: GenerationalNodeId) {
+            self.alive_nodes.insert(node_id.as_plain(), node_id);
+        }
+    }
+
+    pub fn matches_partition_table(
+        partition_table: &PartitionTable,
+        observed_state: &ObservedClusterState,
+    ) -> googletest::Result<()> {
+        assert_that!(observed_state.partitions.len(), eq(partition_table.len()));
+
+        for (partition_id, partition) in partition_table.iter() {
+            let Some(observed_state) = observed_state.partition_state(partition_id) else {
+                panic!("partition {partition_id} not found in observed state");
+            };
+            assert_that!(
+                observed_state.partition_processors.len(),
+                eq(partition.placement.len())
+            );
+
+            for (position, node_id) in partition.placement.iter().with_position() {
+                let run_mode = if matches!(
+                    position,
+                    itertools::Position::First | itertools::Position::Only
+                ) {
+                    RunMode::Leader
+                } else {
+                    RunMode::Follower
+                };
+                assert_that!(
+                    observed_state.partition_processors.get(node_id),
+                    eq(Some(&run_mode))
+                );
+            }
+        }
+        Ok(())
+    }
 
     impl ObservedClusterState {
         pub fn remove_node_from_partition(
@@ -289,7 +331,17 @@ mod tests {
             .collect(),
         };
 
-        observed_cluster_state.update(&cluster_state);
+        let cs = restate_core::cluster_state::ClusterState::default();
+        let mut updater = cs.clone().updater();
+        updater
+            .write()
+            .upsert_node_state(node_1, restate_core::cluster_state::NodeState::Alive);
+        updater
+            .write()
+            .upsert_node_state(node_2, restate_core::cluster_state::NodeState::Alive);
+
+        observed_cluster_state.update_liveness(&cs);
+        observed_cluster_state.update_partitions(&cluster_state);
 
         assert_that!(
             observed_cluster_state
@@ -298,7 +350,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             unordered_elements_are![eq(&node_1.as_plain()), eq(&node_2.as_plain())]
         );
-        assert_that!(observed_cluster_state.dead_nodes, empty());
         assert_that!(
             observed_cluster_state.nodes_to_partitions,
             unordered_elements_are![
@@ -353,7 +404,9 @@ mod tests {
             .collect(),
         };
 
-        observed_cluster_state.update(&cluster_state);
+        updater.write().remove_node(node_2.as_plain());
+        observed_cluster_state.update_liveness(&cs);
+        observed_cluster_state.update_partitions(&cluster_state);
 
         assert_that!(
             observed_cluster_state
@@ -361,10 +414,6 @@ mod tests {
                 .keys()
                 .collect::<Vec<_>>(),
             elements_are![eq(&node_1.as_plain())]
-        );
-        assert_that!(
-            observed_cluster_state.dead_nodes,
-            elements_are![eq(node_2.as_plain())]
         );
         assert_that!(
             observed_cluster_state.nodes_to_partitions,

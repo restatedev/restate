@@ -22,7 +22,8 @@ mod partition_store;
 mod partition_store_manager;
 mod persisted_lsn_tracking;
 pub mod promise_table;
-mod protobuf_types;
+// todo(azmy): Follow up issue https://github.com/restatedev/restate/issues/3284
+pub mod protobuf_types;
 pub mod scan;
 pub mod service_status_table;
 pub mod snapshots;

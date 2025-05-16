@@ -53,13 +53,6 @@ impl ClusterState {
         })
     }
 
-    pub fn dead_nodes(&self) -> impl Iterator<Item = &PlainNodeId> {
-        self.nodes.iter().flat_map(|(node_id, state)| match state {
-            NodeState::Alive(_) => None,
-            NodeState::Dead(_) => Some(node_id),
-        })
-    }
-
     #[cfg(feature = "test-util")]
     pub fn empty() -> Self {
         ClusterState {
@@ -81,6 +74,7 @@ fn instant_to_proto(t: Instant) -> prost_types::Duration {
 #[strum(serialize_all = "snake_case")]
 pub enum NodeState {
     Alive(AliveNode),
+    // #[deprecated(since ="1.3.3", note = "Use restate_core::cluster_state::ClusterState instead for detecting dead nodes")]
     Dead(DeadNode),
 }
 
