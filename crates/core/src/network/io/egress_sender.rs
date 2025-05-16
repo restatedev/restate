@@ -123,9 +123,9 @@ impl UnboundedEgressSender {
         self.inner.send(message).map_err(|_| ConnectionClosed)
     }
 
-    pub fn is_closed(&self) -> bool {
-        self.inner.is_closed()
-    }
+    // pub fn is_closed(&self) -> bool {
+    //     self.inner.is_closed()
+    // }
 
     pub async fn closed(&self) {
         self.inner.closed().await
@@ -137,20 +137,20 @@ impl UnboundedEgressSender {
         let _ = self.inner.send(EgressMessage::Close(reason));
     }
 
-    pub fn downgrade(&self) -> WeakUnboundedEgressSender {
-        WeakUnboundedEgressSender {
-            inner: self.inner.downgrade(),
-        }
-    }
+    // pub fn downgrade(&self) -> WeakUnboundedEgressSender {
+    //     WeakUnboundedEgressSender {
+    //         inner: self.inner.downgrade(),
+    //     }
+    // }
 }
 
-#[derive(Clone)]
-pub struct WeakUnboundedEgressSender {
-    inner: mpsc::WeakUnboundedSender<EgressMessage>,
-}
-
-impl WeakUnboundedEgressSender {
-    pub fn upgrade(&self) -> Option<UnboundedEgressSender> {
-        self.inner.upgrade().map(UnboundedEgressSender::new)
-    }
-}
+// #[derive(Clone)]
+// pub struct WeakUnboundedEgressSender {
+//     inner: mpsc::WeakUnboundedSender<EgressMessage>,
+// }
+//
+// impl WeakUnboundedEgressSender {
+//     pub fn upgrade(&self) -> Option<UnboundedEgressSender> {
+//         self.inner.upgrade().map(UnboundedEgressSender::new)
+//     }
+// }
