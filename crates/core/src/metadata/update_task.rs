@@ -29,7 +29,7 @@ use restate_types::net::metadata::{Extraction, GetMetadataRequest};
 use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::{GenerationalNodeId, Version};
 
-use crate::network::UnboundedConnectionRef;
+use crate::network::Connection;
 use crate::{ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher};
 
 use super::VersionInformation;
@@ -389,13 +389,28 @@ async fn update_from_metadata_store<T: GlobalMetadata>(client: MetadataStoreClie
 }
 
 async fn update_from_peer<T: GlobalMetadata + Extraction<Output = T>>(
-    connection: UnboundedConnectionRef,
+    connection: Connection,
     min_version: Version,
     mut version_watch: watch::Receiver<Version>,
 ) -> Option<Arc<T>> {
     let peer = connection.peer();
-    let reply_rx = connection
-        .send_system_rpc(
+    // we wait until we acquire a permit to send, or until we have learned about this version from other
+    // sources.
+    let permit = tokio::select! {
+        Ok(_) = version_watch.wait_for(|v| *v >= min_version) => {
+            return None;
+        }
+        Some(permit) = connection.reserve() => {
+            permit
+        }
+        else => {
+            // connection has been dropped
+            return None;
+        }
+    };
+
+    let reply_rx = permit
+        .send_rpc(
             GetMetadataRequest {
                 metadata_kind: T::KIND,
                 min_version: Some(min_version),

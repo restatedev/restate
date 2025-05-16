@@ -123,10 +123,6 @@ impl UnboundedEgressSender {
         self.inner.send(message).map_err(|_| ConnectionClosed)
     }
 
-    pub fn is_closed(&self) -> bool {
-        self.inner.is_closed()
-    }
-
     pub async fn closed(&self) {
         self.inner.closed().await
     }
@@ -135,22 +131,5 @@ impl UnboundedEgressSender {
     /// terminating but no new messages will be accepted.
     pub fn unbounded_drain(&self, reason: DrainReason) {
         let _ = self.inner.send(EgressMessage::Close(reason));
-    }
-
-    pub fn downgrade(&self) -> WeakUnboundedEgressSender {
-        WeakUnboundedEgressSender {
-            inner: self.inner.downgrade(),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct WeakUnboundedEgressSender {
-    inner: mpsc::WeakUnboundedSender<EgressMessage>,
-}
-
-impl WeakUnboundedEgressSender {
-    pub fn upgrade(&self) -> Option<UnboundedEgressSender> {
-        self.inner.upgrade().map(UnboundedEgressSender::new)
     }
 }
