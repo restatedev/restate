@@ -17,6 +17,7 @@ use bytes::Bytes;
 use futures::{FutureExt, Stream};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
+use restate_types::net::codec::EncodeError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{Span, trace};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -116,10 +117,10 @@ impl EgressMessage {
         message: M,
         sort_code: Option<u64>,
         protocol_version: ProtocolVersion,
-    ) -> (EgressMessage, ReplyRx<M::Response>) {
+    ) -> Result<(EgressMessage, ReplyRx<M::Response>), EncodeError> {
         let (reply_sender, reply_token) = ReplyRx::new();
-        let payload = message.encode_to_bytes(protocol_version);
-        (
+        let payload = message.encode_to_bytes(protocol_version)?;
+        Ok((
             EgressMessage::RpcCall {
                 payload,
                 reply_sender,
@@ -132,7 +133,7 @@ impl EgressMessage {
                 header: None,
             },
             reply_token,
-        )
+        ))
     }
 
     #[cfg(feature = "test-util")]
@@ -141,10 +142,10 @@ impl EgressMessage {
         sort_code: Option<u64>,
         protocol_version: ProtocolVersion,
         header: Header,
-    ) -> (EgressMessage, ReplyRx<M::Response>) {
+    ) -> Result<(EgressMessage, ReplyRx<M::Response>), EncodeError> {
         let (reply_sender, reply_token) = ReplyRx::new();
-        let payload = message.encode_to_bytes(protocol_version);
-        (
+        let payload = message.encode_to_bytes(protocol_version)?;
+        Ok((
             EgressMessage::RpcCall {
                 payload,
                 reply_sender,
@@ -156,18 +157,18 @@ impl EgressMessage {
                 header: Some(header),
             },
             reply_token,
-        )
+        ))
     }
 
     pub fn make_unary_message<M: UnaryMessage>(
         message: M,
         sort_code: Option<u64>,
         protocol_version: ProtocolVersion,
-    ) -> (EgressMessage, SendToken) {
+    ) -> Result<(EgressMessage, SendToken), EncodeError> {
         let (notifier, token) = Sent::create();
-        let payload = message.encode_to_bytes(protocol_version);
+        let payload = message.encode_to_bytes(protocol_version)?;
 
-        (
+        Ok((
             EgressMessage::Unary {
                 service_tag: M::Service::TAG,
                 msg_type: M::TYPE,
@@ -179,7 +180,7 @@ impl EgressMessage {
                 header: None,
             },
             token,
-        )
+        ))
     }
 }
 

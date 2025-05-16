@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use restate_types::net::codec::EncodeError;
 use tonic::Code;
 
 use restate_types::NodeId;
@@ -121,6 +122,16 @@ pub enum DiscoveryError {
     NodeIsGone(NodeId),
     #[error("node {0} was not found in config")]
     UnknownNodeId(NodeId),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MessageSendError {
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
+    #[error(transparent)]
+    Encoding(#[from] EncodeError),
+    #[error(transparent)]
+    ConnectionClosed(#[from] ConnectionClosed),
 }
 
 #[derive(Debug, thiserror::Error, Clone)]

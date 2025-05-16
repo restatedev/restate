@@ -620,7 +620,11 @@ impl<O: RpcResponse + WireEncode> Reciprocal<Oneshot<O>> {
 
     /// Fails if connection was already dropped
     pub fn try_send(self, msg: O) -> Result<(), ConnectionClosed> {
-        let reply = O::encode_to_bytes(&msg, self.protocol_version);
+        // The assumption here is that because this is a reply of an RPC request
+        // that we received on this connection, we hard-assume that the reply type
+        // serializable on the negotiated protocol version.
+        let reply = O::encode_to_bytes(&msg, self.protocol_version)
+            .expect("serialization of rpc reply should not fail");
         self.reply_port
             .inner
             .0
@@ -658,7 +662,11 @@ impl<O: WatchResponse + WireEncode> Reciprocal<Updates<O>> {
 
     /// Fails if connection was already dropped
     pub fn try_send(&self, msg: O) -> Result<(), ConnectionClosed> {
-        let reply = O::encode_to_bytes(&msg, self.protocol_version);
+        // The assumption here is that because this is a reply of a watch request
+        // that we received on this connection, we hard-assume that the reply type
+        // serializable on the negotiated protocol version.
+        let reply = O::encode_to_bytes(&msg, self.protocol_version)
+            .expect("serialization of rpc reply should not fail");
         self.reply_port
             .inner
             .0

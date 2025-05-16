@@ -844,7 +844,7 @@ mod tests {
 
         let permit = connection.conn.reserve().await.unwrap();
 
-        let rx = permit.send_rpc_with_header(request, None, header);
+        let rx = permit.send_rpc_with_header(request, None, header).unwrap();
         let _result = rx.await;
 
         // we expect the request to go through he existing open connection to my node
