@@ -86,6 +86,7 @@ message SuspensionMessage {
   repeated uint32 waiting_completions = 1;
   repeated uint32 waiting_signals = 2;
   repeated string waiting_named_signals = 3;
+  optional bool preempt_hint = 4;
 }
 
 // Type: 0x0000 + 2

@@ -88,6 +88,7 @@ pub(super) enum InvocationTaskOutputInner {
     // `has_changed` indicates if we believe this is a freshly selected endpoint or not.
     PinnedDeployment(PinnedDeployment, /* has_changed: */ bool),
     ServerHeaderReceived(String),
+    // v3
     NewEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
@@ -98,6 +99,7 @@ pub(super) enum InvocationTaskOutputInner {
         /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#acknowledgment-of-stored-entries
         requires_ack: bool,
     },
+    // V4
     NewCommand {
         command_index: CommandIndex,
         command: journal_v2::raw::RawCommand,
@@ -114,6 +116,17 @@ pub(super) enum InvocationTaskOutputInner {
     Closed,
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
+    /// A cooperative preemption hint sent by the running invocation to suggest
+    /// that it can be suspended if necessary. This allows the runtime to reclaim
+    /// processing time for other tasks, but acting on the hint is optional.
+    ///
+    /// The hint includes a set of `NotificationId`s. If any of these notifications
+    /// are completed and the task has not been suspended, the hint is ignored
+    /// until the task sends a new preemption hint.
+    ///
+    /// If the task is suspended, the runtime must resume it as soon as one of the
+    /// specified `NotificationId`s is completed.
+    PreemptionHint(HashSet<NotificationId>),
     Failed(InvokerError),
 }
 

@@ -40,7 +40,7 @@ use restate_types::live::{Live, LiveLoad};
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::deployment::DeploymentResolver;
 use status_store::InvocationStatusStore;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
@@ -209,6 +209,7 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
                 quota: quota::InvokerConcurrencyQuota::new(options.concurrent_invocations_limit()),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
+                preemptible: Default::default(),
             },
         }
     }
@@ -304,6 +305,13 @@ where
 }
 
 #[derive(Debug)]
+struct Preemptible {
+    partition: PartitionLeaderEpoch,
+    invocation_epoch: InvocationEpoch,
+    notification_ids: HashSet<NotificationId>,
+}
+
+#[derive(Debug)]
 struct ServiceInner<InvocationTaskRunner, SR> {
     input_rx: mpsc::UnboundedReceiver<InputCommand<SR>>,
     status_rx: mpsc::UnboundedReceiver<
@@ -326,6 +334,8 @@ struct ServiceInner<InvocationTaskRunner, SR> {
     quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
     invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager<SR>,
+
+    preemptible: BTreeMap<InvocationId, Preemptible>,
 }
 
 impl<ITR, IR> ServiceInner<ITR, IR>
@@ -389,7 +399,10 @@ where
                 }
             },
 
-            Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
+            Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && (self.quota.is_slot_available() | !self.preemptible.is_empty()) => {
+                if !self.quota.is_slot_available() {
+                    self.suspend_preemptible_invocation().await;
+                }
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_epoch, invoke_input_command.invocation_target, invoke_input_command.journal);
             },
 
@@ -400,6 +413,11 @@ where
                     invocation_epoch,
                     inner
                 } = invocation_task_msg;
+
+                // Any activity from the invocation invalidates previously sent
+                // preemption hints, as it indicates the task is actively making progress.
+                self.preemptible.remove(&invocation_id);
+
                 match inner {
                     InvocationTaskOutputInner::PinnedDeployment(deployment_metadata, has_changed) => {
                         self.handle_pinned_deployment(
@@ -457,6 +475,9 @@ where
                     }
                     InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
                         self.handle_invocation_task_suspended_v2(partition, invocation_id, invocation_epoch, notification_ids).await
+                    }
+                    InvocationTaskOutputInner::PreemptionHint(notification_ids) => {
+                        self.handle_invocation_task_preemption_hint(partition, invocation_id, invocation_epoch, notification_ids).await
                     }
                 };
             },
@@ -921,6 +942,12 @@ where
         invocation_epoch: InvocationEpoch,
         notification: RawNotification,
     ) {
+        if let Some(preemptible) = self.preemptible.get(&invocation_id) {
+            if preemptible.notification_ids.contains(&notification.id()) {
+                self.preemptible.remove(&invocation_id);
+            }
+        }
+
         self.handle_retry_event(options, partition, invocation_id, invocation_epoch, |ism| {
             trace!(
                 restate.invocation.target = %ism.invocation_target,
@@ -1054,6 +1081,55 @@ where
             // If no state machine, this might be a result for an aborted invocation.
             trace!("No state machine found for invocation task suspended signal");
         }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.invocation.id = %invocation_id,
+            restate.invocation.epoch = %invocation_epoch,
+            restate.invoker.partition_leader_epoch = ?partition,
+        )
+    )]
+    async fn handle_invocation_task_preemption_hint(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+        notification_ids: HashSet<NotificationId>,
+    ) {
+        self.preemptible.insert(
+            invocation_id,
+            Preemptible {
+                partition,
+                invocation_epoch,
+                notification_ids,
+            },
+        );
+    }
+
+    async fn suspend_preemptible_invocation(&mut self) {
+        // naive eviction mechanism always pop the first
+        // preemptible invocation. Relying on the inactivity
+        // age is not guaranteed to be fair since an older
+        // invocation might actually be closer to finish.
+        let (
+            invocation_id,
+            Preemptible {
+                partition,
+                invocation_epoch,
+                notification_ids,
+            },
+        ) = self.preemptible.pop_first().expect("at least one element");
+
+        self.handle_invocation_task_suspended_v2(
+            partition,
+            invocation_id,
+            invocation_epoch,
+            notification_ids,
+        )
+        .await
     }
 
     #[instrument(
@@ -1403,6 +1479,7 @@ mod tests {
                 quota: InvokerConcurrencyQuota::new(concurrency_limit),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
+                preemptible: Default::default(),
             };
             (input_tx, status_tx, service_inner)
         }
