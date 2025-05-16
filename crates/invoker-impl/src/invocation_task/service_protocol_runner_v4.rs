@@ -966,6 +966,15 @@ where
         if suspension_indexes.is_empty() {
             return TerminalLoopState::Failed(InvokerError::EmptySuspensionMessage);
         }
+
+        if suspension.preempt_hint.unwrap_or_default() {
+            self.invocation_task
+                .send_invoker_tx(InvocationTaskOutputInner::PreemptionHint(
+                    suspension_indexes,
+                ));
+            return TerminalLoopState::Continue(());
+        }
+
         TerminalLoopState::SuspendedV2(suspension_indexes)
     }
 

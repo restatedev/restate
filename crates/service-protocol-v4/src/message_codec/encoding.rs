@@ -248,6 +248,7 @@ mod tests {
         decoder.push(encoder.encode(expected_msg_2.clone()));
 
         let (actual_msg_header_0, actual_msg_0) = decoder.consume_next().unwrap().unwrap();
+
         assert_eq!(actual_msg_header_0.message_type(), MessageType::Start);
         assert_eq!(actual_msg_0, expected_msg_0);
 
