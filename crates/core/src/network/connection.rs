@@ -10,6 +10,7 @@
 
 mod throttle;
 
+use restate_types::net::codec::EncodeError;
 // re-export
 pub use throttle::ConnectThrottle;
 
@@ -39,6 +40,7 @@ use super::ConnectionDirection;
 use super::Destination;
 use super::HandshakeError;
 use super::MessageRouter;
+use super::MessageSendError;
 use super::PeerAddress;
 use super::ReplyRx;
 use super::Swimlane;
@@ -83,68 +85,73 @@ impl SendPermit<'_> {
     // -- Helpers --
 
     /// Sends a unary message over this permit.
-    pub fn send_unary<M: UnaryMessage>(self, message: M, sort_code: Option<u64>) -> SendToken {
+    pub fn send_unary<M: UnaryMessage>(
+        self,
+        message: M,
+        sort_code: Option<u64>,
+    ) -> Result<SendToken, EncodeError> {
         let (msg, token) =
-            EgressMessage::make_unary_message(message, sort_code, self.protocol_version);
+            EgressMessage::make_unary_message(message, sort_code, self.protocol_version)?;
         self.permit.send(msg);
-        token
+        Ok(token)
     }
 
     /// Sends an rpc call over this permit.
-    #[must_use]
     pub fn send_rpc<M: RpcRequest>(
         self,
         message: M,
         sort_code: Option<u64>,
-    ) -> ReplyRx<M::Response> {
+    ) -> Result<ReplyRx<M::Response>, EncodeError> {
         let (msg, reply_token) =
-            EgressMessage::make_rpc_message(message, sort_code, self.protocol_version);
+            EgressMessage::make_rpc_message(message, sort_code, self.protocol_version)?;
         self.permit.send(msg);
 
-        reply_token
+        Ok(reply_token)
     }
 
     #[cfg(feature = "test-util")]
-    #[must_use]
     pub fn send_rpc_with_header<M: RpcRequest>(
         self,
         message: M,
         sort_code: Option<u64>,
         header: Header,
-    ) -> ReplyRx<M::Response> {
+    ) -> Result<ReplyRx<M::Response>, EncodeError> {
         let (msg, reply_token) = EgressMessage::make_rpc_message_with_header(
             message,
             sort_code,
             self.protocol_version,
             header,
-        );
+        )?;
         self.permit.send(msg);
 
-        reply_token
+        Ok(reply_token)
     }
 }
 
 impl OwnedSendPermit {
     /// Sends a unary message over this permit.
-    pub fn send_unary<M: UnaryMessage>(self, message: M, sort_code: Option<u64>) -> SendToken {
+    pub fn send_unary<M: UnaryMessage>(
+        self,
+        message: M,
+        sort_code: Option<u64>,
+    ) -> Result<SendToken, EncodeError> {
         let (msg, token) =
-            EgressMessage::make_unary_message(message, sort_code, self.protocol_version);
+            EgressMessage::make_unary_message(message, sort_code, self.protocol_version)?;
         self.permit.send(msg);
-        token
+        Ok(token)
     }
 
     /// Sends an rpc call over this permit.
-    #[must_use]
     pub fn send_rpc<M: RpcRequest>(
         self,
         message: M,
         sort_code: Option<u64>,
-    ) -> ReplyRx<M::Response> {
+    ) -> Result<ReplyRx<M::Response>, EncodeError> {
         let (msg, reply_token) =
-            EgressMessage::make_rpc_message(message, sort_code, self.protocol_version);
+            EgressMessage::make_rpc_message(message, sort_code, self.protocol_version)?;
         self.permit.send(msg);
 
-        reply_token
+        Ok(reply_token)
     }
 }
 
@@ -467,7 +474,10 @@ impl UnboundedConnectionRef {
         };
 
         let (msg, token) =
-            EgressMessage::make_unary_message(message, sort_code, self.protocol_version);
+            EgressMessage::make_unary_message(message, sort_code, self.protocol_version)
+                // butchering the error type here but for a good reason. This function
+                // (send_system_unary) is removed in a follow up PR.
+                .map_err(|_| ConnectionClosed)?;
         sender.unbounded_send(msg)?;
         Ok(token)
     }
@@ -483,14 +493,14 @@ impl UnboundedConnectionRef {
         &self,
         message: M,
         sort_code: Option<u64>,
-    ) -> Result<ReplyRx<M::Response>, ConnectionClosed> {
+    ) -> Result<ReplyRx<M::Response>, MessageSendError> {
         // no need to serialize if the connection is already closed
         let Some(sender) = self.sender.upgrade() else {
-            return Err(ConnectionClosed);
+            return Err(ConnectionClosed.into());
         };
 
         let (msg, reply_token) =
-            EgressMessage::make_rpc_message(message, sort_code, self.protocol_version);
+            EgressMessage::make_rpc_message(message, sort_code, self.protocol_version)?;
 
         sender.unbounded_send(msg)?;
         Ok(reply_token)

@@ -25,6 +25,7 @@ use restate_types::invocation::client::{
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
 use restate_types::live::Live;
+use restate_types::net::codec::EncodeError;
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, GetInvocationOutputResponseMode, PartitionProcessorRpcError,
     PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
@@ -119,6 +120,12 @@ impl From<PartitionProcessorInvocationClientError> for InvocationClientError {
     fn from(value: PartitionProcessorInvocationClientError) -> Self {
         let is_safe_to_retry = value.is_safe_to_retry();
         Self::new(value, is_safe_to_retry)
+    }
+}
+
+impl From<EncodeError> for RpcErrorKind {
+    fn from(_value: EncodeError) -> Self {
+        Self::SendFailed
     }
 }
 
@@ -220,6 +227,7 @@ where
                 },
                 Some(*partition_id as u64),
             )
+            .map_err(|err| RpcError::from_err(partition_id, node_id, err))?
             .await
             .map_err(|err| RpcError::from_err(partition_id, node_id, err))?;
 

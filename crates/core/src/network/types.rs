@@ -22,7 +22,7 @@ use restate_types::net::{AdvertisedAddress, ProtocolVersion, RpcResponse};
 use restate_types::{GenerationalNodeId, Version};
 
 use super::protobuf::network::{Header, rpc_reply};
-use super::{ConnectError, ConnectionClosed};
+use super::{ConnectionClosed, MessageSendError};
 
 /// Address of a peer in the network. It can be a specific node or an anonymous peer.
 #[derive(Debug, Clone, Copy, Eq, derive_more::IsVariant, derive_more::Display)]
@@ -171,7 +171,7 @@ pub enum RpcError {
     #[error(transparent)]
     ConnectionClosed(#[from] ConnectionClosed),
     #[error(transparent)]
-    Send(#[from] ConnectError),
+    Send(#[from] MessageSendError),
     #[error(transparent)]
     Receive(#[from] RpcReplyError),
     #[error("timed out")]

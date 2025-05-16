@@ -303,7 +303,9 @@ impl<S: Service> ServiceMessage<S> {
         use crate::network::{RawRpcReply, ReplyRx, RpcReplyError, RpcReplyPort};
 
         let (reply_sender, reply_token) = ReplyRx::new();
-        let payload = msg.encode_to_bytes(protocol_version);
+        let payload = msg
+            .encode_to_bytes(protocol_version)
+            .expect("message encode-able");
 
         let (reply_port, reply_rx) = RpcReplyPort::new();
 

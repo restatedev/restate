@@ -1471,14 +1471,16 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("connection dropped"))
                 .into_test_result()?;
 
-            permit.send_unary(
-                if i % 2 == 0 {
-                    start_processor_command.clone()
-                } else {
-                    stop_processor_command.clone()
-                },
-                None,
-            );
+            permit
+                .send_unary(
+                    if i % 2 == 0 {
+                        start_processor_command.clone()
+                    } else {
+                        stop_processor_command.clone()
+                    },
+                    None,
+                )
+                .unwrap();
         }
 
         loop {
@@ -1495,7 +1497,9 @@ mod tests {
                     .ok_or_else(|| anyhow::anyhow!("connection dropped"))
                     .into_test_result()?;
 
-                permit.send_unary(start_processor_command.clone(), None);
+                permit
+                    .send_unary(start_processor_command.clone(), None)
+                    .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
