@@ -43,8 +43,8 @@ use crate::network::protobuf::network::{Datagram, RpcReply, datagram, rpc_reply}
 use crate::network::protobuf::network::{Header, Message};
 use crate::network::tracking::ConnectionTracking;
 use crate::network::{
-    Connection, Incoming, MessageRouter, PeerAddress, PeerMetadataVersion, ReplyEnvelope,
-    RouterError, RpcReplyError, UnboundedConnectionRef, compat,
+    Connection, Incoming, MessageRouter, PeerMetadataVersion, ReplyEnvelope, RouterError,
+    RpcReplyError, compat,
 };
 use crate::{Metadata, ShutdownError, TaskCenter, TaskContext, TaskId, TaskKind};
 
@@ -69,7 +69,6 @@ pub struct ConnectionReactor {
     state: State,
     connection: Connection,
     shared: super::Shared,
-    connection_ref: UnboundedConnectionRef,
     context_propagator: TraceContextPropagator,
     seen_versions: Option<MetadataVersions>,
     router: Arc<MessageRouter>,
@@ -85,18 +84,12 @@ impl ConnectionReactor {
     ) -> Self {
         let context_propagator = TraceContextPropagator::default();
         let mut seen_versions = MetadataVersions::new(Metadata::current());
-        let connection_ref = UnboundedConnectionRef::new(
-            PeerAddress::ServerNode(connection.peer()),
-            connection.protocol_version,
-            shared.tx.as_ref().unwrap(),
-        );
         if let Some(peer_metadata) = peer_metadata {
-            seen_versions.notify(peer_metadata, &connection_ref);
+            seen_versions.notify(peer_metadata, &connection);
         }
         Self {
             state: State::Active,
             connection,
-            connection_ref,
             shared,
             context_propagator,
             seen_versions: Some(seen_versions),
@@ -135,10 +128,7 @@ impl ConnectionReactor {
 
     fn notify_metadata_versions(&mut self, header: &Header) {
         if let Some(seen) = self.seen_versions.as_mut() {
-            seen.notify(
-                PeerMetadataVersion::from_header(header),
-                &self.connection_ref,
-            );
+            seen.notify(PeerMetadataVersion::from_header(header), &self.connection);
         }
     }
 
@@ -812,7 +802,7 @@ impl MetadataVersions {
         }
     }
 
-    fn notify(&mut self, peer: PeerMetadataVersion, connection: &UnboundedConnectionRef) {
+    fn notify(&mut self, peer: PeerMetadataVersion, connection: &Connection) {
         for kind in MetadataKind::iter() {
             self.update(kind, peer.get(kind), connection);
         }
@@ -827,12 +817,7 @@ impl MetadataVersions {
         }
     }
 
-    fn update(
-        &mut self,
-        metadata_kind: MetadataKind,
-        version: Version,
-        connection: &UnboundedConnectionRef,
-    ) {
+    fn update(&mut self, metadata_kind: MetadataKind, version: Version, connection: &Connection) {
         let current_version = self.versions[metadata_kind];
         if version > current_version {
             self.versions[metadata_kind] = version;

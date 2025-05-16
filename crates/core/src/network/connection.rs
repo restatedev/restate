@@ -40,8 +40,6 @@ use super::ConnectionDirection;
 use super::Destination;
 use super::HandshakeError;
 use super::MessageRouter;
-use super::MessageSendError;
-use super::PeerAddress;
 use super::ReplyRx;
 use super::Swimlane;
 use super::TransportConnect;
@@ -49,8 +47,6 @@ use super::handshake::wait_for_welcome;
 use super::io::ConnectionReactor;
 use super::io::EgressStream;
 use super::io::SendToken;
-use super::io::UnboundedEgressSender;
-use super::io::WeakUnboundedEgressSender;
 use super::io::{DrainReason, EgressMessage, EgressSender};
 use super::protobuf::network::Header;
 use super::protobuf::network::Hello;
@@ -429,81 +425,6 @@ impl Connection {
 impl PartialEq for Connection {
     fn eq(&self, other: &Self) -> bool {
         self.sender.same_channel(&other.sender)
-    }
-}
-
-/// A weak connection that can be used to send system-level messages to peers.
-/// This should **not** be used for other purposes.
-#[derive(Clone, derive_more::Debug)]
-pub struct UnboundedConnectionRef {
-    pub(crate) peer: PeerAddress,
-    pub(crate) protocol_version: ProtocolVersion,
-    #[debug(skip)]
-    pub(crate) sender: WeakUnboundedEgressSender,
-}
-
-impl UnboundedConnectionRef {
-    pub fn new(
-        peer: PeerAddress,
-        protocol_version: ProtocolVersion,
-        sender: &UnboundedEgressSender,
-    ) -> Self {
-        Self {
-            peer,
-            protocol_version,
-            sender: sender.downgrade(),
-        }
-    }
-
-    pub fn peer(&self) -> &PeerAddress {
-        &self.peer
-    }
-
-    /// Sends a system-controlled Unary message on the unbounded channel to peer
-    ///
-    /// This should be only used for core-controlled operations independent of the connection
-    /// intent and direction.
-    pub fn send_system_unary<M: UnaryMessage>(
-        self,
-        message: M,
-        sort_code: Option<u64>,
-    ) -> Result<SendToken, ConnectionClosed> {
-        // no need to serialize if the connection is already closed
-        let Some(sender) = self.sender.upgrade() else {
-            return Err(ConnectionClosed);
-        };
-
-        let (msg, token) =
-            EgressMessage::make_unary_message(message, sort_code, self.protocol_version)
-                // butchering the error type here but for a good reason. This function
-                // (send_system_unary) is removed in a follow up PR.
-                .map_err(|_| ConnectionClosed)?;
-        sender.unbounded_send(msg)?;
-        Ok(token)
-    }
-
-    /// Sends a system-controlled RPC message on the unbounded channel to peer
-    ///
-    /// This should be only used for core-controlled operations independent of the connection
-    /// intent and direction. The most notable use-case is adhoc metadata exchange between peers.
-    ///
-    /// This will fail immediately if this connection has been terminated, or will return an rpc
-    /// reply token that can be used to await the response.
-    pub fn send_system_rpc<M: RpcRequest>(
-        &self,
-        message: M,
-        sort_code: Option<u64>,
-    ) -> Result<ReplyRx<M::Response>, MessageSendError> {
-        // no need to serialize if the connection is already closed
-        let Some(sender) = self.sender.upgrade() else {
-            return Err(ConnectionClosed.into());
-        };
-
-        let (msg, reply_token) =
-            EgressMessage::make_rpc_message(message, sort_code, self.protocol_version)?;
-
-        sender.unbounded_send(msg)?;
-        Ok(reply_token)
     }
 }
 

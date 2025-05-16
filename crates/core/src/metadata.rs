@@ -13,9 +13,6 @@ mod metadata_client_wrapper;
 mod update_task;
 
 use ahash::HashMap;
-pub use manager::{MetadataManager, TargetVersion};
-use restate_types::metadata::GlobalMetadata;
-pub use restate_types::net::metadata::MetadataKind;
 use tokio::time::Instant;
 
 use std::sync::{Arc, OnceLock};
@@ -29,13 +26,16 @@ use tracing::instrument;
 use restate_metadata_store::{MetadataStoreClient, ReadError};
 use restate_types::live::{Live, Pinned};
 use restate_types::logs::metadata::Logs;
+use restate_types::metadata::GlobalMetadata;
+pub use restate_types::net::metadata::MetadataKind;
 use restate_types::net::metadata::{self, MetadataContainer};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
 use restate_types::{GenerationalNodeId, Version, Versioned};
 
-use crate::network::{PeerAddress, UnboundedConnectionRef};
+pub use self::manager::{MetadataManager, TargetVersion};
+use crate::network::Connection;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 
 use self::metadata_client_wrapper::MetadataClientWrapper;
@@ -242,7 +242,7 @@ impl Metadata {
         &self,
         metadata_kind: MetadataKind,
         version: Version,
-        remote_peer: Option<UnboundedConnectionRef>,
+        remote_peer: Option<Connection>,
     ) {
         self.inner
             .notify_observed_version(metadata_kind, version, remote_peer);
@@ -305,7 +305,7 @@ impl MetadataInner {
         &self,
         metadata_kind: MetadataKind,
         version: Version,
-        remote_peer: Option<UnboundedConnectionRef>,
+        remote_peer: Option<Connection>,
     ) {
         // fast path to avoid watch's internal locking if we are already at
         // this version.
@@ -321,20 +321,24 @@ impl MetadataInner {
                     info.peers.clear();
                     info.first_observed_at = Instant::now();
                     if let Some(peer) = remote_peer {
+                        info.peers.insert(peer.peer(), peer);
+                        // NOTE: commented for future use
                         // only use known peers as potential source for metadata updates
-                        if let PeerAddress::ServerNode(node_id) = peer.peer() {
-                            info.peers.insert(*node_id, peer);
-                        }
+                        // if let PeerAddress::ServerNode(node_id) = peer.peer() {
+                        //     info.peers.insert(*node_id, peer);
+                        // }
                     }
                     true
                 }
                 std::cmp::Ordering::Equal => {
                     // same version
                     if let Some(peer) = remote_peer {
+                        info.peers.insert(peer.peer(), peer);
+                        // NOTE: commented for future use
                         // only use known peers as potential source for metadata updates
-                        if let PeerAddress::ServerNode(node_id) = peer.peer() {
-                            info.peers.insert(*node_id, peer);
-                        }
+                        // if let PeerAddress::ServerNode(node_id) = peer.peer() {
+                        //     info.peers.insert(*node_id, peer);
+                        // }
                     }
                     // silent modification
                     false
@@ -443,7 +447,7 @@ pub fn spawn_metadata_manager(metadata_manager: MetadataManager) -> Result<TaskI
 #[derive(Debug, Clone)]
 struct VersionInformation {
     version: Version,
-    peers: HashMap<GenerationalNodeId, UnboundedConnectionRef>,
+    peers: HashMap<GenerationalNodeId, Connection>,
     first_observed_at: Instant,
 }
 
