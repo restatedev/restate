@@ -32,7 +32,7 @@ use restate_types::{GenerationalNodeId, live};
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 use std::borrow::Borrow;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 #[derive(Debug)]
 pub struct KafkaIngressEvent {
@@ -199,6 +199,7 @@ impl KafkaIngressDispatcher {
 }
 
 impl DispatchKafkaEvent for KafkaIngressDispatcher {
+    #[instrument(level = "debug", skip_all, fields(messaging.kafka.offset = ingress_request.deduplication_index))]
     async fn dispatch_kafka_event(
         &self,
         ingress_request: KafkaIngressEvent,
