@@ -44,9 +44,7 @@ use restate_types::live::LiveLoadExt;
 use restate_types::logs::RecordCache;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
 use restate_types::metadata::{GlobalMetadata, Precondition};
-use restate_types::nodes_config::{
-    LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
-};
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::{
@@ -262,7 +260,7 @@ impl Node {
                     &mut router_builder,
                     networking.clone(),
                     bifrost_svc.handle(),
-                    metadata_store_client.clone(),
+                    metadata_manager.writer(),
                 )
                 .await?,
             )
@@ -670,18 +668,18 @@ async fn provision_cluster_metadata(
 fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfiguration {
     let mut initial_nodes_configuration =
         NodesConfiguration::new(Version::MIN, common_opts.cluster_name().to_owned());
-    let node_config = NodeConfig::new(
-        common_opts.node_name().to_owned(),
-        common_opts
-            .force_node_id
-            .map(|force_node_id| force_node_id.with_generation(1))
-            .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID),
-        common_opts.location().clone(),
-        common_opts.advertised_address.clone(),
-        common_opts.roles,
-        LogServerConfig::default(),
-        MetadataServerConfig::default(),
-    );
+    let node_config = NodeConfig::builder()
+        .name(common_opts.node_name().to_owned())
+        .current_generation(
+            common_opts
+                .force_node_id
+                .map(|force_node_id| force_node_id.with_generation(1))
+                .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID),
+        )
+        .location(common_opts.location().clone())
+        .address(common_opts.advertised_address.clone())
+        .roles(common_opts.roles)
+        .build();
     initial_nodes_configuration.upsert_node(node_config);
     initial_nodes_configuration
 }

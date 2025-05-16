@@ -7777,6 +7777,7 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-opentelemetry",
+ "typed-builder",
  "typify 0.1.0",
  "ulid",
  "workspace-hack",
@@ -7829,8 +7830,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.0.68"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.0.68#7b9b091c75c333024af908d89ae122fcac6a3d98"
+version = "0.0.70"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.0.70#cdebab82eaec6a71fb6d2c5ef5174da9646e3e0b"
 dependencies = [
  "anyhow",
  "include_dir",
@@ -7848,7 +7849,6 @@ dependencies = [
  "bytes",
  "bytestring",
  "codederror",
- "derive_builder",
  "derive_more",
  "enumset",
  "futures",
@@ -7870,11 +7870,10 @@ dependencies = [
  "restate-invoker-api",
  "restate-invoker-impl",
  "restate-metadata-server",
+ "restate-metadata-store",
  "restate-object-store-util",
  "restate-partition-store",
  "restate-rocksdb",
- "restate-serde-util",
- "restate-service-client",
  "restate-service-protocol",
  "restate-service-protocol-v4",
  "restate-storage-api",
@@ -9539,18 +9538,18 @@ dependencies = [
 
 [[package]]
 name = "typed-builder"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e14ed59dc8b7b26cacb2a92bad2e8b1f098806063898ab42a3bd121d7d45e75"
+checksum = "ce63bcaf7e9806c206f7d7b9c1f38e0dce8bb165a80af0898161058b19248534"
 dependencies = [
  "typed-builder-macro",
 ]
 
 [[package]]
 name = "typed-builder-macro"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "560b82d656506509d43abe30e0ba64c56b1953ab3d4fe7ba5902747a7a3cedd5"
+checksum = "60d8d828da2a3d759d3519cdf29a5bac49c77d039ad36d0782edadbf9cd5415b"
 dependencies = [
  "proc-macro2",
  "quote",

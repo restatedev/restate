@@ -15,9 +15,7 @@ use restate_types::PlainNodeId;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::{
-    LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration,
-};
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
 use restate_types::retries::RetryPolicy;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -283,15 +281,12 @@ impl<'a> NodeInit<'a> {
 
                         let my_node_id = plain_node_id.with_generation(1);
 
-                        NodeConfig::new(
-                            common_opts.node_name().to_owned(),
-                            my_node_id,
-                            common_opts.location().clone(),
-                            common_opts.advertised_address.clone(),
-                            common_opts.roles,
-                            LogServerConfig::default(),
-                            MetadataServerConfig::default(),
-                        )
+                        NodeConfig::builder().name(
+                            common_opts.node_name().to_owned()).current_generation(
+                            my_node_id).location(
+                            common_opts.location().clone()).address(
+                            common_opts.advertised_address.clone()).roles(
+                            common_opts.roles).build()
                     };
 
                     nodes_config.upsert_node(my_node_config);
@@ -308,6 +303,7 @@ impl<'a> NodeInit<'a> {
 #[cfg(test)]
 mod tests {
     use crate::init::NodeInit;
+    use enumset::EnumSet;
     use googletest::assert_that;
     use googletest::matchers::{contains_substring, displays_as, err};
     use restate_core::TestCoreEnvBuilder;
@@ -325,15 +321,12 @@ mod tests {
         config.common.force_node_id = Some(PlainNodeId::new(1337));
         set_current_config(config);
 
-        let node_config = NodeConfig::new(
-            node_name,
-            GenerationalNodeId::INITIAL_NODE_ID,
-            Default::default(),
-            "http://localhost:1337".parse().unwrap(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        );
+        let node_config = NodeConfig::builder()
+            .name(node_name)
+            .current_generation(GenerationalNodeId::INITIAL_NODE_ID)
+            .address("http://localhost:1337".parse().unwrap())
+            .roles(EnumSet::default())
+            .build();
         let mut nodes_configuration = NodesConfiguration::new(Version::MIN, cluster_name);
         nodes_configuration.upsert_node(node_config);
 

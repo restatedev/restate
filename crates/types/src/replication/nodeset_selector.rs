@@ -592,7 +592,7 @@ pub mod tests {
 
     use crate::locality::LocationScope;
     use crate::nodes_config::{
-        LogServerConfig, MetadataServerConfig, NodesConfiguration, Role, StorageState,
+        LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
     use crate::replication::{NodeSet, ReplicationProperty};
     use crate::{GenerationalNodeId, PlainNodeId};
@@ -624,15 +624,14 @@ pub mod tests {
         location: &str,
     ) -> NodeConfig {
         let id: PlainNodeId = id.into();
-        NodeConfig::new(
-            format!("node-{id}"),
-            GenerationalNodeId::new(id.into(), 1),
-            location.parse().unwrap(),
-            format!("unix:/tmp/my_socket-{id}").parse().unwrap(),
-            role.into(),
-            LogServerConfig { storage_state },
-            MetadataServerConfig::default(),
-        )
+        NodeConfig::builder()
+            .name(format!("node-{id}"))
+            .current_generation(GenerationalNodeId::new(id.into(), 1))
+            .location(location.parse().unwrap())
+            .address(format!("unix:/tmp/my_socket-{id}").parse().unwrap())
+            .roles(role.into())
+            .log_server_config(LogServerConfig { storage_state })
+            .build()
     }
 
     #[test]

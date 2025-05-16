@@ -1340,13 +1340,12 @@ pub mod tests {
     use enumset::{EnumSet, enum_set};
     use googletest::prelude::*;
 
-    use restate_types::locality::NodeLocation;
     use restate_types::logs::metadata::{
         LogsConfiguration, NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig,
     };
     use restate_types::logs::{LogId, LogletId};
     use restate_types::nodes_config::{
-        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
+        LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
     use restate_types::replicated_loglet::ReplicatedLogletParams;
     use restate_types::replication::{NodeSet, ReplicationProperty};
@@ -1535,17 +1534,17 @@ pub mod tests {
         storage_state: StorageState,
     ) -> NodeConfig {
         let node_id = node_id.into();
-        NodeConfig::new(
-            format!("node-{}", u32::from(node_id)),
-            node_id.with_generation(1),
-            NodeLocation::default(),
-            format!("https://node-{}", u32::from(node_id))
-                .parse()
-                .unwrap(),
-            roles,
-            LogServerConfig { storage_state },
-            MetadataServerConfig::default(),
-        )
+        NodeConfig::builder()
+            .name(format!("node-{}", u32::from(node_id)))
+            .current_generation(node_id.with_generation(1))
+            .address(
+                format!("https://node-{}", u32::from(node_id))
+                    .parse()
+                    .unwrap(),
+            )
+            .roles(roles)
+            .log_server_config(LogServerConfig { storage_state })
+            .build()
     }
 
     #[test]

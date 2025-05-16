@@ -342,12 +342,11 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
-    use restate_types::locality::NodeLocation;
     use test_log::test;
 
     use restate_test_util::assert_eq;
     use restate_types::net::AdvertisedAddress;
-    use restate_types::nodes_config::{LogServerConfig, MetadataServerConfig, NodeConfig, Role};
+    use restate_types::nodes_config::{NodeConfig, Role};
     use restate_types::{GenerationalNodeId, Version};
 
     use crate::metadata::spawn_metadata_manager;
@@ -512,15 +511,12 @@ mod tests {
         let address = AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap();
         let node_id = GenerationalNodeId::new(1, 1);
         let roles = Role::Admin | Role::Worker;
-        let my_node = NodeConfig::new(
-            "MyNode-1".to_owned(),
-            node_id,
-            NodeLocation::default(),
-            address,
-            roles,
-            LogServerConfig::default(),
-            MetadataServerConfig::default(),
-        );
+        let my_node = NodeConfig::builder()
+            .name("MyNode-1".to_owned())
+            .current_generation(node_id)
+            .address(address)
+            .roles(roles)
+            .build();
         nodes_config.upsert_node(my_node);
         nodes_config
     }

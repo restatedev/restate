@@ -199,7 +199,6 @@ tempfile = "3.6.0"
 test-log = { version = "0.2.11", default-features = false, features = [
     "trace",
 ] }
-toml = { version = "0.8.12" }
 tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms", "profiling"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling"] }
 thiserror = "2.0"
@@ -211,6 +210,7 @@ tokio = { version = "1.45.0", default-features = false, features = [
 ] }
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.14" }
+toml = { version = "0.8.12" }
 tonic = { version = "0.12.3", default-features = false }
 tonic-reflection = { version = "0.12.3" }
 tonic-health = { version = "0.12.3" }
@@ -221,6 +221,7 @@ tracing = { version = "0.1" }
 tracing-opentelemetry = { version = "0.28.0" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "parking_lot"] }
 tracing-test = { version = "0.2.5" }
+typed-builder = "0.21.0"
 ulid = { version = "1.1.0" }
 url = { version = "2.5" }
 uuid = { version = "1.3.0", features = ["v7", "serde"] }

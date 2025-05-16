@@ -817,15 +817,12 @@ mod tests {
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
-    use restate_types::locality::NodeLocation;
     use restate_types::logs::metadata::ProviderKind;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::net::AdvertisedAddress;
     use restate_types::net::node::{GetNodeState, GossipService, NodeStateResponse};
     use restate_types::net::partition_processor_manager::PartitionManagerService;
-    use restate_types::nodes_config::{
-        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
-    };
+    use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
     #[test(restate_core::test)]
@@ -1367,15 +1364,14 @@ mod tests {
 
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
         for i in 1..=num_nodes {
-            nodes_config.upsert_node(NodeConfig::new(
-                format!("node-{}", i),
-                GenerationalNodeId::new(i as u32, i as u32),
-                NodeLocation::default(),
-                AdvertisedAddress::Uds(format!("{}.sock", i).into()),
-                Role::Admin | Role::Worker,
-                LogServerConfig::default(),
-                MetadataServerConfig::default(),
-            ));
+            nodes_config.upsert_node(
+                NodeConfig::builder()
+                    .name(format!("node-{}", i))
+                    .current_generation(GenerationalNodeId::new(i as u32, i as u32))
+                    .address(AdvertisedAddress::Uds(format!("{}.sock", i).into()))
+                    .roles(Role::Admin | Role::Worker)
+                    .build(),
+            );
         }
         let builder = modify_builder(builder.set_nodes_config(nodes_config));
 

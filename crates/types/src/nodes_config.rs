@@ -101,21 +101,30 @@ enum MaybeNode {
     Node(NodeConfig),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, typed_builder::TypedBuilder,
+)]
 pub struct NodeConfig {
     pub name: String,
     pub current_generation: GenerationalNodeId,
     pub address: AdvertisedAddress,
     pub roles: EnumSet<Role>,
     #[serde(default)]
+    #[builder(default)]
     pub log_server_config: LogServerConfig,
     #[serde(default)]
+    #[builder(default)]
     pub location: NodeLocation,
     #[serde(default)]
+    #[builder(default)]
     pub metadata_server_config: MetadataServerConfig,
+    #[serde(default)]
+    #[builder(default)]
+    pub worker_config: WorkerConfig,
 }
 
 impl NodeConfig {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         current_generation: GenerationalNodeId,
@@ -124,6 +133,7 @@ impl NodeConfig {
         roles: EnumSet<Role>,
         log_server_config: LogServerConfig,
         metadata_server_config: MetadataServerConfig,
+        worker_config: WorkerConfig,
     ) -> Self {
         Self {
             name,
@@ -133,6 +143,7 @@ impl NodeConfig {
             log_server_config,
             location,
             metadata_server_config,
+            worker_config,
         }
     }
 
@@ -491,6 +502,35 @@ pub enum MetadataServerState {
     Member,
 }
 
+/// State of a node that runs the [`Role::Worker`].
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum WorkerState {
+    /// Worker is about to start. No partitions are running on this worker yet.
+    #[default]
+    Provisioning,
+    /// Worker can be included in replica sets for running partitions.
+    Active,
+    /// Worker should no longer be added to new replica sets. However, it might still be part of
+    /// existing replica sets.
+    Draining,
+    /// Worker is no longer part of any replica sets and it won't be added to new replica sets.
+    Disabled,
+}
+
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LogServerConfig {
     pub storage_state: StorageState,
@@ -499,6 +539,11 @@ pub struct LogServerConfig {
 #[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MetadataServerConfig {
     pub metadata_server_state: MetadataServerState,
+}
+
+#[derive(Clone, Default, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WorkerConfig {
+    pub worker_state: WorkerState,
 }
 
 flexbuffers_storage_encode_decode!(NodesConfiguration);
@@ -515,15 +560,13 @@ mod tests {
         let address: AdvertisedAddress = "unix:/tmp/my_socket".parse().unwrap();
         let roles = EnumSet::only(Role::Worker);
         let current_gen = GenerationalNodeId::new(1, 1);
-        let node = NodeConfig::new(
-            "node1".to_owned(),
-            current_gen,
-            "region1.zone1".parse().unwrap(),
-            address.clone(),
-            roles,
-            LogServerConfig::default(),
-            MetadataServerConfig::default(),
-        );
+        let node = NodeConfig::builder()
+            .name("node1".to_owned())
+            .current_generation(current_gen)
+            .location("region1.zone1".parse().unwrap())
+            .address(address.clone())
+            .roles(roles)
+            .build();
         config.upsert_node(node.clone());
 
         let res = config.find_node_by_id(NodeId::new_plain(2));
@@ -563,16 +606,16 @@ mod tests {
 
         // upsert with new generation
         let future_gen = NodeId::new_generational(1, 2);
-        let node = NodeConfig::new(
-            // change name
-            "nodeX".to_owned(),
-            future_gen.as_generational().unwrap(),
-            "region1.zone1".parse().unwrap(),
-            address,
-            roles,
-            LogServerConfig::default(),
-            MetadataServerConfig::default(),
-        );
+        let node = NodeConfig::builder()
+            .name(
+                // change name
+                "nodeX".to_owned(),
+            )
+            .current_generation(future_gen.as_generational().unwrap())
+            .location("region1.zone1".parse().unwrap())
+            .address(address)
+            .roles(roles)
+            .build();
         config.upsert_node(node.clone());
 
         //  now new generation is found
@@ -607,6 +650,7 @@ mod tests {
             Role::Worker.into(),
             LogServerConfig::default(),
             MetadataServerConfig::default(),
+            WorkerConfig::default(),
         );
         let node2 = NodeConfig::new(
             "node2".to_owned(),
@@ -616,6 +660,7 @@ mod tests {
             Role::Worker.into(),
             LogServerConfig::default(),
             MetadataServerConfig::default(),
+            WorkerConfig::default(),
         );
         config.upsert_node(node1.clone());
         config.upsert_node(node2.clone());

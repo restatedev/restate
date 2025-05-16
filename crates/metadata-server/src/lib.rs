@@ -44,7 +44,7 @@ use restate_types::live::LiveLoadExt;
 use restate_types::live::{Live, LiveLoad};
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::nodes_config::{
-    LogServerConfig, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
+    MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
 };
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
@@ -646,15 +646,14 @@ fn prepare_initial_nodes_configuration(
             metadata_server_state: MetadataServerState::Member,
         };
 
-        let node_config = NodeConfig::new(
-            configuration.common.node_name().to_owned(),
-            current_generation,
-            configuration.common.location().clone(),
-            configuration.common.advertised_address.clone(),
-            configuration.common.roles,
-            LogServerConfig::default(),
-            metadata_server_config,
-        );
+        let node_config = NodeConfig::builder()
+            .name(configuration.common.node_name().to_owned())
+            .current_generation(current_generation)
+            .location(configuration.common.location().clone())
+            .address(configuration.common.advertised_address.clone())
+            .roles(configuration.common.roles)
+            .metadata_server_config(metadata_server_config)
+            .build();
 
         nodes_configuration.upsert_node(node_config);
 

@@ -645,7 +645,6 @@ mod tests {
     use restate_test_util::assert_eq;
     use restate_types::Version;
     use restate_types::config::NetworkingOptions;
-    use restate_types::locality::NodeLocation;
     use restate_types::net::metadata::GetMetadataRequest;
     use restate_types::net::metadata::MetadataKind;
     use restate_types::net::metadata::MetadataManagerService;
@@ -654,9 +653,7 @@ mod tests {
         AdvertisedAddress, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
         ProtocolVersion,
     };
-    use restate_types::nodes_config::{
-        LogServerConfig, MetadataServerConfig, NodeConfig, NodesConfiguration, Role,
-    };
+    use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 
     use crate::network::MessageRouterBuilder;
     use crate::network::ServiceMessage;
@@ -803,15 +800,12 @@ mod tests {
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
 
         let node_id = GenerationalNodeId::new(42, 42);
-        let node_config = NodeConfig::new(
-            "42".to_owned(),
-            node_id,
-            NodeLocation::default(),
-            AdvertisedAddress::Uds("foobar1".into()),
-            Role::Worker.into(),
-            LogServerConfig::default(),
-            MetadataServerConfig::default(),
-        );
+        let node_config = NodeConfig::builder()
+            .name("42".to_owned())
+            .current_generation(node_id)
+            .address(AdvertisedAddress::Uds("foobar1".into()))
+            .roles(Role::Worker.into())
+            .build();
         nodes_config.upsert_node(node_config);
 
         let test_env = TestCoreEnvBuilder::with_incoming_only_connector()
