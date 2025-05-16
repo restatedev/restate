@@ -40,7 +40,9 @@ pub enum StorageDecodeError {
     UnsupportedCodecKind(StorageCodecKind),
 }
 
-#[derive(Debug, Copy, Clone, strum::FromRepr, derive_more::Display)]
+#[derive(
+    Debug, Copy, Clone, strum::FromRepr, derive_more::Display, PartialEq, Eq, bilrost::Enumeration,
+)]
 #[repr(u8)]
 pub enum StorageCodecKind {
     /// plain old protobuf
@@ -53,6 +55,18 @@ pub enum StorageCodecKind {
     BincodeSerde = 4,
     /// Json (no length prefix)
     Json = 5,
+    /// Bilrost (no length-prefixed)
+    Bilrost = 6,
+    /// A custom encoding that does not rely on any of the standard encoding formats
+    /// supported by the [`encode`] and [`decode`] modules.
+    ///
+    /// When using this variant, the encoding and decoding logic is entirely defined
+    /// by the implementation of the [`StorageEncode`] and [`StorageDecode`] traits.
+    ///
+    /// While you may still use utility functions from the [`encode`] and [`decode`] modules,
+    /// it is up to your implementation to decide how (or if) to use them, and how the final
+    /// byte representation is constructed.
+    Custom = 7,
 }
 
 impl From<StorageCodecKind> for u8 {

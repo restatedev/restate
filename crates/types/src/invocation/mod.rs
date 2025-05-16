@@ -456,10 +456,15 @@ pub struct InvocationInput {
 }
 
 /// Target of a completion sent from another Partition Processor.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Hash)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Hash, bilrost::Message,
+)]
 pub struct JournalCompletionTarget {
+    #[bilrost(1)]
     pub caller_id: InvocationId,
+    #[bilrost(2)]
     pub caller_completion_id: CompletionId,
+    #[bilrost(3)]
     pub caller_invocation_epoch: InvocationEpoch,
 }
 
@@ -537,13 +542,15 @@ impl From<&InvocationError> for ResponseResult {
 }
 
 // Represents a response to get invocation output
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
 #[serde(
     from = "serde_hacks::GetInvocationOutputResponse",
     into = "serde_hacks::GetInvocationOutputResponse"
 )]
 pub struct GetInvocationOutputResponse {
+    #[bilrost(1)]
     pub target: JournalCompletionTarget,
+    #[bilrost(oneof(2, 3))]
     pub result: GetInvocationOutputResult,
 }
 
@@ -833,7 +840,7 @@ impl SpanRelation {
 }
 
 /// Message to terminate an invocation.
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Message)]
 pub struct InvocationTermination {
     pub invocation_id: InvocationId,
     pub flavor: TerminationFlavor,
@@ -856,17 +863,20 @@ impl InvocationTermination {
 }
 
 /// Flavor of the termination. Can be kill (hard stop) or graceful cancel.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Enumeration,
+)]
 pub enum TerminationFlavor {
     /// hard termination, no clean up
-    Kill,
+    Kill = 0,
     /// graceful termination allowing the invocation to clean up
-    Cancel,
+    Cancel = 1,
 }
 
 /// Message to purge an invocation.
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Message)]
 pub struct PurgeInvocationRequest {
+    #[bilrost(1)]
     pub invocation_id: InvocationId,
 }
 

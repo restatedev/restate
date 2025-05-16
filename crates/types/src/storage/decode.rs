@@ -92,3 +92,7 @@ fn decode_serde_from_json<T: DeserializeOwned, B: Buf>(
     })?;
     Ok(result)
 }
+
+pub fn decode_bilrost<T: bilrost::OwnedMessage, B: Buf>(buf: B) -> Result<T, StorageDecodeError> {
+    T::decode(buf).map_err(|err| StorageDecodeError::DecodeValue(err.into()))
+}

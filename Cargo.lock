@@ -1109,6 +1109,7 @@ checksum = "815ed941f4e34d221bda5ac688ff1f80f579ca0c1b062d381347be6d53786e02"
 dependencies = [
  "bilrost-derive",
  "bytes",
+ "bytestring",
  "thin-vec",
 ]
 
@@ -2967,11 +2968,12 @@ dependencies = [
 
 [[package]]
 name = "flate2"
-version = "1.0.35"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c936bfdafb507ebbf50b8074c54fa31c5be9a1e7e5f467dd659697041407d07c"
+checksum = "7ced92e76e966ca2fd84c8f7aa01a4aea65b0eb6648d72f7c8f3e2764a67fece"
 dependencies = [
  "crc32fast",
+ "libz-rs-sys",
  "miniz_oxide",
 ]
 
@@ -4284,7 +4286,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -4302,6 +4304,15 @@ dependencies = [
  "bitflags 2.8.0",
  "libc",
  "redox_syscall",
+]
+
+[[package]]
+name = "libz-rs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6489ca9bd760fe9642d7644e827b0c9add07df89857b0416ee15c1cc1a3b8c5a"
+dependencies = [
+ "zlib-rs",
 ]
 
 [[package]]
@@ -4541,9 +4552,9 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "miniz_oxide"
-version = "0.8.3"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8402cab7aefae129c6977bb0ff1b8fd9a04eb5b51efc50a70bea51cda0c7924"
+checksum = "3be647b768db090acb35d5ec5db2b0e1f1de11133ca123b9eacf5137868f892a"
 dependencies = [
  "adler2",
 ]
@@ -6565,6 +6576,7 @@ dependencies = [
  "restate-bifrost",
  "restate-core",
  "restate-futures-util",
+ "restate-invoker-api",
  "restate-log-server",
  "restate-metadata-store",
  "restate-rocksdb",
@@ -7803,6 +7815,7 @@ dependencies = [
  "anyhow",
  "assert2",
  "async-trait",
+ "bilrost",
  "bytes",
  "bytestring",
  "codederror",
@@ -7811,8 +7824,10 @@ dependencies = [
  "enum-map",
  "flexbuffers",
  "googletest",
+ "prost",
  "restate-core",
  "restate-invoker-api",
+ "restate-partition-store",
  "restate-storage-api",
  "restate-test-util",
  "restate-types",
@@ -7830,12 +7845,12 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.0.70"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.0.70#cdebab82eaec6a71fb6d2c5ef5174da9646e3e0b"
+version = "0.0.71"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.0.71#9d1e9789bcbbe11a0a231e62a213eed2bd421e71"
 dependencies = [
  "anyhow",
  "include_dir",
- "zip 2.5.0",
+ "zip 3.0.0",
 ]
 
 [[package]]
@@ -10326,9 +10341,11 @@ dependencies = [
  "aws-smithy-types",
  "axum",
  "axum-core",
+ "bilrost",
  "bitflags 2.8.0",
  "byteorder",
  "bytes",
+ "bytestring",
  "bzip2-sys",
  "cc",
  "chrono",
@@ -10657,16 +10674,15 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "2.5.0"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27c03817464f64e23f6f37574b4fdc8cf65925b5bfd2b0f2aedf959791941f88"
+checksum = "12598812502ed0105f607f941c386f43d441e00148fce9dec3ca5ffb0bde9308"
 dependencies = [
  "aes",
  "arbitrary",
  "bzip2 0.5.2",
  "constant_time_eq 0.3.1",
  "crc32fast",
- "crossbeam-utils",
  "deflate64",
  "flate2",
  "getrandom 0.3.1",
@@ -10682,6 +10698,12 @@ dependencies = [
  "zopfli",
  "zstd 0.13.2",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "868b928d7949e09af2f6086dfc1e01936064cc7a819253bce650d4e2a2d63ba8"
 
 [[package]]
 name = "zopfli"

@@ -62,8 +62,7 @@ impl_net_serde!(
     String,
     bytes::Bytes,
     bytestring::ByteString,
-    std::time::Duration,
-    std::path::PathBuf
+    std::time::Duration
 );
 
 macro_rules! impl_net_serde_tuple {
