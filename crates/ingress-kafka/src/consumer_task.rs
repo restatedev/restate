@@ -33,7 +33,7 @@ use restate_types::schema::subscriptions::{
     EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Subscription,
 };
 use tokio::sync::{mpsc, oneshot};
-use tracing::{Instrument, debug, info, info_span, warn};
+use tracing::{debug, instrument, warn};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -120,18 +120,7 @@ impl MessageSender {
     }
 
     async fn send(&self, consumer_group_id: &str, msg: BorrowedMessage<'_>) -> Result<(), Error> {
-        // Prepare ingress span
-        let ingress_span = info_span!(
-            "kafka_ingress_consume",
-            otel.name = "kafka_ingress_consume",
-            messaging.system = "kafka",
-            messaging.operation = "receive",
-            messaging.source.name = msg.topic(),
-            messaging.destination.name = %self.subscription.sink(),
-            restate.subscription.id = %self.subscription.id(),
-            messaging.consumer.group.name = consumer_group_id
-        );
-        info!(parent: &ingress_span, "Processing Kafka ingress request");
+        debug!(messaging.kafka.offset = %msg.offset(), "Processing Kafka ingress request");
 
         let key = if let Some(k) = msg.key() {
             Bytes::copy_from_slice(k)
@@ -171,7 +160,6 @@ impl MessageSender {
 
         self.dispatcher
             .dispatch_kafka_event(req)
-            .instrument(ingress_span)
             .await
             .map_err(|_| Error::IngressDispatcherClosed)?;
         Ok(())
@@ -441,6 +429,19 @@ impl Drop for AbortOnDrop {
     }
 }
 
+#[instrument(
+    level = "info",
+    name = "kafka_ingress_consume",
+    skip_all,
+    fields(
+        otel.name = "kafka_ingress_consume",
+        messaging.system = "kafka",
+        messaging.operation = "receive",
+        messaging.source.name = topic_partition.0,
+        messaging.kafka.partition = topic_partition.1,
+        messaging.destination.name = %sender.subscription.sink(),
+        restate.subscription.id = %sender.subscription.id(),
+        messaging.consumer.group.name = consumer_group_id))]
 async fn topic_partition_queue_consumption_loop(
     sender: MessageSender,
     topic_partition: TopicPartition,
@@ -449,13 +450,7 @@ async fn topic_partition_queue_consumption_loop(
     consumer_group_id: String,
     failed: mpsc::UnboundedSender<Error>,
 ) {
-    debug!(
-        restate.subscription.id = %sender.subscription.id(),
-        messaging.consumer.group.name = consumer_group_id,
-        "Starting topic '{}' partition '{}' consumption loop",
-        topic_partition.0,
-        topic_partition.1
-    );
+    debug!("Starting consumption loop");
     // this future will be aborted when the partition is no longer needed, so any exit is a failure
     let err = loop {
         let res = topic_partition_consumer.recv().await;
