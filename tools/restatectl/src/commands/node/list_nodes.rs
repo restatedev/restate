@@ -85,8 +85,18 @@ async fn list_nodes_configuration(
     let mut header = vec!["NODE", "GEN", "NAME", "ADDRESS", "ROLES"];
     if opts.extra {
         header.extend(vec![
-            "UPTIME", "STATUS", "ADMIN", "WORKER", "LOG-SVR", "META", "NODES", "LOGS", "SCHEMA",
-            "PRTNS",
+            "STORAGE-STATE",
+            "WORKER-STATE",
+            "UPTIME",
+            "STATUS",
+            "ADMIN",
+            "WORKER",
+            "LOG-SERVER",
+            "META",
+            "NODES",
+            "LOGS",
+            "SCHEMA",
+            "P-TABLE",
         ]);
     }
     nodes_table.set_styled_header(header);
@@ -109,6 +119,10 @@ async fn list_nodes_configuration(
         ];
 
         if opts.extra {
+            node_row.extend(vec![
+                Cell::new(node_config.log_server_config.storage_state),
+                Cell::new(node_config.worker_config.worker_state),
+            ]);
             node_row.extend(render_optional_columns(
                 nodes_extra_info.get(&node_config.address),
                 render_ident_extras,
@@ -129,8 +143,16 @@ pub fn list_nodes_lite(
     let mut header = vec!["NODE", "GEN", "NAME", "ADDRESS", "ROLES"];
     if opts.extra {
         header.extend(vec![
-            "UPTIME", "STATUS", "ADMIN", "WORKER", "LOG-SVR", "META", "NODES", "LOGS", "SCHEMA",
-            "PRTNS",
+            "UPTIME",
+            "STATUS",
+            "ADMIN",
+            "WORKER",
+            "LOG-SERVER",
+            "META",
+            "NODES",
+            "LOGS",
+            "SCHEMA",
+            "P-TABLE",
         ]);
     }
     nodes_table.set_styled_header(header);
