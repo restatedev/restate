@@ -11,6 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::{Context, bail};
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
@@ -18,19 +19,22 @@ use pprof::criterion::{Output, PProfProfiler};
 use pprof::flamegraph::Options;
 use prost::Message as _;
 use rand::distr::Alphanumeric;
-use rand::{Rng, random};
+use rand::{Rng, RngCore, random};
 
 use restate_bifrost::InputRecord;
 use restate_core::network::protobuf::network::message::Body;
-use restate_core::network::protobuf::network::{Datagram, Message};
+use restate_core::network::protobuf::network::{Datagram, Message, datagram};
+use restate_invoker_api::{Effect, EffectKind};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber, ProducerId};
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext,
 };
+use restate_types::journal_v2::CommandType;
+use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader, RawEntryInner};
 use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
-use restate_types::net::codec::WireEncode;
+use restate_types::net::codec::{WireDecode, WireEncode};
 use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
 use restate_types::net::replicated_loglet::{Append, CommonRequestHeader};
 use restate_types::net::{RpcRequest, Service};
@@ -59,39 +63,13 @@ fn rand_string(len: usize) -> String {
         .collect()
 }
 
-pub fn generate_envelope() -> Arc<Envelope> {
-    let source_partition_id = random::<u16>().into();
-    let partition_key = random();
-    let leader_epoch = LeaderEpoch::from(random::<u64>());
-    let node_id = GenerationalNodeId::new(random(), random());
+fn invoke_cmd() -> Command {
     let idempotency_key: ByteString = rand_string(15).into();
-
     let request_id = PartitionProcessorRpcRequestId::new();
     let inv_source = restate_types::invocation::Source::Ingress(request_id);
     let handler: ByteString = format!("aFunction_{}", rand_string(10)).into();
 
-    let header = restate_wal_protocol::Header {
-        source: restate_wal_protocol::Source::Processor {
-            partition_id: source_partition_id,
-            partition_key: Some(partition_key),
-            leader_epoch,
-            node_id: node_id.as_plain(),
-            generational_node_id: Some(node_id),
-        },
-        dest: Destination::Processor {
-            partition_key,
-            dedup: Some(DedupInformation {
-                producer_id: ProducerId::self_producer(),
-                sequence_number: restate_storage_api::deduplication_table::DedupSequenceNumber::Esn(
-                    EpochSequenceNumber {
-                        leader_epoch: LeaderEpoch::from(random::<u64>()),
-                        sequence_number: random(),
-                    },
-                ),
-            }),
-        },
-    };
-    let command = Command::Invoke(ServiceInvocation {
+    Command::Invoke(ServiceInvocation {
         invocation_id: InvocationId::generate(
             &InvocationTarget::service("MyWonderfulService", handler.clone()),
             Some(&idempotency_key),
@@ -116,7 +94,66 @@ pub fn generate_envelope() -> Arc<Envelope> {
         submit_notification_sink: Some(
             restate_types::invocation::SubmitNotificationSink::Ingress { request_id },
         ),
-    });
+    })
+}
+
+fn invoker_effect_cmd() -> Command {
+    let idempotency_key: ByteString = rand_string(15).into();
+    let handler: ByteString = format!("aFunction_{}", rand_string(10)).into();
+
+    let mut data = [0u8; 128];
+    rand::rng().fill_bytes(&mut data);
+
+    Command::InvokerEffect(Effect {
+        invocation_id: InvocationId::generate(
+            &InvocationTarget::service("MyWonderfulService", handler.clone()),
+            Some(&idempotency_key),
+        ),
+        invocation_epoch: random(),
+        kind: EffectKind::JournalEntryV2 {
+            entry: RawEntry::new(
+                RawEntryHeader::new(),
+                RawEntryInner::Command(RawCommand::new(
+                    CommandType::SetState,
+                    Bytes::copy_from_slice(&data),
+                )),
+            ),
+            command_index_to_ack: Some(random()),
+        },
+    })
+}
+
+pub fn generate_envelope<G>(generator: G) -> Arc<Envelope>
+where
+    G: FnOnce() -> Command,
+{
+    let source_partition_id = random::<u16>().into();
+    let partition_key = random();
+    let leader_epoch = LeaderEpoch::from(random::<u64>());
+    let node_id = GenerationalNodeId::new(random(), random());
+
+    let header = restate_wal_protocol::Header {
+        source: restate_wal_protocol::Source::Processor {
+            partition_id: source_partition_id,
+            partition_key: Some(partition_key),
+            leader_epoch,
+            node_id: node_id.as_plain(),
+            generational_node_id: Some(node_id),
+        },
+        dest: Destination::Processor {
+            partition_key,
+            dedup: Some(DedupInformation {
+                producer_id: ProducerId::self_producer(),
+                sequence_number: restate_storage_api::deduplication_table::DedupSequenceNumber::Esn(
+                    EpochSequenceNumber {
+                        leader_epoch: LeaderEpoch::from(random::<u64>()),
+                        sequence_number: random(),
+                    },
+                ),
+            }),
+        },
+    };
+    let command = generator();
 
     Envelope::new(header, command).into()
 }
@@ -193,7 +230,7 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
     Ok(message)
 }
 
-fn deserialize_append_message(_serialized_message: Bytes) -> anyhow::Result<Append> {
+fn deserialize_append_message(serialized_message: Bytes) -> anyhow::Result<Append> {
     // let protocol_version = restate_types::net::ProtocolVersion::V1;
     // let msg = Message::decode(serialized_message)?;
     // let body = msg.body.unwrap();
@@ -202,12 +239,63 @@ fn deserialize_append_message(_serialized_message: Bytes) -> anyhow::Result<Appe
     // Ok(Append::decode(msg_body.payload, protocol_version))
     //
     // disabled during fabric v2 refactoring, feel free to implement it if you need this bench
-    todo!()
+    let message = Message::decode(serialized_message)?;
+
+    let Body::Datagram(Datagram {
+        datagram: Some(datagram::Datagram::RpcCall(rpc_call)),
+    }) = message.body.context("missing message body")?
+    else {
+        bail!("expecting a Datagram(RpcCall)");
+    };
+
+    Ok(Append::decode(
+        rpc_call.payload,
+        restate_types::net::ProtocolVersion::V1,
+    ))
 }
 
-fn replicated_loglet_append_serde(c: &mut Criterion) {
-    let mut group = c.benchmark_group("replicated-loglet-serde");
-    let batch: Vec<Record> = vec![generate_envelope(); 10]
+fn replicated_loglet_append_invoke_cmd_serde(c: &mut Criterion) {
+    let mut group = c.benchmark_group("replicated-loglet-serde.invoke-cmd");
+    let batch: Vec<Record> = vec![generate_envelope(invoke_cmd); 10]
+        .into_iter()
+        .map(|r| InputRecord::from(r).into_record())
+        .collect();
+
+    let payloads: Arc<[Record]> = batch.into();
+
+    let mut buf = BytesMut::new();
+    let message = serialize_append_message(payloads.clone()).unwrap();
+    message.encode(&mut buf).unwrap();
+    let serialized = buf.freeze();
+
+    group
+        .sample_size(50)
+        .measurement_time(Duration::from_secs(5))
+        .bench_function("serialize-append", |bencher| {
+            bencher.iter(|| {
+                let mut buf = BytesMut::new();
+                let message = black_box(serialize_append_message(payloads.clone()).unwrap());
+                black_box(message.encode(&mut buf)).unwrap();
+            });
+        })
+        .bench_function("deserialize-append", |bencher| {
+            bencher.iter(|| {
+                black_box(deserialize_append_message(serialized.clone())).unwrap();
+            });
+        })
+        .bench_function("serialize-store", |bencher| {
+            bencher.iter(|| {
+                let mut buf = BytesMut::new();
+                let message = black_box(serialize_store_message(payloads.clone()).unwrap());
+                black_box(message.encode(&mut buf)).unwrap();
+            });
+        });
+    group.finish();
+}
+
+fn replicated_loglet_append_invoker_effect_cmd_serde(c: &mut Criterion) {
+    let mut group = c.benchmark_group("replicated-loglet-serde.invoker-effect");
+    let batch: Vec<Record> = vec![generate_envelope(invoker_effect_cmd); 10]
         .into_iter()
         .map(|r| InputRecord::from(r).into_record())
         .collect();
@@ -247,6 +335,6 @@ fn replicated_loglet_append_serde(c: &mut Criterion) {
 criterion_group!(
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(997, Output::Flamegraph(Some(flamegraph_options()))));
-    targets = replicated_loglet_append_serde,
+    targets = replicated_loglet_append_invoke_cmd_serde, replicated_loglet_append_invoker_effect_cmd_serde
 );
 criterion_main!(benches);

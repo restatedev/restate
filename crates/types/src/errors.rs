@@ -16,6 +16,8 @@ use std::fmt::{Debug, Display, Formatter};
 use tonic;
 use tracing::Level;
 
+use restate_encoding::BilrostNewType;
+
 /// Error type which abstracts away the actual [`std::error::Error`] type. Use this type
 /// if you don't know the actual error type or if it is not important.
 pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -93,7 +95,7 @@ where
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, BilrostNewType)]
 #[serde(transparent)]
 pub struct InvocationErrorCode(u16);
 
