@@ -138,7 +138,7 @@ fn serialize_store_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> {
     let body = Body::Datagram(Datagram {
         datagram: Some(
             restate_core::network::protobuf::network::RpcCall {
-                payload: store_message.encode_to_bytes(restate_types::net::ProtocolVersion::V1),
+                payload: store_message.encode_to_bytes(restate_types::net::ProtocolVersion::V1)?,
                 id: 88,
                 service: <Store as RpcRequest>::Service::TAG.into(),
                 msg_type: Store::TYPE.into(),
@@ -172,7 +172,7 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
     let body = Body::Datagram(Datagram {
         datagram: Some(
             restate_core::network::protobuf::network::RpcCall {
-                payload: append_message.encode_to_bytes(restate_types::net::ProtocolVersion::V1),
+                payload: append_message.encode_to_bytes(restate_types::net::ProtocolVersion::V1)?,
                 id: 88,
                 service: <Append as RpcRequest>::Service::TAG.into(),
                 msg_type: Append::TYPE.into(),
