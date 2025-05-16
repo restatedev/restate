@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::Deref;
 use std::{cmp::Ordering, fmt::Display, sync::Arc, time::Duration};
 
 use tokio::time::Instant;
@@ -617,11 +618,13 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
             .known_global_tail
             .wait_for_offset_or_seal(self.first_offset);
 
+        trace!(global_tail = ?self.sequencer_shared_state.known_global_tail.get().deref(), "Find tail state");
         let tail_state = tokio::select! {
             Ok(l) = server_local_tail => l,
             Ok(g) = global_tail => g,
             else => return Ok(StoreTaskStatus::Shutdown),
         };
+        trace!(?tail_state, global_tail = ?self.sequencer_shared_state.known_global_tail.get().deref(), "Found tail state");
 
         match tail_state {
             TailState::Sealed(_) => return Ok(StoreTaskStatus::Sealed),
@@ -691,6 +694,7 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
                 Some(self.store_timeout),
             )
             .await?;
+
         server.store_latency().record(store_start_time.elapsed());
         Ok(stored)
     }

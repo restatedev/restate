@@ -9,15 +9,15 @@
 // by the Apache License, Version 2.0.
 
 #![allow(dead_code)]
-use std::{sync::Arc, time::Duration};
-
 use enumset::{EnumSet, enum_set};
 use googletest::IntoTestResult;
 use googletest::internal::test_outcome::TestAssertionFailure;
+use std::num::NonZeroU32;
+use std::{sync::Arc, time::Duration};
 
 use restate_bifrost::{Bifrost, loglet::Loglet};
-use restate_core::MetadataWriter;
 use restate_core::TaskCenter;
+use restate_core::{Metadata, MetadataWriter};
 use restate_local_cluster_runner::{
     cluster::{Cluster, MaybeTempDir, StartedCluster},
     node::{BinarySource, Node},
@@ -30,8 +30,9 @@ use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{Chain, LogletParams, SegmentIndex};
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+use restate_types::net::metadata::MetadataKind;
 use restate_types::{
-    GenerationalNodeId, PlainNodeId,
+    GenerationalNodeId, PlainNodeId, Version, Versioned,
     config::Configuration,
     live::Live,
     logs::{LogId, metadata::ProviderKind},
@@ -45,6 +46,7 @@ async fn replicated_loglet_client(
     mut config: Configuration,
     cluster: &StartedCluster,
     node_id: PlainNodeId,
+    logs_version_to_await: Version,
 ) -> googletest::Result<(
     Bifrost,
     Arc<dyn Loglet>,
@@ -76,6 +78,12 @@ async fn replicated_loglet_client(
     let metadata_store_client = node.metadata_store_client();
 
     node.start().await.into_test_result()?;
+
+    // before we can find the tail for the given log, we need to make sure that we have seen the
+    // required logs configuration
+    Metadata::current()
+        .wait_for_version(MetadataKind::Logs, logs_version_to_await)
+        .await?;
 
     let loglet = bifrost.find_tail_loglet(LogId::MIN).await?;
 
@@ -139,16 +147,17 @@ where
     let mut logs_builder = LogsBuilder::default();
     logs_builder.add_log(LogId::MIN, chain)?;
 
+    // some high version number to guarantee that there is no other logs configuration with the same
+    // or higher version
+    logs_builder.set_version(NonZeroU32::new(1336).expect("1336 > 0"));
+
     let metadata_store_client = cluster.nodes[0]
         .metadata_client()
         .await
         .map_err(|err| TestAssertionFailure::create(err.to_string()))?;
+    let logs = logs_builder.build();
     metadata_store_client
-        .put(
-            BIFROST_CONFIG_KEY.clone(),
-            &logs_builder.build(),
-            Precondition::None,
-        )
+        .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
         .await?;
 
     // join a new node to the cluster solely to act as a bifrost client
@@ -157,6 +166,7 @@ where
         base_config,
         &cluster,
         PlainNodeId::new(log_server_count + 2),
+        logs.version(),
     )
     .await?;
 

@@ -17,8 +17,8 @@ use tokio::time::Instant;
 
 use super::connection::OwnedSendPermit;
 use super::{
-    ConnectError, Connection, ConnectionClosed, ConnectionManager, LazyConnection, NetworkSender,
-    RpcError, Swimlane,
+    ConnectError, Connection, ConnectionClosed, ConnectionManager, LazyConnection,
+    MessageSendError, NetworkSender, RpcError, Swimlane,
 };
 use super::{GrpcConnector, TransportConnect};
 
@@ -124,12 +124,15 @@ impl<T: TransportConnect> NetworkSender for Networking<T> {
             let connection = self
                 .connections
                 .get_or_connect(node_id, swimlane, &self.connector)
-                .await?;
+                .await
+                .map_err(MessageSendError::from)?;
             let permit = match connection.reserve().await {
                 None => return Err(ConnectionClosed.into()),
                 Some(permit) => permit,
             };
-            let reply = permit.send_rpc(msg, sort_code);
+            let reply = permit
+                .send_rpc(msg, sort_code)
+                .map_err(MessageSendError::from)?;
             Ok(reply.await?)
         };
 

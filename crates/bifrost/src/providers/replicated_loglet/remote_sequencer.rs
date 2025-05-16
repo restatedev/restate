@@ -21,7 +21,7 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
 use restate_core::{
     ShutdownError, TaskCenter, TaskKind,
     network::{
-        ConnectError, Connection, ConnectionClosed, DiscoveryError, NetworkError,
+        ConnectError, Connection, ConnectionClosed, DiscoveryError, DrainReason, NetworkError,
         NetworkSender as _, Networking, ReplyRx, Swimlane, TransportConnect,
     },
 };
@@ -32,7 +32,7 @@ use restate_types::{
     net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
     replicated_loglet::ReplicatedLogletParams,
 };
-use tracing::instrument;
+use tracing::{instrument, trace};
 
 use crate::loglet::{AppendError, LogletCommit, LogletCommitResolver, OperationError};
 
@@ -114,6 +114,7 @@ where
         level="trace",
         skip_all,
         fields(
+            loglet_id = %self.params.loglet_id,
             otel.name = "replicated_loglet::remote_sequencer: append",
         )
     )]
@@ -165,7 +166,19 @@ where
             payloads,
         };
 
-        let reply_rx = permit.send_rpc(msg, Some(loglet_id.into()));
+        trace!(
+            "Send append message to remote sequencer at {}",
+            connection.inner.peer()
+        );
+
+        let Ok(reply_rx) = permit.send_rpc(msg, Some(loglet_id.into())) else {
+            // sending rpc can fail if message could not be encoded. It's very unlikely that any
+            // retries on this connection will resolve it.
+            self.drop_connection(connection).await;
+            return Err(OperationError::retryable(AppendError::retryable(
+                NetworkError::ConnectionClosed(ConnectionClosed),
+            )));
+        };
         let (commit_token, commit_resolver) = LogletCommit::deferred();
 
         connection.resolve_on_appended(permits, reply_rx, commit_resolver);
@@ -203,6 +216,17 @@ where
         *guard = Some(connection.clone());
 
         Ok(connection)
+    }
+
+    async fn drop_connection(&self, old: RemoteSequencerConnection) {
+        let mut guard = self.connection.lock().await;
+        let current = guard.as_ref().expect("connection has been initialized");
+        // stream has already been renewed
+        if old.inner != current.inner {
+            return;
+        }
+        old.close().await;
+        *guard = None;
     }
 
     /// Renew a connection to a remote sequencer. This guarantees that only a single connection
@@ -265,6 +289,11 @@ impl RemoteSequencerConnection {
             inner: connection,
             tx,
         })
+    }
+
+    pub async fn close(self) {
+        // close the connection
+        let _ = self.inner.drain(DrainReason::ConnectionDrain).await;
     }
 
     pub fn resolve_on_appended(

@@ -17,7 +17,7 @@ use tracing::{Span, debug, info, trace, warn};
 
 use restate_types::GenerationalNodeId;
 use restate_types::net::ProtocolVersion;
-use restate_types::net::codec::WireEncode;
+use restate_types::net::codec::{EncodeError, WireEncode};
 use restate_types::net::{RpcRequest, Service, ServiceTag, UnaryMessage};
 
 use super::io::{EgressMessage, SendToken, Sent};
@@ -291,7 +291,10 @@ enum OutgoingOp {
 }
 
 impl OutgoingOp {
-    fn into_egress_message(self, protocol_version: ProtocolVersion) -> EgressMessage {
+    fn into_egress_message(
+        self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<EgressMessage, EncodeError> {
         match self {
             OutgoingOp::CallRpc {
                 reply_sender,
@@ -301,8 +304,8 @@ impl OutgoingOp {
                 sort_code,
                 span,
             } => {
-                let payload = message.encode_to_bytes(protocol_version);
-                EgressMessage::RpcCall {
+                let payload = message.encode_to_bytes(protocol_version)?;
+                Ok(EgressMessage::RpcCall {
                     payload,
                     reply_sender,
                     span: Some(span),
@@ -312,7 +315,7 @@ impl OutgoingOp {
                     version: protocol_version,
                     #[cfg(feature = "test-util")]
                     header: None,
-                }
+                })
             }
             OutgoingOp::Unary {
                 notifier,
@@ -321,8 +324,8 @@ impl OutgoingOp {
                 msg_type,
                 sort_code,
             } => {
-                let payload = message.encode_to_bytes(protocol_version);
-                EgressMessage::Unary {
+                let payload = message.encode_to_bytes(protocol_version)?;
+                Ok(EgressMessage::Unary {
                     service_tag,
                     msg_type,
                     sort_code,
@@ -331,7 +334,7 @@ impl OutgoingOp {
                     notifier,
                     #[cfg(feature = "test-util")]
                     header: None,
-                }
+                })
             }
         }
     }
@@ -460,7 +463,14 @@ impl<T: NetworkSender> ConnectionTask<T> {
                 };
 
                 // Ship it!
-                permit.send(msg.into_egress_message(connection.protocol_version));
+                match msg.into_egress_message(connection.protocol_version) {
+                    Ok(msg) => permit.send(msg),
+                    Err(err) => {
+                        // on error, the notifier token is dropped. The behaviour that the caller
+                        // observes is identical to the message being Dropped.
+                        debug!(%swimlane, %peer, "Failed to send message: {}", err);
+                    }
+                }
             }
         }
     }

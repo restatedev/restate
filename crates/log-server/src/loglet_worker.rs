@@ -13,7 +13,7 @@ use std::pin::Pin;
 use futures::future::OptionFuture;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tracing::{Instrument, debug, error, trace, trace_span, warn};
+use tracing::{Instrument, debug, error, instrument, trace, trace_span, warn};
 
 use restate_core::network::{Incoming, Rpc, ServiceMessage, Verdict};
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher};
@@ -183,6 +183,7 @@ impl<S: LogStore> LogletWorker<S> {
                 let peer = msg.peer();
 
                 let (reciprocal, msg) = msg.split();
+                let first_offset = msg.first_offset;
                 // this message might be telling us about a higher `known_global_tail`
                 self.loglet_state
                     .notify_known_global_tail(msg.header.known_global_tail);
@@ -203,10 +204,12 @@ impl<S: LogStore> LogletWorker<S> {
                     // in-flight store...
                     let local_tail_watch = self.loglet_state.get_local_tail_watch();
                     let global_tail = self.loglet_state.get_global_tail_tracker();
+                    let loglet_id = self.loglet_id;
                     in_flight_stores.spawn(Box::pin(
                         async move {
                             // wait for log store to finish
                             let res = store_token.await;
+                            trace!(%loglet_id, %first_offset, "Store completed; responding to sequencer");
                             match res {
                                 Ok(_) => {
                                     // advance local-tail
@@ -309,6 +312,7 @@ impl<S: LogStore> LogletWorker<S> {
         }
     }
 
+    #[instrument(level = "debug", skip_all, fields(loglet_id = %self.loglet_id, first_offset = %body.first_offset, %peer))]
     async fn process_store(
         &mut self,
         peer: GenerationalNodeId,
@@ -365,21 +369,13 @@ impl<S: LogStore> LogletWorker<S> {
         }
 
         if body.flags.contains(StoreFlags::IgnoreSeal) {
-            trace!(
-                loglet_id = %self.loglet_id,
-                %peer,
-                first_offset = %body.first_offset,
-                "Admitting a repair store loglet to restore replication"
-            );
+            trace!("Admitting a repair store loglet to restore replication");
         }
 
         if body.first_offset > next_ok_offset {
             // We can only accept writes coming in order. We don't support buffering out-of-order
             // writes.
             debug!(
-                loglet_id = %self.loglet_id,
-                first_offset = %body.first_offset,
-                %peer,
                 "Can only accept writes coming in order, next_ok={}",
                 next_ok_offset,
             );

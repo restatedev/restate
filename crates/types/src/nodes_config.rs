@@ -500,6 +500,8 @@ pub enum MetadataServerState {
     /// The server is an active member of the metadata store cluster.
     #[default]
     Member,
+    /// The server should try to automatically join a metadata store cluster.
+    Provisioning,
 }
 
 /// State of a node that runs the [`Role::Worker`].

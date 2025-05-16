@@ -223,11 +223,10 @@ macro_rules! default_wire_codec {
         impl $crate::net::codec::WireEncode for $message {
             fn encode_to_bytes(
                 &self,
-                protocol_version: $crate::net::ProtocolVersion,
-            ) -> ::bytes::Bytes {
-                ::bytes::Bytes::from($crate::net::codec::encode_as_flexbuffers(
-                    self,
-                    protocol_version,
+                _protocol_version: $crate::net::ProtocolVersion,
+            ) -> Result<::bytes::Bytes, $crate::net::codec::EncodeError> {
+                Ok(::bytes::Bytes::from(
+                    $crate::net::codec::encode_as_flexbuffers(self),
                 ))
             }
         }
@@ -266,15 +265,25 @@ macro_rules! bilrost_wire_codec_with_v1_fallback {
             fn encode_to_bytes(
                 &self,
                 protocol_version: $crate::net::ProtocolVersion,
-            ) -> ::bytes::Bytes {
+            ) -> Result<::bytes::Bytes, $crate::net::codec::EncodeError> {
                 match protocol_version {
                     $crate::net::ProtocolVersion::Unknown => {
                         unreachable!("unknown protocol version should never be set")
                     }
-                    $crate::net::ProtocolVersion::V1 => ::bytes::Bytes::from(
-                        $crate::net::codec::encode_as_flexbuffers(self, protocol_version),
-                    ),
-                    _ => $crate::net::codec::encode_as_bilrost(self, protocol_version),
+                    $crate::net::ProtocolVersion::V1 => Ok(::bytes::Bytes::from(
+                        $crate::net::codec::encode_as_flexbuffers(self),
+                    )),
+                    _ => {
+                        if protocol_version < $crate::net::ProtocolVersion::V2 {
+                            Err($crate::net::codec::EncodeError::IncompatibleVersion {
+                                type_tag: stringify!($message),
+                                min_required: $crate::net::ProtocolVersion::V2,
+                                actual: protocol_version,
+                            })
+                        } else {
+                            Ok($crate::net::codec::encode_as_bilrost(self))
+                        }
+                    }
                 }
             }
         }
@@ -319,8 +328,16 @@ macro_rules! bilrost_wire_codec {
             fn encode_to_bytes(
                 &self,
                 protocol_version: $crate::net::ProtocolVersion,
-            ) -> ::bytes::Bytes {
-                $crate::net::codec::encode_as_bilrost(self, protocol_version)
+            ) -> Result<::bytes::Bytes, $crate::net::codec::EncodeError> {
+                if protocol_version < $crate::net::ProtocolVersion::V2 {
+                    Err($crate::net::codec::EncodeError::IncompatibleVersion {
+                        type_tag: stringify!($message),
+                        min_required: $crate::net::ProtocolVersion::V2,
+                        actual: protocol_version,
+                    })
+                } else {
+                    Ok($crate::net::codec::encode_as_bilrost(self))
+                }
             }
         }
 

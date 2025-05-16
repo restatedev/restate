@@ -135,6 +135,13 @@ pub enum TaskKind {
     LogletProvider,
     #[strum(props(OnCancel = "abort"))]
     Watchdog,
+    /// Append records to the replicated loglet by storing them on a write-quorum of log servers. It
+    /// is important that these tasks complete if the sequencer does not fail because they update
+    /// the sequencer state (local and global tails of the loglet). If this does not happen (e.g.
+    /// because the task is running on the partition processor runtime which gets stopped), then
+    /// subsequent appends might be blocked until the sequencer learns about the current local tails
+    /// via the periodic tail check.
+    #[strum(props(runtime = "default"))]
     SequencerAppender,
     // -- Replicated loglet tasks
     /// Receives messages from remote sequencers on nodes with local sequencer. This is also used

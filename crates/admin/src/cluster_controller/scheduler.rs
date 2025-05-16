@@ -386,6 +386,17 @@ impl<T: TransportConnect> Scheduler<T> {
             );
         }
 
+        if !commands.is_empty() {
+            trace!(
+                "Instruct nodes with partition processor commands: {:?} ",
+                commands
+            );
+        } else {
+            trace!(
+                "No need to instruct nodes as they are running the correct partition processors"
+            );
+        }
+
         let (cur_partition_table_version, cur_logs_version) =
             Metadata::with_current(|m| (m.partition_table_version(), m.logs_version()));
         for (node_id, commands) in commands.into_iter() {
@@ -419,7 +430,8 @@ impl<T: TransportConnect> Scheduler<T> {
                                 // ditto
                                 return Ok(());
                             };
-                            permit.send_unary(control_processors, None);
+                            let _ = permit.send_unary(control_processors, None);
+
                             Ok(())
                         }
                     },

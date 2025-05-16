@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{HashMap, VecDeque};
+use std::mem;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -861,7 +862,7 @@ impl Member {
         };
 
         match node_config.metadata_server_config.metadata_server_state {
-            MetadataServerState::Standby => {
+            MetadataServerState::Standby | MetadataServerState::Provisioning => {
                 let is_member = self.is_member(self.my_member_id);
 
                 if is_member {
@@ -1373,13 +1374,10 @@ impl Member {
                 self.configuration.version.next(),
                 new_configuration.version
             );
-            self.configuration = new_configuration;
 
             info!(configuration = %self.configuration, "Applied new configuration");
 
-            self.validate_metadata_server_configuration();
-
-            self.update_membership_in_nodes_configuration();
+            self.update_configuration(new_configuration);
 
             self.create_snapshot(entry.index, entry.term).await?;
 
@@ -1485,7 +1483,10 @@ impl Member {
         Ok(())
     }
 
-    fn update_membership_in_nodes_configuration(&mut self) {
+    fn update_configuration(&mut self, new_configuration: MetadataServerConfiguration) {
+        let previous_configuration = mem::replace(&mut self.configuration, new_configuration);
+        self.validate_metadata_server_configuration();
+
         let mut new_nodes_configuration = self.kv_storage.last_seen_nodes_configuration().clone();
         let previous_version = new_nodes_configuration.version();
 
@@ -1493,7 +1494,9 @@ impl Member {
             if self.is_member_plain_node_id(node_id) {
                 node_config.metadata_server_config.metadata_server_state =
                     MetadataServerState::Member;
-            } else {
+            } else if previous_configuration.contains(node_id) {
+                // node was part of the previous configuration, which means that it was removed from
+                // the metadata cluster, and we should set its state to Standby
                 node_config.metadata_server_config.metadata_server_state =
                     MetadataServerState::Standby;
             }
@@ -1966,6 +1969,7 @@ impl Standby {
                 }
                 _ = nodes_config_watcher.changed() => {
                     let nodes_config = nodes_config.live_load();
+
                     if let Some(node_config) = nodes_config.find_node_by_name(&my_node_name) {
                         // we first need to wait until we have joined the Restate cluster to obtain our node id and thereby our member id
                         if my_member_id.is_none() {
@@ -1977,7 +1981,7 @@ impl Standby {
                         if join_cluster.is_terminated() && matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
                             debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
 
-                            // Persist latest NodesConfiguration so that we know about the MetadataServerState at least
+                            // Persist the latest NodesConfiguration so that we know about the MetadataServerState at least
                             // as of now when restarting.
                             storage
                                 .store_nodes_configuration(nodes_config)
@@ -1985,7 +1989,7 @@ impl Standby {
                             join_cluster.set(Some(Self::join_cluster(my_member_id.expect("MemberId to be known")).fuse()).into());
                         }
                     } else {
-                        trace!("Node '{}' has not joined the cluster yet :-(", my_node_name);
+                        trace!("Node '{}' has not joined the cluster yet as of NodesConfiguration {}", my_node_name, nodes_config.version());
                     }
                 }
             }

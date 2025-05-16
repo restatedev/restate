@@ -352,6 +352,8 @@ impl ConnectionReactor {
                     parent_context,
                 );
                 trace!(
+                    peer = %self.connection.peer(),
+                    rpc_id = %rpc_call.id,
                     "Received RPC call: {target_service}::{}",
                     incoming.msg_type()
                 );
@@ -412,11 +414,11 @@ impl ConnectionReactor {
                     let _ = match msg.body {
                         Some(rpc_reply::Body::Status(status)) => {
                             let status = RpcReplyError::from(status);
-                            trace!("Received RPC response with status {status}!");
+                            trace!(rpc_id = %msg.id, "Received RPC response with status {status}!");
                             reply_sender.send(crate::network::RawRpcReply::Error(status))
                         }
                         Some(rpc_reply::Body::Payload(payload)) => {
-                            trace!("Received RPC response with payload!");
+                            trace!(rpc_id = %msg.id, "Received RPC response with payload!");
                             reply_sender.send(crate::network::RawRpcReply::Success((
                                 self.connection.protocol_version,
                                 payload,
@@ -432,6 +434,8 @@ impl ConnectionReactor {
                             ))
                         }
                     };
+                } else {
+                    trace!(rpc_id = %msg.id, "Received RPC response for unknown message!");
                 }
                 Decision::Continue
             }
@@ -689,6 +693,7 @@ fn spawn_rpc_responder(
             reply = reply_rx => {
                 match reply {
                     Ok(envelope) => {
+                        trace!(rpc_id = %id, "Sending RPC response to caller");
                         let body = RpcReply { id, body: Some(envelope.body) };
                         let datagram = Body::Datagram(Datagram { datagram: Some(body.into())});
                         let _ = tx.unbounded_send(EgressMessage::Message(
@@ -701,6 +706,7 @@ fn spawn_rpc_responder(
                     }
                     // reply_port was closed, we'll not respond.
                     Err(_) => {
+                        trace!(rpc_id = %id, "RPC was dropped, sending dropped notification to caller");
                         let body = RpcReply { id, body: Some(rpc_reply::Body::Status(rpc_reply::Status::Dropped.into())), };
                         let datagram = Body::Datagram(Datagram { datagram: Some(body.into())});
                         let _ = tx.unbounded_send(EgressMessage::Message(
@@ -713,6 +719,7 @@ fn spawn_rpc_responder(
             }
             () = tx.closed() => {
                 // connection was dropped. Nothing to be done here.
+                trace!(rpc_id = %id, "Connection was dropped, dropping RPC responder task");
             }
         }
     });

@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ahash::HashMap;
@@ -761,24 +762,34 @@ impl PartitionProcessorManager {
                     self.on_control_processor(control_processor, &partition_table);
                 }
             });
+        } else if let Some((min_logs_version, min_partition_table_version)) = self
+            .pending_control_processors
+            .as_ref()
+            .map(|p| (p.min_logs_version(), p.min_partition_table_version()))
+        {
+            debug!(
+                "Waiting for logs version {min_logs_version} and partition table version {min_partition_table_version} to process control processors."
+            )
         }
     }
 
+    #[instrument(level = "info", skip_all, fields(partition_id = %control_processor.partition_id))]
     fn on_control_processor(
         &mut self,
         control_processor: ControlProcessor,
         partition_table: &PartitionTable,
     ) {
         let partition_id = control_processor.partition_id;
-
         match control_processor.command {
             ProcessorCommand::Stop => {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
-                    debug!(%partition_id, "Asked to stop partition processor by cluster controller");
+                    debug!("Asked to stop partition processor by cluster controller");
                     processor_state.stop();
                 }
                 if self.pending_snapshots.contains_key(&partition_id) {
-                    info!(%partition_id, "Partition processor stop requested with snapshot task result outstanding");
+                    info!(
+                        "Partition processor stop requested with snapshot task result outstanding"
+                    );
                 }
                 self.archived_lsns.remove(&partition_id);
                 self.latest_snapshots.remove(&partition_id);
@@ -787,7 +798,9 @@ impl PartitionProcessorManager {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
                     if control_processor.command == ProcessorCommand::Leader {
                         if let Some(leader_epoch_token) = processor_state.run_as_leader() {
-                            debug!(%partition_id, "Asked to run as leader by cluster controller. Obtaining required leader epoch");
+                            debug!(
+                                "Asked to run as leader by cluster controller. Obtaining required leader epoch"
+                            );
                             Self::obtain_new_leader_epoch(
                                 partition_id,
                                 leader_epoch_token,
@@ -796,9 +809,9 @@ impl PartitionProcessorManager {
                             );
                         }
                     } else if control_processor.command == ProcessorCommand::Follower {
-                        debug!(%partition_id, "Asked to run as follower by cluster controller");
+                        debug!("Asked to run as follower by cluster controller");
                         if let Err(err) = processor_state.run_as_follower() {
-                            info!(%partition_id, %err, "Partition processor failed to run as follower. Stopping it now");
+                            info!(%err, "Partition processor failed to run as follower. Stopping it now");
                             processor_state.stop();
                         }
                     }
@@ -806,7 +819,10 @@ impl PartitionProcessorManager {
                     .get(&partition_id)
                     .map(|partition| &partition.key_range)
                 {
-                    debug!(%partition_id, "Starting new partition processor to run as {}", control_processor.command);
+                    debug!(
+                        "Starting new partition processor to run as {}",
+                        control_processor.command
+                    );
                     let starting_task = self.create_start_partition_processor_task(
                         partition_id,
                         partition_key_range.clone(),
@@ -840,7 +856,6 @@ impl PartitionProcessorManager {
                     gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
                 } else {
                     debug!(
-                        %partition_id,
                         "Unknown partition id. Ignoring {} command.",
                         control_processor.command
                     );
@@ -1204,13 +1219,18 @@ async fn provision_worker(metadata_writer: &MetadataWriter) -> anyhow::Result<()
                 .common
                 .network_error_retry_policy
                 .clone();
-            let mut first_attempt = true;
+
+            // We need to use an atomic bool here only because the retry_on_retryable_error closure
+            // returns an async block which captures a reference to this variable, and therefore it would
+            // escape the closure body. With an atomic bool, we can pass in a simple borrow which can
+            // escape the closure body. This can be changed once AsyncFnMut allows us to define Send bounds.
+            let first_attempt = AtomicBool::new(true);
 
             let metadata_client = metadata_writer.global_metadata();
 
             if let Err(err) = retry_on_retryable_error(retry_policy, || {
                 metadata_client.read_modify_write(
-                    move |nodes_config: Option<Arc<NodesConfiguration>>| {
+                    |nodes_config: Option<Arc<NodesConfiguration>>| {
                         let nodes_config = nodes_config.expect(
                             "nodes config must be present if the node starts the worker role",
                         );
@@ -1220,7 +1240,7 @@ async fn provision_worker(metadata_writer: &MetadataWriter) -> anyhow::Result<()
                             .map_err(ProvisionWorkerError::NewerGenerationOrRemoved)?;
 
                         if node_config.worker_config.worker_state != WorkerState::Provisioning {
-                            return if first_attempt {
+                            return if first_attempt.load(Ordering::Relaxed) {
                                 Err(ProvisionWorkerError::NotProvisioning(
                                     node_config.worker_config.worker_state,
                                 ))
@@ -1236,7 +1256,7 @@ async fn provision_worker(metadata_writer: &MetadataWriter) -> anyhow::Result<()
                         new_nodes_config.upsert_node(my_node_config);
                         new_nodes_config.increment_version();
 
-                        first_attempt = false;
+                        first_attempt.store(false, Ordering::Relaxed);
 
                         Ok(new_nodes_config)
                     },
@@ -1255,6 +1275,11 @@ async fn provision_worker(metadata_writer: &MetadataWriter) -> anyhow::Result<()
                     }
                 }
             }
+
+            debug_assert!(
+                !first_attempt.load(Ordering::Relaxed),
+                "Should have tried to set the worker-state at least once"
+            );
         }
         WorkerState::Active | WorkerState::Draining | WorkerState::Disabled => {
             // We are also starting the worker if it has been disabled. In this case, no
@@ -1446,14 +1471,16 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("connection dropped"))
                 .into_test_result()?;
 
-            permit.send_unary(
-                if i % 2 == 0 {
-                    start_processor_command.clone()
-                } else {
-                    stop_processor_command.clone()
-                },
-                None,
-            );
+            permit
+                .send_unary(
+                    if i % 2 == 0 {
+                        start_processor_command.clone()
+                    } else {
+                        stop_processor_command.clone()
+                    },
+                    None,
+                )
+                .unwrap();
         }
 
         loop {
@@ -1470,7 +1497,9 @@ mod tests {
                     .ok_or_else(|| anyhow::anyhow!("connection dropped"))
                     .into_test_result()?;
 
-                permit.send_unary(start_processor_command.clone(), None);
+                permit
+                    .send_unary(start_processor_command.clone(), None)
+                    .unwrap();
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
