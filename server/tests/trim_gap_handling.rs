@@ -302,7 +302,7 @@ async fn applied_lsn_converged(
                         State::Alive(s) => s
                             .partitions
                             .get(&partition_id.into())
-                            .map(|p| p.last_applied_log_lsn)
+                            .map(|p| p.applied_lsn)
                             .unwrap_or_default()
                             .map(|lsn| (partition_id, lsn.value)),
                         _ => None,

@@ -40,9 +40,9 @@ pub fn gen_partition_processor_status() -> PartitionProcessorStatus {
         planned_mode: run_mode(),
         replay_status: ReplayStatus::Active,
         target_tail_lsn: lsn(),
-        last_applied_log_lsn: lsn(),
-        last_archived_log_lsn: lsn(),
-        last_persisted_log_lsn: lsn(),
+        applied_lsn: lsn(),
+        archived_lsn: lsn(),
+        durable_lsn: lsn(),
         ..Default::default()
     }
 }
