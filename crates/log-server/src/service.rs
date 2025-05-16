@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use tracing::{debug, instrument, warn};
@@ -236,14 +237,18 @@ impl LogServerService {
             .common
             .network_error_retry_policy
             .clone();
-        let mut first_attempt = true;
+        // We need to use an atomic bool here only because the retry_on_retryable_error closure
+        // returns an async block which captures a reference to this variable, and therefore it would
+        // escape the closure body. With an atomic bool, we can pass in a simple borrow which can
+        // escape the closure body. This can be changed once AsyncFnMut allows us to define Send bounds.
+        let first_attempt = AtomicBool::new(true);
 
         let nodes_config = match retry_on_retryable_error(retry_policy, || {
             metadata_writer
                 .raw_metadata_store_client()
                 .read_modify_write(
                     NODES_CONFIG_KEY.clone(),
-                    move |nodes_config: Option<NodesConfiguration>| {
+                    |nodes_config: Option<NodesConfiguration>| {
                         let mut nodes_config = nodes_config
                             .ok_or(StorageStateUpdateError::MissingNodesConfiguration)?;
                         // If this fails, it means that a newer node has started somewhere else, and we
@@ -255,7 +260,7 @@ impl LogServerService {
                             .clone();
 
                         if node.log_server_config.storage_state != expected_state {
-                            return if first_attempt {
+                            return if first_attempt.load(Ordering::Relaxed) {
                                 // Something might have caused this state to change. This should not happen,
                                 // bail!
                                 Err(StorageStateUpdateError::NotInExpectedState(
@@ -274,7 +279,7 @@ impl LogServerService {
 
                         node.log_server_config.storage_state = target_state;
 
-                        first_attempt = false;
+                        first_attempt.store(false, Ordering::Relaxed);
                         nodes_config.upsert_node(node);
                         nodes_config.increment_version();
                         Ok(nodes_config)
@@ -301,6 +306,10 @@ impl LogServerService {
             }
         };
 
+        debug_assert!(
+            !first_attempt.load(Ordering::Relaxed),
+            "Should have tried to set the storage-state at least once"
+        );
         metadata_writer.update(Arc::new(nodes_config)).await?;
         Ok(target_state)
     }

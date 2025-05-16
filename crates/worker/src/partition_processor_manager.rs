@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ahash::HashMap;
@@ -1204,13 +1205,18 @@ async fn provision_worker(metadata_writer: &MetadataWriter) -> anyhow::Result<()
                 .common
                 .network_error_retry_policy
                 .clone();
-            let mut first_attempt = true;
+
+            // We need to use an atomic bool here only because the retry_on_retryable_error closure
+            // returns an async block which captures a reference to this variable, and therefore it would
+            // escape the closure body. With an atomic bool, we can pass in a simple borrow which can
+            // escape the closure body. This can be changed once AsyncFnMut allows us to define Send bounds.
+            let first_attempt = AtomicBool::new(true);
 
             let metadata_client = metadata_writer.global_metadata();
 
             if let Err(err) = retry_on_retryable_error(retry_policy, || {
                 metadata_client.read_modify_write(
-                    move |nodes_config: Option<Arc<NodesConfiguration>>| {
+                    |nodes_config: Option<Arc<NodesConfiguration>>| {
                         let nodes_config = nodes_config.expect(
                             "nodes config must be present if the node starts the worker role",
                         );
@@ -1220,7 +1226,7 @@ async fn provision_worker(metadata_writer: &MetadataWriter) -> anyhow::Result<()
                             .map_err(ProvisionWorkerError::NewerGenerationOrRemoved)?;
 
                         if node_config.worker_config.worker_state != WorkerState::Provisioning {
-                            return if first_attempt {
+                            return if first_attempt.load(Ordering::Relaxed) {
                                 Err(ProvisionWorkerError::NotProvisioning(
                                     node_config.worker_config.worker_state,
                                 ))
@@ -1236,7 +1242,7 @@ async fn provision_worker(metadata_writer: &MetadataWriter) -> anyhow::Result<()
                         new_nodes_config.upsert_node(my_node_config);
                         new_nodes_config.increment_version();
 
-                        first_attempt = false;
+                        first_attempt.store(false, Ordering::Relaxed);
 
                         Ok(new_nodes_config)
                     },
@@ -1255,6 +1261,11 @@ async fn provision_worker(metadata_writer: &MetadataWriter) -> anyhow::Result<()
                     }
                 }
             }
+
+            debug_assert!(
+                !first_attempt.load(Ordering::Relaxed),
+                "Should have tried to set the worker-state at least once"
+            );
         }
         WorkerState::Active | WorkerState::Draining | WorkerState::Disabled => {
             // We are also starting the worker if it has been disabled. In this case, no
