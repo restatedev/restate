@@ -525,7 +525,7 @@ pub mod v1 {
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 current_invocation_epoch,
-                                completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points(
+                                completion_range_epoch_map: CompletionRangeEpochMap::from_truncation_points(
                                     trim_points.into_iter().map(|trim_point|(trim_point.completion_id, trim_point.invocation_epoch))
                                 ),
                             },
@@ -553,7 +553,7 @@ pub mod v1 {
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 current_invocation_epoch,
-                                completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points(
+                                completion_range_epoch_map: CompletionRangeEpochMap::from_truncation_points(
                                     trim_points.into_iter().map(|trim_point|(trim_point.completion_id, trim_point.invocation_epoch))
                                 ),
                             },
@@ -785,7 +785,7 @@ pub mod v1 {
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             current_invocation_epoch,
-                            trim_points: completion_range_epoch_map.into_trim_points_iter().into_iter().map(|(completion_id, invocation_epoch)| JournalTrimPoint {
+                            trim_points: completion_range_epoch_map.into_truncation_points_iter().into_iter().map(|(completion_id, invocation_epoch)| JournalTrimPoint {
                                 completion_id,
                                 invocation_epoch,
                             }).collect(),
@@ -876,7 +876,7 @@ pub mod v1 {
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             current_invocation_epoch,
-                            trim_points: completion_range_epoch_map.into_trim_points_iter().into_iter().map(|(completion_id, invocation_epoch)| JournalTrimPoint {
+                            trim_points: completion_range_epoch_map.into_truncation_points_iter().into_iter().map(|(completion_id, invocation_epoch)| JournalTrimPoint {
                                 completion_id,
                                 invocation_epoch,
                             }).collect(),

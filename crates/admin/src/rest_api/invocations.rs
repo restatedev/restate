@@ -17,10 +17,82 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest};
+use restate_types::invocation::{
+    InvocationTermination, PurgeInvocationRequest, ResetInvocationRequest, TruncateFrom,
+};
 use restate_wal_protocol::{Command, Envelope};
 use serde::Deserialize;
 use tracing::warn;
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct ResetInvocationParams {
+    pub truncate_from: Option<u32>,
+}
+
+/// Reset an invocation
+#[openapi(
+    summary = "Reset an invocation",
+    description = "Reset the given invocation, truncating the progress from the given journal entry index onward and resuming afterward.",
+    operation_id = "reset_invocation",
+    tags = "invocation",
+    parameters(
+        path(
+            name = "invocation_id",
+            description = "Invocation identifier.",
+            schema = "std::string::String"
+        ),
+        query(
+            name = "truncate_from",
+            description = "Journal entry index to truncate from, inclusive. The index MUST correspond to a command entry or to a signal notification, otherwise this operation will be ignored. If not provided, it defaults to 1 (after the first entry)",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = "u32",
+        )
+    ),
+    responses(
+        ignore_return_type = true,
+        response(
+            status = "202",
+            description = "Accepted",
+            content = "okapi_operation::Empty",
+        ),
+        from_type = "MetaApiError",
+    )
+)]
+pub async fn reset_invocation<V>(
+    State(state): State<AdminServiceState<V>>,
+    Path(invocation_id): Path<String>,
+    Query(ResetInvocationParams { truncate_from }): Query<ResetInvocationParams>,
+) -> Result<StatusCode, MetaApiError> {
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
+
+    let cmd = Command::ResetInvocation(ResetInvocationRequest {
+        invocation_id,
+        truncate_from: TruncateFrom::EntryIndex {
+            entry_index: truncate_from.unwrap_or(1),
+        },
+    });
+
+    let partition_key = invocation_id.partition_key();
+
+    let result = restate_bifrost::append_to_bifrost(
+        &state.bifrost,
+        Arc::new(Envelope::new(create_envelope_header(partition_key), cmd)),
+    )
+    .await;
+
+    if let Err(err) = result {
+        warn!("Could not append reset invocation command to the cluster: {err}");
+        Err(MetaApiError::Internal(
+            "Failed sending reset invocation command to the cluster.".to_owned(),
+        ))
+    } else {
+        Ok(StatusCode::ACCEPTED)
+    }
+}
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub enum DeletionMode {

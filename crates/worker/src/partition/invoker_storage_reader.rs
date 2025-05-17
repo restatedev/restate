@@ -83,6 +83,7 @@ where
                 invoked_status.journal_metadata.length,
                 invoked_status.journal_metadata.span_context,
                 invoked_status.pinned_deployment.clone(),
+                invoked_status.current_invocation_epoch,
                 // SAFETY: this value is used by the invoker, it's ok if it's not in sync
                 unsafe { invoked_status.timestamps.modification_time() },
             );

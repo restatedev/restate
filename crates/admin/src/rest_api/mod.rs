@@ -85,6 +85,10 @@ where
             delete(openapi_handler!(invocations::delete_invocation)),
         )
         .route(
+            "/invocations/:invocation_id/reset",
+            patch(openapi_handler!(invocations::reset_invocation)),
+        )
+        .route(
             "/subscriptions",
             post(openapi_handler!(subscriptions::create_subscription)),
         )
