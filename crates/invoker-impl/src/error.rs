@@ -267,6 +267,10 @@ pub(crate) enum CommandPreconditionError {
     ServiceHandlerNotFound(String, String),
     #[error("the request key is not a valid UTF-8 string: {0}")]
     BadRequestKey(#[from] std::str::Utf8Error),
+    #[error(
+        "a key was provided, but the callee '{0}' is a Service. Only VirtualObjects or Workflows accept a key"
+    )]
+    UnexpectedKey(String),
     #[error("the idempotency key provided in the request is empty")]
     EmptyIdempotencyKey,
     #[error("unsupported entry type, only Workflow services support it")]

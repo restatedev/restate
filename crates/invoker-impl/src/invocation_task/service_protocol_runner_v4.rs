@@ -1015,6 +1015,12 @@ fn resolve_call_request(
             )
         })?;
 
+    if !request.key.is_empty() && !meta.target_ty.is_keyed() {
+        return Err(CommandPreconditionError::UnexpectedKey(
+            request.service_name.to_string(),
+        ));
+    }
+
     let invocation_target = match meta.target_ty {
         InvocationTargetType::Service => {
             InvocationTarget::service(request.service_name, request.handler_name)
