@@ -272,7 +272,7 @@ where
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[bilrost_as(RangeInclusiveMessage<Idx>)]
-pub struct NetRangeInclusive<Idx>(RangeInclusive<Idx>)
+pub struct NetRangeInclusive<Idx>(pub RangeInclusive<Idx>)
 where
     Idx: Copy + EmptyState + ValueEncoder<General> + ValueDecoder<General> + 'static;
 

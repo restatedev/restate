@@ -25,7 +25,8 @@ use restate_types::NodeId;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
-    RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened,
+    RemoteQueryScannerNextResult, RemoteQueryScannerNextResultShadow, RemoteQueryScannerOpen,
+    RemoteQueryScannerOpened,
 };
 
 use crate::{decode_record_batch, encode_schema};
@@ -86,7 +87,7 @@ pub fn remote_scan_as_datafusion_stream(
         //
         let open_request = RemoteQueryScannerOpen {
             partition_id,
-            range,
+            range: restate_types::NetRangeInclusive(range),
             table: table_name,
             projection_schema_bytes: encode_schema(&projection_schema),
         };
@@ -123,19 +124,29 @@ pub fn remote_scan_as_datafusion_stream(
                     close_fn().await;
                     return Err(e);
                 }
-                Ok(RemoteQueryScannerNextResult::NextBatch { record_batch, .. }) => {
-                    decode_record_batch(&record_batch)?
-                }
-                Ok(RemoteQueryScannerNextResult::Failure { message, .. }) => {
+                Ok(RemoteQueryScannerNextResult(
+                    RemoteQueryScannerNextResultShadow::NextBatch { record_batch, .. },
+                )) => decode_record_batch(&record_batch)?,
+                Ok(RemoteQueryScannerNextResult(RemoteQueryScannerNextResultShadow::Failure {
+                    message,
+                    ..
+                })) => {
                     // assume server closed the scanner before responding
                     return Err(DataFusionError::Internal(message));
                 }
-                Ok(RemoteQueryScannerNextResult::NoMoreRecords(_)) => {
+                Ok(RemoteQueryScannerNextResult(
+                    RemoteQueryScannerNextResultShadow::NoMoreRecords(_),
+                )) => {
                     // assume server closed the scanner before responding
                     return Ok(());
                 }
-                Ok(RemoteQueryScannerNextResult::NoSuchScanner(_)) => {
+                Ok(RemoteQueryScannerNextResult(
+                    RemoteQueryScannerNextResultShadow::NoSuchScanner(_),
+                )) => {
                     return Err(DataFusionError::Internal("No such scanner. It could have expired due to a long period of inactivity.".to_string()));
+                }
+                Ok(RemoteQueryScannerNextResult(RemoteQueryScannerNextResultShadow::Unknown)) => {
+                    unreachable!()
                 }
             };
 
