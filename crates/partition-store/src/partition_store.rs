@@ -29,7 +29,6 @@ use static_assertions::const_assert_eq;
 use tracing::trace;
 
 use restate_core::ShutdownError;
-use restate_core::worker_api::SnapshotError;
 use restate_rocksdb::CfName;
 use restate_rocksdb::IoMode;
 use restate_rocksdb::Priority;
@@ -465,37 +464,34 @@ impl PartitionStore {
         snapshot_base_path: &Path,
         min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
-    ) -> std::result::Result<LocalPartitionSnapshot, SnapshotError> {
+    ) -> Result<LocalPartitionSnapshot> {
         let applied_lsn = self
             .get_applied_lsn()
             .await
-            .map_err(|e| SnapshotError::SnapshotExport(self.partition_id, anyhow!(e)))?
-            .ok_or(SnapshotError::SnapshotExport(
-                self.partition_id,
-                anyhow!(StorageError::DataIntegrityError),
-            ))?;
+            .map_err(|e| StorageError::SnapshotExport(e.into()))?
+            .ok_or(StorageError::DataIntegrityError)?; // if PartitionStore::get_applied_lsn returns None
 
         if let Some(min_target_lsn) = min_target_lsn {
             if applied_lsn < min_target_lsn {
-                return Err(SnapshotError::MinimumTargetLsnNotMet {
-                    partition_id: self.partition_id,
-                    min_target_lsn,
+                return Err(StorageError::PreconditionFailed(anyhow!(
+                    "Applied LSN below the target LSN: {} < {}",
                     applied_lsn,
-                });
+                    min_target_lsn
+                )));
             }
         };
 
         // RocksDB will create the snapshot directory but the parent must exist first:
         tokio::fs::create_dir_all(snapshot_base_path)
             .await
-            .map_err(|e| SnapshotError::SnapshotIo(self.partition_id, e))?;
+            .map_err(|e| StorageError::SnapshotExport(e.into()))?;
         let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
 
         let metadata = self
             .rocksdb
             .export_cf(self.data_cf_name.clone(), snapshot_dir.clone())
             .await
-            .map_err(|err| SnapshotError::SnapshotExport(self.partition_id, err.into()))?;
+            .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
         trace!(
             cf_name = ?self.data_cf_name,
