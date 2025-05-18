@@ -79,6 +79,9 @@ check-fmt:
 clippy: (_target-installed target)
     cargo clippy {{ _target-option }} --all-targets --workspace -- -D warnings
 
+hack-clippy: (_target-installed target)
+    cargo hack clippy {{ _target-option }} --all-targets --workspace --each-feature -- -D warnings
+
 # Runs all lints (fmt, clippy, deny)
 lint: check-fmt clippy check-deny
 
