@@ -105,7 +105,7 @@ impl ValueDecoder<General> for BilrostDisplayFromStr {
         value: &mut Self,
         buf: bilrost::encoding::Capped<B>,
         ctx: bilrost::encoding::DecodeContext,
-    ) -> Result<(), bilrost::DecodeError> {
+    ) -> Result<(), DecodeError> {
         <String as ValueDecoder<General>>::decode_value(&mut value.inner, buf, ctx)
     }
 }
@@ -161,44 +161,43 @@ impl Wiretyped<General> for BilrostSkip {
 }
 
 impl ValueEncoder<General> for BilrostSkip {
-    fn encode_value<B: bytes::BufMut + ?Sized>(_value: &Self, _buf: &mut B) {}
+    fn encode_value<B: bytes::BufMut + ?Sized>(_value: &Self, buf: &mut B) {
+        <() as ValueEncoder<General>>::encode_value(&(), buf);
+    }
 
-    fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(_value: &Self, _buf: &mut B) {}
+    fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(_value: &Self, buf: &mut B) {
+        <() as ValueEncoder<General>>::prepend_value(&(), buf);
+    }
 
     fn value_encoded_len(_value: &Self) -> usize {
-        0
+        <() as ValueEncoder<General>>::value_encoded_len(&())
     }
 }
 
 impl ValueDecoder<General> for BilrostSkip {
     fn decode_value<B: bytes::Buf + ?Sized>(
         _value: &mut Self,
-        _buf: bilrost::encoding::Capped<B>,
-        _ctx: bilrost::encoding::DecodeContext,
-    ) -> Result<(), bilrost::DecodeError> {
-        Ok(())
+        buf: bilrost::encoding::Capped<B>,
+        ctx: bilrost::encoding::DecodeContext,
+    ) -> Result<(), DecodeError> {
+        <() as ValueDecoder<General>>::decode_value(&mut (), buf, ctx)
     }
 }
 
 impl ForOverwrite for BilrostSkip {
-    fn for_overwrite() -> Self
-    where
-        Self: Sized,
-    {
+    fn for_overwrite() -> Self {
         Self
     }
 }
 
 impl EmptyState for BilrostSkip {
-    fn clear(&mut self) {}
-    fn empty() -> Self
-    where
-        Self: Sized,
-    {
+    fn empty() -> Self {
         Self
     }
 
     fn is_empty(&self) -> bool {
         true
     }
+
+    fn clear(&mut self) {}
 }
