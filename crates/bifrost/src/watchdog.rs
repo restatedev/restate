@@ -8,15 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
 use enum_map::Enum;
+use futures::future::OptionFuture;
+use futures::stream::FuturesUnordered;
 use tokio::task::JoinSet;
+use tokio_stream::StreamExt;
 use tracing::{debug, trace, warn};
 
-use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, cancellation_watcher};
+use restate_core::{
+    ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind, cancellation_watcher,
+};
 use restate_metadata_store::{ReadModifyWriteError, ReadWriteError, retry_on_retryable_error};
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Logs, ProviderKind};
@@ -38,7 +43,11 @@ pub struct Watchdog {
     sender: WatchdogSender,
     inbound: WatchdogReceiver,
     live_providers: Vec<Arc<dyn LogletProvider>>,
+    in_flight_trim: Option<restate_core::task_center::TaskHandle<()>>,
+    pending_trims: TrimRequests,
 }
+
+type TrimRequests = HashMap<LogId, Lsn>;
 
 impl Watchdog {
     pub fn new(
@@ -51,6 +60,8 @@ impl Watchdog {
             sender,
             inbound,
             live_providers: Vec::with_capacity(ProviderKind::LENGTH),
+            in_flight_trim: None,
+            pending_trims: HashMap::with_capacity(128),
         }
     }
 
@@ -71,39 +82,68 @@ impl Watchdog {
                 log_id,
                 requested_trim_point,
             } => {
-                self.on_log_trim(log_id, requested_trim_point);
+                self.store_trim_request(log_id, requested_trim_point);
             }
         }
     }
 
-    fn on_log_trim(&self, log_id: LogId, requested_trim_point: Lsn) {
+    fn spawn_trim(&self, mut trim_requests: TrimRequests) -> Result<TaskHandle<()>, ShutdownError> {
         let bifrost = self.inner.clone();
-        let _ = TaskCenter::spawn_child(
+        TaskCenter::spawn_unmanaged(
             TaskKind::BifrostBackgroundLowPriority,
-            format!("trim-chain-{log_id}"),
+            "trim-chains",
             async move {
-                let trim_point = bifrost
-                    .get_trim_point(log_id)
-                    .await
-                    .context("cannot determine tail")?;
-                if trim_point == Lsn::INVALID {
-                    return Ok(());
+                if trim_requests.is_empty() {
+                    return;
                 }
+
+                // Concurrently look up the trim points of all the requests
+                let trim_point_futures: FuturesUnordered<_> = trim_requests
+                    .drain()
+                    .map(async |(log_id, requested_trim_point)| {
+                        match bifrost.get_trim_point(log_id).await {
+                            // an invalid lsn means that the log has never been trimmed
+                            Ok(actual_trim_point) if actual_trim_point == Lsn::INVALID => None,
+                            Ok(actual_trim_point) => Some(TrimPoint {
+                                log_id,
+                                requested_trim_point,
+                                actual_trim_point,
+                            }),
+                            Err(err) => {
+                                warn!(
+                                    "Bifrost watchdog failed to find a trim point for {log_id}; will \
+                                    not be able to process the request to trim chain to {requested_trim_point}: {err}"
+                                );
+                                None
+                            },
+                        }
+                    })
+                    .collect();
+
+                let trim_points: Vec<TrimPoint> = trim_point_futures
+                    .filter_map(|trim_point| trim_point)
+                    .collect()
+                    .await;
+
+                if trim_points.is_empty() {
+                    return;
+                }
+
+                let retry_policy = Configuration::pinned()
+                    .common
+                    .network_error_retry_policy
+                    .clone();
+
                 // todo(asoli): Notify providers about trimmed loglets for pruning.
-                let opts = Configuration::pinned();
-                retry_on_retryable_error(opts.common.network_error_retry_policy.clone(), || {
-                    trim_chain_if_needed(&bifrost, log_id, requested_trim_point, trim_point)
+                if let Err(err) = retry_on_retryable_error(retry_policy, || {
+                    trim_chains_if_needed(&bifrost, &trim_points)
                 })
                 .await
-                .with_context(|| {
-                    format!(
-                        "failed trimming the log chain after trimming log {} to trim-point {}",
-                        log_id, trim_point
-                    )
-                })?;
-                Ok(())
+                {
+                    warn!("Bifrost watchdog trim chains failed: {err}",);
+                }
             },
-        );
+        )
     }
 
     pub fn sender(&self) -> WatchdogSender {
@@ -116,6 +156,17 @@ impl Watchdog {
         trace!("Bifrost watchdog started");
 
         loop {
+            if self.in_flight_trim.is_none() && !self.pending_trims.is_empty() {
+                let trims = self.pending_trims.drain().collect();
+                match self.spawn_trim(trims) {
+                    Ok(task_handle) => self.in_flight_trim = Some(task_handle),
+                    Err(ShutdownError) => {
+                        self.shutdown().await;
+                        break;
+                    }
+                }
+            }
+
             tokio::select! {
             biased;
             _ = &mut shutdown => {
@@ -125,9 +176,23 @@ impl Watchdog {
             Some(cmd) = self.inbound.recv() => {
                 self.handle_command(cmd)
             }
+            Some(_) = OptionFuture::from(self.in_flight_trim.as_mut()) => {
+                self.in_flight_trim = None;
+            }
             }
         }
         Ok(())
+    }
+
+    fn store_trim_request(&mut self, log_id: LogId, requested_trim_point: Lsn) {
+        self.pending_trims
+            .entry(log_id)
+            .and_modify(|lsn| {
+                if *lsn < requested_trim_point {
+                    *lsn = requested_trim_point;
+                }
+            })
+            .or_insert(requested_trim_point);
     }
 
     async fn shutdown(mut self) {
@@ -181,14 +246,18 @@ impl Watchdog {
     }
 }
 
-#[derive(Debug)]
-struct AlreadyTrimmed;
-
-async fn trim_chain_if_needed(
-    bifrost: &BifrostInner,
+struct TrimPoint {
     log_id: LogId,
     requested_trim_point: Lsn,
     actual_trim_point: Lsn,
+}
+
+#[derive(Debug)]
+struct AlreadyTrimmed;
+
+async fn trim_chains_if_needed(
+    bifrost: &BifrostInner,
+    trim_points: &[TrimPoint],
 ) -> Result<(), ReadWriteError> {
     let new_logs = bifrost
         .metadata_writer
@@ -196,24 +265,35 @@ async fn trim_chain_if_needed(
         .read_modify_write(|current: Option<Arc<Logs>>| {
             let logs = current.expect("logs should be initialized by BifrostService");
             let mut logs_builder = logs.as_ref().clone().into_builder();
-            let mut chain_builder = logs_builder.chain(log_id).expect("log id exists");
 
-            // trim_prefix's lsn is exclusive. Trim-point is inclusive of the last trimmed lsn,
-            // therefore, we need to trim _including_ the trim point.
-            chain_builder.trim_prefix(actual_trim_point.next());
+            for trim_point in trim_points {
+                let mut chain_builder = logs_builder
+                    .chain(trim_point.log_id)
+                    .expect("log id exists");
+
+                // trim_prefix's lsn is exclusive. Trim-point is inclusive of the last trimmed lsn,
+                // therefore, we need to trim _including_ the trim point.
+                chain_builder.trim_prefix(trim_point.actual_trim_point.next());
+            }
+
             let Some(logs) = logs_builder.build_if_modified() else {
                 // already trimmed, nothing to be done.
                 return Err(AlreadyTrimmed);
             };
+
             Ok(logs)
         })
         .await;
     match new_logs {
         Ok(_) => {
-            debug!(
-                "Log {} chain has been trimmed to trim-point {} after requesting trim to {}",
-                log_id, actual_trim_point, requested_trim_point,
-            );
+            for trim_point in trim_points {
+                debug!(
+                    "Log {} chain has been trimmed to trim-point {} after requesting trim to {}",
+                    trim_point.log_id,
+                    trim_point.actual_trim_point,
+                    trim_point.requested_trim_point,
+                );
+            }
         }
         Err(ReadModifyWriteError::FailedOperation(AlreadyTrimmed)) => {
             // nothing to do
