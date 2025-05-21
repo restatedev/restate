@@ -310,6 +310,7 @@ mod envelope {
         PatchState = 2,                         // protobuf
         TerminateInvocation = 3,                // bilrost
         PurgeInvocation = 4,                    // bilrost
+        PurgeJournal = 15,                      // bilrost
         Invoke = 5,                             // protobuf
         TruncateOutbox = 6,                     // flexbuffers
         ProxyThrough = 7,                       // protobuf
@@ -440,6 +441,9 @@ mod envelope {
             Command::PurgeInvocation(value) => {
                 (CommandKind::PurgeInvocation, Field::encode_bilrost(value))
             }
+            Command::PurgeJournal(value) => {
+                (CommandKind::PurgeJournal, Field::encode_bilrost(value))
+            }
             Command::Invoke(value) => {
                 let value = protobuf::ServiceInvocation::from(value.clone());
                 (CommandKind::Invoke, Field::encode_protobuf(&value))
@@ -524,6 +528,10 @@ mod envelope {
             CommandKind::PurgeInvocation => {
                 codec_or_error!(envelope.command, StorageCodecKind::Bilrost);
                 Command::PurgeInvocation(envelope.command.decode_bilrost()?)
+            }
+            CommandKind::PurgeJournal => {
+                codec_or_error!(envelope.command, StorageCodecKind::Bilrost);
+                Command::PurgeJournal(envelope.command.decode_bilrost()?)
             }
             CommandKind::Invoke => {
                 codec_or_error!(envelope.command, StorageCodecKind::Protobuf);
