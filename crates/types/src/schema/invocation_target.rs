@@ -52,12 +52,14 @@ impl InvocationTargetMetadata {
             } else {
                 DEFAULT_IDEMPOTENCY_RETENTION
             };
-        let journal_retention =
-            if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
-                DEFAULT_WORKFLOW_COMPLETION_RETENTION
-            } else {
-                Duration::ZERO
-            };
+        // TODO enable this in Restate 1.4
+        // let journal_retention =
+        //     if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
+        //         DEFAULT_WORKFLOW_COMPLETION_RETENTION
+        //     } else {
+        //         Duration::ZERO
+        //     };
+        let journal_retention = Duration::ZERO;
         Self {
             public: true,
             completion_retention,
