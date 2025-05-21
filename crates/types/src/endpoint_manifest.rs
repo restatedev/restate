@@ -11,6 +11,7 @@
 mod generated {
     #![allow(clippy::clone_on_copy)]
     #![allow(clippy::to_string_trait_impl)]
+    #![allow(clippy::derivable_impls)]
 
     include!(concat!(env!("OUT_DIR"), "/endpoint_manifest.rs"));
 }

@@ -58,23 +58,21 @@ fn main() -> std::io::Result<()> {
 
     // Patch schema for https://github.com/oxidecomputer/typify/issues/531
     // We can get rid of this once the issue in typify is solved.
+    Pointer::parse("/properties/services/items/properties/handlers/items/properties/input/default")
+        .unwrap()
+        .delete(&mut parsed_content);
     Pointer::parse(
-        "#/properties/services/items/properties/handlers/items/properties/input/default",
+        "/properties/services/items/properties/handlers/items/properties/input/examples",
     )
     .unwrap()
     .delete(&mut parsed_content);
     Pointer::parse(
-        "#/properties/services/items/properties/handlers/items/properties/input/examples",
+        "/properties/services/items/properties/handlers/items/properties/output/default",
     )
     .unwrap()
     .delete(&mut parsed_content);
     Pointer::parse(
-        "#/properties/services/items/properties/handlers/items/properties/output/default",
-    )
-    .unwrap()
-    .delete(&mut parsed_content);
-    Pointer::parse(
-        "#/properties/services/items/properties/handlers/items/properties/output/examples",
+        "/properties/services/items/properties/handlers/items/properties/output/examples",
     )
     .unwrap()
     .delete(&mut parsed_content);
@@ -86,11 +84,8 @@ fn main() -> std::io::Result<()> {
         .add_root_schema(serde_json::from_value(parsed_content).unwrap())
         .unwrap();
 
-    let contents = format!(
-        "{}\n{}",
-        "use serde::{Deserialize, Serialize};",
-        prettyplease::unparse(&syn::parse2::<syn::File>(type_space.to_stream()).unwrap())
-    );
+    let contents =
+        prettyplease::unparse(&syn::parse2::<syn::File>(type_space.to_stream()).unwrap());
 
     std::fs::write(out_dir.join("endpoint_manifest.rs"), contents)
 }
