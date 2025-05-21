@@ -7,7 +7,7 @@ use rocksdb::event_listener::{EventListener, FlushJobInfo};
 use rocksdb::table_properties::{
     CollectorError, EntryType, TablePropertiesCollector, TablePropertiesCollectorFactory,
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use restate_storage_api::StorageError;
 use restate_types::{identifiers::PartitionId, logs::Lsn};
@@ -120,9 +120,20 @@ impl EventListener for PersistedLsnEventListener {
                 .transpose();
 
             if let (Ok(ref partition_id), Ok(Some(ref lsn))) = (partition_id, lsn) {
-                // Note: we only modify entries, never insert, from the event listener. If we don't find
-                // an existing entry for the partition, that means that the PartitionStoreManager has
-                // already closed or dropped it.
+                info!(
+                    %partition_id,
+                    applied_lsn = %lsn,
+                    cf_name = flush_job_info.cf_name,
+                    file_path = flush_job_info.file_path,
+                    smallest_seqno = flush_job_info.smallest_seqno,
+                    largest_seqno = flush_job_info.largest_seqno,
+                    flush_reason = ?flush_job_info.flush_reason,
+                    "Partition store flush"
+                );
+
+                // Note: we only modify, never insert, entries from the event listener. If we don't
+                // find an existing entry for the partition, that means that the
+                // PartitionStoreManager has already closed or dropped it.
                 self.persisted_lsns
                     .entry(*partition_id)
                     .and_modify(|persisted| {
