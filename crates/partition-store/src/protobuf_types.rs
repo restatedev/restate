@@ -622,7 +622,7 @@ pub mod v1 {
                         span_context: Some(span_context.into()),
                         // SAFETY: We're only mapping data types here
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                        created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
+                        created_using_restate_version: unsafe { timestamps.created_using_restate_version().as_str().to_owned() },
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                         modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()},
                         inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
@@ -683,7 +683,7 @@ pub mod v1 {
                         span_context: Some(span_context.into()),
                         // SAFETY: We're only mapping data types here
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                        created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
+                        created_using_restate_version: unsafe { timestamps.created_using_restate_version().as_str().to_owned() },
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                         modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
                             .map(|t| t.as_u64()),
@@ -747,7 +747,7 @@ pub mod v1 {
                             span_context: Some(journal_metadata.span_context.into()),
                             // SAFETY: We're only mapping data types here
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                            created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
+                            created_using_restate_version: unsafe { timestamps.created_using_restate_version().as_str().to_owned() },
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                             modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe {
                                 timestamps.inboxed_transition_time()
@@ -839,7 +839,7 @@ pub mod v1 {
                             span_context: Some(journal_metadata.span_context.into()),
                             // SAFETY: We're only mapping data types here
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                            created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
+                            created_using_restate_version: unsafe { timestamps.created_using_restate_version().as_str().to_owned() },
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                             modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()},
                             inboxed_transition_time: unsafe {
@@ -903,9 +903,10 @@ pub mod v1 {
                         span_context: Some(span_context.into()),
                         // SAFETY: We're only mapping data types here
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                        created_using_restate_version: timestamps.created_using_restate_version().as_str().to_owned(),
+                        created_using_restate_version: unsafe {timestamps.created_using_restate_version().as_str().to_owned()},
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                        modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()}, inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
+                        modified_using_restate_version: unsafe {timestamps.modified_using_restate_version().as_str().to_owned()},
+                        inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
                             .map(|t| t.as_u64()),
                         scheduled_transition_time: unsafe {
                             timestamps.scheduled_transition_time()

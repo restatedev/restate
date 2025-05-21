@@ -156,7 +156,7 @@ fn fill_timestamps(row: &mut SysInvocationStatusRowBuilder, stat: &StatusTimesta
     //  as we don't use them as part of the PP state machine business logic.
 
     row.created_at(unsafe { stat.creation_time() }.as_u64() as i64);
-    row.created_using_restate_version(stat.created_using_restate_version().as_str());
+    row.created_using_restate_version(unsafe { stat.created_using_restate_version().as_str() });
     row.modified_at(unsafe { stat.modification_time() }.as_u64() as i64);
     row.modified_using_restate_version(unsafe { stat.modified_using_restate_version().as_str() });
     if let Some(inboxed_at) = unsafe { stat.inboxed_transition_time() } {

@@ -25,6 +25,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
 use serde_with::{FromInto, serde_as};
+use std::borrow::Cow;
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Deref;
@@ -354,20 +355,20 @@ impl WithInvocationId for InvocationRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub struct RestateVersion(String);
+pub struct RestateVersion(Cow<'static, str>);
 
 impl RestateVersion {
     pub fn current() -> Self {
-        Self(env!("CARGO_PKG_VERSION").to_owned())
+        Self(Cow::Borrowed(env!("CARGO_PKG_VERSION")))
     }
 
     pub fn unknown() -> Self {
         // We still provide a semver valid version here
-        Self("0.0.0-dev".to_owned())
+        Self(Cow::Borrowed("0.0.0-unknown"))
     }
 
     pub fn new(s: String) -> Self {
-        Self(s)
+        Self(Cow::Owned(s))
     }
 
     pub fn as_str(&self) -> &str {
@@ -375,7 +376,7 @@ impl RestateVersion {
     }
 
     pub fn into_string(self) -> String {
-        self.0
+        self.0.into_owned()
     }
 }
 

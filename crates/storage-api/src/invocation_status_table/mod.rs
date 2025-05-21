@@ -144,8 +144,10 @@ impl StatusTimestamps {
 
     /// Restate version which the invocation was created with.
     ///
-    /// This value is agreed among replicas.
-    pub fn created_using_restate_version(&self) -> &RestateVersion {
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub unsafe fn created_using_restate_version(&self) -> &RestateVersion {
         &self.created_using_restate_version
     }
 
