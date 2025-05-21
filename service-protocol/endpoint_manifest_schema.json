@@ -3,7 +3,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "title": "Endpoint",
-  "description": "Restate endpoint manifest v2",
+  "description": "Restate endpoint manifest v3",
   "properties": {
     "protocolMode": {
       "title": "ProtocolMode",
@@ -142,6 +142,31 @@
                     }
                   }
                 },
+                "inactivityTimeout": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Inactivity timeout duration, expressed in milliseconds."
+                },
+                "abortTimeout":  {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Abort timeout duration, expressed in milliseconds."
+                },
+                "journalRetention":  {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Journal retention duration, expressed in milliseconds."
+                },
+                "idempotencyRetention":  {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Idempotency retention duration, expressed in milliseconds. This is NOT VALID when HandlerType == WORKFLOW"
+                },
+                "workflowCompletionRetention":  {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Workflow completion retention duration, expressed in milliseconds. This is valid ONLY when HandlerType == WORKFLOW"
+                },
                 "metadata": {
                   "type": "object",
                   "description": "Custom metadata of this handler definition. This metadata is shown on the Admin API when querying the service/handler definition.",
@@ -155,6 +180,31 @@
               ],
               "additionalProperties": false
             }
+          },
+          "inactivityTimeout": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Inactivity timeout duration, expressed in milliseconds."
+          },
+          "abortTimeout":  {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Abort timeout duration, expressed in milliseconds."
+          },
+          "journalRetention":  {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Journal retention duration, expressed in milliseconds."
+          },
+          "idempotencyRetention":  {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Idempotency retention duration, expressed in milliseconds. When ServiceType == WORKFLOW, this option will be applied only to the shared handlers. See workflowCompletionRetention for more details."
+          },
+          "private":  {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
           },
           "metadata": {
             "type": "object",
