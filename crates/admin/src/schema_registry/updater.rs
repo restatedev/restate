@@ -888,51 +888,81 @@ mod tests {
 
     fn greeter_service() -> endpoint_manifest::Service {
         endpoint_manifest::Service {
+            abort_timeout: None,
             documentation: None,
+            private: None,
             ty: endpoint_manifest::ServiceType::Service,
             name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![endpoint_manifest::Handler {
+                abort_timeout: None,
                 documentation: None,
+                idempotency_retention: None,
                 name: "greet".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
                 metadata: Default::default(),
+                inactivity_timeout: None,
+                journal_retention: None,
+                workflow_completion_retention: None,
             }],
+            idempotency_retention: None,
+            inactivity_timeout: None,
+            journal_retention: None,
             metadata: Default::default(),
         }
     }
 
     fn greeter_virtual_object() -> endpoint_manifest::Service {
         endpoint_manifest::Service {
+            abort_timeout: None,
             documentation: None,
+            private: None,
             ty: endpoint_manifest::ServiceType::VirtualObject,
             name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![endpoint_manifest::Handler {
+                abort_timeout: None,
                 documentation: None,
+                idempotency_retention: None,
                 name: "greet".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
                 metadata: Default::default(),
+                inactivity_timeout: None,
+                journal_retention: None,
+                workflow_completion_retention: None,
             }],
+            idempotency_retention: None,
+            inactivity_timeout: None,
+            journal_retention: None,
             metadata: Default::default(),
         }
     }
 
     fn another_greeter_service() -> endpoint_manifest::Service {
         endpoint_manifest::Service {
+            abort_timeout: None,
             documentation: None,
+            private: None,
             ty: endpoint_manifest::ServiceType::Service,
             name: ANOTHER_GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![endpoint_manifest::Handler {
+                abort_timeout: None,
                 documentation: None,
+                idempotency_retention: None,
                 name: "another_greeter".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
                 metadata: Default::default(),
+                inactivity_timeout: None,
+                journal_retention: None,
+                workflow_completion_retention: None,
             }],
+            idempotency_retention: None,
+            inactivity_timeout: None,
+            journal_retention: None,
             metadata: Default::default(),
         }
     }
@@ -1185,44 +1215,69 @@ mod tests {
 
         fn greeter_v1_service() -> endpoint_manifest::Service {
             endpoint_manifest::Service {
+                abort_timeout: None,
                 documentation: None,
+                private: None,
                 ty: endpoint_manifest::ServiceType::Service,
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![
                     endpoint_manifest::Handler {
+                        abort_timeout: None,
                         documentation: None,
+                        idempotency_retention: None,
                         name: "greet".parse().unwrap(),
                         ty: None,
                         input: None,
                         output: None,
                         metadata: Default::default(),
+                        inactivity_timeout: None,
+                        journal_retention: None,
+                        workflow_completion_retention: None,
                     },
                     endpoint_manifest::Handler {
+                        abort_timeout: None,
                         documentation: None,
+                        idempotency_retention: None,
                         name: "doSomething".parse().unwrap(),
                         ty: None,
                         input: None,
                         output: None,
                         metadata: Default::default(),
+                        inactivity_timeout: None,
+                        journal_retention: None,
+                        workflow_completion_retention: None,
                     },
                 ],
+                idempotency_retention: None,
+                inactivity_timeout: None,
+                journal_retention: None,
                 metadata: Default::default(),
             }
         }
 
         fn greeter_v2_service() -> endpoint_manifest::Service {
             endpoint_manifest::Service {
+                abort_timeout: None,
                 documentation: None,
+                private: None,
                 ty: endpoint_manifest::ServiceType::Service,
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![endpoint_manifest::Handler {
+                    abort_timeout: None,
                     documentation: None,
+                    idempotency_retention: None,
                     name: "greet".parse().unwrap(),
                     ty: None,
                     input: None,
                     output: None,
                     metadata: Default::default(),
+                    inactivity_timeout: None,
+                    journal_retention: None,
+                    workflow_completion_retention: None,
                 }],
+                idempotency_retention: None,
+                inactivity_timeout: None,
+                journal_retention: None,
                 metadata: Default::default(),
             }
         }
@@ -1509,12 +1564,17 @@ mod tests {
         updated_greeter_service
             .handlers
             .push(endpoint_manifest::Handler {
+                abort_timeout: None,
                 documentation: None,
+                idempotency_retention: None,
                 name: "greetAgain".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
                 metadata: Default::default(),
+                inactivity_timeout: None,
+                journal_retention: None,
+                workflow_completion_retention: None,
             });
 
         updater
@@ -1576,12 +1636,17 @@ mod tests {
         updated_greeter_service
             .handlers
             .push(endpoint_manifest::Handler {
+                abort_timeout: None,
                 documentation: None,
+                idempotency_retention: None,
                 name: "greetAgain".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
                 metadata: Default::default(),
+                inactivity_timeout: None,
+                journal_retention: None,
+                workflow_completion_retention: None,
             });
 
         updater
