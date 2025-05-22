@@ -66,7 +66,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     // Methods
     c_println!();
     c_title!("🔌", "Handlers");
-    let table = create_service_handlers_table(&service.handlers);
+    let table = create_service_handlers_table(service.handlers.values());
     c_println!("{}", table);
 
     // Printing other existing endpoints with previous revisions. We currently don't
