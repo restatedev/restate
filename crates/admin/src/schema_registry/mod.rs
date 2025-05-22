@@ -368,7 +368,7 @@ impl<V> SchemaRegistry<V> {
     ) -> Option<Vec<HandlerMetadata>> {
         Metadata::with_current(|m| m.schema())
             .resolve_latest_service(&service_name)
-            .map(|m| m.handlers)
+            .map(|m| m.handlers.into_values().collect())
     }
 
     pub fn get_service_handler(
@@ -378,11 +378,7 @@ impl<V> SchemaRegistry<V> {
     ) -> Option<HandlerMetadata> {
         Metadata::with_current(|m| m.schema())
             .resolve_latest_service(&service_name)
-            .and_then(|m| {
-                m.handlers
-                    .into_iter()
-                    .find(|handler| handler.name == handler_name.as_ref())
-            })
+            .and_then(|m| m.handlers.get(handler_name.as_ref()).cloned())
     }
 
     pub fn get_subscription(&self, subscription_id: SubscriptionId) -> Option<Subscription> {

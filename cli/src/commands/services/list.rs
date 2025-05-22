@@ -106,7 +106,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         ];
         if list_opts.extra {
             row.push(render_deployment_url(&deployment));
-            row.push(render_methods(svc.handlers));
+            row.push(render_methods(svc.handlers.into_values().collect()));
         }
 
         table.add_row(row);

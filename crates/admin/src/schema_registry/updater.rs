@@ -98,7 +98,7 @@ impl SchemaUpdater {
                     ));
                 }
 
-                for service in &existing_deployment.services {
+                for service in existing_deployment.services.values() {
                     // If a service is not available anymore in the new deployment, we need to remove it
                     if !proposed_services.contains_key(&service.name) {
                         warn!(
@@ -150,8 +150,8 @@ impl SchemaUpdater {
                 let metadata = schema.as_service_metadata(name.clone().into_inner());
                 self.schema_information
                     .services
-                    .insert(name.into_inner(), schema);
-                metadata
+                    .insert(name.clone().into_inner(), schema);
+                (name.into_inner(), metadata)
             })
             .collect();
 
@@ -205,7 +205,7 @@ impl SchemaUpdater {
 
         let mut services_to_remove = Vec::default();
 
-        for service in &existing_deployment.services {
+        for service in existing_deployment.services.values() {
             if !proposed_services.contains_key(&service.name) {
                 services_to_remove.push(service.name.clone());
             }
@@ -251,7 +251,7 @@ impl SchemaUpdater {
                         );
                         self.schema_information
                             .services
-                            .insert(name.into_inner(), schema);
+                            .insert(name.clone().into_inner(), schema);
                     },
                     Some(_) => {
                         debug!(
@@ -263,11 +263,11 @@ impl SchemaUpdater {
                         // we have a new service, it deserves a schema as normal
                         self.schema_information
                             .services
-                            .insert(name.into_inner(), schema);
+                            .insert(name.clone().into_inner(), schema);
                     }
                 }
 
-                metadata
+                (name.into_inner(), metadata)
             })
             .collect();
 
@@ -446,7 +446,7 @@ impl SchemaUpdater {
                 None
             };
             let inactivity_timeout = service.inactivity_timeout_duration();
-            let abort_timeout = service.inactivity_timeout_duration();
+            let abort_timeout = service.abort_timeout_duration();
 
             ServiceSchemas {
                 revision: 1,
@@ -487,7 +487,7 @@ impl SchemaUpdater {
 
     pub fn remove_deployment(&mut self, deployment_id: DeploymentId) {
         if let Some(deployment) = self.schema_information.deployments.remove(&deployment_id) {
-            for service_metadata in deployment.services {
+            for (_, service_metadata) in deployment.services {
                 match self
                     .schema_information
                     .services
@@ -704,6 +704,8 @@ struct DiscoveredHandlerMetadata {
     journal_retention: Option<Duration>,
     idempotency_retention: Option<Duration>,
     workflow_completion_retention: Option<Duration>,
+    inactivity_timeout: Option<Duration>,
+    abort_timeout: Option<Duration>,
     input: InputRules,
     output: OutputRules,
 }
@@ -754,20 +756,22 @@ impl DiscoveredHandlerMetadata {
             ));
         }
 
+        let journal_retention = handler.journal_retention_duration();
+        let idempotency_retention = handler.idempotency_retention_duration();
+        let workflow_completion_retention = handler.workflow_completion_retention_duration();
+        let inactivity_timeout = handler.inactivity_timeout_duration();
+        let abort_timeout = handler.abort_timeout_duration();
+
         Ok(Self {
             name: handler.name.to_string(),
             ty,
             documentation: handler.documentation,
             metadata: handler.metadata,
-            journal_retention: handler
-                .journal_retention
-                .map(|d| Duration::from_millis(d.get())),
-            idempotency_retention: handler
-                .idempotency_retention
-                .map(|d| Duration::from_millis(d.get())),
-            workflow_completion_retention: handler
-                .workflow_completion_retention
-                .map(|d| Duration::from_millis(d.get())),
+            journal_retention,
+            idempotency_retention,
+            workflow_completion_retention,
+            inactivity_timeout,
+            abort_timeout,
             input: handler
                 .input
                 .map(|input_payload| {
@@ -929,6 +933,11 @@ impl DiscoveredHandlerMetadata {
                             input_rules: handler.input,
                             output_rules: handler.output,
                         },
+                        idempotency_retention: handler.idempotency_retention,
+                        workflow_completion_retention: handler.workflow_completion_retention,
+                        journal_retention: handler.journal_retention,
+                        inactivity_timeout: handler.inactivity_timeout,
+                        abort_timeout: handler.abort_timeout,
                         documentation: handler.documentation,
                         metadata: handler.metadata,
                     },
@@ -1686,8 +1695,7 @@ mod tests {
         assert_eq!(
             updated_deployment_1
                 .services
-                .iter()
-                .find(|svc| svc.name == GREETER_SERVICE_NAME)
+                .get(GREETER_SERVICE_NAME)
                 .unwrap()
                 .handlers
                 .len(),
@@ -1763,8 +1771,7 @@ mod tests {
         assert_eq!(
             updated_deployment_1
                 .services
-                .iter()
-                .find(|svc| svc.name == GREETER_SERVICE_NAME)
+                .get(GREETER_SERVICE_NAME)
                 .unwrap()
                 .handlers
                 .len(),
@@ -1774,8 +1781,7 @@ mod tests {
         assert_eq!(
             updated_deployment_2
                 .services
-                .iter()
-                .find(|svc| svc.name == GREETER_SERVICE_NAME)
+                .get(GREETER_SERVICE_NAME)
                 .unwrap()
                 .handlers
                 .len(),
@@ -1922,6 +1928,7 @@ mod tests {
 
         use googletest::prelude::*;
         use restate_types::invocation::InvocationRetention;
+        use restate_types::schema::service::InvocationAttemptTimeouts;
         use std::num::NonZeroU64;
         use std::time::Duration;
         use test_log::test;
@@ -2113,6 +2120,78 @@ mod tests {
                 eq(InvocationRetention {
                     completion_retention: Duration::from_secs(60),
                     journal_retention: Duration::from_secs(60),
+                })
+            )
+        }
+
+        fn init_discover_and_resolve_timeouts(
+            svc: endpoint_manifest::Service,
+            service_name: &str,
+            handler_name: &str,
+        ) -> InvocationAttemptTimeouts {
+            let schema_information = Schema::default();
+            let mut updater = SchemaUpdater::new(schema_information);
+
+            let mut deployment = Deployment::mock();
+            deployment.id = updater
+                .add_deployment(deployment.metadata.clone(), vec![svc], false)
+                .unwrap();
+
+            let schema = updater.into_inner();
+
+            schema.assert_service_revision(service_name, 1);
+            schema.assert_service_deployment(service_name, deployment.id);
+
+            schema
+                .resolve_invocation_attempt_timeouts(&deployment.id, service_name, handler_name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Invocation target for deployment {} and target {}/{} must exists",
+                        deployment.id, service_name, handler_name
+                    )
+                })
+        }
+
+        #[test]
+        fn service_level_timeouts() {
+            let timeouts = init_discover_and_resolve_timeouts(
+                endpoint_manifest::Service {
+                    abort_timeout: Some(NonZeroU64::new(120 * 1000).unwrap()),
+                    inactivity_timeout: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                timeouts,
+                eq(InvocationAttemptTimeouts {
+                    abort_timeout: Some(Duration::from_secs(120)),
+                    inactivity_timeout: Some(Duration::from_secs(60)),
+                })
+            )
+        }
+
+        #[test]
+        fn service_level_timeouts_with_handler_overrides() {
+            let timeouts = init_discover_and_resolve_timeouts(
+                endpoint_manifest::Service {
+                    abort_timeout: Some(NonZeroU64::new(120 * 1000).unwrap()),
+                    inactivity_timeout: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    handlers: vec![endpoint_manifest::Handler {
+                        inactivity_timeout: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        ..greeter_service_greet_handler()
+                    }],
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                timeouts,
+                eq(InvocationAttemptTimeouts {
+                    abort_timeout: Some(Duration::from_secs(120)),
+                    inactivity_timeout: Some(Duration::from_secs(30)),
                 })
             )
         }
