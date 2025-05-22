@@ -41,39 +41,11 @@ pub struct InvocationTargetMetadata {
 }
 
 impl InvocationTargetMetadata {
-    pub fn new(
-        target_ty: InvocationTargetType,
-        input_rules: InputRules,
-        output_rules: OutputRules,
-    ) -> Self {
-        let completion_retention =
-            if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
-                DEFAULT_WORKFLOW_COMPLETION_RETENTION
-            } else {
-                DEFAULT_IDEMPOTENCY_RETENTION
-            };
-        // TODO enable this in Restate 1.4
-        // let journal_retention =
-        //     if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
-        //         DEFAULT_WORKFLOW_COMPLETION_RETENTION
-        //     } else {
-        //         Duration::ZERO
-        //     };
-        let journal_retention = Duration::ZERO;
-        Self {
-            public: true,
-            completion_retention,
-            journal_retention,
-            target_ty,
-            input_rules,
-            output_rules,
-        }
-    }
-
     pub fn compute_retention(&self, has_idempotency_key: bool) -> InvocationRetention {
         // See https://github.com/restatedev/restate/issues/892#issuecomment-2841609088
         match (self.target_ty, has_idempotency_key) {
-            (InvocationTargetType::Workflow(WorkflowHandlerType::Workflow), _) => {
+            (InvocationTargetType::Workflow(WorkflowHandlerType::Workflow), _) | (_, true) => {
+                // We should retain the completion when the call is to a workflow, or has idempotency key
                 InvocationRetention {
                     completion_retention: self.completion_retention,
                     // We need to make sure journal_retention is smaller or equal to completion_retention,
@@ -81,12 +53,6 @@ impl InvocationTargetMetadata {
                     journal_retention: cmp::min(self.journal_retention, self.completion_retention),
                 }
             }
-            (_, true) => InvocationRetention {
-                completion_retention: self.completion_retention,
-                // We need to make sure journal_retention is smaller or equal to completion_retention,
-                // due to implementation requirement that journal must be retained at least as long as the status.
-                journal_retention: cmp::min(self.journal_retention, self.completion_retention),
-            },
             (_, _) if !self.journal_retention.is_zero() => InvocationRetention {
                 // To retain the journal, we must retain the completion too. No way out of this.
                 completion_retention: self.journal_retention,

@@ -203,7 +203,6 @@
           },
           "private":  {
             "type": "boolean",
-            "default": false,
             "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
           },
           "metadata": {
