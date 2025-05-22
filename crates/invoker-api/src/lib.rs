@@ -70,6 +70,7 @@ pub mod test_util {
                     0,
                     ServiceInvocationSpanContext::empty(),
                     None,
+                    0,
                     MillisSinceEpoch::UNIX_EPOCH,
                 ),
                 futures::stream::empty(),
