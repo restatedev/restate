@@ -29,7 +29,9 @@ use restate_types::{
     config::Configuration,
     errors::MaybeRetryableError,
     logs::{LogId, Record, TailOffsetWatch, metadata::SegmentIndex},
-    net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerStatus},
+    net::replicated_loglet::{
+        Append, AppendPayloads, Appended, CommonRequestHeader, SequencerStatus,
+    },
     replicated_loglet::ReplicatedLogletParams,
 };
 use tracing::{instrument, trace};
@@ -163,7 +165,7 @@ where
                 loglet_id,
                 segment_index: self.segment_index,
             },
-            payloads,
+            payloads: AppendPayloads(payloads),
         };
 
         trace!(
@@ -538,7 +540,7 @@ mod test {
                 let (reciprocal, msg) = msg.split();
                 let last_offset = self
                     .offset
-                    .fetch_add(msg.payloads.len() as u32, Ordering::Relaxed);
+                    .fetch_add(msg.payloads.0.len() as u32, Ordering::Relaxed);
 
                 let delay = rand::rng().random_range(50..350);
                 tokio::time::sleep(Duration::from_millis(delay)).await;
