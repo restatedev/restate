@@ -10,6 +10,9 @@
 
 mod location_scope;
 mod node_location;
+// This module is currently shared only with `replication` until its shape is redesigned. The
+// future of topology will be more generic, lives longer, and reusable.
+pub(crate) mod topology;
 
 pub use location_scope::LocationScope;
 pub use node_location::NodeLocation;
