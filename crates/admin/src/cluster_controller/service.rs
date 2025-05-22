@@ -886,7 +886,7 @@ mod tests {
     #[derive(Default)]
     struct HandlerState {
         applied_lsn: AtomicU64,
-        persisted_lsn: AtomicU64,
+        durable_lsn: AtomicU64,
         archived_lsn: AtomicU64,
     }
 
@@ -903,13 +903,9 @@ mod tests {
             };
 
             let partition_processor_status = PartitionProcessorStatus {
-                last_applied_log_lsn: Some(Lsn::from(
-                    self.inner.applied_lsn.load(Ordering::Relaxed),
-                )),
-                last_persisted_log_lsn: Some(Lsn::from(
-                    self.inner.persisted_lsn.load(Ordering::Relaxed),
-                )),
-                last_archived_log_lsn: match self.inner.archived_lsn.load(Ordering::Relaxed) {
+                applied_lsn: Some(Lsn::from(self.inner.applied_lsn.load(Ordering::Relaxed))),
+                durable_lsn: Some(Lsn::from(self.inner.durable_lsn.load(Ordering::Relaxed))),
+                archived_lsn: match self.inner.archived_lsn.load(Ordering::Relaxed) {
                     0 => None,
                     n => Some(Lsn::from(n)),
                 },
@@ -1021,7 +1017,7 @@ mod tests {
     }
 
     #[test(restate_core::test(start_paused = true))]
-    async fn single_node_no_snapshots_auto_trim_log_by_persisted_lsn() -> anyhow::Result<()> {
+    async fn single_node_no_snapshots_auto_trim_log_by_durable_lsn() -> anyhow::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
 
         let interval_duration = Duration::from_secs(10);
@@ -1070,11 +1066,11 @@ mod tests {
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        handler_state.persisted_lsn.store(3, Ordering::Relaxed);
+        handler_state.durable_lsn.store(3, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(bifrost.get_trim_point(LOG_ID).await?, Lsn::from(3));
 
-        handler_state.persisted_lsn.store(20, Ordering::Relaxed);
+        handler_state.durable_lsn.store(20, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
 
@@ -1132,7 +1128,7 @@ mod tests {
                 .as_u64(),
             Ordering::Relaxed,
         );
-        handler_state.persisted_lsn.store(10, Ordering::Relaxed);
+        handler_state.durable_lsn.store(10, Ordering::Relaxed);
 
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(cluster_state.current().nodes.len(), 1);
@@ -1148,7 +1144,7 @@ mod tests {
         // we default to trimming by archived_lsn only, just like in multi-node
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
-        handler_state.persisted_lsn.store(20, Ordering::Relaxed);
+        handler_state.durable_lsn.store(20, Ordering::Relaxed);
         tokio::time::sleep(interval_duration * 2).await;
         assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 

@@ -310,7 +310,7 @@ where
         let last_applied_lsn = partition_store.get_applied_lsn().await?;
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
 
-        self.status.last_applied_log_lsn = Some(last_applied_lsn);
+        self.status.applied_lsn = Some(last_applied_lsn);
 
         // propagate errors and let the PPM handle error retries
         let current_tail = self
@@ -774,7 +774,7 @@ where
         transaction.put_applied_lsn(lsn).await?;
 
         // Update replay status
-        self.status.last_applied_log_lsn = Some(lsn);
+        self.status.applied_lsn = Some(lsn);
         self.status.last_record_applied_at = Some(MillisSinceEpoch::now());
         match self.status.replay_status {
             ReplayStatus::CatchingUp

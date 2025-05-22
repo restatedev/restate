@@ -24,9 +24,9 @@ pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
 pub const PARTITION_TIME_SINCE_LAST_STATUS_UPDATE: &str =
     "restate.partition.time_since_last_status_update";
 pub const PARTITION_TIME_SINCE_LAST_RECORD: &str = "restate.partition.time_since_last_record";
-pub const PARTITION_LAST_APPLIED_LOG_LSN: &str = "restate.partition.last_applied_lsn";
-pub const PARTITION_LAST_APPLIED_LSN_LAG: &str = "restate.partition.applied_lsn_lag";
-pub const PARTITION_LAST_PERSISTED_LOG_LSN: &str = "restate.partition.last_persisted_lsn";
+pub const PARTITION_APPLIED_LSN: &str = "restate.partition.applied_lsn";
+pub const PARTITION_APPLIED_LSN_LAG: &str = "restate.partition.applied_lsn_lag";
+pub const PARTITION_DURABLE_LSN: &str = "restate.partition.durable_lsn";
 pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_leader";
 pub const PARTITION_IS_ACTIVE: &str = "restate.partition.is_active";
 
@@ -125,19 +125,19 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_gauge!(
-        PARTITION_LAST_APPLIED_LOG_LSN,
+        PARTITION_APPLIED_LSN,
         Unit::Count,
         "Raw value of the last applied log LSN"
     );
 
     describe_gauge!(
-        PARTITION_LAST_APPLIED_LSN_LAG,
+        PARTITION_APPLIED_LSN_LAG,
         Unit::Count,
         "Number of records between last applied lsn and the log tail"
     );
 
     describe_gauge!(
-        PARTITION_LAST_PERSISTED_LOG_LSN,
+        PARTITION_DURABLE_LSN,
         Unit::Count,
         "Raw value of the LSN that can be trimmed"
     );

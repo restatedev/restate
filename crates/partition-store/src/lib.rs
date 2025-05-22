@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 pub mod deduplication_table;
+mod durable_lsn_tracking;
 pub mod fsm_table;
 pub mod idempotency_table;
 pub mod inbox_table;
@@ -20,7 +21,6 @@ pub mod outbox_table;
 mod owned_iter;
 mod partition_store;
 mod partition_store_manager;
-mod persisted_lsn_tracking;
 pub mod promise_table;
 // todo(azmy): Follow up issue https://github.com/restatedev/restate/issues/3284
 pub mod protobuf_types;
