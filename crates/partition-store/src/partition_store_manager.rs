@@ -257,6 +257,7 @@ impl PartitionStoreManager {
         // Require a lock to prevent closing/reopening stores while a snapshot is ongoing. Failure
         // to do so can lead to exporting a partially-initialized store.
         let guard = self.lookup.read().await;
+        info!("Obtained read-only lock for partition store lookup table");
         let mut partition_store = guard
             .get(&partition_id)
             .cloned()
@@ -267,6 +268,8 @@ impl PartitionStoreManager {
             .acquire()
             .await
             .expect("we never close the semaphore");
+        info!("Obtained snapshot concurrency limiter permit");
+
         partition_store
             .create_snapshot(snapshot_base_path, min_target_lsn, snapshot_id)
             .await
