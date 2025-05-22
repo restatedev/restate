@@ -100,6 +100,7 @@ where
             headers,
             idempotency_key,
             completion_retention_duration,
+            journal_retention_duration,
         } = self.request;
 
         // Prepare the service invocation to propose
@@ -121,7 +122,8 @@ where
             span_context: span_context.clone(),
             headers,
             execution_time: self.execution_time,
-            completion_retention_duration: Some(completion_retention_duration),
+            completion_retention_duration,
+            journal_retention_duration,
             idempotency_key,
             submit_notification_sink: None,
         };
