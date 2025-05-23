@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use anyhow::Context;
 use cling::prelude::*;
 
+use crate::commands::node::update_state;
+use crate::connection::ConnectionInfo;
 use restate_cli_util::c_println;
 use restate_metadata_store::MetadataStoreClient;
 use restate_metadata_store::protobuf::metadata_proxy_svc::client::MetadataStoreProxy;
@@ -23,11 +25,6 @@ use restate_types::replicated_loglet::logserver_candidate_filter;
 use restate_types::replication::{NodeSetChecker, NodeSetSelector, NodeSetSelectorOptions};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
-use crate::connection::ConnectionInfo;
-use crate::util::update_state;
-
-// note 1: this is until we have a way to proxy metadata requests through nodes
-// note 2: currently supports replicated metadata only, node must be one of metadata nodes
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "set_storage_state")]
 pub struct SetOpts {

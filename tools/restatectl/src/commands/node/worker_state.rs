@@ -8,13 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
+
 use anyhow::bail;
 use assert2::let_assert;
 use cling::prelude::*;
-use std::collections::HashMap;
 
-use crate::connection::ConnectionInfo;
-use crate::util::update_state;
 use restate_cli_util::c_println;
 use restate_metadata_store::MetadataStoreClient;
 use restate_metadata_store::protobuf::metadata_proxy_svc::client::MetadataStoreProxy;
@@ -25,6 +24,9 @@ use restate_types::partitions::{PartitionReplication, worker_candidate_filter};
 use restate_types::replication::balanced_spread_selector::{
     BalancedSpreadSelector, SelectorOptions,
 };
+
+use crate::commands::node::update_state;
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "set_worker_state")]
