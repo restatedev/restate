@@ -1927,6 +1927,7 @@ mod tests {
         use super::*;
 
         use googletest::prelude::*;
+        use restate_types::config::Configuration;
         use restate_types::invocation::InvocationRetention;
         use restate_types::schema::service::InvocationAttemptTimeouts;
         use std::num::NonZeroU64;
@@ -2120,6 +2121,27 @@ mod tests {
                 eq(InvocationRetention {
                     completion_retention: Duration::from_secs(60),
                     journal_retention: Duration::from_secs(60),
+                })
+            )
+        }
+
+        #[test]
+        fn journal_retention_global_override_is_respected() {
+            let mut config = Configuration::default();
+            config.admin.experimental_feature_force_journal_retention =
+                Some(Duration::from_secs(300));
+            restate_types::config::set_current_config(config);
+
+            let target = init_discover_and_resolve_target(
+                greeter_service(),
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(300),
+                    journal_retention: Duration::from_secs(300),
                 })
             )
         }
