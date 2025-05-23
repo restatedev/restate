@@ -1059,7 +1059,12 @@ impl Decoder for ServiceProtocolV4Codec {
                 }
             },
 
-            RawEntryInner::Event(e) => Entry::Event(e.clone().into()),
+            RawEntryInner::Event(e) => (if let Ok(parsed_event) = Event::try_from(e.clone()) {
+                parsed_event
+            } else {
+                Event::Generic(e.clone())
+            })
+            .into(),
         })
     }
 }

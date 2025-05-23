@@ -18,14 +18,16 @@ use restate_types::journal_v2::raw::RawEvent;
 pub(super) struct ApplyEventCommand<'e> {
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_status: &'e mut InvocationStatus,
-    pub(super) entry: &'e RawEvent,
+    pub(super) entry: &'e mut RawEvent,
 }
 
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyEventCommand<'e>
 {
     async fn apply(self, _ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        // TODO is there anything to do here?!
+        // Some Events are merged together when duplicated, to avoid storing too many duplicate events
+        // let e: Entry = self.entry.clone().into();
+
         Ok(())
     }
 }

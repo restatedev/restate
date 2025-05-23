@@ -52,6 +52,7 @@ use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, trace};
 use tracing::{error, instrument};
 
+use crate::error::SdkInvocationErrorV2;
 use crate::metric_definitions::{
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
     TASK_OP_SUSPENDED,
@@ -64,10 +65,15 @@ use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal_v2;
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader, RawNotification};
-use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
+use restate_types::journal_v2::raw::{
+    RawCommand, RawEntry, RawEntryHeader, RawEvent, RawNotification,
+};
+use restate_types::journal_v2::{
+    CommandIndex, EntryMetadata, Event, NotificationId, TransientErrorEvent,
+};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
+use restate_types::service_protocol::ServiceProtocolVersion;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -673,6 +679,12 @@ where
                 // we assume that we have stored it previously.
                 if has_changed {
                     ism.notify_pinned_deployment(pinned_deployment);
+                } else {
+                    // The service protocol is selected only if this was the stored version already,
+                    // or if we send the pinned deployment through (see handle_new_command)
+                    ism.notify_selected_service_protocol(
+                        pinned_deployment.service_protocol_version,
+                    );
                 }
             },
         );
@@ -796,6 +808,7 @@ where
                 ism.invocation_state_debug()
             );
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
+                ism.notify_selected_service_protocol(pinned_deployment.service_protocol_version);
                 let _ = output_tx
                     .send(Effect {
                         invocation_id,
@@ -851,6 +864,7 @@ where
                 ism.invocation_state_debug()
             );
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
+                ism.notify_selected_service_protocol(pinned_deployment.service_protocol_version);
                 let _ = output_tx
                     .send(Effect {
                         invocation_id,
@@ -1196,10 +1210,58 @@ where
                 trace!("Invocation state: {:?}.", ism.invocation_state_debug());
                 let next_retry_at = SystemTime::now() + next_retry_timer_duration;
 
+                let journal_v2_related_command_type =
+                    if let InvokerError::SdkV2(SdkInvocationErrorV2 {
+                        related_command: Some(ref related_entry),
+                        ..
+                    }) = error
+                    {
+                        related_entry
+                            .related_entry_type
+                            .and_then(|e| e.try_as_command_ref().copied())
+                    } else {
+                        None
+                    };
+                let invocation_error_report = error.into_invocation_error_report();
+                if ism
+                    .selected_service_protocol()
+                    .is_some_and(|sp| *sp >= ServiceProtocolVersion::V4)
+                {
+                    // Only if protocol version >= 4 was selected we can propose the transient error
+                    let event = Event::TransientError(TransientErrorEvent {
+                        error_code: invocation_error_report.err.code(),
+                        error_message: invocation_error_report.err.message().to_owned(),
+                        error_stacktrace: invocation_error_report
+                            .err
+                            .stacktrace()
+                            .map(|s| s.to_owned()),
+                        restate_doc_error_code: invocation_error_report
+                            .doc_error_code
+                            .map(|c| c.code().to_owned()),
+                        related_command_index: invocation_error_report.related_entry_index,
+                        related_command_name: invocation_error_report.related_entry_name.clone(),
+                        related_command_type: journal_v2_related_command_type,
+                        count: 0,
+                    });
+                    let _ = self
+                        .invocation_state_machine_manager
+                        .resolve_partition_sender(partition)
+                        .expect("Partition should be registered")
+                        .send(Effect {
+                            invocation_id,
+                            invocation_epoch: ism.invocation_epoch,
+                            kind: EffectKind::JournalEntryV2 {
+                                entry: RawEntry::new(RawEntryHeader::new(), RawEvent::from(event)),
+                                command_index_to_ack: None,
+                            },
+                        })
+                        .await;
+                }
+
                 self.status_store.on_failure(
                     partition,
                     invocation_id,
-                    error.into_invocation_error_report(),
+                    invocation_error_report,
                     Some(next_retry_at),
                 );
                 let epoch = ism.invocation_epoch;

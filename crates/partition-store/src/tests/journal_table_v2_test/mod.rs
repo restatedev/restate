@@ -26,7 +26,7 @@ use restate_types::journal_v2::raw::RawCommandSpecificMetadata;
 use restate_types::journal_v2::{
     CallCommand, CallRequest, CommandType, CompletionId, CompletionType, Entry, EntryMetadata,
     EntryType, Event, NotificationId, NotificationType, OneWayCallCommand, SleepCommand,
-    SleepCompletion,
+    SleepCompletion, TransientErrorEvent,
 };
 
 const MOCK_INVOCATION_ID_1: InvocationId =
@@ -305,12 +305,16 @@ async fn test_event() {
 
     let mut txn = rocksdb.transaction();
 
-    let event = journal_v2::Event::Suspend {
-        waiting_for_notification_ids: vec![
-            NotificationId::CompletionId(10),
-            NotificationId::SignalIndex(10),
-        ],
-    };
+    let event = journal_v2::Event::TransientError(TransientErrorEvent {
+        error_code: 500u16.into(),
+        error_message: "my_error".to_string(),
+        error_stacktrace: None,
+        restate_doc_error_code: None,
+        related_command_index: None,
+        related_command_name: Some("Input".to_string()),
+        related_command_type: None,
+        count: 10,
+    });
 
     // Populate
     txn.put_journal_entry(

@@ -133,7 +133,7 @@ where
         }
 
         let mut entries = VecDeque::from([self.entry]);
-        while let Some(entry) = entries.pop_front() {
+        while let Some(mut entry) = entries.pop_front() {
             // We need this information to store the journal entry!
             let mut related_completion_ids = vec![];
 
@@ -326,7 +326,7 @@ where
                         invocation_status: &mut self.invocation_status,
                         entry: entry
                             .inner
-                            .try_as_event_ref()
+                            .try_as_event_mut()
                             .ok_or(Error::BadEntryVariant(EntryType::Event))?,
                     }
                     .apply(ctx)
