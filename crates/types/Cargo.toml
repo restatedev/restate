@@ -108,9 +108,8 @@ prettyplease = "0.2"
 schemars = { workspace = true }
 serde_json = { workspace = true }
 syn = "2.0"
-typify = { version = "0.1.0" }
-jsonptr = "0.4.7"
-
+typify = { version = "0.4.1" }
+jsonptr = "0.7.1"
 
 [[bench]]
 name = "network_serialization"

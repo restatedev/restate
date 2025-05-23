@@ -415,13 +415,13 @@ pub mod test_util {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeploymentSchemas {
     pub metadata: DeploymentMetadata,
 
-    // We need to store ServiceMetadata here only for queries
-    // We could optimize the memory impact of this by reading these info from disk
-    pub services: Vec<ServiceMetadata>,
+    #[serde_as(as = "restate_serde_util::MapAsVec")]
+    pub services: HashMap<String, ServiceMetadata>,
 }
 
 impl DeploymentResolver for Schema {
@@ -457,7 +457,7 @@ impl DeploymentResolver for Schema {
                     id: *deployment_id,
                     metadata: schemas.metadata.clone(),
                 },
-                schemas.services.clone(),
+                schemas.services.values().cloned().collect(),
             )
         })
     }
@@ -474,7 +474,7 @@ impl DeploymentResolver for Schema {
                     schemas
                         .services
                         .iter()
-                        .map(|s| (s.name.clone(), s.revision))
+                        .map(|(k, v)| (k.clone(), v.revision))
                         .collect(),
                 )
             })

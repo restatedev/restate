@@ -357,15 +357,17 @@ where
                     /* has_changed= */ true,
                 )
             };
-        if let Some(service_metadata) =
-            schemas.resolve_latest_service(self.invocation_target.service_name())
-        {
+        if let Some(invocation_attempt_timeouts) = schemas.resolve_invocation_attempt_timeouts(
+            &deployment.id,
+            self.invocation_target.service_name(),
+            self.invocation_target.handler_name(),
+        ) {
             // Override the inactivity timeout and abort timeout, if available
-            if let Some(inactivity_timeout) = service_metadata.inactivity_timeout {
-                self.inactivity_timeout = inactivity_timeout.into();
+            if let Some(inactivity_timeout) = invocation_attempt_timeouts.inactivity_timeout {
+                self.inactivity_timeout = inactivity_timeout;
             }
-            if let Some(abort_timeout) = service_metadata.abort_timeout {
-                self.abort_timeout = abort_timeout.into();
+            if let Some(abort_timeout) = invocation_attempt_timeouts.abort_timeout {
+                self.abort_timeout = abort_timeout;
             }
         } else {
             warn!("Unexpected service not found, after resolving correctly the deployment.");

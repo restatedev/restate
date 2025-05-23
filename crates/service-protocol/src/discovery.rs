@@ -52,6 +52,8 @@ const SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v1+json";
 const SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v2+json";
+const SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE: &str =
+    "application/vnd.restate.endpointmanifest.v3+json";
 static SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS: LazyLock<HeaderValue> = LazyLock::new(|| {
     let supported_versions = ServiceDiscoveryProtocolVersion::iter()
         .skip_while(|version| version < &MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION)
@@ -73,6 +75,7 @@ fn service_discovery_protocol_to_content_type(
         }
         ServiceDiscoveryProtocolVersion::V1 => SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE,
         ServiceDiscoveryProtocolVersion::V2 => SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE,
+        ServiceDiscoveryProtocolVersion::V3 => SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE,
     }
 }
 
@@ -82,6 +85,7 @@ fn parse_service_discovery_protocol_version_from_content_type(
     match content_type {
         SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V1),
         SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V2),
+        SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V3),
         _ => None,
     }
 }
@@ -250,7 +254,9 @@ impl ServiceDiscovery {
             ServiceDiscoveryProtocolVersion::Unspecified => {
                 unreachable!("unspecified service discovery protocol should not be chosen")
             }
-            ServiceDiscoveryProtocolVersion::V1 | ServiceDiscoveryProtocolVersion::V2 => {
+            ServiceDiscoveryProtocolVersion::V1
+            | ServiceDiscoveryProtocolVersion::V2
+            | ServiceDiscoveryProtocolVersion::V3 => {
                 serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?
             }
         };
@@ -347,8 +353,7 @@ impl ServiceDiscovery {
         }
 
         // Sanity checks for the service protocol version
-        if endpoint_response.min_protocol_version <= 0
-            || endpoint_response.min_protocol_version > MAX_SERVICE_PROTOCOL_VERSION_VALUE as i64
+        if endpoint_response.min_protocol_version.get() > MAX_SERVICE_PROTOCOL_VERSION_VALUE as u64
         {
             return Err(DiscoveryError::BadResponse(
                 format!(
@@ -358,8 +363,7 @@ impl ServiceDiscovery {
             ));
         }
 
-        if endpoint_response.max_protocol_version <= 0
-            || endpoint_response.max_protocol_version > MAX_SERVICE_PROTOCOL_VERSION_VALUE as i64
+        if endpoint_response.max_protocol_version.get() > MAX_SERVICE_PROTOCOL_VERSION_VALUE as u64
         {
             return Err(DiscoveryError::BadResponse(
                 format!(
@@ -375,8 +379,8 @@ impl ServiceDiscovery {
             ));
         }
 
-        let min_version = endpoint_response.min_protocol_version as i32;
-        let mut max_version = endpoint_response.max_protocol_version as i32;
+        let min_version = endpoint_response.min_protocol_version.get() as i32;
+        let mut max_version = endpoint_response.max_protocol_version.get() as i32;
         let mut sdk_version = None;
 
         // Fix for the SDK-Typescript bad protocol version,
@@ -498,12 +502,13 @@ mod tests {
     use restate_types::service_discovery::ServiceDiscoveryProtocolVersion;
     use restate_types::service_protocol::MAX_SERVICE_PROTOCOL_VERSION;
     use std::collections::HashMap;
+    use std::num::NonZeroU64;
 
     #[test]
     fn fail_on_invalid_min_protocol_version_with_bad_response() {
         let response = endpoint_manifest::Endpoint {
-            min_protocol_version: 0,
-            max_protocol_version: 1,
+            min_protocol_version: NonZeroU64::MAX,
+            max_protocol_version: NonZeroU64::MAX,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
         };
@@ -523,8 +528,8 @@ mod tests {
     #[test]
     fn fail_on_bidirectional_with_lambda() {
         let response = endpoint_manifest::Endpoint {
-            min_protocol_version: 0,
-            max_protocol_version: 1,
+            min_protocol_version: NonZeroU64::MIN,
+            max_protocol_version: NonZeroU64::MIN,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
         };
@@ -549,8 +554,8 @@ mod tests {
     #[test]
     fn fail_on_invalid_max_protocol_version_with_bad_response() {
         let response = endpoint_manifest::Endpoint {
-            min_protocol_version: 1,
-            max_protocol_version: i64::MAX,
+            min_protocol_version: NonZeroU64::MIN,
+            max_protocol_version: NonZeroU64::MAX,
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
         };
@@ -570,8 +575,8 @@ mod tests {
     #[test]
     fn fail_on_max_protocol_version_smaller_than_min_protocol_version_with_bad_response() {
         let response = endpoint_manifest::Endpoint {
-            min_protocol_version: 10,
-            max_protocol_version: 9,
+            min_protocol_version: NonZeroU64::new(10).unwrap(),
+            max_protocol_version: NonZeroU64::new(9).unwrap(),
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
         };
@@ -590,10 +595,10 @@ mod tests {
 
     #[test]
     fn fail_with_unsupported_protocol_version() {
-        let unsupported_version = i32::from(MAX_SERVICE_PROTOCOL_VERSION) + 1;
+        let unsupported_version = MAX_SERVICE_PROTOCOL_VERSION.as_repr() + 1;
         let response = endpoint_manifest::Endpoint {
-            min_protocol_version: unsupported_version as i64,
-            max_protocol_version: unsupported_version as i64,
+            min_protocol_version: NonZeroU64::new(unsupported_version as u64).unwrap(),
+            max_protocol_version: NonZeroU64::new(unsupported_version as u64).unwrap(),
             services: Vec::new(),
             protocol_mode: Some(ProtocolMode::BidiStream),
         };

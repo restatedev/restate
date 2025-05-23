@@ -164,6 +164,7 @@ pub struct CallOrSendMetadata {
     pub invocation_target: InvocationTarget,
     pub span_context: ServiceInvocationSpanContext,
     pub completion_retention_duration: Duration,
+    pub journal_retention_duration: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

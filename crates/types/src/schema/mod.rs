@@ -130,7 +130,12 @@ mod test_util {
             handler_name: &str,
         ) -> InvocationTargetMetadata {
             self.resolve_latest_invocation_target(service_name, handler_name)
-                .unwrap()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Invocation target for {}/{} must exists",
+                        service_name, handler_name
+                    )
+                })
         }
 
         #[track_caller]
