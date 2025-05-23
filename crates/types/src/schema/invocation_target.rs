@@ -11,6 +11,7 @@
 use super::Schema;
 use crate::invocation::{InvocationRetention, InvocationTargetType, WorkflowHandlerType};
 
+use crate::config::Configuration;
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
@@ -86,6 +87,15 @@ impl InvocationTargetResolver for Schema {
                 .map(|handler_schemas| handler_schemas.target_meta.clone())
         })
         .flatten()
+        .map(|mut meta| {
+            if let Some(journal_retention_override) = Configuration::pinned()
+                .admin
+                .experimental_feature_force_journal_retention
+            {
+                meta.journal_retention = journal_retention_override
+            }
+            meta
+        })
     }
 }
 
