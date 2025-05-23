@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::errors::GenericError;
 use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use crate::journal_v2::encoding::DecodingError;
@@ -263,7 +264,7 @@ impl EntryMetadata for RawEvent {
 // The conversion RawEvent <-> Event is defined at this level directly.
 
 impl TryFrom<RawEvent> for Event {
-    type Error = serde_json::Error;
+    type Error = GenericError;
 
     fn try_from(value: RawEvent) -> Result<Self, Self::Error> {
         let entry_type = value

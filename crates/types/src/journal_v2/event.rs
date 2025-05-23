@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::errors::InvocationErrorCode;
-use crate::journal_v2::raw::{RawEvent, TryFromEntry, TryFromEntryError};
-use crate::journal_v2::{CommandIndex, CommandType, Entry, EntryMetadata, EntryType};
+use crate::journal_v2::raw::{RawEntry, RawEvent, TryFromEntry, TryFromEntryError};
+use crate::journal_v2::{CommandIndex, CommandType, Encoder, Entry, EntryMetadata, EntryType};
 use serde::{Deserialize, Serialize};
 use strum::EnumString;
 
@@ -60,6 +60,12 @@ pub enum Event {
 impl EntryMetadata for Event {
     fn ty(&self) -> EntryType {
         EntryType::Event
+    }
+}
+
+impl Event {
+    pub fn encode<E: Encoder>(&self) -> RawEntry {
+        E::encode_entry(&Entry::Event(self.clone()))
     }
 }
 
