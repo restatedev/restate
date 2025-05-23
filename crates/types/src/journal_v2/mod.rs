@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// TODO remove this!
-#![allow(dead_code)]
-
 //! This module contains the data model of the Journal.
 //!
 //! Within the runtime, Journal entries are represented in different ways in different stages/components:
@@ -34,6 +31,7 @@ use std::fmt;
 pub mod command;
 pub mod encoding;
 mod event;
+pub mod lite;
 pub mod notification;
 pub mod raw;
 mod types;
@@ -77,6 +75,7 @@ impl fmt::Display for EntryType {
     }
 }
 
+use crate::journal_v2::lite::*;
 use crate::journal_v2::raw::*;
 
 #[enum_dispatch]
