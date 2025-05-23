@@ -117,22 +117,3 @@ impl InvocationStatusStore {
         report.last_retry_attempt_failure = Some(reason);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    impl InvocationStatusStore {
-        pub fn resolve_invocation(
-            &self,
-            partition: PartitionLeaderEpoch,
-            invocation_id: &InvocationId,
-        ) -> Option<InvocationStatusReport> {
-            self.0.get(&partition).and_then(|inner| {
-                inner.get(invocation_id).map(|report| {
-                    InvocationStatusReport::new(*invocation_id, partition, report.clone())
-                })
-            })
-        }
-    }
-}

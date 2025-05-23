@@ -170,6 +170,7 @@ pub struct InvokerOptions {
     /// # Limit number of concurrent invocations from this node
     ///
     /// Number of concurrent invocations that can be processed by the invoker.
+    #[deprecated]
     concurrent_invocations_limit: Option<NonZeroUsize>,
 
     // -- Private config options (not exposed in the schema)
@@ -185,10 +186,6 @@ impl InvokerOptions {
         })
     }
 
-    pub fn concurrent_invocations_limit(&self) -> Option<usize> {
-        self.concurrent_invocations_limit.map(Into::into)
-    }
-
     pub fn in_memory_queue_length_limit(&self) -> usize {
         self.in_memory_queue_length_limit.into()
     }
@@ -200,6 +197,7 @@ impl InvokerOptions {
 
 impl Default for InvokerOptions {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(50),
@@ -214,7 +212,7 @@ impl Default for InvokerOptions {
             message_size_warning: NonZeroUsize::new(10 * 1024 * 1024).unwrap(), // 10MiB
             message_size_limit: None,
             tmp_dir: None,
-            concurrent_invocations_limit: Some(NonZeroUsize::new(100).unwrap()),
+            concurrent_invocations_limit: None,
             disable_eager_state: false,
         }
     }
