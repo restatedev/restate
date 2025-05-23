@@ -25,7 +25,7 @@ use restate_types::journal_v2;
 use restate_types::journal_v2::raw::RawCommandSpecificMetadata;
 use restate_types::journal_v2::{
     CallCommand, CallRequest, CommandType, CompletionId, CompletionType, Entry, EntryMetadata,
-    EntryType, EventType, NotificationId, NotificationType, OneWayCallCommand, SleepCommand,
+    EntryType, Event, NotificationId, NotificationType, OneWayCallCommand, SleepCommand,
     SleepCompletion,
 };
 
@@ -305,9 +305,11 @@ async fn test_event() {
 
     let mut txn = rocksdb.transaction();
 
-    let event = journal_v2::Event {
-        ty: EventType::Lifecycle,
-        metadata: [("abc".to_string(), ByteString::from_static("123"))].into(),
+    let event = journal_v2::Event::Suspend {
+        waiting_for_notification_ids: vec![
+            NotificationId::CompletionId(10),
+            NotificationId::SignalIndex(10),
+        ],
     };
 
     // Populate
@@ -323,7 +325,10 @@ async fn test_event() {
     // Verify the event is correct
     let mut journal = txn.get_journal(MOCK_INVOCATION_ID_1, 1).unwrap();
     let entry = journal.next().await.unwrap().unwrap().1;
-    assert_eq!(entry.inner.try_as_event().unwrap(), event);
+    assert_eq!(
+        entry.decode::<ServiceProtocolV4Codec, Event>().unwrap(),
+        event
+    );
 
     assert!(journal.next().await.is_none());
     drop(journal);

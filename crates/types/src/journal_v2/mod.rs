@@ -86,7 +86,14 @@ pub trait EntryMetadata {
 
 /// Root enum representing a decoded entry.
 #[enum_dispatch(EntryMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    /* The deserialize trait is used only by CLI */ Deserialize,
+)]
 pub enum Entry {
     Command(Command),
     Notification(Notification),

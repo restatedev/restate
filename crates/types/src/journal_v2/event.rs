@@ -9,23 +9,34 @@
 // by the Apache License, Version 2.0.
 
 use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
-use crate::journal_v2::{Entry, EntryMetadata, EntryType};
+use crate::journal_v2::{Entry, EntryMetadata, EntryType, NotificationId};
 use bytestring::ByteString;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use std::collections::HashMap;
 use strum::EnumString;
 
-#[derive(Debug, Clone, PartialEq, Eq, EnumString, strum::Display, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, EnumString, strum::Display)]
 pub enum EventType {
-    Lifecycle,
+    Suspend,
+    Resume,
+    TransientError,
     #[strum(default)]
-    Other(String),
+    Generic(String),
 }
 
+#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Event {
-    pub ty: EventType,
-    pub metadata: HashMap<String, ByteString>,
+pub enum Event {
+    Suspend {
+        waiting_for_notification_ids: Vec<NotificationId>,
+    },
+    Resume {},
+    TransientError {},
+    Generic {
+        ty: String,
+        metadata: HashMap<String, ByteString>,
+    },
 }
 
 impl EntryMetadata for Event {

@@ -12,11 +12,14 @@ use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use crate::journal_v2::encoding::DecodingError;
 use crate::journal_v2::{
-    CommandType, Decoder, Entry, EntryMetadata, EntryType, Event, NotificationId, NotificationType,
+    CommandType, Decoder, Entry, EntryMetadata, EntryType, Event, EventType, NotificationId,
+    NotificationType,
 };
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
+use bytestring::ByteString;
 use enum_dispatch::enum_dispatch;
+use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -104,7 +107,7 @@ impl EntryMetadata for RawEntry {
 pub enum RawEntryInner {
     Command(RawCommand),
     Notification(RawNotification),
-    Event(Event),
+    Event(RawEvent),
 }
 
 // -- Raw command
@@ -219,5 +222,93 @@ impl RawNotification {
 impl EntryMetadata for RawNotification {
     fn ty(&self) -> EntryType {
         EntryType::Notification(self.ty)
+    }
+}
+
+// -- Raw event
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RawEvent {
+    ty: String,
+    metadata: HashMap<String, ByteString>,
+}
+
+impl RawEvent {
+    pub fn new<T: IntoIterator<Item = (String, String)>>(
+        event_type: EventType,
+        metadata: T,
+    ) -> Self {
+        RawEvent {
+            ty: event_type.to_string(),
+            metadata: HashMap::from_iter(metadata.into_iter().map(|(k, v)| (k, v.into()))),
+        }
+    }
+
+    pub fn into_inner(self) -> (String, HashMap<String, ByteString>) {
+        (self.ty, self.metadata)
+    }
+}
+
+impl EntryMetadata for RawEvent {
+    fn ty(&self) -> EntryType {
+        EntryType::Event
+    }
+}
+
+// The conversion RawEvent <-> Event is defined at this level directly.
+
+impl From<RawEvent> for Event {
+    fn from(value: RawEvent) -> Self {
+        let Ok(entry_type) = value.ty.parse::<EventType>() else {
+            return Event::Generic {
+                ty: value.ty,
+                metadata: value.metadata,
+            };
+        };
+
+        match entry_type {
+            EventType::Suspend => {
+                let Ok(waiting_for_notification_ids) = serde_json::from_str(
+                    value
+                        .metadata
+                        .get("waiting_for_notification_ids")
+                        .map(|s| s.as_ref())
+                        .unwrap_or_default(),
+                ) else {
+                    return Event::Generic {
+                        ty: value.ty,
+                        metadata: value.metadata,
+                    };
+                };
+                Event::Suspend {
+                    waiting_for_notification_ids,
+                }
+            }
+            EventType::Resume => Event::Resume {},
+            EventType::TransientError => Event::TransientError {},
+            EventType::Generic(_) => Event::Generic {
+                ty: value.ty,
+                metadata: value.metadata,
+            },
+        }
+    }
+}
+
+impl From<Event> for RawEvent {
+    fn from(value: Event) -> Self {
+        match value {
+            Event::Suspend {
+                waiting_for_notification_ids,
+            } => RawEvent::new(
+                EventType::Suspend,
+                [(
+                    "waiting_for_notification_ids".to_owned(),
+                    serde_json::to_string(&waiting_for_notification_ids).unwrap(),
+                )],
+            ),
+            Event::Resume {} => RawEvent::new(EventType::Resume, []),
+            Event::TransientError {} => RawEvent::new(EventType::TransientError, []),
+            Event::Generic { ty, metadata } => RawEvent { ty, metadata },
+        }
     }
 }
