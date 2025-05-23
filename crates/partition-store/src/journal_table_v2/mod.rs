@@ -184,14 +184,34 @@ fn all_journals<S: StorageAccess>(
 fn delete_journal<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
-    journal_length: EntryIndex,
+    journal_length: Option<EntryIndex>,
 ) -> Result<()> {
     let _x = RocksDbPerfGuard::new("delete-journal");
-    let mut key = write_journal_entry_key(invocation_id, 0);
-    let k = &mut key;
-    for journal_index in 0..journal_length {
-        k.journal_index = Some(journal_index);
-        storage.delete_key(k)?;
+
+    if let Some(journal_length) = journal_length {
+        let mut key = write_journal_entry_key(invocation_id, 0);
+        let k = &mut key;
+        for journal_index in 0..journal_length {
+            k.journal_index = Some(journal_index);
+            storage.delete_key(k)?;
+        }
+    } else {
+        let key = JournalKey::default()
+            .partition_key(invocation_id.partition_key())
+            .invocation_uuid(invocation_id.invocation_uuid());
+        // We need to scan before deleting to figure out the entries in rocksdb
+        let journal_indexes = OwnedIterator::new(storage.iterator_from(
+            TableScan::SinglePartitionKeyPrefix(invocation_id.partition_key(), key.clone()),
+        )?)
+        .map(|(mut key, _)| {
+            let journal_key = JournalKey::deserialize_from(&mut key)?;
+            let (_, _, entry_index) = journal_key.into_inner_ok_or()?;
+            Ok(entry_index)
+        })
+        .collect::<Result<Vec<_>>>()?;
+        for entry_index in journal_indexes {
+            storage.delete_key(&key.clone().journal_index(entry_index))?;
+        }
     }
 
     // Delete the indexes
@@ -412,7 +432,7 @@ impl JournalTable for PartitionStoreTransaction<'_> {
     async fn delete_journal(
         &mut self,
         invocation_id: InvocationId,
-        journal_length: EntryIndex,
+        journal_length: Option<EntryIndex>,
     ) -> Result<()> {
         self.assert_partition_key(&invocation_id)?;
         let _x = RocksDbPerfGuard::new("delete-journal");

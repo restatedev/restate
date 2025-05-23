@@ -60,6 +60,7 @@ fn mock_call_command(
             headers: vec![],
             idempotency_key: Some(ByteString::from_static("my-idempotency-key")),
             completion_retention_duration: Duration::from_secs(10),
+            journal_retention_duration: Duration::from_secs(11),
         },
         invocation_id_completion_id,
         name: Default::default(),
@@ -80,6 +81,7 @@ fn mock_one_way_call_command(invocation_id_completion_id: CompletionId) -> Entry
             headers: vec![],
             idempotency_key: Some(ByteString::from_static("my-idempotency-key")),
             completion_retention_duration: Duration::from_secs(10),
+            journal_retention_duration: Duration::from_secs(11),
         },
         invoke_time: 0.into(),
         invocation_id_completion_id,
@@ -182,7 +184,7 @@ async fn sleep_point_lookups<T: JournalTable>(txn: &mut T) {
 }
 
 async fn delete_journal<T: JournalTable>(txn: &mut T, length: usize) {
-    txn.delete_journal(MOCK_INVOCATION_ID_1, length as u32)
+    txn.delete_journal(MOCK_INVOCATION_ID_1, Some(length as u32))
         .await
         .unwrap();
 }
@@ -227,6 +229,24 @@ async fn test_sleep_journal() {
     sleep_point_lookups(&mut txn).await;
     delete_journal(&mut txn, 10).await;
 
+    txn.commit().await.expect("should not fail");
+
+    let mut txn = rocksdb.transaction();
+    verify_journal_deleted(&mut txn, 10).await;
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_delete_journal_without_entry_index() {
+    let mut rocksdb = storage_test_environment().await;
+
+    let mut txn = rocksdb.transaction();
+    populate_sleep_journal(&mut txn).await;
+    txn.commit().await.expect("should not fail");
+
+    let mut txn = rocksdb.transaction();
+    txn.delete_journal(MOCK_INVOCATION_ID_1, None)
+        .await
+        .unwrap();
     txn.commit().await.expect("should not fail");
 
     let mut txn = rocksdb.transaction();

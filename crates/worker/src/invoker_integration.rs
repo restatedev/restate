@@ -119,10 +119,16 @@ where
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(&invocation_id, span_relation);
 
+        let completion_retention_duration = meta.compute_retention(false).completion_retention;
+
         Ok(CallEnrichmentResult {
             invocation_id,
             invocation_target,
-            completion_retention_time: meta.compute_retention(false),
+            completion_retention_time: if completion_retention_duration.is_zero() {
+                None
+            } else {
+                Some(completion_retention_duration)
+            },
             span_context,
         })
     }

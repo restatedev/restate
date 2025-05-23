@@ -86,7 +86,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     let mut table = Table::new_styled();
     table.add_kv_row(
         "Idempotent requests retention:",
-        service.idempotency_retention,
+        humantime::Duration::from(service.idempotency_retention),
     );
     c_println!("{table}");
     c_tip!("{}", IDEMPOTENCY_RETENTION);
@@ -96,9 +96,11 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         let mut table = Table::new_styled();
         table.add_kv_row(
             "Workflow retention time:",
-            service
-                .workflow_completion_retention
-                .expect("Workflows must have a well defined retention"),
+            humantime::format_duration(
+                service
+                    .workflow_completion_retention
+                    .expect("Workflows must have a well defined retention"),
+            ),
         );
         c_println!("{table}");
         c_tip!("{}", WORKFLOW_RETENTION);
@@ -110,7 +112,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         "Inactivity timeout:",
         service
             .inactivity_timeout
-            .map(|d| d.to_string())
+            .map(|d| humantime::format_duration(d).to_string())
             .unwrap_or("<DEFAULT>".to_string()),
     );
     c_println!("{table}");
@@ -122,7 +124,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         "Abort timeout:",
         service
             .abort_timeout
-            .map(|d| d.to_string())
+            .map(|d| humantime::format_duration(d).to_string())
             .unwrap_or("<DEFAULT>".to_string()),
     );
     c_println!("{table}");

@@ -43,7 +43,9 @@ use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
-use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
+use restate_types::schema::service::{
+    InvocationAttemptTimeouts, ServiceMetadata, ServiceMetadataResolver,
+};
 use serde_json::Value;
 
 #[derive(Default, Clone, Debug)]
@@ -55,6 +57,16 @@ pub(crate) struct MockSchemas(
 impl ServiceMetadataResolver for MockSchemas {
     fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
         self.0.resolve_latest_service(service_name)
+    }
+
+    fn resolve_invocation_attempt_timeouts(
+        &self,
+        deployment_id: &DeploymentId,
+        service_name: impl AsRef<str>,
+        handler_name: impl AsRef<str>,
+    ) -> Option<InvocationAttemptTimeouts> {
+        self.0
+            .resolve_invocation_attempt_timeouts(deployment_id, service_name, handler_name)
     }
 
     fn resolve_latest_service_openapi(&self, _: impl AsRef<str>) -> Option<Value> {

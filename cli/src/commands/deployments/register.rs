@@ -297,7 +297,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 icon_for_service_type(&service.ty),
             );
 
-            c_indent_table!(2, create_service_handlers_table(&service.handlers));
+            c_indent_table!(2, create_service_handlers_table(service.handlers.values()));
             c_println!();
         }
         c_println!();
@@ -373,10 +373,17 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                     );
                 }
 
-                let tt = create_service_handlers_table_diff(&existing_svc.handlers, &svc.handlers);
+                let tt = create_service_handlers_table_diff(
+                    existing_svc.handlers.values(),
+                    svc.handlers.values(),
+                );
                 c_indent_table!(2, tt);
             } else {
-                c_indentln!(2, "{}", create_service_handlers_table(&svc.handlers));
+                c_indentln!(
+                    2,
+                    "{}",
+                    create_service_handlers_table(svc.handlers.values())
+                );
             }
             c_println!();
         }

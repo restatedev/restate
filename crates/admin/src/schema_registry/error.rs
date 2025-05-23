@@ -15,6 +15,7 @@ use http::Uri;
 use restate_core::ShutdownError;
 use restate_metadata_store::ReadModifyWriteError;
 use restate_types::endpoint_manifest;
+use restate_types::endpoint_manifest::HandlerType;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::DeploymentId;
 use restate_types::invocation::ServiceType;
@@ -97,6 +98,18 @@ pub enum ServiceError {
     #[error("invalid combination of service type and handler type '({0}, {1:?})'")]
     #[code(unknown)]
     BadServiceAndHandlerType(ServiceType, Option<endpoint_manifest::HandlerType>),
+    #[error(
+        "{0} sets the workflow_completion_retention, but it's not a {t} handler",
+        t = HandlerType::Workflow
+    )]
+    #[code(unknown)]
+    UnexpectedWorkflowCompletionRetention(String),
+    #[error(
+        "{0} sets the idempotency_retention, but it's a {t} handler",
+        t = HandlerType::Workflow
+    )]
+    #[code(unknown)]
+    UnexpectedIdempotencyRetention(String),
     #[error("the json schema for {service}/{handler} {position} is invalid: {error}")]
     #[code(unknown)]
     BadJsonSchema {

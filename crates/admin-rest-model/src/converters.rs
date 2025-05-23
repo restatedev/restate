@@ -110,7 +110,7 @@ fn convert_service_metadata_v1(service_metadata: ServiceMetadata) -> ServiceMeta
         handlers: service_metadata
             .handlers
             .into_iter()
-            .map(convert_handler_metadata_v1)
+            .map(|(k, v)| (k, convert_handler_metadata_v1(v)))
             .collect(),
         ..service_metadata
     }

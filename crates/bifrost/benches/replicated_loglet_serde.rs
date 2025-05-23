@@ -86,7 +86,8 @@ fn invoke_cmd() -> Command {
             "application/json",
         )],
         execution_time: Some(MillisSinceEpoch::after(Duration::from_secs(10))),
-        completion_retention_duration: Some(Duration::from_secs(10)),
+        completion_retention_duration: Duration::from_secs(10),
+        journal_retention_duration: Default::default(),
         idempotency_key: Some(idempotency_key),
         response_sink: Some(
             restate_types::invocation::ServiceInvocationResponseSink::Ingress { request_id },
