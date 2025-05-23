@@ -116,6 +116,7 @@ pub struct PartitionProcessorManager {
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
     snapshot_repository: Option<SnapshotRepository>,
     fast_forward_on_startup: HashMap<PartitionId, Lsn>,
+    max_observed_partition_configuration: HashMap<PartitionId, Version>,
 }
 
 struct PendingSnapshotTask {
@@ -217,6 +218,7 @@ impl PartitionProcessorManager {
             snapshot_export_tasks: FuturesUnordered::default(),
             snapshot_repository,
             fast_forward_on_startup: HashMap::default(),
+            max_observed_partition_configuration: HashMap::default(),
         }
     }
 
@@ -508,6 +510,11 @@ impl PartitionProcessorManager {
                                     ControlProcessor {
                                         partition_id,
                                         command: ProcessorCommand::from(restart_as),
+                                        partition_configuration_version: self
+                                            .max_observed_partition_configuration
+                                            .get(&partition_id)
+                                            .copied()
+                                            .unwrap_or(Version::MIN),
                                     },
                                     &Metadata::with_current(|m| m.partition_table_ref()),
                                 );
@@ -780,6 +787,26 @@ impl PartitionProcessorManager {
         partition_table: &PartitionTable,
     ) {
         let partition_id = control_processor.partition_id;
+
+        if self
+            .max_observed_partition_configuration
+            .get(&partition_id)
+            .is_some_and(|version| version > &control_processor.partition_configuration_version)
+        {
+            debug!(
+                "Ignoring outdated control processor message for partition configuration version {}. Current version is {}.",
+                control_processor.partition_configuration_version,
+                self.max_observed_partition_configuration
+                    .get(&partition_id)
+                    .unwrap()
+            );
+        }
+
+        self.max_observed_partition_configuration.insert(
+            partition_id,
+            control_processor.partition_configuration_version,
+        );
+
         match control_processor.command {
             ProcessorCommand::Stop => {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
@@ -1171,7 +1198,7 @@ impl PartitionProcessorManager {
             .read_modify_write(partition_processor_epoch_key(partition_id), |epoch| {
                 let next_epoch = epoch
                     .map(|epoch: EpochMetadata| epoch.claim_leadership(node_id, partition_id))
-                    .unwrap_or_else(|| EpochMetadata::new(node_id, partition_id));
+                    .ok_or("missing epoch metadata".to_owned())?;
 
                 Ok(next_epoch)
             })
@@ -1452,6 +1479,7 @@ mod tests {
             commands: vec![ControlProcessor {
                 partition_id: PartitionId::MIN,
                 command: ProcessorCommand::Follower,
+                partition_configuration_version: Version::MIN,
             }],
         };
         let stop_processor_command = ControlProcessors {
@@ -1460,6 +1488,7 @@ mod tests {
             commands: vec![ControlProcessor {
                 partition_id: PartitionId::MIN,
                 command: ProcessorCommand::Stop,
+                partition_configuration_version: Version::MIN,
             }],
         };
 

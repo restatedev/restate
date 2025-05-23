@@ -19,10 +19,12 @@ use tokio::sync::{Mutex, MutexGuard};
 use tonic::{Code, Status, transport::Channel};
 use tracing::{debug, info};
 
+use crate::util::grpc_channel;
 use restate_core::protobuf::node_ctl_svc::{
     GetMetadataRequest, IdentResponse, new_node_ctl_client,
 };
 use restate_metadata_store::ReadModifyWriteError;
+use restate_types::partition_table::PartitionTable;
 use restate_types::{
     Version, Versioned,
     errors::SimpleStatus,
@@ -32,8 +34,6 @@ use restate_types::{
     protobuf::common::{MetadataKind, NodeStatus},
     storage::{StorageCodec, StorageDecode, StorageDecodeError},
 };
-
-use crate::util::grpc_channel;
 
 #[derive(Clone, Parser, Collect, Debug)]
 pub struct ConnectionInfo {
@@ -61,6 +61,9 @@ pub struct ConnectionInfo {
 
     #[clap(skip)]
     logs: Arc<Mutex<Option<Logs>>>,
+
+    #[clap(skip)]
+    partition_table: Arc<Mutex<Option<PartitionTable>>>,
 
     #[clap(skip)]
     open_connections: Arc<Mutex<HashMap<AdvertisedAddress, Channel>>>,
@@ -136,6 +139,50 @@ impl ConnectionInfo {
             MetadataKind::Logs,
             guard,
             |ident| Version::from(ident.logs_version),
+        )
+        .await
+    }
+
+    pub async fn get_partition_table(&self) -> Result<PartitionTable, ConnectionInfoError> {
+        let nodes_config = self.get_nodes_configuration().await?;
+
+        let guard = self.partition_table.lock().await;
+
+        let mut nodes_addresses = nodes_config
+            .iter()
+            .map(|(_, node)| &node.address)
+            .collect::<Vec<_>>();
+
+        nodes_addresses.shuffle(&mut rng());
+
+        let cluster_size = nodes_addresses.len();
+        let cached = self
+            .open_connections
+            .lock()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert!(!cached.is_empty(), "must have cached connections");
+
+        // To improve our chance of getting the latest partition table, we read from a simple
+        // majority of nodes. Existing connections take precedence.
+        let partition_table_nodes = cached
+            .iter()
+            .chain(
+                nodes_addresses
+                    .into_iter()
+                    .filter(|address| !cached.contains(address)),
+            )
+            .collect::<Vec<_>>();
+
+        self.get_latest_metadata(
+            partition_table_nodes.into_iter(),
+            (cluster_size / 2) + 1,
+            MetadataKind::PartitionTable,
+            guard,
+            |ident| Version::from(ident.partition_table_version),
         )
         .await
     }

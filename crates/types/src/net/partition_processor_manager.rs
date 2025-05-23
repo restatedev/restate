@@ -42,6 +42,8 @@ pub struct ControlProcessors {
 pub struct ControlProcessor {
     pub partition_id: PartitionId,
     pub command: ProcessorCommand,
+    #[serde(default = "Version::invalid")]
+    pub partition_configuration_version: Version,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, derive_more::Display)]

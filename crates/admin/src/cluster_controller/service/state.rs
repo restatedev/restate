@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, Deref};
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::future::OptionFuture;
+use futures::never::Never;
 use itertools::Itertools;
 use tokio::sync::watch;
 use tokio::time;
@@ -21,11 +23,14 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::TransportConnect;
-use restate_core::{Metadata, my_node_id};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, my_node_id};
+use restate_metadata_store::MetadataStoreClient;
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, PartitionProcessorStatus};
 use restate_types::config::{AdminOptions, Configuration};
+use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, Version};
@@ -35,7 +40,7 @@ use crate::cluster_controller::logs_controller::{
     LogsBasedPartitionProcessorPlacementHints, LogsController,
 };
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-use crate::cluster_controller::scheduler::{PartitionTableNodeSetSelectorHints, Scheduler};
+use crate::cluster_controller::scheduler::{Scheduler, SchedulerNodeSetSelectorHints};
 use crate::cluster_controller::service::Service;
 
 pub enum ClusterControllerState<T> {
@@ -154,6 +159,7 @@ pub struct Leader<T> {
     cluster_state_watcher: ClusterStateWatcher,
     log_trim_check_interval: Option<Interval>,
     snapshots_repository_configured: bool,
+    epoch_metadata_rx: tokio::sync::mpsc::Receiver<HashMap<PartitionId, EpochMetadata>>,
 }
 
 impl<T> Leader<T>
@@ -174,6 +180,14 @@ where
             time::interval(configuration.admin.log_tail_update_interval.into());
         find_logs_tail_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+        let (epoch_metadata_tx, epoch_metadata_rx) = tokio::sync::mpsc::channel(1);
+
+        TaskCenter::spawn_unmanaged(TaskKind::Background, "epoch-metadata-fetch", {
+            let metadata_store_client = service.metadata_writer.raw_metadata_store_client().clone();
+
+            async move { Self::fetch_epoch_metadata(metadata_store_client, epoch_metadata_tx).await }
+        }).expect("failed to spawn epoch metadata fetch task");
+
         let metadata = Metadata::current();
         let mut leader = Self {
             bifrost: service.bifrost.clone(),
@@ -185,6 +199,7 @@ where
             cluster_state_watcher: service.cluster_state_refresher.cluster_state_watcher(),
             log_trim_check_interval,
             snapshots_repository_configured: configuration.worker.snapshots.destination.is_some(),
+            epoch_metadata_rx,
         };
 
         leader.logs_watcher.mark_changed();
@@ -201,9 +216,7 @@ where
         self.logs_controller.on_observed_cluster_state_update(
             &nodes_config,
             observed_cluster_state,
-            Metadata::with_current(|m| {
-                PartitionTableNodeSetSelectorHints::from(m.partition_table_snapshot())
-            }),
+            SchedulerNodeSetSelectorHints::new(&self.scheduler),
         )?;
 
         self.scheduler
@@ -238,6 +251,12 @@ where
                 }
                 Ok(_) = self.partition_table_watcher.changed() => {
                     return LeaderEvent::PartitionTableUpdate;
+                }
+                Some(epoch_metadata) = self.epoch_metadata_rx.recv() => {
+                    for (partition_id, epoch_metadata) in epoch_metadata {
+                        let (_, _, current, next) = epoch_metadata.into_inner();
+                        self.scheduler.update_partition_configuration(partition_id, current, next);
+                    }
                 }
             }
         }
@@ -330,6 +349,44 @@ where
                     "Failed to trim log {log_id}. This can lead to increased disk usage: {err}"
                 );
             }
+        }
+    }
+
+    async fn fetch_epoch_metadata(
+        metadata_client: MetadataStoreClient,
+        epoch_metadata_tx: tokio::sync::mpsc::Sender<HashMap<PartitionId, EpochMetadata>>,
+    ) -> Result<Never, ShutdownError> {
+        let mut epoch_metadata_fetch_interval = tokio::time::interval(Duration::from_secs(5));
+        epoch_metadata_fetch_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut partition_table = Metadata::with_current(|m| m.updateable_partition_table());
+
+        loop {
+            epoch_metadata_fetch_interval.tick().await;
+            let send_permit = epoch_metadata_tx
+                .reserve()
+                .await
+                .map_err(|_| ShutdownError)?;
+            let mut latest_epoch_metadata = HashMap::default();
+
+            let partition_table = partition_table.live_load();
+
+            for partition_id in partition_table.iter_ids() {
+                // todo replace with multi get
+                match metadata_client
+                    .get::<EpochMetadata>(partition_processor_epoch_key(*partition_id))
+                    .await
+                {
+                    Ok(Some(epoch_metadata)) => {
+                        latest_epoch_metadata.insert(*partition_id, epoch_metadata);
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        debug!(%err, "Failed to fetch epoch metadata for partition {partition_id}");
+                    }
+                }
+            }
+
+            send_permit.send(latest_epoch_metadata);
         }
     }
 }

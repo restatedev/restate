@@ -520,6 +520,7 @@ pub enum MetadataServerState {
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum WorkerState {
     /// Worker is about to start. No partitions are running on this worker yet.
     #[default]
