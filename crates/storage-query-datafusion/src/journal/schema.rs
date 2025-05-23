@@ -58,9 +58,12 @@ define_table!(sys_journal (
     /// The journal version.
     version: DataType::UInt32,
 
-    /// The entry serialized as a JSON string (only relevant for journal version 2)
+    /// The entry serialized as a JSON string. Filled only if journal version is 2.
     entry_json: DataType::LargeUtf8,
 
-    /// When the entry was appended to the journal
+    /// The EntryLite projection serialized as a JSON string. Filled only if journal version is 2.
+    entry_lite_json: DataType::LargeUtf8,
+
+    /// When the entry was appended to the journal. Filled only if journal version is 2.
     appended_at: TimestampMillisecond,
 ));

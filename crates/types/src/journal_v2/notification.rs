@@ -48,9 +48,9 @@ impl From<SignalId> for NotificationId {
 impl fmt::Display for NotificationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NotificationId::SignalIndex(idx) => write!(f, "{idx}"),
-            NotificationId::SignalName(name) => write!(f, "{name}"),
-            NotificationId::CompletionId(idx) => write!(f, "{idx}"),
+            NotificationId::SignalIndex(idx) => write!(f, "SignalIndex: {idx}"),
+            NotificationId::SignalName(name) => write!(f, "SignalName: {name}"),
+            NotificationId::CompletionId(idx) => write!(f, "CompletionId: {idx}"),
         }
     }
 }
