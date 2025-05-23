@@ -194,7 +194,11 @@ pub struct HandlerMetadata {
     /// # Idempotency retention
     ///
     /// The retention duration of idempotent requests for this service.
-    #[serde(with = "serde_with::As::<Option<restate_serde_util::DurationString>>")]
+    #[serde(
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub idempotency_retention: Option<Duration>,
 
