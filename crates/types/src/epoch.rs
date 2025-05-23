@@ -62,18 +62,6 @@ impl EpochMetadata {
         self.epoch
     }
 
-    pub fn partition_id(&self) -> Option<PartitionId> {
-        self.leader_metadata
-            .as_ref()
-            .map(|metadata| metadata.partition_id)
-    }
-
-    pub fn node_id(&self) -> Option<GenerationalNodeId> {
-        self.leader_metadata
-            .as_ref()
-            .map(|metadata| metadata.node_id)
-    }
-
     pub fn claim_leadership(self, node_id: GenerationalNodeId, partition_id: PartitionId) -> Self {
         Self {
             version: self.version.next(),
@@ -203,7 +191,5 @@ mod tests {
         let next_epoch = epoch.claim_leadership(other_node_id, PartitionId::from(1));
 
         assert_eq!(next_epoch.epoch(), LeaderEpoch::from(2));
-        assert_eq!(next_epoch.partition_id(), Some(PartitionId::from(1)));
-        assert_eq!(next_epoch.node_id(), Some(other_node_id));
     }
 }
