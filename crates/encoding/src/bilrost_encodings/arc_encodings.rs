@@ -325,7 +325,7 @@ mod impl_arc_slice_encoding {
 
     impl<T, E> ValueDecoder<ArcedSlice<E>, Arc<[T]>> for ()
     where
-        (): ValueDecoder<E, Vec<T>>,
+        (): ValueDecoder<E, Vec<T>> + ValueEncoder<E, [T]>,
     {
         #[inline(always)]
         fn decode_value<B: Buf + ?Sized>(
