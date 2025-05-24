@@ -55,7 +55,7 @@ pub mod timer;
 use std::num::NonZero;
 use std::ops::RangeInclusive;
 
-use bilrost::encoding::{EmptyState, ForOverwrite, General, ValueDecoder, ValueEncoder, Wiretyped};
+use bilrost::encoding::{EmptyState, ForOverwrite, GeneralGeneric, General, ValueDecoder, ValueEncoder, Wiretyped};
 use serde_with::serde_as;
 
 use restate_encoding::{BilrostAs, NetSerde};
@@ -120,7 +120,7 @@ macro_rules! impl_option_non_zero {
 
 impl_option_non_zero!(u8, u16, u32, u64, usize);
 
-impl<P> ValueEncoder<General, OptionNonZero<P>> for ()
+impl<const _P: u8, P> ValueEncoder<GeneralGeneric<_P>, OptionNonZero<P>> for ()
 where
     P: Default + Copy,
     (): ValueEncoder<General, P>,
@@ -142,7 +142,7 @@ where
 }
 
 #[allow(clippy::all)]
-impl<P> ValueDecoder<General, OptionNonZero<P>> for ()
+impl<const _P: u8, P> ValueDecoder<GeneralGeneric<_P>, OptionNonZero<P>> for ()
 where
     P: Default + Copy + PartialEq,
 ():  ValueDecoder<General, P>
@@ -164,7 +164,7 @@ where
 }
 
 #[allow(clippy::all)]
-impl<P> Wiretyped<General, OptionNonZero<P>> for ()
+impl<const _P: u8, P> Wiretyped<GeneralGeneric<_P>, OptionNonZero<P>> for ()
 where
     (): Wiretyped<General, P>,
 {
