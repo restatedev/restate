@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod bilrost_as;
-mod bilrost_encodings;
+pub mod bilrost_encodings;
 mod common;
 
 use std::collections::BTreeMap;

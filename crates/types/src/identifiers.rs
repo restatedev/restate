@@ -22,7 +22,7 @@ use std::mem::size_of;
 use std::str::FromStr;
 use ulid::Ulid;
 
-use restate_encoding::{BilrostAs, BilrostDisplayFromStr, BilrostNewType, NetSerde};
+use restate_encoding::{BilrostNewType, NetSerde};
 
 use crate::base62_util::base62_encode_fixed_width;
 use crate::base62_util::base62_max_length_for_type;
