@@ -8,13 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::{fmt::Display, str::FromStr};
-
-use bilrost::{
-    DecodeError, DecodeErrorKind,
-    encoding::{EmptyState, ForOverwrite, General, ValueDecoder, ValueEncoder, Wiretyped},
-};
-
 /// Adaptor trait used by the `BilrostAs` derive macro. The macro will
 /// create an instance of the adaptor to be able to convert from the original
 /// type to the `As` type.
@@ -39,7 +32,7 @@ use bilrost::{
 /// ```
 pub trait BilrostAsAdaptor<'a, Source> {
     fn create(value: &'a Source) -> Self;
-    fn into_inner(self) -> Result<Source, DecodeError>;
+    fn into_inner(self) -> Result<Source, bilrost::DecodeError>;
 }
 
 impl<'a, Target, Source> BilrostAsAdaptor<'a, Source> for Target
@@ -53,7 +46,7 @@ where
         Target::from(value)
     }
 
-    fn into_inner(self) -> Result<Source, DecodeError> {
+    fn into_inner(self) -> Result<Source, bilrost::DecodeError> {
         Ok(Source::from(self))
     }
 }
