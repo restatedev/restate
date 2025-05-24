@@ -50,7 +50,7 @@ pub fn new_type(item: TokenStream) -> TokenStream {
                 <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General, #inner_ty>>::encode_value(&value.0, buf)
             }
 
-            fn value_encoded_len(value: #name) -> usize {
+            fn value_encoded_len(value: &#name) -> usize {
                 <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General, #inner_ty>>::value_encoded_len(&value.0)
             }
 
@@ -85,7 +85,7 @@ pub fn new_type(item: TokenStream) -> TokenStream {
             where
                 #name: Sized,
             {
-                #name(<() as ::bilrost::encoding::EmptyState, #inner_ty>::empty())
+                #name(<() as ::bilrost::encoding::EmptyState<(), #inner_ty>>::empty())
             }
             fn is_empty(val: &#name) -> bool {
                 <() as ::bilrost::encoding::EmptyState<(), #inner_ty>>::is_empty(&val.0)
