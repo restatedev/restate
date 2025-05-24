@@ -3,6 +3,22 @@ pub struct DisplayFromStr;
 #[macro_export]
 macro_rules! bilrost_as_display_from_str {
     ($ty:ty) => {
+        impl ::bilrost::encoding::ForOverwrite<(), $ty> for () {
+            fn for_overwrite() -> $ty {
+                ::core::default::Default::default()
+            }
+        }
+
+        impl ::bilrost::encoding::EmptyState<(), $ty> for () {
+            fn is_empty(val: &$ty) -> bool {
+                *val == ::core::default::Default::default()
+            }
+
+            fn clear(val: &mut $ty) {
+                *val = ::core::default::Default::default();
+            }
+        }
+
         impl ::bilrost::encoding::Proxiable<$crate::bilrost_encodings::display_from_str::DisplayFromStr> for $ty
         where
             $ty: ::std::fmt::Display + ::std::str::FromStr,

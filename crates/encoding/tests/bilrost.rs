@@ -12,13 +12,14 @@ use std::{fmt::Display, num::ParseIntError, ops::RangeInclusive, str::FromStr};
 
 use bilrost::{Message, OwnedMessage};
 use bytes::BytesMut;
-use restate_encoding::{BilrostAs, BilrostDisplayFromStr};
+use restate_encoding::{BilrostAs};
 
-#[derive(Default, BilrostAs)]
-#[bilrost_as(BilrostDisplayFromStr)]
+#[derive(Default, PartialEq)]
 struct Stringer {
     inner: u64,
 }
+
+restate_encoding::bilrost_as_display_from_str!(Stringer);
 
 impl Display for Stringer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
