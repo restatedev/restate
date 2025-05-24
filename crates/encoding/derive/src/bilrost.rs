@@ -45,58 +45,59 @@ pub fn new_type(item: TokenStream) -> TokenStream {
 
     let output = quote! {
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General> for #name {
-            fn encode_value<B: ::bytes::BufMut + ?Sized>(value: &Self, buf: &mut B) {
-                <#inner_ty as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General>>::encode_value(&value.0, buf)
+        impl ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General, #name> for () {
+            fn encode_value<B: ::bytes::BufMut + ?Sized>(value: &#name, buf: &mut B) {
+                <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General, #inner_ty>>::encode_value(&value.0, buf)
             }
 
-            fn value_encoded_len(value: &Self) -> usize {
-                <#inner_ty as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General>>::value_encoded_len(&value.0)
+            fn value_encoded_len(value: #name) -> usize {
+                <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General, #inner_ty>>::value_encoded_len(&value.0)
             }
 
-            fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(value: &Self, buf: &mut B) {
-                <#inner_ty as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General>>::prepend_value(&value.0, buf);
+            fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(value: &#name, buf: &mut B) {
+                <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General, #inner_ty>>::prepend_value(&value.0, buf);
             }
         }
 
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::ValueDecoder<::bilrost::encoding::General> for #name {
+        impl ::bilrost::encoding::ValueDecoder<::bilrost::encoding::General, #name> for () {
             fn decode_value<B: ::bytes::Buf + ?Sized>(
-                value: &mut Self,
+                value: &mut #name,
                 buf: ::bilrost::encoding::Capped<B>,
                 ctx: ::bilrost::encoding::DecodeContext,
             ) -> ::std::result::Result<(), ::bilrost::DecodeError> {
-                <#inner_ty as ::bilrost::encoding::ValueDecoder<::bilrost::encoding::General>>::decode_value(&mut value.0, buf, ctx)
+                <() as ::bilrost::encoding::ValueDecoder<::bilrost::encoding::General, #inner_ty>>::decode_value(&mut value.0, buf, ctx)
             }
         }
 
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::Wiretyped<::bilrost::encoding::General> for #name {
-            const WIRE_TYPE: ::bilrost::encoding::WireType = <#inner_ty as ::bilrost::encoding::Wiretyped<::bilrost::encoding::General>>::WIRE_TYPE;
+        impl ::bilrost::encoding::Wiretyped<::bilrost::encoding::General, #name> for () {
+            const WIRE_TYPE: ::bilrost::encoding::WireType =
+                <() as ::bilrost::encoding::Wiretyped<::bilrost::encoding::General, #inner_ty>>::WIRE_TYPE;
         }
 
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::EmptyState for #name {
-            fn clear(&mut self) {
-                <#inner_ty as ::bilrost::encoding::EmptyState>::clear(&mut self.0);
+        impl ::bilrost::encoding::EmptyState<(), #name> for () {
+            fn clear(val: &mut #name) {
+                <() as ::bilrost::encoding::EmptyState<(), #inner_ty>>::clear(&mut val.0);
             }
-            fn empty() -> Self
+            fn empty() -> #name
             where
-                Self: Sized,
+                #name: Sized,
             {
-                Self(<#inner_ty as ::bilrost::encoding::EmptyState>::empty())
+                #name(<() as ::bilrost::encoding::EmptyState, #inner_ty>::empty())
             }
-            fn is_empty(&self) -> bool {
-                <#inner_ty as ::bilrost::encoding::EmptyState>::is_empty(&self.0)
+            fn is_empty(val: &#name) -> bool {
+                <() as ::bilrost::encoding::EmptyState<(), #inner_ty>>::is_empty(&val.0)
             }
         }
 
-        impl ::bilrost::encoding::ForOverwrite for #name {
-            fn for_overwrite() -> Self
+        impl ::bilrost::encoding::ForOverwrite<(), #name> for () {
+            fn for_overwrite() -> #name
             where
-                Self: Sized,
+                #name: Sized,
             {
-                Self(<#inner_ty as ::bilrost::encoding::ForOverwrite>::for_overwrite())
+                #name(<() as ::bilrost::encoding::ForOverwrite<(), #inner_ty>>::for_overwrite())
             }
         }
     };
