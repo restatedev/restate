@@ -108,7 +108,7 @@ pub fn new_type(item: TokenStream) -> TokenStream {
 pub fn bilrost_as(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
-    let adaptor = match extract_bilorst_as_attr(&input) {
+    let adaptor = match extract_bilrost_as_attr(&input) {
         Ok(adaptor) => adaptor,
         Err(err) => return err.to_compile_error().into(),
     };
@@ -210,7 +210,7 @@ pub fn bilrost_as(input: TokenStream) -> TokenStream {
     output.into()
 }
 
-fn extract_bilorst_as_attr(input: &DeriveInput) -> Result<syn::Type, syn::Error> {
+fn extract_bilrost_as_attr(input: &DeriveInput) -> Result<syn::Type, syn::Error> {
     for attr in &input.attrs {
         if attr.meta.path().is_ident(BILROST_AS_ATTR_NAME) {
             return attr.parse_args();
