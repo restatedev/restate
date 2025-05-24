@@ -9,8 +9,8 @@ use bilrost::encoding::{
 use bilrost::{Canonicity, DecodeError};
 use std::sync::Arc;
 
-pub struct Arced<E>(E);
-pub struct ArcedSlice<E>(E);
+pub struct Arced<E = bilrost::encoding::General>(E);
+pub struct ArcedSlice<E = bilrost::encoding::General>(E);
 
 // This enables `Option<Arc<T>>` and `[Arc<T>; N]`
 bilrost::implement_core_empty_state_rules!(Arced<E>, with generics (E));
