@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod bilrost_as;
+mod bilrost_encodings;
 mod common;
 
 use std::collections::BTreeMap;
@@ -17,7 +18,7 @@ use std::collections::HashSet;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-pub use bilrost_as::{BilrostAsAdaptor, BilrostDisplayFromStr, BilrostSkip};
+pub use bilrost_as::BilrostAsAdaptor;
 pub use common::U128;
 pub use restate_encoding_derive::{BilrostAs, BilrostNewType, NetSerde};
 /// A marker trait for types that can be serialized and sent over the network.

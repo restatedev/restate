@@ -322,11 +322,11 @@ where
     derive_more::FromStr,
     serde::Serialize,
     serde::Deserialize,
-    BilrostAs,
 )]
-#[bilrost_as(BilrostDisplayFromStr)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NetJsonValue(serde_json::Value);
+
+restate_encoding::bilrost_as_display_from_str!(NetJsonValue);
 
 impl Default for NetJsonValue {
     fn default() -> Self {
@@ -347,15 +347,15 @@ impl Default for NetJsonValue {
     derive_more::FromStr,
     serde::Serialize,
     serde::Deserialize,
-    BilrostAs,
 )]
-#[bilrost_as(BilrostDisplayFromStr)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NetHumanDuration(
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     humantime::Duration,
 );
+
+restate_encoding::bilrost_as_display_from_str!(NetHumanDuration);
 
 impl Default for NetHumanDuration {
     fn default() -> Self {

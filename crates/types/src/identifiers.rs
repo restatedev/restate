@@ -425,15 +425,15 @@ impl Display for ServiceId {
     serde_with::SerializeDisplay,
     serde_with::DeserializeFromStr,
     Default,
-    BilrostAs,
 )]
-#[bilrost_as(BilrostDisplayFromStr)]
 pub struct InvocationId {
     /// Partition key of the called service
     partition_key: PartitionKey,
     /// Uniquely identifies this invocation instance
     inner: InvocationUuid,
 }
+
+restate_encoding::bilrost_as_display_from_str!(InvocationId);
 
 pub trait WithInvocationId {
     /// Returns the invocation id
