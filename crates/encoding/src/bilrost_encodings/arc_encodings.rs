@@ -263,10 +263,7 @@ mod impl_arc_slice_encoding {
 
     // The rest of the file is trait implementations that perform direct method pass-through.
 
-    impl<T, E> ForOverwrite<ArcedSlice<E>, Arc<[T]>> for ()
-    where
-        (): ForOverwrite<E, [T]>,
-    {
+    impl<T, E> ForOverwrite<ArcedSlice<E>, Arc<[T]>> for () {
         #[inline(always)]
         fn for_overwrite() -> Arc<[T]>
         where
@@ -276,10 +273,7 @@ mod impl_arc_slice_encoding {
         }
     }
 
-    impl<T, E> EmptyState<ArcedSlice<E>, Arc<[T]>> for ()
-    where
-        (): EmptyState<E, [T]>,
-    {
+    impl<T, E> EmptyState<ArcedSlice<E>, Arc<[T]>> for () {
         #[inline(always)]
         fn empty() -> Arc<[T]> {
             Arc::new([])
