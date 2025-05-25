@@ -354,11 +354,9 @@ mod impl_arc_slice_encoding {
             ctx: RestrictedDecodeContext,
         ) -> Result<Canonicity, DecodeError> {
             let mut decoded = vec![];
-            let canon = <() as DistinguishedValueDecoder<E, Vec<T>>>::decode_value_distinguished::<ALLOW_EMPTY>(
-                &mut decoded,
-                buf,
-                ctx,
-            )?;
+            let canon = <() as DistinguishedValueDecoder<E, Vec<T>>>::decode_value_distinguished::<
+                ALLOW_EMPTY,
+            >(&mut decoded, buf, ctx)?;
             *value = decoded.into();
             Ok(canon)
         }
@@ -385,7 +383,8 @@ mod impl_arc_slice_encoding {
     where
         (): DistinguishedValueBorrowDecoder<'a, E, Vec<T>> + ValueEncoder<E, [T]>,
     {
-        const CHECKS_EMPTY: bool = <() as DistinguishedValueBorrowDecoder<'a, E, Vec<T>>>::CHECKS_EMPTY;
+        const CHECKS_EMPTY: bool =
+            <() as DistinguishedValueBorrowDecoder<'a, E, Vec<T>>>::CHECKS_EMPTY;
 
         #[inline(always)]
         fn borrow_decode_value_distinguished<const ALLOW_EMPTY: bool>(
