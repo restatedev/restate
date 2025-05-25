@@ -45,58 +45,59 @@ pub fn new_type(item: TokenStream) -> TokenStream {
 
     let output = quote! {
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General> for #name {
-            fn encode_value<B: ::bytes::BufMut + ?Sized>(value: &Self, buf: &mut B) {
-                <#inner_ty as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General>>::encode_value(&value.0, buf)
+        impl<const __P: u8> ::bilrost::encoding::ValueEncoder<::bilrost::encoding::GeneralGeneric<__P>, #name> for () {
+            fn encode_value<B: ::bytes::BufMut + ?Sized>(value: &#name, buf: &mut B) {
+                <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::GeneralGeneric<__P>, #inner_ty>>::encode_value(&value.0, buf)
             }
 
-            fn value_encoded_len(value: &Self) -> usize {
-                <#inner_ty as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General>>::value_encoded_len(&value.0)
+            fn value_encoded_len(value: &#name) -> usize {
+                <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::GeneralGeneric<__P>, #inner_ty>>::value_encoded_len(&value.0)
             }
 
-            fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(value: &Self, buf: &mut B) {
-                <#inner_ty as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General>>::prepend_value(&value.0, buf);
+            fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(value: &#name, buf: &mut B) {
+                <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::GeneralGeneric<__P>, #inner_ty>>::prepend_value(&value.0, buf);
             }
         }
 
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::ValueDecoder<::bilrost::encoding::General> for #name {
+        impl<const __P: u8> ::bilrost::encoding::ValueDecoder<::bilrost::encoding::GeneralGeneric<__P>, #name> for () {
             fn decode_value<B: ::bytes::Buf + ?Sized>(
-                value: &mut Self,
+                value: &mut #name,
                 buf: ::bilrost::encoding::Capped<B>,
                 ctx: ::bilrost::encoding::DecodeContext,
             ) -> ::std::result::Result<(), ::bilrost::DecodeError> {
-                <#inner_ty as ::bilrost::encoding::ValueDecoder<::bilrost::encoding::General>>::decode_value(&mut value.0, buf, ctx)
+                <() as ::bilrost::encoding::ValueDecoder<::bilrost::encoding::GeneralGeneric<__P>, #inner_ty>>::decode_value(&mut value.0, buf, ctx)
             }
         }
 
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::Wiretyped<::bilrost::encoding::General> for #name {
-            const WIRE_TYPE: ::bilrost::encoding::WireType = <#inner_ty as ::bilrost::encoding::Wiretyped<::bilrost::encoding::General>>::WIRE_TYPE;
+        impl<const __P: u8> ::bilrost::encoding::Wiretyped<::bilrost::encoding::GeneralGeneric<__P>, #name> for () {
+            const WIRE_TYPE: ::bilrost::encoding::WireType =
+                <() as ::bilrost::encoding::Wiretyped<::bilrost::encoding::GeneralGeneric<__P>, #inner_ty>>::WIRE_TYPE;
         }
 
         #[allow(clippy::all)]
-        impl ::bilrost::encoding::EmptyState for #name {
-            fn clear(&mut self) {
-                <#inner_ty as ::bilrost::encoding::EmptyState>::clear(&mut self.0);
+        impl ::bilrost::encoding::EmptyState<(), #name> for () {
+            fn clear(val: &mut #name) {
+                <() as ::bilrost::encoding::EmptyState<(), #inner_ty>>::clear(&mut val.0);
             }
-            fn empty() -> Self
+            fn empty() -> #name
             where
-                Self: Sized,
+                #name: Sized,
             {
-                Self(<#inner_ty as ::bilrost::encoding::EmptyState>::empty())
+                #name(<() as ::bilrost::encoding::EmptyState<(), #inner_ty>>::empty())
             }
-            fn is_empty(&self) -> bool {
-                <#inner_ty as ::bilrost::encoding::EmptyState>::is_empty(&self.0)
+            fn is_empty(val: &#name) -> bool {
+                <() as ::bilrost::encoding::EmptyState<(), #inner_ty>>::is_empty(&val.0)
             }
         }
 
-        impl ::bilrost::encoding::ForOverwrite for #name {
-            fn for_overwrite() -> Self
+        impl ::bilrost::encoding::ForOverwrite<(), #name> for () {
+            fn for_overwrite() -> #name
             where
-                Self: Sized,
+                #name: Sized,
             {
-                Self(<#inner_ty as ::bilrost::encoding::ForOverwrite>::for_overwrite())
+                #name(<() as ::bilrost::encoding::ForOverwrite<(), #inner_ty>>::for_overwrite())
             }
         }
     };
@@ -107,13 +108,22 @@ pub fn new_type(item: TokenStream) -> TokenStream {
 pub fn bilrost_as(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
-    let adaptor = match extract_bilorst_as_attr(&input) {
+    let adaptor = match extract_bilrost_as_attr(&input) {
         Ok(adaptor) => adaptor,
         Err(err) => return err.to_compile_error().into(),
     };
 
     let name = input.ident;
     let generics = input.generics;
+    let generics_inner = &generics.params;
+    // We want to make our type implemented for all the General encodings so that it works in both
+    // "packed" and "unpacked" contexts. The const-u8 param has to go after any lifetime generics,
+    // but we can't just include a comma.
+    let generics_with_general_param = if generics_inner.is_empty() {
+        quote!(<const __P: u8>)
+    } else {
+        quote!(<#generics_inner, const __P: u8>)
+    };
     let where_clause = &generics.where_clause;
 
     let empty_state_where_clause = match where_clause.as_ref().map(|w| &w.predicates) {
@@ -135,66 +145,71 @@ pub fn bilrost_as(input: TokenStream) -> TokenStream {
 
     let output = quote! {
         #[allow(clippy::all)]
-        impl #generics ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General> for #name #generics #where_clause {
-            fn encode_value<B: ::bytes::BufMut + ?Sized>(value: &Self, buf: &mut B) {
+        impl #generics_with_general_param ::bilrost::encoding::ValueEncoder<::bilrost::encoding::GeneralGeneric<__P>, #name #generics> for ()
+        #where_clause {
+            fn encode_value<B: ::bytes::BufMut + ?Sized>(value: &#name #generics, buf: &mut B) {
                 let adaptor = <#adaptor as ::restate_encoding::BilrostAsAdaptor<_>>::create(value);
-                <#adaptor as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General>>::encode_value(&adaptor, buf)
+                <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::GeneralGeneric<__P>, #adaptor>>::encode_value(&adaptor, buf)
             }
 
-            fn value_encoded_len(value: &Self) -> usize {
+            fn value_encoded_len(value: &#name #generics) -> usize {
                 let adaptor = <#adaptor as ::restate_encoding::BilrostAsAdaptor<_>>::create(value);
-                <#adaptor as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General>>::value_encoded_len(&adaptor)
+                <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::GeneralGeneric<__P>, #adaptor>>::value_encoded_len(&adaptor)
             }
 
-            fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(value: &Self, buf: &mut B) {
+            fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(value: &#name #generics, buf: &mut B) {
                 let adaptor = <#adaptor as ::restate_encoding::BilrostAsAdaptor<_>>::create(value);
-                <#adaptor as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::General>>::prepend_value(&adaptor, buf);
+                <() as ::bilrost::encoding::ValueEncoder<::bilrost::encoding::GeneralGeneric<__P>, #adaptor>>::prepend_value(&adaptor, buf);
             }
         }
 
         #[allow(clippy::all)]
-        impl #generics ::bilrost::encoding::ValueDecoder<::bilrost::encoding::General> for #name #generics #where_clause {
+        impl #generics_with_general_param ::bilrost::encoding::ValueDecoder<::bilrost::encoding::GeneralGeneric<__P>, #name #generics> for ()
+        #where_clause {
             fn decode_value<B: ::bytes::Buf + ?Sized>(
-                value: &mut Self,
+                value: &mut #name #generics,
                 buf: ::bilrost::encoding::Capped<B>,
                 ctx: ::bilrost::encoding::DecodeContext,
             ) -> ::std::result::Result<(), ::bilrost::DecodeError> {
-                let mut adaptor = <#adaptor as ::bilrost::encoding::ForOverwrite>::for_overwrite();
-                <#adaptor as ::bilrost::encoding::ValueDecoder<::bilrost::encoding::General>>::decode_value(&mut adaptor, buf, ctx)?;
+                let mut adaptor = <() as ::bilrost::encoding::ForOverwrite<(), #adaptor>>::for_overwrite();
+                <() as ::bilrost::encoding::ValueDecoder<::bilrost::encoding::GeneralGeneric<__P>, #adaptor>>::decode_value(&mut adaptor, buf, ctx)?;
                 *value = <#adaptor as ::restate_encoding::BilrostAsAdaptor<_>>::into_inner(adaptor)?;
                 Ok(())
             }
         }
 
         #[allow(clippy::all)]
-        impl #generics ::bilrost::encoding::Wiretyped<::bilrost::encoding::General> for #name #generics #where_clause {
-            const WIRE_TYPE: ::bilrost::encoding::WireType = <#adaptor as ::bilrost::encoding::Wiretyped<::bilrost::encoding::General>>::WIRE_TYPE;
+        impl #generics_with_general_param ::bilrost::encoding::Wiretyped<::bilrost::encoding::GeneralGeneric<__P>, #name #generics> for ()
+        #where_clause {
+            const WIRE_TYPE: ::bilrost::encoding::WireType =
+                <() as ::bilrost::encoding::Wiretyped<::bilrost::encoding::GeneralGeneric<__P>, #adaptor>>::WIRE_TYPE;
         }
 
         #[allow(clippy::all)]
-        impl #generics ::bilrost::encoding::EmptyState for #name #generics
+        impl #generics ::bilrost::encoding::EmptyState<(), #name #generics> for ()
         #empty_state_where_clause {
-            fn clear(&mut self) {
-                *self = Self::empty();
+            fn clear(val: &mut #name #generics) {
+                *val = #name::default();
             }
-            fn empty() -> Self
+
+            fn empty() -> #name #generics
             where
-                Self: Sized,
+                #name #generics: Sized,
             {
                 #name::default()
             }
 
-            fn is_empty(&self) -> bool {
-                let adaptor = <#adaptor as ::restate_encoding::BilrostAsAdaptor<_>>::create(self);
-                <#adaptor as ::bilrost::encoding::EmptyState>::is_empty(&adaptor)
+            fn is_empty(val: &#name #generics) -> bool {
+                let adaptor = <#adaptor as ::restate_encoding::BilrostAsAdaptor<_>>::create(val);
+                <() as ::bilrost::encoding::EmptyState<(), #adaptor>>::is_empty(&adaptor)
             }
         }
 
-        impl #generics ::bilrost::encoding::ForOverwrite for #name #generics
-            #empty_state_where_clause {
-            fn for_overwrite() -> Self
+        impl #generics ::bilrost::encoding::ForOverwrite<(), #name #generics> for ()
+        #empty_state_where_clause {
+            fn for_overwrite() -> #name #generics
             where
-                Self: Sized,
+                #name #generics: Sized,
             {
                 #name::default()
             }
@@ -204,7 +219,7 @@ pub fn bilrost_as(input: TokenStream) -> TokenStream {
     output.into()
 }
 
-fn extract_bilorst_as_attr(input: &DeriveInput) -> Result<syn::Type, syn::Error> {
+fn extract_bilrost_as_attr(input: &DeriveInput) -> Result<syn::Type, syn::Error> {
     for attr in &input.attrs {
         if attr.meta.path().is_ident(BILROST_AS_ATTR_NAME) {
             return attr.parse_args();
