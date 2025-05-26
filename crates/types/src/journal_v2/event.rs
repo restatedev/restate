@@ -8,29 +8,64 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
-use crate::journal_v2::{Entry, EntryMetadata, EntryType};
-use bytestring::ByteString;
+use crate::errors::InvocationErrorCode;
+use crate::journal_v2::raw::{RawEntry, RawEvent, TryFromEntry, TryFromEntryError};
+use crate::journal_v2::{CommandIndex, CommandType, Encoder, Entry, EntryMetadata, EntryType};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use strum::EnumString;
 
-#[derive(Debug, Clone, PartialEq, Eq, EnumString, strum::Display, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, EnumString, strum::Display)]
 pub enum EventType {
-    Lifecycle,
+    // TODO(slinkydeveloper) I would love to wire these up,
+    //  but ATM this is not possible b/c we miss https://github.com/restatedev/restate/issues/2765
+    // Suspend,
+    // Resume,
+    TransientError,
     #[strum(default)]
-    Other(String),
+    Generic(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Event {
-    pub ty: EventType,
-    pub metadata: HashMap<String, ByteString>,
+pub struct TransientErrorEvent {
+    pub error_code: InvocationErrorCode,
+    pub error_message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_stacktrace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restate_doc_error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_command_index: Option<CommandIndex>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_command_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_command_type: Option<CommandType>,
+
+    // Count of the same transient error
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Event {
+    // TODO(slinkydeveloper) I would love to wire these up,
+    //  but ATM this is not possible b/c we miss https://github.com/restatedev/restate/issues/2765
+    // Suspend {
+    //     waiting_for_notification_ids: Vec<NotificationId>,
+    // },
+    // Resume {},
+    TransientError(TransientErrorEvent),
+    /// This is used when it's not possible to parse in this Restate version the event.
+    Generic(RawEvent),
 }
 
 impl EntryMetadata for Event {
     fn ty(&self) -> EntryType {
         EntryType::Event
+    }
+}
+
+impl Event {
+    pub fn encode<E: Encoder>(&self) -> RawEntry {
+        E::encode_entry(&Entry::Event(self.clone()))
     }
 }
 
