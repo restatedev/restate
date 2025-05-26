@@ -38,10 +38,7 @@ mod impl_arc_encoding {
         (): ForOverwrite<E, T>,
     {
         #[inline(always)]
-        fn for_overwrite() -> Arc<T>
-        where
-            Self: Sized,
-        {
+        fn for_overwrite() -> Arc<T> {
             Arc::new(<() as ForOverwrite<E, T>>::for_overwrite())
         }
     }
@@ -277,10 +274,7 @@ mod impl_arc_slice_encoding {
 
     impl<T, E> ForOverwrite<ArcedSlice<E>, Arc<[T]>> for () {
         #[inline(always)]
-        fn for_overwrite() -> Arc<[T]>
-        where
-            Self: Sized,
-        {
+        fn for_overwrite() -> Arc<[T]> {
             Arc::new([])
         }
     }
