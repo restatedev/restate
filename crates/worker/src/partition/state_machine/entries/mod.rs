@@ -133,7 +133,7 @@ where
         }
 
         let mut entries = VecDeque::from([self.entry]);
-        while let Some(entry) = entries.pop_front() {
+        while let Some(mut entry) = entries.pop_front() {
             // We need this information to store the journal entry!
             let mut related_completion_ids = vec![];
 
@@ -321,16 +321,24 @@ where
                 }
 
                 EntryType::Event => {
+                    let mut entry_opt = Some(entry);
                     ApplyEventCommand {
                         invocation_id: self.invocation_id,
                         invocation_status: &mut self.invocation_status,
-                        entry: entry
-                            .inner
-                            .try_as_event_ref()
-                            .ok_or(Error::BadEntryVariant(EntryType::Event))?,
+                        entry: &mut entry_opt,
                     }
                     .apply(ctx)
                     .await?;
+                    match entry_opt {
+                        None => {
+                            // Just skip appending the journal entry here
+                            continue;
+                        }
+                        Some(e) => {
+                            // We still need to append this entry
+                            entry = e;
+                        }
+                    }
                 }
             };
 

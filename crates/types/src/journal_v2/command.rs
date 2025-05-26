@@ -38,7 +38,7 @@ pub trait CommandMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants, Serialize, Deserialize)]
 #[strum_discriminants(vis(pub))]
 #[strum_discriminants(name(CommandType))]
-#[strum_discriminants(derive(serde::Serialize, serde::Deserialize))]
+#[strum_discriminants(derive(serde::Serialize, serde::Deserialize, strum::EnumString))]
 pub enum Command {
     Input(InputCommand),
     Output(OutputCommand),

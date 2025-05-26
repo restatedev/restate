@@ -17,22 +17,49 @@ use strum::EnumString;
 use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
 use crate::journal_v2::{Entry, EntryMetadata, EntryType};
 
-#[derive(Debug, Clone, PartialEq, Eq, EnumString, strum::Display, Serialize, Deserialize)]
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, EnumString, strum::Display, Serialize, Deserialize)]
 pub enum EventType {
-    Lifecycle,
-    #[strum(default)]
-    Other(String),
+    TransientError,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Event {
-    pub ty: EventType,
-    pub metadata: HashMap<String, ByteString>,
+pub struct TransientErrorEvent {
+    pub error_code: InvocationErrorCode,
+    pub error_message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_stacktrace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restate_doc_error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_command_index: Option<CommandIndex>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_command_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_command_type: Option<CommandType>,
+
+    // Count of the same transient error
+    pub count: NonZeroU32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "ty")]
+pub enum Event {
+    TransientError(TransientErrorEvent),
+    /// This is used when it's not possible to parse in this Restate version the event.
+    Unknown,
 }
 
 impl EntryMetadata for Event {
     fn ty(&self) -> EntryType {
         EntryType::Event
+    }
+}
+
+impl Event {
+    pub fn encode<E: Encoder>(&self) -> RawEntry {
+        E::encode_entry(&Entry::Event(self.clone()))
     }
 }
 

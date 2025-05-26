@@ -21,6 +21,8 @@ use crate::journal_v2::{
 };
 use crate::time::MillisSinceEpoch;
 
+mod events;
+
 #[derive(Debug, thiserror::Error)]
 #[error(
     "Unexpected mapping, expecting entry {expected:?} but was {actual:?}. This might be a symptom of data corruption."
@@ -106,7 +108,7 @@ impl EntryMetadata for RawEntry {
 pub enum RawEntryInner {
     Command(RawCommand),
     Notification(RawNotification),
-    Event(Event),
+    Event(RawEvent),
 }
 
 // -- Raw command
@@ -222,5 +224,58 @@ impl RawNotification {
 impl EntryMetadata for RawNotification {
     fn ty(&self) -> EntryType {
         EntryType::Notification(self.ty)
+    }
+}
+
+// -- Raw event
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RawEvent {
+    ty: EventType,
+    value: Bytes,
+}
+
+impl RawEvent {
+    pub fn new(ty: EventType, value: Bytes) -> Self {
+        RawEvent { ty, value }
+    }
+
+    pub fn unknown() -> Self {
+        RawEvent {
+            ty: EventType::Unknown,
+            value: Bytes::default(),
+        }
+    }
+
+    pub fn event_type(&self) -> EventType {
+        self.ty
+    }
+
+    pub fn into_inner(self) -> (EventType, Bytes) {
+        (self.ty, self.value)
+    }
+}
+
+impl EntryMetadata for RawEvent {
+    fn ty(&self) -> EntryType {
+        EntryType::Event
+    }
+}
+
+// The conversion RawEvent <-> Event is defined at this level directly.
+
+impl TryFrom<RawEvent> for Event {
+    type Error = GenericError;
+
+    fn try_from(value: RawEvent) -> Result<Self, Self::Error> {
+        events::decode(value.ty, value.value)
+            .context("error when decoding event")
+            .map_err(Into::into)
+    }
+}
+
+impl From<Event> for RawEvent {
+    fn from(value: Event) -> Self {
+        events::encode(value)
     }
 }

@@ -1,0 +1,24 @@
+// Copyright (c) 2024 - 2025 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+syntax = "proto3";
+
+package restate.journal.events;
+
+message TransientErrorEvent {
+  uint32 error_code = 1;
+  string error_message = 2;
+  optional string error_stacktrace = 3;
+  optional string restate_doc_error_code = 4;
+  optional uint32 related_command_index = 5;
+  optional string related_command_name = 6;
+  optional string related_command_type = 7;
+  uint32 count = 8;
+}

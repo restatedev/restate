@@ -42,6 +42,7 @@ use restate_types::schema::deployment::DeploymentResolver;
 use status_store::InvocationStatusStore;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -52,6 +53,7 @@ use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, trace};
 use tracing::{error, instrument};
 
+use crate::error::SdkInvocationErrorV2;
 use crate::metric_definitions::{
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
     TASK_OP_SUSPENDED,
@@ -64,10 +66,15 @@ use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal_v2;
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader, RawNotification};
-use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
+use restate_types::journal_v2::raw::{
+    RawCommand, RawEntry, RawEntryHeader, RawEvent, RawNotification,
+};
+use restate_types::journal_v2::{
+    CommandIndex, EntryMetadata, Event, NotificationId, TransientErrorEvent,
+};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
+use restate_types::service_protocol::ServiceProtocolVersion;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -405,7 +412,7 @@ where
                         self.handle_pinned_deployment(
                             partition,
                             invocation_id,
-                              invocation_epoch,
+                            invocation_epoch,
                             deployment_metadata,
                             has_changed,
                         )
@@ -440,7 +447,7 @@ where
                         self.handle_invocation_task_closed(partition, invocation_id, invocation_epoch).await
                     },
                     InvocationTaskOutputInner::Failed(e) => {
-                        self.handle_invocation_task_failed(partition, invocation_id, invocation_epoch, e).await
+                        self.handle_invocation_task_failed(options, partition, invocation_id, invocation_epoch, e).await
                     },
                     InvocationTaskOutputInner::Suspended(indexes) => {
                         self.handle_invocation_task_suspended(partition, invocation_id, invocation_epoch, indexes).await
@@ -673,6 +680,12 @@ where
                 // we assume that we have stored it previously.
                 if has_changed {
                     ism.notify_pinned_deployment(pinned_deployment);
+                } else {
+                    // The service protocol is selected only if this was the stored version already,
+                    // or if we send the pinned deployment through (see handle_new_command)
+                    ism.notify_selected_service_protocol(
+                        pinned_deployment.service_protocol_version,
+                    );
                 }
             },
         );
@@ -1067,6 +1080,7 @@ where
     )]
     async fn handle_invocation_task_failed(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
@@ -1077,7 +1091,7 @@ where
             .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
-            self.handle_error_event(partition, invocation_id, error, ism)
+            self.handle_error_event(options, partition, invocation_id, error, ism)
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -1160,6 +1174,7 @@ where
 
     async fn handle_error_event(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         error: InvokerError,
@@ -1196,10 +1211,59 @@ where
                 trace!("Invocation state: {:?}.", ism.invocation_state_debug());
                 let next_retry_at = SystemTime::now() + next_retry_timer_duration;
 
+                let journal_v2_related_command_type =
+                    if let InvokerError::SdkV2(SdkInvocationErrorV2 {
+                        related_command: Some(ref related_entry),
+                        ..
+                    }) = error
+                    {
+                        related_entry
+                            .related_entry_type
+                            .and_then(|e| e.try_as_command_ref().copied())
+                    } else {
+                        None
+                    };
+                let invocation_error_report = error.into_invocation_error_report();
+                if options.experimental_features_propose_events()
+                    && ism
+                        .selected_service_protocol()
+                        .is_some_and(|sp| *sp >= ServiceProtocolVersion::V4)
+                {
+                    // Only if protocol version >= 4 was selected we can propose the transient error
+                    let event = Event::TransientError(TransientErrorEvent {
+                        error_code: invocation_error_report.err.code(),
+                        error_message: invocation_error_report.err.message().to_owned(),
+                        error_stacktrace: invocation_error_report
+                            .err
+                            .stacktrace()
+                            .map(|s| s.to_owned()),
+                        restate_doc_error_code: invocation_error_report
+                            .doc_error_code
+                            .map(|c| c.code().to_owned()),
+                        related_command_index: invocation_error_report.related_entry_index,
+                        related_command_name: invocation_error_report.related_entry_name.clone(),
+                        related_command_type: journal_v2_related_command_type,
+                        count: NonZeroU32::new(1).unwrap(),
+                    });
+                    let _ = self
+                        .invocation_state_machine_manager
+                        .resolve_partition_sender(partition)
+                        .expect("Partition should be registered")
+                        .send(Effect {
+                            invocation_id,
+                            invocation_epoch: ism.invocation_epoch,
+                            kind: EffectKind::JournalEntryV2 {
+                                entry: RawEntry::new(RawEntryHeader::new(), RawEvent::from(event)),
+                                command_index_to_ack: None,
+                            },
+                        })
+                        .await;
+                }
+
                 self.status_store.on_failure(
                     partition,
                     invocation_id,
-                    error.into_invocation_error_report(),
+                    invocation_error_report,
                     Some(next_retry_at),
                 );
                 let epoch = ism.invocation_epoch;
@@ -1816,6 +1880,7 @@ mod tests {
         // Handle error coming after the abort (this should be noop)
         service_inner
             .handle_invocation_task_failed(
+                &invoker_options,
                 MOCK_PARTITION,
                 invocation_id,
                 0,
@@ -1869,6 +1934,7 @@ mod tests {
         // Also handle error on epoch 0 should have no effect
         service_inner
             .handle_invocation_task_failed(
+                &InvokerOptions::default(),
                 MOCK_PARTITION,
                 invocation_id,
                 0,
