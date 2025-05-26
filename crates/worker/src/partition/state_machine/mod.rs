@@ -3796,7 +3796,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             journal_table_v2::JournalTable::delete_journal(
                 self.storage,
                 invocation_id,
-                Some(journal_length),
+                journal_length,
             )
             .await
             .map_err(Error::Storage)?

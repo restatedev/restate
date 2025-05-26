@@ -91,11 +91,6 @@ where
             }
             InvocationStatus::Free => {
                 trace!("Received purge command for unknown invocation with id '{invocation_id}'.");
-                // It is still worth trying to cleanup the journal,
-                // as it might be the user went back and forth between restate versions and the invocation status was cleaned,
-                // but not the journal.
-                // Note: retaining the journal is a functionality available only with service protocol >= 4, so we need to cleanup only journal v2.
-                JournalTable::delete_journal(ctx.storage, invocation_id, None).await?;
             }
             _ => {
                 trace!(
