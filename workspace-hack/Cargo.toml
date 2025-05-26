@@ -103,7 +103,7 @@ schemars = { version = "0.8", features = ["bytes", "enumset", "preserve_order"] 
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
-serde_with = { version = "3", features = ["hex"] }
+serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 snafu = { version = "0.8" }
 stable_deref_trait = { version = "1" }
@@ -224,7 +224,7 @@ schemars = { version = "0.8", features = ["bytes", "enumset", "preserve_order"] 
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
-serde_with = { version = "3", features = ["hex"] }
+serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 snafu = { version = "0.8" }
 stable_deref_trait = { version = "1" }
