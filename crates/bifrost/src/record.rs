@@ -46,6 +46,8 @@ impl LogEntry<LogletOffset> {
 }
 
 impl<S: Copy> LogEntry<S> {
+    // Only used if any of the feature-gated providers is activated
+    #[allow(dead_code)]
     pub(crate) fn new_data(offset: S, record: Record) -> Self {
         Self {
             offset,
@@ -128,6 +130,8 @@ impl<S: Copy> LogEntry<S> {
 #[derive(Debug, Clone, derive_more::IsVariant)]
 enum MaybeRecord<S = Lsn> {
     TrimGap(TrimGap<S>),
+    // Only used if any of the feature-gated providers is activated
+    #[allow(dead_code)]
     Data(Record),
 }
 

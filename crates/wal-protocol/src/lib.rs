@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::BufMut;
-use tracing::error;
-
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
@@ -21,11 +18,6 @@ use restate_types::invocation::{
 use restate_types::logs::{HasRecordKeys, Keys, MatchKeyQuery};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::storage::decode::decode_serde;
-use restate_types::storage::encode::encode_serde;
-use restate_types::storage::{
-    StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
-};
 use restate_types::{PlainNodeId, Version, logs};
 
 use crate::control::AnnounceLeader;
@@ -61,49 +53,6 @@ impl Envelope {
     ) -> Result<Self, restate_types::storage::StorageDecodeError> {
         let mut bytes = bytes.as_ref();
         restate_types::storage::StorageCodec::decode::<Self, _>(&mut bytes)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl StorageEncode for Envelope {
-    fn default_codec(&self) -> StorageCodecKind {
-        // TODO(azmy): Change to `Custom` in v1.4
-        StorageCodecKind::FlexbuffersSerde
-    }
-
-    fn encode(&self, buf: &mut ::bytes::BytesMut) -> Result<(), StorageEncodeError> {
-        match self.default_codec() {
-            StorageCodecKind::FlexbuffersSerde => encode_serde(self, buf, self.default_codec()),
-            StorageCodecKind::Custom => {
-                buf.put_slice(&envelope::encode(self)?);
-                Ok(())
-            }
-            _ => unreachable!("developer error"),
-        }
-    }
-}
-
-#[cfg(feature = "serde")]
-impl StorageDecode for Envelope {
-    fn decode<B: ::bytes::Buf>(
-        buf: &mut B,
-        kind: StorageCodecKind,
-    ) -> Result<Self, StorageDecodeError>
-    where
-        Self: Sized,
-    {
-        match kind {
-            StorageCodecKind::Json
-            | StorageCodecKind::BincodeSerde
-            | StorageCodecKind::FlexbuffersSerde => decode_serde(buf, kind).map_err(|err| {
-                error!(%err, "{} decode failure (decoding Envelope)", kind);
-                err
-            }),
-            StorageCodecKind::LengthPrefixedRawBytes
-            | StorageCodecKind::Protobuf
-            | StorageCodecKind::Bilrost => Err(StorageDecodeError::UnsupportedCodecKind(kind)),
-            StorageCodecKind::Custom => envelope::decode(buf),
-        }
     }
 }
 
@@ -274,15 +223,61 @@ impl MatchKeyQuery for Envelope {
     }
 }
 
+#[cfg(feature = "serde")]
 mod envelope {
     use bilrost::{Message, OwnedMessage};
     use bytes::{Buf, Bytes, BytesMut};
-    use serde::{Serialize, de::DeserializeOwned};
 
     use restate_partition_store::protobuf_types::v1 as protobuf;
-    use restate_types::storage::{self, StorageCodecKind, StorageDecodeError, StorageEncodeError};
+    use restate_types::storage::decode::{decode_bilrost, decode_serde};
+    use restate_types::storage::encode::{encode_bilrost, encode_serde};
+    use restate_types::storage::{
+        StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+    };
 
     use crate::Command;
+
+    impl StorageEncode for crate::Envelope {
+        fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
+            use bytes::BufMut;
+            match self.default_codec() {
+                StorageCodecKind::FlexbuffersSerde => encode_serde(self, buf, self.default_codec()),
+                StorageCodecKind::Custom => {
+                    buf.put_slice(&encode(self)?);
+                    Ok(())
+                }
+                _ => unreachable!("developer error"),
+            }
+        }
+
+        fn default_codec(&self) -> StorageCodecKind {
+            // TODO(azmy): Change to `Custom` in v1.4
+            StorageCodecKind::FlexbuffersSerde
+        }
+    }
+
+    impl StorageDecode for crate::Envelope {
+        fn decode<B: ::bytes::Buf>(
+            buf: &mut B,
+            kind: StorageCodecKind,
+        ) -> Result<Self, StorageDecodeError>
+        where
+            Self: Sized,
+        {
+            match kind {
+                StorageCodecKind::Json
+                | StorageCodecKind::BincodeSerde
+                | StorageCodecKind::FlexbuffersSerde => decode_serde(buf, kind).map_err(|err| {
+                    tracing::error!(%err, "{} decode failure (decoding Envelope)", kind);
+                    err
+                }),
+                StorageCodecKind::LengthPrefixedRawBytes
+                | StorageCodecKind::Protobuf
+                | StorageCodecKind::Bilrost => Err(StorageDecodeError::UnsupportedCodecKind(kind)),
+                StorageCodecKind::Custom => decode(buf),
+            }
+        }
+    }
 
     #[derive(Debug, thiserror::Error)]
     enum DecodeError {
@@ -328,12 +323,12 @@ mod envelope {
     }
 
     impl Field {
-        fn encode_serde<T: Serialize>(
+        fn encode_serde<T: serde::Serialize>(
             codec: StorageCodecKind,
             value: &T,
         ) -> Result<Self, StorageEncodeError> {
             let mut buf = BytesMut::new();
-            storage::encode::encode_serde(value, &mut buf, codec)?;
+            encode_serde(value, &mut buf, codec)?;
 
             Ok(Self {
                 codec: Some(codec),
@@ -344,7 +339,7 @@ mod envelope {
         fn encode_bilrost<T: bilrost::Message>(value: &T) -> Result<Self, StorageEncodeError> {
             Ok(Self {
                 codec: Some(StorageCodecKind::Bilrost),
-                bytes: storage::encode::encode_bilrost(value),
+                bytes: encode_bilrost(value),
             })
         }
 
@@ -360,7 +355,7 @@ mod envelope {
             })
         }
 
-        fn decode_serde<T: DeserializeOwned>(mut self) -> Result<T, StorageDecodeError> {
+        fn decode_serde<T: serde::de::DeserializeOwned>(mut self) -> Result<T, StorageDecodeError> {
             let codec = self.codec()?;
             if !matches!(
                 codec,
@@ -371,7 +366,7 @@ mod envelope {
                 return Err(StorageDecodeError::UnsupportedCodecKind(codec));
             }
 
-            storage::decode::decode_serde(
+            decode_serde(
                 &mut self.bytes,
                 self.codec.ok_or(DecodeError::MissingFieldCodec)?,
             )
@@ -383,7 +378,7 @@ mod envelope {
                 return Err(StorageDecodeError::UnsupportedCodecKind(codec));
             }
 
-            storage::decode::decode_bilrost(&mut self.bytes)
+            decode_bilrost(&mut self.bytes)
         }
 
         fn decode_protobuf<T: prost::Message + Default>(self) -> Result<T, StorageDecodeError> {

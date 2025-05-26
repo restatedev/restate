@@ -10,6 +10,7 @@
 
 use crate::errors::GenericError;
 use crate::journal_v2::Entry;
+use crate::journal_v2::lite::EntryLite;
 use crate::journal_v2::raw::RawEntry;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +22,8 @@ pub struct DecodingError(#[from] GenericError);
 /// This is typically depending on the concrete service protocol implementation/format/version.
 pub trait Decoder {
     fn decode_entry(entry: &RawEntry) -> Result<Entry, DecodingError>;
+
+    fn decode_entry_lite(entry: &RawEntry) -> Result<EntryLite, DecodingError>;
 }
 
 /// The encoder is the abstraction encapsulating how to represent entries as serialized data.
