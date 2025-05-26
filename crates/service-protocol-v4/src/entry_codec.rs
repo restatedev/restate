@@ -34,7 +34,7 @@ use restate_types::journal_v2::lite::{
 };
 use restate_types::journal_v2::raw::{
     CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawEntryHeader,
-    RawEntryInner, RawNotification,
+    RawEntryInner, RawEvent, RawNotification,
 };
 use restate_types::journal_v2::*;
 use std::fmt::Debug;
@@ -584,7 +584,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 .into()
             }
 
-            Entry::Event(e) => e.clone().into(),
+            Entry::Event(e) => RawEvent::from(e.clone()).into(),
         };
         RawEntry::new(RawEntryHeader::new(), entry_inner)
     }
@@ -1078,7 +1078,9 @@ impl Decoder for ServiceProtocolV4Codec {
                 }
             },
 
-            RawEntryInner::Event(e) => Entry::Event(e.clone()),
+            RawEntryInner::Event(e) => Event::try_from(e.clone())
+                .map_err(|e| DecodingError::from(GenericError::from(e)))?
+                .into(),
         })
     }
 
