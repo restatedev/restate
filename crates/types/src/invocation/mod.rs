@@ -282,7 +282,7 @@ impl fmt::Display for InvocationTarget {
 pub struct InvocationRetention {
     /// Retention duration of the completed status. If none, the completed status is not retained, and invocation won't be deduplicated.
     pub completion_retention: Duration,
-    /// Retention duration of the journal. If none, the journal is not retained. This is always smaller or equal to `completion_retention_duration`.
+    /// Retention duration of the journal. If none, the journal is not retained.
     pub journal_retention: Duration,
 }
 
@@ -316,11 +316,14 @@ pub struct InvocationRequestHeader {
     /// Time when the request should be executed. If none, it's executed immediately.
     pub execution_time: Option<MillisSinceEpoch>,
 
-    /// Retention duration of the completed status. If none, the completed status is not retained.
+    /// Retention duration of the completed status.
+    /// If zero, the completed status is not retained.
     #[serde(default)]
     #[serde_as(deserialize_as = "serde_with::DefaultOnNull")]
     completion_retention_duration: Duration,
-    /// Retention duration of the journal. If zero, the journal is not retained. This should be smaller than `completion_retention_duration`.
+    /// Retention duration of the journal.
+    /// If zero, the journal is not retained.
+    /// If `completion_retention_duration < journal_retention_duration`, then completion retention is used as journal retention.
     #[serde(default, skip_serializing_if = "Duration::is_zero")]
     journal_retention_duration: Duration,
 }

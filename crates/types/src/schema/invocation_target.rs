@@ -531,12 +531,16 @@ pub mod test_util {
 mod serde_hacks {
     use super::*;
 
+    /// Some good old serde hacks here to make sure we can parse the old data structure.
+    /// See the tests for more details on the old data structure and the various cases.
+    /// Revisit this for Restate 1.5
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct InvocationTargetMetadata {
         pub public: bool,
 
         #[serde(default)]
         pub completion_retention: Option<Duration>,
+        /// This is unused at this point, we just write it for backward compatibility.
         #[serde(default)]
         pub idempotency_retention: Duration,
         #[serde(default, skip_serializing_if = "Duration::is_zero")]

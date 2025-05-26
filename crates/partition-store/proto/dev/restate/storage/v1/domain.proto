@@ -330,9 +330,9 @@ message ServiceInvocation {
   repeated Header headers = 7;
   uint64 execution_time = 8;
   Duration completion_retention_duration = 9;
-  Duration journal_retention_duration = 12;
   optional string idempotency_key = 10;
   SubmitNotificationSink submit_notification_sink = 11;
+  Duration journal_retention_duration = 12;
 }
 
 message StateMutation {
