@@ -21,8 +21,23 @@ use bilrost::encoding::{
 use bilrost::{Canonicity, DecodeError};
 use std::sync::Arc;
 
+/// The `Arced` encoding can be used to encode and decode any type `T` that is wrapped in `Arc<T>`.
+/// The parametrized encoding type `E` is the encoding that is used to encode and decode `T` inside
+/// the `Arc`.
+///
+/// If `Arc`s are constructed with cyclic references, encoding them with `bilrost` will crash the
+/// program. If self-referential types must be encoded, take great care that the data does not
+/// contain cycles before it is encoded.
 pub struct Arced<E = bilrost::encoding::General>(E);
-pub struct ArcedSlice<E = bilrost::encoding::General>(E);
+
+/// The `ArcedSlice` encoding can be used to encode and decode `Arc<[T]>` directly with `bilrost`.
+/// The parametrized type `E` is the inner encoding, which should be either "packed" or "unpacked",
+/// with whatever further parameters are required to name the encoding of the type.
+///
+/// If `Arc`s are constructed with cyclic references, encoding them with `bilrost` will crash the
+/// program. If self-referential types must be encoded, take great care that the data does not
+/// contain cycles before it is encoded.
+pub struct ArcedSlice<E>(E);
 
 // This enables `Option<Arc<T>>` and `[Arc<T>; N]`
 bilrost::implement_core_empty_state_rules!(Arced<E>, with generics (E));
@@ -271,14 +286,14 @@ mod impl_arc_slice_encoding {
     impl<T, E> ForOverwrite<ArcedSlice<E>, Arc<[T]>> for () {
         #[inline(always)]
         fn for_overwrite() -> Arc<[T]> {
-            Arc::new([])
+            Arc::new([]) // tragically, this always allocates :(
         }
     }
 
     impl<T, E> EmptyState<ArcedSlice<E>, Arc<[T]>> for () {
         #[inline(always)]
         fn empty() -> Arc<[T]> {
-            Arc::new([])
+            Arc::new([]) // tragically, this always allocates :(
         }
 
         #[inline(always)]
@@ -299,6 +314,8 @@ mod impl_arc_slice_encoding {
         const WIRE_TYPE: WireType = <() as Wiretyped<E, [T]>>::WIRE_TYPE;
     }
 
+    // We will pass-through value-encoding support to any encoder E which can value-encode `[T]`;
+    // that is, the "packed" encoding.
     impl<T, E> ValueEncoder<ArcedSlice<E>, Arc<[T]>> for ()
     where
         (): ValueEncoder<E, [T]>,
@@ -397,6 +414,8 @@ mod impl_arc_slice_encoding {
         }
     }
 
+    // This means we will pass-through encoding support to any encoder E which can encode `[T]`;
+    // that is, the "packed" or "unpacked" encodings.
     impl<T, E> Encoder<ArcedSlice<E>, Arc<[T]>> for ()
     where
         (): Encoder<E, [T]>,
