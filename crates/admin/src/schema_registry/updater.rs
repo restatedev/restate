@@ -37,6 +37,37 @@ use std::ops::Not;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+/// Behavior when a handler is removed during service update
+enum RemovedHandlerBehavior {
+    /// Fail with an error when a handler is removed
+    Fail,
+    /// Log a warning but allow the removal
+    Warn,
+}
+
+/// Behavior when service type changes during update
+enum ServiceTypeMismatchBehavior {
+    /// Fail with an error when service type changes
+    Fail,
+    /// Log a warning but allow the type change
+    Warn,
+}
+
+/// Behavior for service level settings during update
+enum ServiceLevelSettingsBehavior {
+    /// Preserve existing service level settings
+    Preserve,
+    /// Reset to defaults
+    #[allow(dead_code)]
+    UseDefaults,
+}
+
+impl ServiceLevelSettingsBehavior {
+    fn preserve(&self) -> bool {
+        matches!(self, ServiceLevelSettingsBehavior::Preserve)
+    }
+}
+
 /// Responsible for updating the provided [`Schema`] with new
 /// schema information. It makes sure that the version of schema information
 /// is incremented on changes.
@@ -130,9 +161,17 @@ impl SchemaUpdater {
                 deployment_id,
                 &service_name,
                 service,
-                !force,
-                !force,
-                true,
+                if force {
+                    RemovedHandlerBehavior::Warn
+                } else {
+                    RemovedHandlerBehavior::Fail
+                },
+                if force {
+                    ServiceTypeMismatchBehavior::Warn
+                } else {
+                    ServiceTypeMismatchBehavior::Fail
+                },
+                ServiceLevelSettingsBehavior::Preserve,
             )?;
 
             services_to_add.insert(service_name, service_schema);
@@ -227,9 +266,9 @@ impl SchemaUpdater {
                 deployment_id,
                 &service_name,
                 service,
-                true,
-                true,
-                true,
+                RemovedHandlerBehavior::Fail,
+                ServiceTypeMismatchBehavior::Fail,
+                ServiceLevelSettingsBehavior::Preserve,
             )?;
 
             services_to_add.insert(service_name, service_schema);
@@ -291,9 +330,9 @@ impl SchemaUpdater {
         deployment_id: DeploymentId,
         service_name: &ServiceName,
         service: endpoint_manifest::Service,
-        fail_on_removed_handler: bool,
-        fail_on_different_service_type: bool,
-        preserve_service_level_settings: bool,
+        removed_handler_behavior: RemovedHandlerBehavior,
+        service_type_mismatch_behavior: ServiceTypeMismatchBehavior,
+        service_level_settings_behavior: ServiceLevelSettingsBehavior,
     ) -> Result<ServiceSchemas, SchemaError> {
         let service_type = ServiceType::from(service.ty);
 
@@ -310,53 +349,48 @@ impl SchemaUpdater {
             // This makes little sense now that we have these settings in the manifest, but it preserves the old behavior.
             // At some point we should "break" this behavior, and on service updates simply apply defaults when nothing is configured in the manifest,
             // in order to favour people using annotations, rather than the clunky Admin REST API.
-            let public =
-                service
-                    .private
-                    .map(bool::not)
-                    .unwrap_or(if preserve_service_level_settings {
-                        existing_service.location.public
-                    } else {
-                        true
-                    });
+            let public = service.private.map(bool::not).unwrap_or(
+                if service_level_settings_behavior.preserve() {
+                    existing_service.location.public
+                } else {
+                    true
+                },
+            );
             let idempotency_retention = service.idempotency_retention_duration().unwrap_or(
-                if preserve_service_level_settings {
+                if service_level_settings_behavior.preserve() {
                     existing_service.idempotency_retention
                 } else {
                     DEFAULT_IDEMPOTENCY_RETENTION
                 },
             );
-            let journal_retention =
-                service
-                    .journal_retention_duration()
-                    .or(if preserve_service_level_settings {
-                        existing_service.journal_retention
-                    } else {
-                        None
-                    });
-            let workflow_completion_retention = if preserve_service_level_settings {
+            let journal_retention = service.journal_retention_duration().or(
+                if service_level_settings_behavior.preserve() {
+                    existing_service.journal_retention
+                } else {
+                    None
+                },
+            );
+            let workflow_completion_retention = if service_level_settings_behavior.preserve() {
                 existing_service.workflow_completion_retention
             } else if service_type == ServiceType::Workflow {
                 Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
             } else {
                 None
             };
-            let inactivity_timeout =
-                service
-                    .inactivity_timeout_duration()
-                    .or(if preserve_service_level_settings {
-                        existing_service.inactivity_timeout
-                    } else {
-                        None
-                    });
-            let abort_timeout =
-                service
-                    .abort_timeout_duration()
-                    .or(if preserve_service_level_settings {
-                        existing_service.abort_timeout
-                    } else {
-                        None
-                    });
+            let inactivity_timeout = service.inactivity_timeout_duration().or(
+                if service_level_settings_behavior.preserve() {
+                    existing_service.inactivity_timeout
+                } else {
+                    None
+                },
+            );
+            let abort_timeout = service.abort_timeout_duration().or(
+                if service_level_settings_behavior.preserve() {
+                    existing_service.abort_timeout
+                } else {
+                    None
+                },
+            );
 
             let handlers = DiscoveredHandlerMetadata::compute_handlers(
                 service
@@ -384,7 +418,7 @@ impl SchemaUpdater {
                 .collect();
 
             if !removed_handlers.is_empty() {
-                if fail_on_removed_handler {
+                if matches!(removed_handler_behavior, RemovedHandlerBehavior::Fail) {
                     return Err(SchemaError::Service(ServiceError::RemovedHandlers(
                         service_name.clone(),
                         removed_handlers,
@@ -401,7 +435,10 @@ impl SchemaUpdater {
             }
 
             if existing_service.ty != service_type {
-                if fail_on_different_service_type {
+                if matches!(
+                    service_type_mismatch_behavior,
+                    ServiceTypeMismatchBehavior::Fail
+                ) {
                     return Err(SchemaError::Service(ServiceError::DifferentType(
                         service_name.clone(),
                     )));
@@ -658,6 +695,7 @@ impl SchemaUpdater {
                     ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
                         schemas.idempotency_retention = new_idempotency_retention;
                         for h in schemas.handlers.values_mut().filter(|w| {
+                            // idempotency retention doesn't apply to workflow handlers
                             w.target_meta.target_ty
                                 != InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
                         }) {
@@ -667,6 +705,7 @@ impl SchemaUpdater {
                     ModifyServiceChange::WorkflowCompletionRetention(
                         new_workflow_completion_retention,
                     ) => {
+                        // This applies only to workflow services
                         if schemas.ty != ServiceType::Workflow {
                             return Err(SchemaError::Service(
                                 ServiceError::CannotModifyRetentionTime(schemas.ty),
