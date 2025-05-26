@@ -300,6 +300,7 @@ impl CliEnv {
         Ok(())
     }
 
+    #[cfg(feature = "cloud")]
     pub fn write_config(&self, config: &str) -> std::io::Result<()> {
         if let Some(parent) = self.config_file.parent() {
             std::fs::create_dir_all(parent)?

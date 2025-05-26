@@ -374,7 +374,7 @@ impl Drop for TracingGuard {
 macro_rules! invocation_span {
     (level= $lvl:expr, relation = $relation:expr, prefix= $prefix:expr, id= $id:expr, target= $target:expr, tags=($($($key:ident).+ = $value:expr),*), fields=($($field:ident = $field_value:expr),*)) => {
         {
-            use opentelemetry::KeyValue;
+            use ::opentelemetry::KeyValue;
 
             let attributes = vec![
                 KeyValue::new("rpc.service", $target.service_name().to_string()),
@@ -395,7 +395,7 @@ macro_rules! invocation_span {
     };
     (level= $lvl:expr, relation = $relation:expr, id= $id:expr, name= $name:expr, tags=($($($key:ident).+ = $value:expr),*), fields=($($field:ident = $field_value:expr),*)) => {
         {
-            use opentelemetry::KeyValue;
+            use ::opentelemetry::KeyValue;
 
             let attributes = vec![
                 KeyValue::new("restate.invocation.id", $id.to_string()),
@@ -413,9 +413,10 @@ macro_rules! invocation_span {
     };
     (level= $lvl:expr, relation=$relation:expr, name= $name:expr, attributes=$attributes:ident, fields=($($field:ident = $field_value:expr),*)) => {
         {
-            use opentelemetry::{KeyValue, Context, trace::{Tracer, Link, TracerProvider, TraceContextExt}};
-            use restate_types::invocation::SpanRelation;
-            use tracing_opentelemetry::OpenTelemetrySpanExt;
+            use ::opentelemetry::{KeyValue, Context, trace::{Tracer, Link, TracerProvider, TraceContextExt}};
+            use ::tracing_opentelemetry::OpenTelemetrySpanExt;
+
+            use ::restate_types::invocation::SpanRelation;
 
             let tracer = opentelemetry::global::tracer_provider().tracer_with_scope(opentelemetry::InstrumentationScope::builder("services").build());
 

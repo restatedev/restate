@@ -27,7 +27,7 @@ pub struct AnnounceLeader {
     pub partition_key_range: Option<RangeInclusive<PartitionKey>>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "serde"))]
 mod tests {
     use crate::control::AnnounceLeader;
     use bytes::BytesMut;

@@ -15,7 +15,6 @@ use itertools::Itertools;
 use strum::IntoEnumIterator;
 
 use restate_admin_rest_model::version::AdminApiVersion;
-use restate_cli_util::ui::duration_to_human_rough;
 use restate_cli_util::{CliContext, c_eprintln, c_error, c_println, c_success};
 use restate_types::art::render_restate_logo;
 
@@ -173,8 +172,10 @@ pub async fn run(State(env): State<CliEnv>) {
                     Ok(expiry) => {
                         let delta = expiry.signed_duration_since(chrono::Utc::now());
                         if delta > chrono::TimeDelta::zero() {
-                            let left =
-                                duration_to_human_rough(delta, chrono_humanize::Tense::Present);
+                            let left = restate_cli_util::ui::duration_to_human_rough(
+                                delta,
+                                chrono_humanize::Tense::Present,
+                            );
                             table.add_row(vec!["Logged in?", &format!("true (expires in {left})")]);
                         } else {
                             table.add_row(vec!["Logged in?", "false (token expired)"]);
