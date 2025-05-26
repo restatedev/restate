@@ -2032,7 +2032,6 @@ mod tests {
         fn handler_level_journal_retention() {
             let target = init_discover_and_resolve_target(
                 endpoint_manifest::Service {
-                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
                     handlers: vec![endpoint_manifest::Handler {
                         journal_retention: Some(NonZeroU64::new(30 * 1000).unwrap()),
                         ..greeter_service_greet_handler()
