@@ -411,7 +411,7 @@ where
                         self.handle_pinned_deployment(
                             partition,
                             invocation_id,
-                              invocation_epoch,
+                            invocation_epoch,
                             deployment_metadata,
                             has_changed,
                         )
@@ -446,7 +446,7 @@ where
                         self.handle_invocation_task_closed(partition, invocation_id, invocation_epoch).await
                     },
                     InvocationTaskOutputInner::Failed(e) => {
-                        self.handle_invocation_task_failed(partition, invocation_id, invocation_epoch, e).await
+                        self.handle_invocation_task_failed(options, partition, invocation_id, invocation_epoch, e).await
                     },
                     InvocationTaskOutputInner::Suspended(indexes) => {
                         self.handle_invocation_task_suspended(partition, invocation_id, invocation_epoch, indexes).await
@@ -1081,6 +1081,7 @@ where
     )]
     async fn handle_invocation_task_failed(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
@@ -1091,7 +1092,7 @@ where
             .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
-            self.handle_error_event(partition, invocation_id, error, ism)
+            self.handle_error_event(options, partition, invocation_id, error, ism)
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -1174,6 +1175,7 @@ where
 
     async fn handle_error_event(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         error: InvokerError,
@@ -1223,9 +1225,10 @@ where
                         None
                     };
                 let invocation_error_report = error.into_invocation_error_report();
-                if ism
-                    .selected_service_protocol()
-                    .is_some_and(|sp| *sp >= ServiceProtocolVersion::V4)
+                if options.experimental_features_propose_events()
+                    && ism
+                        .selected_service_protocol()
+                        .is_some_and(|sp| *sp >= ServiceProtocolVersion::V4)
                 {
                     // Only if protocol version >= 4 was selected we can propose the transient error
                     let event = Event::TransientError(TransientErrorEvent {
