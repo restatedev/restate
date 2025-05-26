@@ -13,7 +13,7 @@ use std::time::SystemTime;
 
 use tracing::{debug, info, instrument, warn};
 
-use restate_core::worker_api::SnapshotError;
+use restate_core::worker_api::{SnapshotError, SnapshotErrorKind};
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
@@ -39,9 +39,8 @@ impl SnapshotPartitionTask {
     #[instrument(level = "info", skip_all, fields(snapshot_id = %self.snapshot_id, partition_id = %self.partition_id))]
     pub async fn run(self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
         debug!("Creating partition snapshot");
-        let result = self.create_snapshot_inner().await;
-
-        result
+        self.create_snapshot_inner()
+            .await
             .inspect(|metadata| {
                 info!(
                     archived_lsn = %metadata.min_applied_lsn,
@@ -70,7 +69,10 @@ impl SnapshotPartitionTask {
         self.snapshot_repository
             .put(&metadata, snapshot.base_dir)
             .await
-            .map_err(|e| SnapshotError::RepositoryIo(self.partition_id, e))?;
+            .map_err(|e| SnapshotError {
+                partition_id: self.partition_id,
+                kind: SnapshotErrorKind::RepositoryIo(e),
+            })?;
 
         Ok(metadata)
     }

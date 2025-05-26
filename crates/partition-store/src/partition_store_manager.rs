@@ -18,7 +18,7 @@ use rocksdb::event_listener::EventListenerExt;
 use tokio::sync::{RwLock, RwLockWriteGuard, Semaphore};
 use tracing::{debug, info, warn};
 
-use restate_core::worker_api::SnapshotError;
+use restate_core::worker_api::{SnapshotError, SnapshotErrorKind};
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
@@ -257,10 +257,10 @@ impl PartitionStoreManager {
         // Require a lock to prevent closing/reopening stores while a snapshot is ongoing. Failure
         // to do so can lead to exporting a partially-initialized store.
         let guard = self.lookup.read().await;
-        let mut partition_store = guard
-            .get(&partition_id)
-            .cloned()
-            .ok_or(SnapshotError::PartitionNotFound(partition_id))?;
+        let mut partition_store = guard.get(&partition_id).cloned().ok_or(SnapshotError {
+            partition_id,
+            kind: SnapshotErrorKind::PartitionNotFound,
+        })?;
 
         let _permit = self
             .snapshot_limiter
@@ -270,6 +270,10 @@ impl PartitionStoreManager {
         partition_store
             .create_snapshot(snapshot_base_path, min_target_lsn, snapshot_id)
             .await
+            .map_err(|err| SnapshotError {
+                partition_id,
+                kind: SnapshotErrorKind::Export(err.into()),
+            })
     }
 
     pub async fn drop_partition(&self, partition_id: PartitionId) {

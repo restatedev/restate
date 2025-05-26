@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
-use std::io;
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -52,14 +51,13 @@ impl ProcessorsManagerHandle {
                 tx,
             })
             .await
-            .map_err(|_| {
-                SnapshotError::Internal(
-                    partition_id,
-                    "Unable to send command to PartitionProcessorManager".to_string(),
-                )
+            .map_err(|e| SnapshotError {
+                partition_id,
+                kind: SnapshotErrorKind::Internal(e.into()),
             })?;
-        rx.await.map_err(|_| {
-            SnapshotError::Internal(partition_id, "Unable to receive response".to_string())
+        rx.await.map_err(|e| SnapshotError {
+            partition_id,
+            kind: SnapshotErrorKind::Internal(e.into()),
         })?
     }
 
@@ -83,49 +81,29 @@ pub struct SnapshotCreated {
     pub snapshot_id: SnapshotId,
     pub log_id: LogId,
     pub min_applied_lsn: Lsn,
+}
+
+#[derive(Debug, derive_more::Display)]
+#[display("{kind} for partition id: {partition_id}")]
+pub struct SnapshotError {
     pub partition_id: PartitionId,
+    pub kind: SnapshotErrorKind,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum SnapshotError {
-    #[error("Partition {0} not found")]
-    PartitionNotFound(PartitionId),
-    #[error("Snapshot target LSN {min_target_lsn} > applied LSN {applied_lsn}")]
-    MinimumTargetLsnNotMet {
-        partition_id: PartitionId,
-        min_target_lsn: Lsn,
-        applied_lsn: Lsn,
-    },
-    #[error("Snapshot creation already in progress")]
-    SnapshotInProgress(PartitionId),
-    /// Partition Processor is not fully caught up.
-    #[error("Partition processor state does not permit snapshotting")]
-    InvalidState(PartitionId),
-    #[error("Snapshot destination is not configured")]
-    RepositoryNotConfigured(PartitionId),
-    /// Database snapshot export error.
-    #[error("Snapshot export failed: {1}")]
-    SnapshotExport(PartitionId, #[source] anyhow::Error),
-    #[error("Snapshot IO error: {1}")]
-    SnapshotIo(PartitionId, #[source] io::Error),
-    #[error("Snapshot repository IO error: {1}")]
-    RepositoryIo(PartitionId, #[source] anyhow::Error),
-    #[error("Internal error creating snapshot: {1}")]
-    Internal(PartitionId, String),
-}
-
-impl SnapshotError {
-    pub fn partition_id(&self) -> PartitionId {
-        match self {
-            SnapshotError::PartitionNotFound(partition_id) => *partition_id,
-            SnapshotError::MinimumTargetLsnNotMet { partition_id, .. } => *partition_id,
-            SnapshotError::SnapshotInProgress(partition_id) => *partition_id,
-            SnapshotError::InvalidState(partition_id) => *partition_id,
-            SnapshotError::RepositoryNotConfigured(partition_id) => *partition_id,
-            SnapshotError::SnapshotExport(partition_id, _) => *partition_id,
-            SnapshotError::SnapshotIo(partition_id, _) => *partition_id,
-            SnapshotError::RepositoryIo(partition_id, _) => *partition_id,
-            SnapshotError::Internal(partition_id, _) => *partition_id,
-        }
-    }
+pub enum SnapshotErrorKind {
+    #[error("Partition not found")]
+    PartitionNotFound,
+    #[error("Snapshot export in progress")]
+    SnapshotInProgress,
+    #[error("Partition Processor state does not permit snapshotting")]
+    InvalidState,
+    #[error("Snapshot repository is not configured")]
+    RepositoryNotConfigured,
+    #[error("Snapshot export failed for partition")]
+    Export(#[source] anyhow::Error),
+    #[error("Snapshot repository IO error")]
+    RepositoryIo(#[source] anyhow::Error),
+    #[error("Internal error")]
+    Internal(anyhow::Error),
 }
