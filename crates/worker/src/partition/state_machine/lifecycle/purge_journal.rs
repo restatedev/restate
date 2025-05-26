@@ -9,17 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::idempotency_table::IdempotencyTable;
-use restate_storage_api::inbox_table::InboxTable;
 use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::JournalTable;
-use restate_storage_api::outbox_table::OutboxTable;
-use restate_storage_api::promise_table::PromiseTable;
-use restate_storage_api::service_status_table::VirtualObjectStatusTable;
-use restate_storage_api::state_table::StateTable;
-use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use tracing::trace;
@@ -31,18 +23,7 @@ pub struct OnPurgeJournalCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnPurgeJournalCommand
 where
-    S: JournalTable
-        + InvocationStatusTable
-        + InboxTable
-        + FsmTable
-        + StateTable
-        + JournalTable
-        + OutboxTable
-        + journal_table::JournalTable
-        + IdempotencyTable
-        + VirtualObjectStatusTable
-        + TimerTable
-        + PromiseTable,
+    S: JournalTable + InvocationStatusTable + journal_table::JournalTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPurgeJournalCommand { invocation_id } = self;
@@ -97,7 +78,7 @@ mod tests {
     use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::TestEnv;
     use crate::partition::state_machine::tests::fixtures::{
-        invoker_end_effect, invoker_entry_effect, pinned_deployment_v5,
+        invoker_end_effect, invoker_entry_effect, pinned_deployment,
     };
     use crate::partition::state_machine::tests::matchers::storage::{
         has_commands, has_journal_length, is_variant,
@@ -142,7 +123,7 @@ mod tests {
                     journal_retention_duration: journal_retention,
                     ..ServiceInvocation::mock()
                 }),
-                pinned_deployment_v5(invocation_id, ServiceProtocolVersion::V5),
+                pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
                 invoker_entry_effect(
                     invocation_id,
                     OutputCommand {

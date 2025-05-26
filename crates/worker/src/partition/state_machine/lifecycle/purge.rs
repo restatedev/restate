@@ -9,19 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::idempotency_table::IdempotencyTable;
-use restate_storage_api::inbox_table::InboxTable;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InvocationStatus, InvocationStatusTable,
 };
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::JournalTable;
-use restate_storage_api::outbox_table::OutboxTable;
 use restate_storage_api::promise_table::PromiseTable;
 use restate_storage_api::service_status_table::VirtualObjectStatusTable;
 use restate_storage_api::state_table::StateTable;
-use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 use restate_types::invocation::{InvocationTargetType, WorkflowHandlerType};
 use restate_types::service_protocol::ServiceProtocolVersion;
@@ -35,15 +31,11 @@ impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>
 where
     S: JournalTable
         + InvocationStatusTable
-        + InboxTable
-        + FsmTable
         + StateTable
         + JournalTable
-        + OutboxTable
         + journal_table::JournalTable
         + IdempotencyTable
         + VirtualObjectStatusTable
-        + TimerTable
         + PromiseTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {

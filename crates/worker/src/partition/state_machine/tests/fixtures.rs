@@ -110,7 +110,7 @@ pub fn invoker_end_effect_for_epoch(
     })
 }
 
-pub fn pinned_deployment_v5(
+pub fn pinned_deployment(
     invocation_id: InvocationId,
     service_protocol_version: ServiceProtocolVersion,
 ) -> Command {
@@ -185,9 +185,6 @@ pub async fn mock_start_invocation(state_machine: &mut TestEnv) -> InvocationId 
 
 pub async fn mock_pinned_deployment_v5(state_machine: &mut TestEnv, invocation_id: InvocationId) {
     let _ = state_machine
-        .apply(pinned_deployment_v5(
-            invocation_id,
-            ServiceProtocolVersion::V5,
-        ))
+        .apply(pinned_deployment(invocation_id, ServiceProtocolVersion::V5))
         .await;
 }

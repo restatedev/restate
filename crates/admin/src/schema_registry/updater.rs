@@ -303,11 +303,13 @@ impl SchemaUpdater {
         {
             // Little problem here that can lead to some surprising stuff.
             //
-            // When updating a service, and setting the idempotency retention (or private) in the manifest,
-            // I override whatever was stored before. Makes sense.
-            // But when not setting the idempotency retention, we keep whatever was configured before (either from manifest, or from Admin REST API).
+            // When updating a service, and setting the service/handler options (e.g. the idempotency retention, private, etc)
+            // in the manifest, I override whatever was stored before. Makes sense.
+            //
+            // But when not setting these values, we keep whatever was configured before (either from manifest, or from Admin REST API).
             // This makes little sense now that we have these settings in the manifest, but it preserves the old behavior.
-            // At some point we should "break" this behavior, and on service updates simply apply defaults when nothing is configured in the manifest (in order to favour people using annotations, rather than the clunky Admin REST API).
+            // At some point we should "break" this behavior, and on service updates simply apply defaults when nothing is configured in the manifest,
+            // in order to favour people using annotations, rather than the clunky Admin REST API.
             let public =
                 service
                     .private
@@ -321,7 +323,7 @@ impl SchemaUpdater {
                 if preserve_service_level_settings {
                     existing_service.idempotency_retention
                 } else {
-                    DEFAULT_WORKFLOW_COMPLETION_RETENTION
+                    DEFAULT_IDEMPOTENCY_RETENTION
                 },
             );
             let journal_retention =

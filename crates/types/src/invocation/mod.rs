@@ -302,6 +302,7 @@ impl Default for InvocationRetention {
 }
 
 #[serde_as]
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationRequestHeader {
     pub id: InvocationId,
@@ -318,10 +319,10 @@ pub struct InvocationRequestHeader {
     /// Retention duration of the completed status. If none, the completed status is not retained.
     #[serde(default)]
     #[serde_as(deserialize_as = "serde_with::DefaultOnNull")]
-    pub completion_retention_duration: Duration,
+    completion_retention_duration: Duration,
     /// Retention duration of the journal. If zero, the journal is not retained. This should be smaller than `completion_retention_duration`.
     #[serde(default, skip_serializing_if = "Duration::is_zero")]
-    pub journal_retention_duration: Duration,
+    journal_retention_duration: Duration,
 }
 
 impl InvocationRequestHeader {
@@ -346,14 +347,22 @@ impl InvocationRequestHeader {
         self.headers.extend(headers);
     }
 
+    pub fn with_retention(&mut self, invocation_retention: InvocationRetention) {
+        self.completion_retention_duration = invocation_retention.completion_retention;
+        self.journal_retention_duration = invocation_retention.journal_retention;
+    }
+
     /// Invocations are idempotent if they have an idempotency key specified or are of type workflow
     pub fn is_idempotent(&self) -> bool {
         self.idempotency_key.is_some() || matches!(self.target.service_ty(), ServiceType::Workflow)
     }
 
-    pub fn with_retention(&mut self, invocation_retention: InvocationRetention) {
-        self.completion_retention_duration = invocation_retention.completion_retention;
-        self.journal_retention_duration = invocation_retention.journal_retention;
+    pub fn completion_retention_duration(&self) -> Duration {
+        self.completion_retention_duration
+    }
+
+    pub fn journal_retention_duration(&self) -> Duration {
+        self.journal_retention_duration
     }
 }
 
@@ -414,8 +423,8 @@ pub struct ServiceInvocation {
     // Where to send the response, if any
     pub response_sink: Option<ServiceInvocationResponseSink>,
     /// Where to send the submit notification, if any.
-    ///  The submit notification is sent back both when this invocation request attached to an existing invocation,
-    ///  or when this request started a fresh invocation.
+    /// The submit notification is sent back both when this invocation request attached to an existing invocation,
+    /// or when this request started a fresh invocation.
     pub submit_notification_sink: Option<SubmitNotificationSink>,
 }
 

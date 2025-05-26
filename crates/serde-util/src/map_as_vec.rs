@@ -18,9 +18,11 @@ use std::hash::Hash;
 /// The value of the `HashMap` must implement [`MapAsVecItem`] to specify how to extract the key.
 pub struct MapAsVec;
 
+/// Trait for the item to support [`MapAsVecItem`] transformation.
 pub trait MapAsVecItem {
     type Key: Eq + Hash;
 
+    /// Item's key, to transform a `Vec<Self>` into `HashMap<Self::Key, Self>`.
     fn key(&self) -> Self::Key;
 }
 

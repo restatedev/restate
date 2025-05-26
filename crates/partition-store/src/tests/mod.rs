@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures::Stream;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::pin;
 use std::time::Duration;
+
+use futures::Stream;
 use tokio_stream::StreamExt;
 
 use crate::{OpenMode, PartitionStore, PartitionStoreManager};

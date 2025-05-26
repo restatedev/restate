@@ -305,7 +305,6 @@ mod envelope {
         PatchState = 2,                         // protobuf
         TerminateInvocation = 3,                // bilrost
         PurgeInvocation = 4,                    // bilrost
-        PurgeJournal = 15,                      // bilrost
         Invoke = 5,                             // protobuf
         TruncateOutbox = 6,                     // flexbuffers
         ProxyThrough = 7,                       // protobuf
@@ -316,6 +315,7 @@ mod envelope {
         InvocationResponse = 12,                // protobuf
         NotifyGetInvocationOutputResponse = 13, // bilrost
         NotifySignal = 14,                      // protobuf
+        PurgeJournal = 15,                      // bilrost
     }
 
     #[derive(bilrost::Message)]

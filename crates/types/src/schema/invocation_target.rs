@@ -50,7 +50,7 @@ impl InvocationTargetMetadata {
                 InvocationRetention {
                     completion_retention: self.completion_retention,
                     // We need to make sure journal_retention is smaller or equal to completion_retention,
-                    // due to implementation requirement that journal must be retained at least as long as the status.
+                    // due to implementation requirement that invocation status must be retained at least as long as the journal.
                     journal_retention: cmp::min(self.journal_retention, self.completion_retention),
                 }
             }

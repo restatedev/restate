@@ -70,7 +70,10 @@ pub struct ServiceMetadata {
     /// # Idempotency retention
     ///
     /// The retention duration of idempotent requests for this service.
-    #[serde(with = "serde_with::As::<restate_serde_util::DurationString>")]
+    #[serde(
+        with = "serde_with::As::<serde_with::DefaultOnNull<restate_serde_util::DurationString>>",
+        default
+    )]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub idempotency_retention: Duration,
 
@@ -87,7 +90,10 @@ pub struct ServiceMetadata {
 
     /// # Journal retention
     ///
-    /// The journal retention. This applies only to workflow calls, or to idempotent requests.
+    /// The journal retention. When set, this applies to all requests to all handlers of this service.
+    ///
+    /// In case the request has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
+    /// In case the request targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
     #[serde(
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
         skip_serializing_if = "Option::is_none",
@@ -199,7 +205,7 @@ pub struct HandlerMetadata {
         skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub idempotency_retention: Option<Duration>,
 
     /// # Workflow completion retention
@@ -215,7 +221,10 @@ pub struct HandlerMetadata {
 
     /// # Journal retention
     ///
-    /// The journal retention. This applies only to workflow calls, or to idempotent requests.
+    /// The journal retention. When set, this applies to all requests to this handler.
+    ///
+    /// In case the request has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
+    /// In case this handler is a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
     #[serde(
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
         skip_serializing_if = "Option::is_none",
