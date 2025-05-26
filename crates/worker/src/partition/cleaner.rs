@@ -158,6 +158,8 @@ where
             }
 
             // We don't cleanup the status yet, let's check if there's a journal to cleanup
+            // When length != 0 it means that the purge journal feature was activated from the SDK side (through annotations and the new manifest),
+            // or from the relative experimental feature in the Admin API. In this case, the user opted-in this feature and it can't go back to 1.3
             if completed_invocation.journal_metadata.length != 0 {
                 let Some(journal_expiration_time) = SystemTime::from(completed_time)
                     .checked_add(completed_invocation.journal_retention_duration)
