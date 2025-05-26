@@ -244,6 +244,64 @@ fn delete_journal<S: StorageAccess>(
     Ok(())
 }
 
+fn rewrite_journal<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: InvocationId,
+    truncation_starting_point: EntryIndex,
+    entries_to_retain_after_trim_point: &[EntryIndex],
+    notification_ids_to_cleanup: &[NotificationId],
+    journal_length: EntryIndex,
+) -> Result<()> {
+    let _x = RocksDbPerfGuard::new("rewrite-journal");
+
+    // This algorithm works as follows:
+    // * Copy the entries in entries_to_retain_after_trim_point in order starting at truncation_starting_point
+    // * Trim the remaining entries up to journal_length
+    // * Cleanup the notification and completion indexes
+    for (i, old_entry_index) in entries_to_retain_after_trim_point.iter().enumerate() {
+        debug_assert!(
+            *old_entry_index >= truncation_starting_point,
+            "Entry index in 'entries_to_retain_after_trim_point' does not respect the invariant: old_entry_index >= truncation_starting_point"
+        );
+
+        let new_entry_index = truncation_starting_point + (i as u32);
+        let entry = get_journal_entry(storage, &invocation_id, *old_entry_index)?.ok_or_else(|| anyhow!("Expected entry at index {old_entry_index}, but wasn't there. This indicates a bug in the journal trim/compaction procedure"))?;
+
+        // put_journal_entry also takes care of the eventual notification index
+        put_journal_entry(storage, &invocation_id, new_entry_index, &entry, &[])?;
+    }
+
+    let mut key = write_journal_entry_key(&invocation_id, 0);
+    let deletion_starting_point =
+        truncation_starting_point + (entries_to_retain_after_trim_point.len() as u32);
+    for i in deletion_starting_point..journal_length {
+        key.journal_index = Some(i);
+        storage.delete_key(&key)?;
+    }
+
+    if !notification_ids_to_cleanup.is_empty() {
+        let mut notification_id_to_notification_index =
+            JournalNotificationIdToNotificationIndexKey::default()
+                .partition_key(invocation_id.partition_key())
+                .invocation_uuid(invocation_id.invocation_uuid());
+        let mut completion_id_to_command_index = JournalCompletionIdToCommandIndexKey::default()
+            .partition_key(invocation_id.partition_key())
+            .invocation_uuid(invocation_id.invocation_uuid());
+        for notification_id_to_cleanup in notification_ids_to_cleanup {
+            notification_id_to_notification_index.notification_id =
+                Some(notification_id_to_cleanup.clone());
+            storage.delete_key(&notification_id_to_notification_index)?;
+
+            if let NotificationId::CompletionId(completion_id) = notification_id_to_cleanup {
+                completion_id_to_command_index.completion_id = Some(*completion_id);
+                storage.delete_key(&completion_id_to_command_index)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn get_notifications_index<S: StorageAccess>(
     storage: &mut S,
     invocation_id: InvocationId,
@@ -415,8 +473,26 @@ impl JournalTable for PartitionStoreTransaction<'_> {
         journal_length: EntryIndex,
     ) -> Result<()> {
         self.assert_partition_key(&invocation_id)?;
-        let _x = RocksDbPerfGuard::new("delete-journal");
         delete_journal(self, &invocation_id, journal_length)
+    }
+
+    async fn rewrite_journal(
+        &mut self,
+        invocation_id: InvocationId,
+        truncation_starting_point: EntryIndex,
+        entries_to_retain_after_trim_point: &[EntryIndex],
+        notification_ids_to_cleanup: &[NotificationId],
+        journal_length: EntryIndex,
+    ) -> Result<()> {
+        self.assert_partition_key(&invocation_id)?;
+        rewrite_journal(
+            self,
+            invocation_id,
+            truncation_starting_point,
+            entries_to_retain_after_trim_point,
+            notification_ids_to_cleanup,
+            journal_length,
+        )
     }
 }
 
