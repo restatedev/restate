@@ -9,6 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use crate::proto;
+use crate::proto::{
+    complete_awakeable_command_message, notification_template, output_command_message,
+    send_signal_command_message,
+};
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -19,6 +23,15 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::Header;
 use restate_types::journal_v2::encoding::DecodingError;
+use restate_types::journal_v2::lite::{
+    AttachInvocationCommandLite, CallCommandLite, ClearAllStateCommandLite, ClearStateCommandLite,
+    CompleteAwakeableCommandLite, CompleteAwakeableResultLite, CompletePromiseCommandLite,
+    EntryLite, GetEagerStateCommandLite, GetEagerStateKeysCommandLite,
+    GetInvocationOutputCommandLite, GetLazyStateCommandLite, GetLazyStateKeysCommandLite,
+    GetPromiseCommandLite, InputCommandLite, NotificationLite, NotificationResultLite,
+    OneWayCallCommandLite, OutputCommandLite, OutputResultLite, PeekPromiseCommandLite,
+    RunCommandLite, SendSignalCommandLite, SetStateCommandLite, SignalResultLite, SleepCommandLite,
+};
 use restate_types::journal_v2::raw::{
     CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawEntryHeader,
     RawEntryInner, RawNotification,
@@ -1060,6 +1073,266 @@ impl Decoder for ServiceProtocolV4Codec {
             },
 
             RawEntryInner::Event(e) => Entry::Event(e.clone()),
+        })
+    }
+
+    fn decode_entry_lite(entry: &RawEntry) -> Result<EntryLite, DecodingError> {
+        Ok(match &entry.inner {
+            RawEntryInner::Command(cmd) => match cmd.command_type() {
+                CommandType::Input => InputCommandLite {}.into(),
+                CommandType::Output => {
+                    let proto::OutputCommandMessage { result, .. } =
+                        decode_or_bail!(cmd.serialized_content(), OutputCommandMessage);
+                    OutputCommandLite {
+                        result: match get_or_bail!(result) {
+                            output_command_message::Result::Value(_) => OutputResultLite::Success,
+                            output_command_message::Result::Failure(_) => OutputResultLite::Failure,
+                        },
+                    }
+                    .into()
+                }
+                CommandType::Run => {
+                    let proto::RunCommandMessage {
+                        result_completion_id,
+                        name,
+                    } = decode_or_bail!(cmd.serialized_content(), RunCommandMessage);
+                    RunCommandLite {
+                        completion_id: result_completion_id,
+                        name: name.into(),
+                    }
+                    .into()
+                }
+                CommandType::Sleep => {
+                    let proto::SleepCommandMessage {
+                        wake_up_time,
+                        result_completion_id,
+                        name,
+                    } = decode_or_bail!(cmd.serialized_content(), SleepCommandMessage);
+                    SleepCommandLite {
+                        wake_up_time: wake_up_time.into(),
+                        completion_id: result_completion_id,
+                        name: name.into(),
+                    }
+                    .into()
+                }
+                CommandType::Call => {
+                    let proto::CallCommandMessage {
+                        invocation_id_notification_idx,
+                        result_completion_id,
+                        name,
+                        ..
+                    } = decode_or_bail!(cmd.serialized_content(), CallCommandMessage);
+                    let_assert!(
+                        RawCommandSpecificMetadata::CallOrSend(metadata) =
+                            cmd.command_specific_metadata()
+                    );
+                    CallCommandLite {
+                        invocation_id: metadata.invocation_id,
+                        invocation_target: metadata.invocation_target.clone(),
+                        invocation_id_completion_id: invocation_id_notification_idx,
+                        result_completion_id,
+                        name: name.into(),
+                    }
+                    .into()
+                }
+                CommandType::OneWayCall => {
+                    let proto::OneWayCallCommandMessage {
+                        invoke_time,
+                        invocation_id_notification_idx,
+                        name,
+                        ..
+                    } = decode_or_bail!(cmd.serialized_content(), OneWayCallCommandMessage);
+                    let_assert!(
+                        RawCommandSpecificMetadata::CallOrSend(metadata) =
+                            cmd.command_specific_metadata()
+                    );
+                    OneWayCallCommandLite {
+                        invocation_id: metadata.invocation_id,
+                        invocation_target: metadata.invocation_target.clone(),
+                        invoke_time: invoke_time.into(),
+                        invocation_id_completion_id: invocation_id_notification_idx,
+                        name: name.into(),
+                    }
+                    .into()
+                }
+                CommandType::GetLazyState => {
+                    let proto::GetLazyStateCommandMessage {
+                        key,
+                        result_completion_id,
+                        ..
+                    } = decode_or_bail!(cmd.serialized_content(), GetLazyStateCommandMessage);
+                    GetLazyStateCommandLite {
+                        key: to_string_or_bail!(key).into(),
+                        completion_id: result_completion_id,
+                    }
+                    .into()
+                }
+                CommandType::SetState => {
+                    let proto::SetStateCommandMessage { key, .. } =
+                        decode_or_bail!(cmd.serialized_content(), SetStateCommandMessage);
+                    SetStateCommandLite {
+                        key: to_string_or_bail!(key).into(),
+                    }
+                    .into()
+                }
+                CommandType::ClearState => {
+                    let proto::ClearStateCommandMessage { key, .. } =
+                        decode_or_bail!(cmd.serialized_content(), ClearStateCommandMessage);
+                    ClearStateCommandLite {
+                        key: to_string_or_bail!(key).into(),
+                    }
+                    .into()
+                }
+                CommandType::ClearAllState => ClearAllStateCommandLite {}.into(),
+                CommandType::GetLazyStateKeys => {
+                    let proto::GetLazyStateKeysCommandMessage {
+                        result_completion_id,
+                        ..
+                    } = decode_or_bail!(cmd.serialized_content(), GetLazyStateKeysCommandMessage);
+                    GetLazyStateKeysCommandLite {
+                        completion_id: result_completion_id,
+                    }
+                    .into()
+                }
+                CommandType::GetEagerState => {
+                    let proto::GetEagerStateCommandMessage { key, .. } =
+                        decode_or_bail!(cmd.serialized_content(), GetEagerStateCommandMessage);
+                    GetEagerStateCommandLite {
+                        key: to_string_or_bail!(key).into(),
+                    }
+                    .into()
+                }
+                CommandType::GetEagerStateKeys => GetEagerStateKeysCommandLite {}.into(),
+                CommandType::GetPromise => {
+                    let proto::GetPromiseCommandMessage {
+                        key,
+                        result_completion_id,
+                        ..
+                    } = decode_or_bail!(cmd.serialized_content(), GetPromiseCommandMessage);
+                    GetPromiseCommandLite {
+                        key: key.into(),
+                        completion_id: result_completion_id,
+                    }
+                    .into()
+                }
+                CommandType::PeekPromise => {
+                    let proto::PeekPromiseCommandMessage {
+                        key,
+                        result_completion_id,
+                        ..
+                    } = decode_or_bail!(cmd.serialized_content(), PeekPromiseCommandMessage);
+                    PeekPromiseCommandLite {
+                        key: key.into(),
+                        completion_id: result_completion_id,
+                    }
+                    .into()
+                }
+                CommandType::CompletePromise => {
+                    let proto::CompletePromiseCommandMessage {
+                        key,
+                        result_completion_id,
+                        ..
+                    } = decode_or_bail!(cmd.serialized_content(), CompletePromiseCommandMessage);
+                    CompletePromiseCommandLite {
+                        key: key.into(),
+                        completion_id: result_completion_id,
+                    }
+                    .into()
+                }
+                CommandType::SendSignal => {
+                    let proto::SendSignalCommandMessage {
+                        target_invocation_id,
+                        signal_id,
+                        result,
+                        ..
+                    } = decode_or_bail!(cmd.serialized_content(), SendSignalCommandMessage);
+                    SendSignalCommandLite {
+                        target_invocation_id: to_invocation_id_or_bail!(target_invocation_id),
+                        signal_id: get_or_bail!(signal_id).try_into()?,
+                        result: match get_or_bail!(result) {
+                            send_signal_command_message::Result::Void(_) => SignalResultLite::Void,
+                            send_signal_command_message::Result::Value(_) => {
+                                SignalResultLite::Success
+                            }
+                            send_signal_command_message::Result::Failure(_) => {
+                                SignalResultLite::Failure
+                            }
+                        },
+                    }
+                    .into()
+                }
+                CommandType::AttachInvocation => {
+                    let proto::AttachInvocationCommandMessage {
+                        result_completion_id,
+                        target,
+                        ..
+                    } = decode_or_bail!(cmd.serialized_content(), AttachInvocationCommandMessage);
+                    AttachInvocationCommandLite {
+                        target: get_or_bail!(target).try_into()?,
+                        completion_id: result_completion_id,
+                    }
+                    .into()
+                }
+                CommandType::GetInvocationOutput => {
+                    let proto::GetInvocationOutputCommandMessage {
+                        result_completion_id,
+                        target,
+                        ..
+                    } = decode_or_bail!(
+                        cmd.serialized_content(),
+                        GetInvocationOutputCommandMessage
+                    );
+                    GetInvocationOutputCommandLite {
+                        target: get_or_bail!(target).try_into()?,
+                        completion_id: result_completion_id,
+                    }
+                    .into()
+                }
+                CommandType::CompleteAwakeable => {
+                    let proto::CompleteAwakeableCommandMessage {
+                        awakeable_id,
+                        result,
+                        ..
+                    } = decode_or_bail!(cmd.serialized_content(), CompleteAwakeableCommandMessage);
+                    CompleteAwakeableCommandLite {
+                        id: parse_complete_awakeable_id(awakeable_id)?,
+                        result: match get_or_bail!(result) {
+                            complete_awakeable_command_message::Result::Value(_) => {
+                                CompleteAwakeableResultLite::Success
+                            }
+                            complete_awakeable_command_message::Result::Failure(_) => {
+                                CompleteAwakeableResultLite::Failure
+                            }
+                        },
+                    }
+                    .into()
+                }
+            },
+
+            RawEntryInner::Notification(notif) => {
+                let proto::NotificationTemplate { result, .. } =
+                    decode_or_bail!(notif.serialized_content(), NotificationTemplate);
+
+                EntryLite::Notification(NotificationLite {
+                    ty: notif.ty(),
+                    id: notif.id(),
+                    result: match get_or_bail!(result) {
+                        notification_template::Result::Void(_) => NotificationResultLite::Void,
+                        notification_template::Result::Value(_) => NotificationResultLite::Success,
+                        notification_template::Result::Failure(_) => {
+                            NotificationResultLite::Failure
+                        }
+                        notification_template::Result::InvocationId(_) => {
+                            NotificationResultLite::InvocationId
+                        }
+                        notification_template::Result::StateKeys(_) => {
+                            NotificationResultLite::StateKeys
+                        }
+                    },
+                })
+            }
+
+            RawEntryInner::Event(e) => EntryLite::Event(e.clone()),
         })
     }
 }
