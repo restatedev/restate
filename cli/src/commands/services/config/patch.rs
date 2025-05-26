@@ -8,18 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface};
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::Table;
 use const_format::concatcp;
+
 use restate_admin_rest_model::services::ModifyServiceRequest;
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_serde_util::DurationString;
 
-pub(super) const DURATION_EDIT_DESCRIPTION: &str = "Can be configured using the humantime format (https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) or the ISO8601.";
+use crate::cli_env::CliEnv;
+use crate::clients::{AdminClient, AdminClientInterface};
+
+pub(super) const DURATION_EDIT_DESCRIPTION: &str = "Can be configured using the jiff \
+    friendly format (https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) or ISO8601.";
 pub(super) const IDEMPOTENCY_RETENTION_EDIT_DESCRIPTION: &str = concatcp!(
     super::view::IDEMPOTENCY_RETENTION,
     "\n",
@@ -122,23 +125,23 @@ pub(super) async fn apply_service_configuration_patch(
     if let Some(idempotency_retention) = &modify_request.idempotency_retention {
         table.add_kv_row(
             "Idempotent requests retention:",
-            humantime::Duration::from(*idempotency_retention),
+            DurationString::display(*idempotency_retention),
         );
     }
     if let Some(workflow_completion_retention) = &modify_request.workflow_completion_retention {
         table.add_kv_row(
             "Workflow retention time:",
-            humantime::Duration::from(*workflow_completion_retention),
+            DurationString::display(*workflow_completion_retention),
         );
     }
     if let Some(inactivity_timeout) = &modify_request.inactivity_timeout {
         table.add_kv_row(
             "Inactivity timeout:",
-            humantime::Duration::from(*inactivity_timeout),
+            DurationString::display(*inactivity_timeout),
         );
     }
     if let Some(abort_timeout) = &modify_request.abort_timeout {
-        table.add_kv_row("Abort timeout:", humantime::Duration::from(*abort_timeout));
+        table.add_kv_row("Abort timeout:", DurationString::display(*abort_timeout));
     }
     c_println!("{table}");
     confirm_or_exit("Are you sure you want to apply these changes?")?;
