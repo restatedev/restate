@@ -55,7 +55,9 @@ pub mod timer;
 use std::num::NonZero;
 use std::ops::RangeInclusive;
 
-use bilrost::encoding::{EmptyState, ForOverwrite, GeneralGeneric, General, ValueDecoder, ValueEncoder, Wiretyped};
+use bilrost::encoding::{
+    EmptyState, ForOverwrite, General, GeneralGeneric, ValueDecoder, ValueEncoder, Wiretyped,
+};
 use serde_with::serde_as;
 
 use restate_encoding::{BilrostAs, NetSerde};
@@ -145,7 +147,7 @@ where
 impl<const _P: u8, P> ValueDecoder<GeneralGeneric<_P>, OptionNonZero<P>> for ()
 where
     P: Default + Copy + PartialEq,
-():  ValueDecoder<General, P>
+    (): ValueDecoder<General, P>,
 {
     fn decode_value<B: ::bytes::Buf + ?Sized>(
         value: &mut OptionNonZero<P>,
@@ -271,12 +273,12 @@ where
 pub struct NetRangeInclusive<Idx>(RangeInclusive<Idx>)
 where
     Idx: Copy + 'static,
-(): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>;
+    (): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>;
 
 impl<Idx> Default for NetRangeInclusive<Idx>
 where
     Idx: Copy + 'static,
-(): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>,
+    (): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>,
 {
     fn default() -> Self {
         Self(RangeInclusive::new(
@@ -294,7 +296,7 @@ where
 impl<Idx> From<&NetRangeInclusive<Idx>> for RangeInclusiveMessage<Idx>
 where
     Idx: Copy,
-(): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>,
+    (): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>,
 {
     fn from(value: &NetRangeInclusive<Idx>) -> Self {
         Self((*value.0.start(), *value.0.end()))
@@ -304,7 +306,7 @@ where
 impl<Idx> From<RangeInclusiveMessage<Idx>> for NetRangeInclusive<Idx>
 where
     Idx: Copy,
-(): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>,
+    (): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>,
 {
     fn from(value: RangeInclusiveMessage<Idx>) -> Self {
         Self(RangeInclusive::new(value.0.0, value.0.1))

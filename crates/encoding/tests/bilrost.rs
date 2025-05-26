@@ -12,7 +12,7 @@ use std::{fmt::Display, num::ParseIntError, ops::RangeInclusive, str::FromStr};
 
 use bilrost::{Message, OwnedMessage};
 use bytes::BytesMut;
-use restate_encoding::{BilrostAs};
+use restate_encoding::BilrostAs;
 
 #[derive(Default, PartialEq)]
 struct Stringer {

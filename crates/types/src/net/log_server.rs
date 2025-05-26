@@ -15,7 +15,7 @@ use bitflags::bitflags;
 use prost_dto::{FromProst, IntoProst};
 use serde::{Deserialize, Serialize};
 
-use restate_encoding::{BilrostAs, BilrostNewType, ArcedSlice, NetSerde};
+use restate_encoding::{ArcedSlice, BilrostAs, BilrostNewType, NetSerde};
 
 use super::{RpcResponse, ServiceTag};
 use crate::GenerationalNodeId;
