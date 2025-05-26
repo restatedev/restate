@@ -13,7 +13,6 @@ mod input_command;
 mod invocation_state_machine;
 mod invocation_task;
 mod metric_definitions;
-mod quota;
 mod state_machine_manager;
 mod status_store;
 
@@ -206,7 +205,6 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
                 },
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
-                quota: quota::InvokerConcurrencyQuota::new(options.concurrent_invocations_limit()),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             },
@@ -323,7 +321,6 @@ struct ServiceInner<InvocationTaskRunner, SR> {
     // Invoker state machine
     invocation_tasks: JoinSet<()>,
     retry_timers: TimerQueue<(PartitionLeaderEpoch, InvocationId, InvocationEpoch)>,
-    quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
     invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager<SR>,
 }
@@ -389,7 +386,7 @@ where
                 }
             },
 
-            Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
+            Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() => {
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_epoch, invoke_input_command.invocation_target, invoke_input_command.journal);
             },
 
@@ -567,7 +564,6 @@ where
                 .invocation_state_machine_manager
                 .partition_storage_reader(partition)
                 .expect("partition is registered");
-            self.quota.reserve_slot();
             self.start_invocation_task(
                 options,
                 partition,
@@ -956,7 +952,6 @@ where
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Invocation task closed correctly");
-            self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
             let _ = sender
                 .send(Effect {
@@ -996,7 +991,6 @@ where
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Suspending invocation");
-            self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
             let _ = sender
                 .send(Effect {
@@ -1039,7 +1033,6 @@ where
                 restate.invocation.target = %ism.invocation_target,
                 "Suspending invocation"
             );
-            self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
             let _ = sender
                 .send(Effect {
@@ -1110,7 +1103,6 @@ where
                 "Aborting invocation"
             );
             ism.abort();
-            self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
         } else {
             trace!(
@@ -1138,7 +1130,6 @@ where
                     "Aborting invocation"
                 );
                 ism.abort();
-                self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &fid);
             }
         } else {
@@ -1222,7 +1213,6 @@ where
                     restate.invocation.id = %invocation_id,
                     restate.invocation.target = %ism.invocation_target,
                     "Error when executing the invocation, not going to retry.");
-                self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &invocation_id);
 
                 let _ = self
@@ -1329,7 +1319,7 @@ where
 mod tests {
     use super::*;
 
-    use std::future::{pending, ready};
+    use std::future::pending;
     use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1339,22 +1329,18 @@ mod tests {
     use googletest::prelude::eq;
     use googletest::{assert_that, pat};
     use serde_json::Value;
-    use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
-    use tokio_util::sync::CancellationToken;
 
     use restate_core::{TaskCenter, TaskKind};
     use restate_invoker_api::InvokerHandle;
     use restate_invoker_api::entry_enricher;
     use restate_invoker_api::test_util::EmptyStorageReader;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-    use restate_test_util::{check, let_assert};
+    use restate_test_util::check;
     use restate_types::config::InvokerOptionsBuilder;
     use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceRevision};
     use restate_types::invocation::ServiceType;
-    use restate_types::journal::enriched::EnrichedEntryHeader;
-    use restate_types::journal::raw::RawEntry;
     use restate_types::journal_v2::{Command, OutputCommand, OutputResult};
     use restate_types::journal_v2::{CompletionType, NotificationType};
     use restate_types::live::Constant;
@@ -1364,7 +1350,6 @@ mod tests {
     use restate_types::schema::service::ServiceMetadata;
 
     use crate::error::{InvokerError, SdkInvocationErrorV2};
-    use crate::quota::InvokerConcurrencyQuota;
 
     // -- Mocks
 
@@ -1377,7 +1362,6 @@ mod tests {
         #[allow(clippy::type_complexity)]
         fn mock(
             invocation_task_runner: ITR,
-            concurrency_limit: Option<usize>,
         ) -> (
             mpsc::UnboundedSender<InputCommand<IR>>,
             mpsc::UnboundedSender<
@@ -1400,7 +1384,6 @@ mod tests {
                 invocation_task_runner,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
-                quota: InvokerConcurrencyQuota::new(concurrency_limit),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             };
@@ -1635,195 +1618,10 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn quota_allows_one_concurrent_invocation() {
-        let invoker_options = InvokerOptionsBuilder::default()
-            // fixed amount of retries so that an invocation eventually completes with a failure
-            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, Some(1)))
-            .inactivity_timeout(Duration::ZERO.into())
-            .abort_timeout(Duration::ZERO.into())
-            .disable_eager_state(false)
-            .message_size_warning(NonZeroUsize::new(1024).unwrap())
-            .message_size_limit(None)
-            .build()
-            .unwrap();
-
-        let mut segment_queue = SegmentQueue::new(tempdir().unwrap().into_path(), 1024);
-        let cancel_token = CancellationToken::new();
-        let shutdown = cancel_token.cancelled();
-        tokio::pin!(shutdown);
-
-        let invocation_id_1 = InvocationId::mock_random();
-        let invocation_id_2 = InvocationId::mock_random();
-
-        let (_invoker_tx, _status_tx, mut service_inner) =
-            ServiceInner::mock(|_, _, _, _, _, _, _| ready(()), Some(1));
-        let _ = service_inner.register_mock_partition(EmptyStorageReader);
-
-        // Enqueue sid_1 and sid_2
-        segment_queue
-            .enqueue(InvokeCommand {
-                partition: MOCK_PARTITION,
-                invocation_id: invocation_id_1,
-                invocation_epoch: 0,
-                invocation_target: InvocationTarget::mock_virtual_object(),
-                journal: InvokeInputJournal::NoCachedJournal,
-            })
-            .await;
-        segment_queue
-            .enqueue(InvokeCommand {
-                partition: MOCK_PARTITION,
-                invocation_id: invocation_id_2,
-                invocation_epoch: 0,
-                invocation_target: InvocationTarget::mock_virtual_object(),
-                journal: InvokeInputJournal::NoCachedJournal,
-            })
-            .await;
-
-        // Now step the state machine to start the invocation
-        assert!(
-            service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
-                .await
-        );
-
-        // Check status and quota
-        assert!(
-            service_inner
-                .status_store
-                .resolve_invocation(MOCK_PARTITION, &invocation_id_1)
-                .unwrap()
-                .in_flight()
-        );
-        assert!(!service_inner.quota.is_slot_available());
-
-        // Step again to remove sid_1 from task queue. This should not invoke sid_2!
-        assert!(
-            service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
-                .await
-        );
-        assert!(
-            service_inner
-                .status_store
-                .resolve_invocation(MOCK_PARTITION, &invocation_id_2)
-                .is_none()
-        );
-        assert!(!service_inner.quota.is_slot_available());
-
-        // Send the close signal
-        service_inner
-            .handle_invocation_task_closed(MOCK_PARTITION, invocation_id_1, 0)
-            .await;
-
-        // Slot should be available again
-        assert!(service_inner.quota.is_slot_available());
-
-        // Step now should invoke sid_2
-        assert!(
-            service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
-                .await
-        );
-        assert!(
-            service_inner
-                .status_store
-                .resolve_invocation(MOCK_PARTITION, &invocation_id_1)
-                .is_none()
-        );
-        assert!(
-            service_inner
-                .status_store
-                .resolve_invocation(MOCK_PARTITION, &invocation_id_2)
-                .unwrap()
-                .in_flight()
-        );
-        assert!(!service_inner.quota.is_slot_available());
-    }
-
-    #[test(restate_core::test)]
-    async fn reclaim_quota_after_abort() {
-        let invoker_options = InvokerOptionsBuilder::default()
-            // fixed amount of retries so that an invocation eventually completes with a failure
-            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, Some(1)))
-            .inactivity_timeout(Duration::ZERO.into())
-            .abort_timeout(Duration::ZERO.into())
-            .disable_eager_state(false)
-            .message_size_warning(NonZeroUsize::new(1024).unwrap())
-            .message_size_limit(None)
-            .build()
-            .unwrap();
-        let invocation_id = InvocationId::mock_random();
-
-        let (_, _status_tx, mut service_inner) = ServiceInner::mock(
-            |partition,
-             invocation_id,
-             _service_id,
-             _storage_reader,
-             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-             _,
-             _| {
-                let _ = invoker_tx.send(InvocationTaskOutput {
-                    partition,
-                    invocation_id,
-                    invocation_epoch: 0,
-                    inner: InvocationTaskOutputInner::NewEntry {
-                        entry_index: 1,
-                        entry: RawEntry::new(EnrichedEntryHeader::SetState {}, Bytes::default()),
-                        requires_ack: false,
-                    },
-                });
-                pending() // Never ends
-            },
-            Some(2),
-        );
-        let _ = service_inner.register_mock_partition(EmptyStorageReader);
-
-        // Invoke the service
-        service_inner.handle_invoke(
-            &invoker_options,
-            MOCK_PARTITION,
-            invocation_id,
-            0,
-            InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
-        );
-
-        // We should receive the new entry here
-        let invoker_effect = service_inner.invocation_tasks_rx.recv().await.unwrap();
-        assert_eq!(invoker_effect.invocation_id, invocation_id);
-        check!(let InvocationTaskOutputInner::NewEntry { .. } = invoker_effect.inner);
-
-        // Check the quota
-        let_assert!(InvokerConcurrencyQuota::Limited { available_slots } = &service_inner.quota);
-        assert_eq!(*available_slots, 1);
-
-        // Abort the invocation
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 0);
-
-        // Check the quota
-        let_assert!(InvokerConcurrencyQuota::Limited { available_slots } = &service_inner.quota);
-        assert_eq!(*available_slots, 2);
-
-        // Handle error coming after the abort (this should be noop)
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                0,
-                InvokerError::EmptySuspensionMessage, /* any error is fine */
-            )
-            .await;
-
-        // Check the quota, should not be changed
-        let_assert!(InvokerConcurrencyQuota::Limited { available_slots } = &service_inner.quota);
-        assert_eq!(*available_slots, 2);
-    }
-
-    #[test(restate_core::test)]
     async fn abort_doesnt_get_applied_with_old_epoch() {
         let invocation_id = InvocationId::mock_random();
 
-        let (_, _status_tx, mut service_inner) = ServiceInner::mock((), None);
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock(());
         let _ = service_inner.register_mock_partition(EmptyStorageReader);
 
         // Invoke the service with epoch one
@@ -1891,8 +1689,7 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
         let started_tasks_count = Arc::new(AtomicUsize::new(0));
 
-        let (_, _status_tx, mut service_inner) =
-            ServiceInner::mock(started_tasks_count.clone(), None);
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock(started_tasks_count.clone());
         let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
 
         // Invoke the service with epoch zero
@@ -2042,7 +1839,6 @@ mod tests {
                     pending::<()>().await
                 }
             },
-            None,
         );
 
         // Register a mock partition

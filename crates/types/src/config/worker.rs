@@ -167,11 +167,6 @@ pub struct InvokerOptions {
     /// that can be kept in memory before spilling to disk. This is a per-partition limit.
     in_memory_queue_length_limit: NonZeroUsize,
 
-    /// # Limit number of concurrent invocations from this node
-    ///
-    /// Number of concurrent invocations that can be processed by the invoker.
-    concurrent_invocations_limit: Option<NonZeroUsize>,
-
     // -- Private config options (not exposed in the schema)
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -183,10 +178,6 @@ impl InvokerOptions {
         self.tmp_dir.clone().unwrap_or_else(|| {
             std::env::temp_dir().join(format!("{}-{}", "invoker", ulid::Ulid::new()))
         })
-    }
-
-    pub fn concurrent_invocations_limit(&self) -> Option<usize> {
-        self.concurrent_invocations_limit.map(Into::into)
     }
 
     pub fn in_memory_queue_length_limit(&self) -> usize {
@@ -214,7 +205,6 @@ impl Default for InvokerOptions {
             message_size_warning: NonZeroUsize::new(10 * 1024 * 1024).unwrap(), // 10MiB
             message_size_limit: None,
             tmp_dir: None,
-            concurrent_invocations_limit: Some(NonZeroUsize::new(100).unwrap()),
             disable_eager_state: false,
         }
     }
