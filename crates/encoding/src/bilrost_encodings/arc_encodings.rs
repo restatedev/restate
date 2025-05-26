@@ -31,8 +31,6 @@ bilrost::implement_core_empty_state_rules!(ArcedSlice<E>, with generics (E));
 mod impl_arc_encoding {
     use super::*;
 
-    // The rest of the file is trait implementations that perform direct method pass-through.
-
     impl<T, E> ForOverwrite<Arced<E>, Arc<T>> for ()
     where
         (): ForOverwrite<E, T>,
@@ -269,8 +267,6 @@ mod impl_arc_encoding {
 //  Overall that approach isn't likely to be very much faster in reality.
 mod impl_arc_slice_encoding {
     use super::*;
-
-    // The rest of the file is trait implementations that perform direct method pass-through.
 
     impl<T, E> ForOverwrite<ArcedSlice<E>, Arc<[T]>> for () {
         #[inline(always)]
