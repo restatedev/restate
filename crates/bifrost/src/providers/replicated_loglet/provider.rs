@@ -244,7 +244,6 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
             .with_top_priority_node(my_node);
 
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
-
         let selection = NodeSetSelector::select(
             &nodes_config,
             &defaults.replication_property,
@@ -284,10 +283,7 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
                     .expect("LogletParams serde is infallible");
                 Ok(LogletParams::from(new_params))
             }
-            Err(err) => {
-                warn!(?log_id, "Cannot select node-set for log: {err}");
-                Err(OperationError::retryable(err))
-            }
+            Err(err) => Err(OperationError::retryable(err)),
         }
     }
 
