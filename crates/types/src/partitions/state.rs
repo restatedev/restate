@@ -10,6 +10,10 @@
 
 use std::sync::Arc;
 
+use dashmap::Entry;
+use tokio::sync::Notify;
+use tokio::sync::futures::Notified;
+
 use restate_encoding::NetSerde;
 
 use crate::identifiers::PartitionId;
@@ -28,6 +32,7 @@ pub struct PartitionReplicaSetStates {
 #[derive(Default)]
 struct Inner {
     partitions: DashMap<PartitionId, MembershipState>,
+    global_notify: Notify,
 }
 
 impl PartitionReplicaSetStates {
@@ -38,17 +43,22 @@ impl PartitionReplicaSetStates {
         current_membership: &ReplicaSetState,
         next_membership: &Option<ReplicaSetState>,
     ) {
-        // we insert the partition id if unknown
-        self.inner
-            .partitions
-            .entry(partition_id)
-            .and_modify(|existing| {
-                existing.merge(current_membership, next_membership);
-            })
-            .or_insert_with(|| MembershipState {
-                observed_current_membership: current_membership.clone(),
-                observed_next_membership: next_membership.clone(),
-            });
+        let modified = match self.inner.partitions.entry(partition_id) {
+            Entry::Occupied(mut occupied_entry) => occupied_entry
+                .get_mut()
+                .merge(current_membership, next_membership),
+            Entry::Vacant(entry) => {
+                entry.insert(MembershipState {
+                    observed_current_membership: current_membership.clone(),
+                    observed_next_membership: next_membership.clone(),
+                });
+                true
+            }
+        };
+
+        if modified {
+            self.inner.global_notify.notify_waiters();
+        }
     }
 
     pub fn get_membership_state(&self, partition_id: PartitionId) -> Option<MembershipState> {
@@ -63,6 +73,14 @@ impl PartitionReplicaSetStates {
             .partitions
             .iter()
             .map(|entry| (*entry.key(), entry.value().clone()))
+    }
+
+    /// Future to monitor changes to the partition replica set states.
+    ///
+    /// If you don't want to miss any changes, it's advised to create this future first, read the
+    /// partition replica set states, then await this future for updates.
+    pub fn changed(&self) -> Notified {
+        self.inner.global_notify.notified()
     }
 }
 
@@ -139,6 +157,19 @@ impl MembershipState {
 
         modified
     }
+
+    /// Returns true if the given node_id is part of the current or next membership.
+    pub fn contains(&self, node_id: PlainNodeId) -> bool {
+        self.observed_current_membership
+            .members
+            .iter()
+            .any(|m| m.node_id == node_id)
+            || self
+                .observed_next_membership
+                .as_ref()
+                .map(|m| m.members.iter().any(|m| m.node_id == node_id))
+                .unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Clone, bilrost::Message, NetSerde)]
@@ -149,7 +180,7 @@ pub struct ReplicaSetState {
 }
 
 impl ReplicaSetState {
-    /// Creates the replicate set state from the given partition configuration. It assumes the
+    /// Creates the replica set state from the given partition configuration. It assumes the
     /// durable lsn to be invalid since we don't have information about it yet.
     pub fn from_partition_configuration(partition_configuration: &PartitionConfiguration) -> Self {
         let members = partition_configuration

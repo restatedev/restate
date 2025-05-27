@@ -62,7 +62,6 @@ pub enum ProcessorState {
     },
     Stopping {
         processor: Option<StartedProcessor>,
-        restart_as: Option<RunMode>,
     },
 }
 
@@ -74,7 +73,6 @@ impl ProcessorState {
     pub fn stopping(processor: StartedProcessor) -> Self {
         Self::Stopping {
             processor: Some(processor),
-            restart_as: None,
         }
     }
 
@@ -89,21 +87,17 @@ impl ProcessorState {
         match self {
             ProcessorState::Starting { .. } => {
                 // let's see whether we can stop a starting PP eagerly
-                *self = ProcessorState::Stopping {
-                    restart_as: None,
-                    processor: None,
-                }
+                *self = ProcessorState::Stopping { processor: None }
             }
             ProcessorState::Started { processor, .. } => {
                 let processor = processor.take().expect("must be some");
                 processor.cancel();
                 *self = ProcessorState::Stopping {
-                    restart_as: None,
                     processor: Some(processor),
                 };
             }
-            ProcessorState::Stopping { restart_as, .. } => {
-                *restart_as = None;
+            ProcessorState::Stopping { .. } => {
+                // already stopping
             }
         };
     }
@@ -132,8 +126,8 @@ impl ProcessorState {
                     }
                 }
             }
-            ProcessorState::Stopping { restart_as, .. } => {
-                *restart_as = Some(RunMode::Follower);
+            ProcessorState::Stopping { .. } => {
+                // we first need to stop before we check whether we should run again
             }
         }
 
@@ -184,9 +178,8 @@ impl ProcessorState {
                     }
                 }
             }
-            ProcessorState::Stopping { restart_as, .. } => {
-                debug!("Restarting partition processor as leader.");
-                *restart_as = Some(RunMode::Leader);
+            ProcessorState::Stopping { .. } => {
+                // we first need to stop before we check whether we should run again
                 None
             }
         }

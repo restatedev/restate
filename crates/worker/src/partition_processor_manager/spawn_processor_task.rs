@@ -72,6 +72,7 @@ impl SpawnPartitionProcessorTask {
         }
     }
 
+    /// Start the spawn processor task. The task is delayed by the given `delay`.
     #[instrument(
         level = "error",
         skip_all,
@@ -81,6 +82,7 @@ impl SpawnPartitionProcessorTask {
     )]
     pub fn run(
         self,
+        delay: Option<Duration>,
     ) -> anyhow::Result<(
         StartedProcessor,
         RuntimeTaskHandle<Result<(), ProcessorError>>,
@@ -141,6 +143,10 @@ impl SpawnPartitionProcessorTask {
                 let key_range = key_range.clone();
 
                 move || async move {
+                    if let Some(delay) = delay {
+                        tokio::time::sleep(delay).await;
+                    }
+
                     let partition_store = open_partition_store(
                         partition_id,
                         partition_store_manager,
