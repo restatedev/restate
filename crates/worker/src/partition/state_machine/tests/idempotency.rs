@@ -234,6 +234,7 @@ async fn complete_already_completed_invocation() {
         &InvocationStatus::Completed(CompletedInvocation {
             invocation_target: invocation_target.clone(),
             source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
+            execution_time: None,
             idempotency_key: Some(idempotency_key.clone()),
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(response_bytes.clone()),

@@ -594,6 +594,8 @@ pub struct InFlightInvocationMetadata {
     pub response_sinks: HashSet<ServiceInvocationResponseSink>,
     pub timestamps: StatusTimestamps,
     pub source: Source,
+    /// For invocations that were originally scheduled, retains the time when the request was originally scheduled to execute
+    pub execution_time: Option<MillisSinceEpoch>,
 
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_duration: Duration,
@@ -626,6 +628,7 @@ impl InFlightInvocationMetadata {
                 response_sinks: pre_flight_invocation_metadata.response_sinks,
                 timestamps: pre_flight_invocation_metadata.timestamps,
                 source: pre_flight_invocation_metadata.source,
+                execution_time: pre_flight_invocation_metadata.execution_time,
                 completion_retention_duration: pre_flight_invocation_metadata
                     .completion_retention_duration,
                 journal_retention_duration: pre_flight_invocation_metadata
@@ -662,6 +665,8 @@ impl InFlightInvocationMetadata {
 pub struct CompletedInvocation {
     pub invocation_target: InvocationTarget,
     pub source: Source,
+    /// For invocations that were originally scheduled, retains the time when the request was originally scheduled to execute
+    pub execution_time: Option<MillisSinceEpoch>,
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
     pub response_result: ResponseResult,
@@ -692,6 +697,7 @@ impl CompletedInvocation {
         Self {
             invocation_target: in_flight_invocation_metadata.invocation_target,
             source: in_flight_invocation_metadata.source,
+            execution_time: in_flight_invocation_metadata.execution_time,
             idempotency_key: in_flight_invocation_metadata.idempotency_key,
             timestamps: in_flight_invocation_metadata.timestamps,
             response_result,
@@ -775,6 +781,7 @@ mod test_util {
                 response_sinks: HashSet::new(),
                 timestamps: StatusTimestamps::now(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                execution_time: None,
                 completion_retention_duration: Duration::ZERO,
                 journal_retention_duration: Duration::ZERO,
                 idempotency_key: None,
@@ -799,6 +806,7 @@ mod test_util {
                     VirtualObjectHandlerType::Exclusive,
                 ),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                execution_time: None,
                 idempotency_key: None,
                 timestamps,
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
@@ -818,6 +826,7 @@ mod test_util {
                     VirtualObjectHandlerType::Exclusive,
                 ),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                execution_time: None,
                 idempotency_key: None,
                 timestamps: StatusTimestamps::now(),
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
