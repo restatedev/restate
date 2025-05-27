@@ -1,0 +1,38 @@
+# Region 3 (witness only, log & meta) - Node 3 Configuration
+
+env:
+  # --------------------
+  # common params
+  # --------------------
+  - name: RESTATE_LOG_FORMAT
+    value: "json"
+  - name: RESTATE_CLUSTER_NAME
+    value: "multi-region-demo-cluster"
+  - name: RESTATE_METADATA_SERVER__TYPE
+    value: "replicated"
+  - name: RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE
+    value: "1024MB"
+
+  # --------------------
+  # node specific params
+  # --------------------
+  - name: RESTATE_NODE_NAME
+    value: "node3"
+  - name: RESTATE_FORCE_NODE_ID
+    value: "3"
+  - name: RESTATE_ROLES
+    value: '["metadata-server","log-server"]'
+  - name: RESTATE_AUTO_PROVISION
+    value: "false"
+
+  # --------------------
+  # params that need to be overridden
+  # --------------------
+  # this needs to be an address the other two nodes can resolve and reach
+  # the example given here only works if all three are in the same cluster (eg in different namespaces)
+  # (and it assumes the namespace deployed into is restate-node3)
+  - name: RESTATE_ADVERTISED_ADDRESS
+    value: "http://restate-0.restate-cluster.restate-node3:5122"
+  # this should be the values of RESTATE_ADVERTISED_ADDRESS for each of the 3 nodes
+  - name: RESTATE_METADATA_CLIENT__ADDRESSES
+    value: '["http://restate-0.restate-cluster.restate-node1:5122","http://restate-0.restate-cluster.restate-node2:5122","http://restate-0.restate-cluster.restate-node3:5122"]'
