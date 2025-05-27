@@ -42,7 +42,7 @@ pub async fn run(
     let mut append_latencies = Histogram::<u64>::new(3)?;
     let mut counter = 0;
     let mut appender =
-        bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::extend_preferred())?;
+        bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::ExtendChainPreferred)?;
     let start = Instant::now();
     loop {
         if counter >= args.num_records {
