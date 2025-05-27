@@ -13,10 +13,10 @@ use std::fmt::Display;
 use tokio::time::Instant;
 use tracing::debug;
 
-use restate_core::network::{LazyConnection, NetworkSender};
+use restate_core::network::{LazyConnection, NetworkSender, ReplyRx};
 use restate_core::network::{SendToken, Swimlane, TrySendError};
 use restate_types::config::GossipOptions;
-use restate_types::net::node::Gossip;
+use restate_types::net::node::{ClusterStateReply, GetClusterState, Gossip};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, Version};
 
@@ -262,8 +262,9 @@ impl Node {
                 self.gen_node_id,
                 Swimlane::Gossip,
                 // this buffer is intentionally small to provide fast feedback to failure detector
-                // if we cannot connect.
-                1,
+                // if we cannot connect. It's big enough to carry the bring-up gossip message and a
+                // potential GetClusterState request.
+                2,
                 true,
             )
         })
@@ -279,5 +280,13 @@ impl Node {
         msg: Gossip,
     ) -> Result<SendToken, TrySendError<Gossip>> {
         self.connection(networking).try_send_unary(msg, None)
+    }
+
+    pub fn send_get_cluster_state(
+        &mut self,
+        networking: &impl NetworkSender,
+    ) -> Result<ReplyRx<ClusterStateReply>, TrySendError<GetClusterState>> {
+        self.connection(networking)
+            .try_send_rpc(GetClusterState, None)
     }
 }

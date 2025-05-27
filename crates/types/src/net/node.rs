@@ -48,6 +48,14 @@ define_unary_message! {
 }
 bilrost_wire_codec!(Gossip);
 
+define_rpc! {
+    @request = GetClusterState,
+    @response = ClusterStateReply,
+    @service = GossipService,
+}
+bilrost_wire_codec!(GetClusterState);
+bilrost_wire_codec!(ClusterStateReply);
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, bilrost::Message, NetSerde)]
 pub struct GetNodeState {}
 
@@ -143,4 +151,63 @@ pub struct PartitionReplicaSet {
     pub id: PartitionId,
     pub observed_current_membership: ReplicaSetState,
     pub observed_next_membership: Option<ReplicaSetState>,
+}
+
+// ** RPC for fetching cluster state from a peer node
+
+#[derive(Debug, Clone, Copy, Default, bilrost::Message, NetSerde)]
+pub struct GetClusterState;
+
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash, bilrost::Enumeration, NetSerde)]
+#[repr(u8)]
+pub enum CsReplyStatus {
+    /// Response should not be used, the node's FailureDetector is not fully running yet or in
+    /// lonely state.
+    #[default]
+    NotReady = 0,
+    Ok = 1,
+}
+
+/// This is a full copy of the node's in-memory view of cluster state
+#[derive(Debug, Default, Clone, bilrost::Message, NetSerde)]
+pub struct ClusterStateReply {
+    #[bilrost(1)]
+    pub status: CsReplyStatus,
+    #[bilrost(2)]
+    pub nodes: Vec<CsNode>,
+    #[bilrost(3)]
+    pub partitions: Vec<PartitionReplicaSet>,
+}
+
+impl ClusterStateReply {
+    pub fn not_ready() -> Self {
+        Self {
+            status: CsReplyStatus::NotReady,
+            nodes: Vec::default(),
+            partitions: Vec::default(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash, bilrost::Enumeration, NetSerde)]
+#[repr(u8)]
+pub enum NodeState {
+    #[default]
+    Dead = 0,
+    Alive = 1,
+    FailingOver = 2,
+}
+
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
+pub struct CsNode {
+    #[bilrost(1)]
+    pub node_id: GenerationalNodeId,
+    #[bilrost(2)]
+    pub state: NodeState,
+}
+
+impl NodeState {
+    pub fn is_alive(self) -> bool {
+        matches!(self, Self::Alive | Self::FailingOver)
+    }
 }
