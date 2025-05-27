@@ -32,7 +32,6 @@ where
     S: JournalTable
         + InvocationStatusTable
         + StateTable
-        + JournalTable
         + journal_table::JournalTable
         + IdempotencyTable
         + VirtualObjectStatusTable

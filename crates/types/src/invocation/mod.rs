@@ -280,9 +280,9 @@ impl fmt::Display for InvocationTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvocationRetention {
-    /// Retention duration of the completed status. If none, the completed status is not retained, and invocation won't be deduplicated.
+    /// Retention duration of the completed status. If zero, the completed status is not retained, and invocation won't be deduplicated.
     pub completion_retention: Duration,
-    /// Retention duration of the journal. If none, the journal is not retained.
+    /// Retention duration of the journal. If zero, the journal is not retained.
     pub journal_retention: Duration,
 }
 
