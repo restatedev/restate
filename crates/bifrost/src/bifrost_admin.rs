@@ -53,6 +53,28 @@ impl<'a> BifrostAdmin<'a> {
         self.inner.trim(log_id, trim_point).await
     }
 
+    /// Creates the log if it doesn't exist
+    #[instrument(level = "debug", skip(self))]
+    pub async fn ensure_log_exists(&self, log_id: LogId) -> Result<()> {
+        self.inner.fail_if_shutting_down()?;
+        let logs = Metadata::with_current(|m| m.logs_snapshot());
+        let provider_config = &logs.configuration().default_provider;
+        let provider = self.inner.provider_for(provider_config.kind())?;
+        if logs.chain(&log_id).is_none() {
+            let proposed_params =
+                provider.propose_new_loglet_params(log_id, None, provider_config)?;
+            debug!(
+                %log_id,
+                provider = %provider_config.kind(),
+                "Provisioning log"
+            );
+            self.add_log(log_id, provider_config.kind(), proposed_params)
+                .await?;
+        }
+
+        Ok(())
+    }
+
     /// Seals a loglet under a set of conditions.
     ///
     /// The loglet will be sealed if and only if the following is true:
@@ -249,7 +271,8 @@ impl<'a> BifrostAdmin<'a> {
         params: LogletParams,
     ) -> Result<()> {
         self.inner.fail_if_shutting_down()?;
-        self.inner
+        let res = self
+            .inner
             .metadata_writer
             .global_metadata()
             .read_modify_write::<_, _, Error>(|logs: Option<Arc<Logs>>| {
@@ -264,9 +287,14 @@ impl<'a> BifrostAdmin<'a> {
                 Ok(builder.build())
             })
             .await
-            .map_err(|e| e.transpose())?;
+            .map_err(|e| e.transpose());
 
-        Ok(())
+        match res {
+            Ok(_) => Ok(()),
+            // If the log already exists, it's okay to ignore the error.
+            Err(Error::AdminError(AdminError::LogAlreadyExists(_))) => Ok(()),
+            Err(other) => Err(other),
+        }
     }
 
     /// Creates empty metadata if none exists for bifrost and publishes it to metadata
