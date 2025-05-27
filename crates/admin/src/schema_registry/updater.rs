@@ -356,11 +356,12 @@ impl SchemaUpdater {
                     true
                 },
             );
-            let idempotency_retention = service.idempotency_retention_duration().unwrap_or(
+            let idempotency_retention = service.idempotency_retention_duration().or(
                 if service_level_settings_behavior.preserve() {
                     existing_service.idempotency_retention
                 } else {
-                    DEFAULT_IDEMPOTENCY_RETENTION
+                    // TODO(slinydeveloper) Remove this in Restate 1.5, no need for this defaulting anymore!
+                    Some(DEFAULT_IDEMPOTENCY_RETENTION)
                 },
             );
             let journal_retention = service.journal_retention_duration().or(
@@ -477,7 +478,8 @@ impl SchemaUpdater {
             let public = service.private.map(bool::not).unwrap_or(true);
             let idempotency_retention = service
                 .idempotency_retention_duration()
-                .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION);
+                // TODO(slinydeveloper) Remove this in Restate 1.5, no need for this defaulting anymore!
+                .or(Some(DEFAULT_IDEMPOTENCY_RETENTION));
             let journal_retention = service.journal_retention_duration();
             let workflow_completion_retention = if service_type == ServiceType::Workflow {
                 Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
@@ -693,7 +695,7 @@ impl SchemaUpdater {
                         schemas.service_openapi_cache = Default::default();
                     }
                     ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
-                        schemas.idempotency_retention = new_idempotency_retention;
+                        schemas.idempotency_retention = Some(new_idempotency_retention);
                         for h in schemas.handlers.values_mut().filter(|w| {
                             // idempotency retention doesn't apply to workflow handlers
                             w.target_meta.target_ty
@@ -929,7 +931,7 @@ impl DiscoveredHandlerMetadata {
     fn compute_handlers(
         handlers: Vec<DiscoveredHandlerMetadata>,
         public: bool,
-        service_level_idempotency_retention: Duration,
+        service_level_idempotency_retention: Option<Duration>,
         service_level_workflow_completion_retention: Option<Duration>,
         service_level_journal_retention: Option<Duration>,
     ) -> HashMap<String, HandlerSchemas> {
@@ -947,7 +949,8 @@ impl DiscoveredHandlerMetadata {
                 } else {
                     handler
                         .idempotency_retention
-                        .unwrap_or(service_level_idempotency_retention)
+                        .or(service_level_idempotency_retention)
+                        .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION)
                 };
                 // TODO enable this in Restate 1.4
                 // let journal_retention =

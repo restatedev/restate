@@ -83,14 +83,16 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     c_tip!("{}", PUBLIC_DESCRIPTION);
     c_println!();
 
-    let mut table = Table::new_styled();
-    table.add_kv_row(
-        "Idempotent requests retention:",
-        humantime::Duration::from(service.idempotency_retention),
-    );
-    c_println!("{table}");
-    c_tip!("{}", IDEMPOTENCY_RETENTION);
-    c_println!();
+    if let Some(idempotency_retention) = service.idempotency_retention {
+        let mut table = Table::new_styled();
+        table.add_kv_row(
+            "Idempotent requests retention:",
+            humantime::Duration::from(idempotency_retention),
+        );
+        c_println!("{table}");
+        c_tip!("{}", IDEMPOTENCY_RETENTION);
+        c_println!();
+    }
 
     if service.ty == ServiceType::Workflow {
         let mut table = Table::new_styled();

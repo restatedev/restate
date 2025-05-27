@@ -105,7 +105,7 @@ mod mocks {
     };
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_types::schema::invocation_target::{
-        DEFAULT_IDEMPOTENCY_RETENTION, InvocationTargetMetadata, InvocationTargetResolver,
+        InvocationTargetMetadata, InvocationTargetResolver,
     };
     use restate_types::schema::service::test_util::MockServiceMetadataResolver;
     use restate_types::schema::service::{
@@ -167,7 +167,7 @@ mod mocks {
                 deployment_id: DeploymentId::default(),
                 revision: 0,
                 public: invocation_target_metadata.public,
-                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
+                idempotency_retention: None,
                 workflow_completion_retention: None,
                 journal_retention: None,
                 inactivity_timeout: None,

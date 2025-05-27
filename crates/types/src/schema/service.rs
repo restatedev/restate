@@ -71,11 +71,12 @@ pub struct ServiceMetadata {
     ///
     /// The retention duration of idempotent requests for this service.
     #[serde(
-        with = "serde_with::As::<serde_with::DefaultOnNull<restate_serde_util::DurationString>>",
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub idempotency_retention: Duration,
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    pub idempotency_retention: Option<Duration>,
 
     /// # Workflow completion retention
     ///
@@ -372,7 +373,7 @@ pub struct ServiceSchemas {
     pub handlers: HashMap<String, HandlerSchemas>,
     pub ty: ServiceType,
     pub location: ServiceLocation,
-    pub idempotency_retention: Duration,
+    pub idempotency_retention: Option<Duration>,
     pub workflow_completion_retention: Option<Duration>,
     pub journal_retention: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
@@ -590,7 +591,7 @@ pub mod test_util {
                 deployment_id: Default::default(),
                 revision: 0,
                 public: true,
-                idempotency_retention: Duration::from_secs(60),
+                idempotency_retention: Some(Duration::from_secs(60)),
                 workflow_completion_retention: None,
                 journal_retention: None,
                 inactivity_timeout: None,
@@ -633,7 +634,7 @@ pub mod test_util {
                 deployment_id: Default::default(),
                 revision: 0,
                 public: true,
-                idempotency_retention: Duration::from_secs(60),
+                idempotency_retention: Some(Duration::from_secs(60)),
                 workflow_completion_retention: None,
                 journal_retention: None,
                 inactivity_timeout: None,
