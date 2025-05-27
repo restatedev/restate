@@ -13,7 +13,8 @@ use std::sync::Arc;
 use restate_encoding::NetSerde;
 
 use crate::identifiers::PartitionId;
-use crate::logs::Lsn;
+use crate::logs::{Lsn, SequenceNumber};
+use crate::partitions::PartitionConfiguration;
 use crate::{Merge, PlainNodeId, Version};
 
 type DashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
@@ -145,6 +146,25 @@ pub struct ReplicaSetState {
     pub version: Version,
     // ordered, akin to NodeSet
     pub members: Vec<MemberState>,
+}
+
+impl ReplicaSetState {
+    /// Creates the replicate set state from the given partition configuration. It assumes the
+    /// durable lsn to be invalid since we don't have information about it yet.
+    pub fn from_partition_configuration(partition_configuration: &PartitionConfiguration) -> Self {
+        let members = partition_configuration
+            .replica_set()
+            .iter()
+            .map(|node_id| MemberState {
+                node_id: *node_id,
+                durable_lsn: Lsn::INVALID,
+            })
+            .collect();
+        Self {
+            version: partition_configuration.version,
+            members,
+        }
+    }
 }
 
 impl Default for ReplicaSetState {

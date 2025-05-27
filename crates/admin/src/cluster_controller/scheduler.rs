@@ -37,6 +37,7 @@ use restate_types::net::partition_processor_manager::{
 };
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::{PartitionPlacement, PartitionReplication, PartitionTable};
+use restate_types::partitions::state::{PartitionReplicaSetStates, ReplicaSetState};
 use restate_types::partitions::{PartitionConfiguration, worker_candidate_filter};
 use restate_types::replication::balanced_spread_selector::{
     BalancedSpreadSelector, SelectorOptions,
@@ -96,13 +97,17 @@ impl PartitionState {
         }
     }
 
+    /// Returns true if the partition configuration was updated.
     fn update_configuration(
         &mut self,
         current: PartitionConfiguration,
         next: Option<PartitionConfiguration>,
-    ) {
+    ) -> bool {
+        let mut updated = false;
+
         if self.current.version() < current.version() {
             self.current = current;
+            updated = true;
         }
 
         if let Some(next) = next {
@@ -112,6 +117,7 @@ impl PartitionState {
                 .is_none_or(|my_next| my_next.version() < next.version())
             {
                 self.next = Some(next);
+                updated = true;
             }
         }
 
@@ -121,7 +127,10 @@ impl PartitionState {
             .is_some_and(|next| next.version() <= self.current.version())
         {
             self.next = None;
+            updated = true;
         }
+
+        updated
     }
 
     fn replicas(&self) -> impl Iterator<Item = &PlainNodeId> {
@@ -203,6 +212,7 @@ pub struct Scheduler<T> {
     metadata_writer: MetadataWriter,
     networking: Networking<T>,
     partitions: HashMap<PartitionId, PartitionState>,
+    replica_set_states: PartitionReplicaSetStates,
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -210,11 +220,16 @@ pub struct Scheduler<T> {
 /// and then driving the observed cluster state to the target state (represented by the
 /// partition table).
 impl<T: TransportConnect> Scheduler<T> {
-    pub fn new(metadata_writer: MetadataWriter, networking: Networking<T>) -> Self {
+    pub fn new(
+        metadata_writer: MetadataWriter,
+        networking: Networking<T>,
+        replica_set_states: PartitionReplicaSetStates,
+    ) -> Self {
         Self {
             metadata_writer,
             networking,
             partitions: HashMap::default(),
+            replica_set_states,
         }
     }
 
@@ -224,14 +239,38 @@ impl<T: TransportConnect> Scheduler<T> {
         current: PartitionConfiguration,
         next: Option<PartitionConfiguration>,
     ) {
-        match self.partitions.entry(partition_id) {
+        let (updated, occupied_entry) = match self.partitions.entry(partition_id) {
             Entry::Occupied(mut entry) => {
-                entry.get_mut().update_configuration(current, next);
+                (entry.get_mut().update_configuration(current, next), entry)
             }
-            Entry::Vacant(entry) => {
-                entry.insert(PartitionState::new(current, next));
-            }
+            Entry::Vacant(entry) => (true, entry.insert_entry(PartitionState::new(current, next))),
+        };
+
+        if updated {
+            Self::note_observed_membership_update(
+                partition_id,
+                occupied_entry.get(),
+                &self.replica_set_states,
+            );
         }
+    }
+
+    fn note_observed_membership_update(
+        partition_id: PartitionId,
+        partition_state: &PartitionState,
+        replica_set_states: &PartitionReplicaSetStates,
+    ) {
+        let current_membership =
+            ReplicaSetState::from_partition_configuration(&partition_state.current);
+        let next_membership = partition_state
+            .next
+            .as_ref()
+            .map(ReplicaSetState::from_partition_configuration);
+        replica_set_states.note_observed_membership(
+            partition_id,
+            &current_membership,
+            &next_membership,
+        );
     }
 
     pub async fn on_observed_cluster_state(
@@ -326,6 +365,11 @@ impl<T: TransportConnect> Scheduler<T> {
                                 next,
                             )
                             .await?;
+                            Self::note_observed_membership_update(
+                                *partition_id,
+                                entry.get(),
+                                &self.replica_set_states,
+                            );
                         }
                     }
 
@@ -350,14 +394,20 @@ impl<T: TransportConnect> Scheduler<T> {
                         partition_replication.clone(),
                         preferred_nodes,
                     ) {
-                        entry.insert_entry(
+                        let occupied_entry = entry.insert_entry(
                             Self::store_initial_partition_configuration(
                                 self.metadata_writer.raw_metadata_store_client(),
                                 *partition_id,
                                 current,
                             )
                             .await?,
-                        )
+                        );
+                        Self::note_observed_membership_update(
+                            *partition_id,
+                            occupied_entry.get(),
+                            &self.replica_set_states,
+                        );
+                        occupied_entry
                     } else {
                         // no valid configuration, skip
                         continue;
@@ -379,10 +429,16 @@ impl<T: TransportConnect> Scheduler<T> {
                         next.version(),
                     )
                     .await?;
-                    occupied_entry.get_mut().update_configuration(
+                    if occupied_entry.get_mut().update_configuration(
                         partition_configuration_update.current,
                         partition_configuration_update.next,
-                    );
+                    ) {
+                        Self::note_observed_membership_update(
+                            *partition_id,
+                            occupied_entry.get(),
+                            &self.replica_set_states,
+                        );
+                    }
                 }
             }
 
@@ -832,6 +888,9 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
+    use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+    use crate::cluster_controller::observed_cluster_state::tests::matches_partition_table;
+    use crate::cluster_controller::scheduler::{PartitionProcessorPlacementHints, Scheduler};
     use restate_core::network::{
         BackPressureMode, Incoming, MessageRouterBuilder, MockConnector, Unary,
     };
@@ -850,14 +909,11 @@ mod tests {
         NodeConfig, NodesConfiguration, Role, WorkerConfig, WorkerState,
     };
     use restate_types::partition_table::{PartitionReplication, PartitionTable};
+    use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::replication::NodeSet;
     use restate_types::replication::ReplicationProperty;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-
-    use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
-    use crate::cluster_controller::observed_cluster_state::tests::matches_partition_table;
-    use crate::cluster_controller::scheduler::{PartitionProcessorPlacementHints, Scheduler};
 
     struct NoPlacementHints;
 
@@ -881,7 +937,11 @@ mod tests {
         let metadata_writer = test_env.metadata_writer.clone();
         let networking = test_env.networking.clone();
 
-        let mut scheduler = Scheduler::new(metadata_writer, networking);
+        let mut scheduler = Scheduler::new(
+            metadata_writer,
+            networking,
+            PartitionReplicaSetStates::default(),
+        );
         let observed_cluster_state = ObservedClusterState::default();
 
         scheduler
@@ -1004,7 +1064,11 @@ mod tests {
             .build()
             .await;
 
-        let mut scheduler = Scheduler::new(metadata_writer, networking);
+        let mut scheduler = Scheduler::new(
+            metadata_writer,
+            networking,
+            PartitionReplicaSetStates::default(),
+        );
         let mut observed_cluster_state = ObservedClusterState::default();
         let mut control_recv = std::pin::pin!(UnboundedReceiverStream::new(control_recv));
 

@@ -68,7 +68,7 @@ pub struct Service<T> {
     networking: Networking<T>,
     bifrost: Bifrost,
     cluster_state_refresher: ClusterStateRefresher<T>,
-    _replica_set_states: PartitionReplicaSetStates,
+    replica_set_states: PartitionReplicaSetStates,
     configuration: Live<Configuration>,
     metadata_writer: MetadataWriter,
 
@@ -133,7 +133,7 @@ where
             networking,
             bifrost,
             cluster_state_refresher,
-            _replica_set_states: replica_set_states,
+            replica_set_states,
             metadata_writer,
             processor_manager_client,
             command_tx,
