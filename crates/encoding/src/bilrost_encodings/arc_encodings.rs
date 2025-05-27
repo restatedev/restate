@@ -274,12 +274,10 @@ mod impl_arc_encoding {
     }
 }
 
-// TODO: when decoding, this always performs an extra copy from the `Vec`'s storage to the `Arc`. If
-//  we want to avoid that, we have to reimplement the exponentially growing storage like `Vec` does,
-//  but stored in the `Arc`. We would probably achieve this with a local wrapper implementing the
-//  `bilrost::encoding::Collection` trait.
-//
-//  Overall that approach isn't likely to be very much faster in reality.
+// When decoding, the `ArcedSlice` encoding always decodes into a `Vec<T>` and then copies the final
+// result into an `Arc<[T]>`. Without knowing the precise number of elements that are going to be in
+// the slice this is always necessary, and it is almost certainly faster than counting the number of
+// items first.
 mod impl_arc_slice_encoding {
     use super::*;
 
