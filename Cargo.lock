@@ -1103,39 +1103,14 @@ dependencies = [
 
 [[package]]
 name = "bilrost"
-version = "0.1012.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "815ed941f4e34d221bda5ac688ff1f80f579ca0c1b062d381347be6d53786e02"
-dependencies = [
- "bilrost-derive 0.1012.3",
- "bytes",
- "bytestring",
- "thin-vec",
-]
-
-[[package]]
-name = "bilrost"
 version = "0.1013.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e8e7a9f7362e2e380c13b6df94f81576c32c7b5d25e608f6279232e8f0aee76"
 dependencies = [
- "bilrost-derive 0.1013.0-rc.4",
+ "bilrost-derive",
  "bytes",
  "bytestring",
  "thin-vec",
-]
-
-[[package]]
-name = "bilrost-derive"
-version = "0.1012.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7460f57756524d00acaca4d8c1af4188667739d10b9a2911fd430f6b2857d2d6"
-dependencies = [
- "eyre",
- "itertools 0.14.0",
- "proc-macro2",
- "quote",
- "syn 2.0.98",
 ]
 
 [[package]]
@@ -6805,7 +6780,7 @@ dependencies = [
 name = "restate-encoding"
 version = "1.3.3-dev"
 dependencies = [
- "bilrost 0.1013.0-rc.4",
+ "bilrost",
  "bytes",
  "bytestring",
  "rand 0.9.0",
@@ -7735,7 +7710,7 @@ dependencies = [
  "arc-swap",
  "base62",
  "base64 0.22.1",
- "bilrost 0.1013.0-rc.4",
+ "bilrost",
  "bincode",
  "bitflags 2.8.0",
  "bytes",
@@ -7831,7 +7806,7 @@ name = "restate-wal-protocol"
 version = "1.3.3-dev"
 dependencies = [
  "anyhow",
- "bilrost 0.1013.0-rc.4",
+ "bilrost",
  "bytes",
  "bytestring",
  "enum-map",
@@ -10345,7 +10320,7 @@ dependencies = [
  "aws-smithy-types",
  "axum",
  "axum-core",
- "bilrost 0.1012.3",
+ "bilrost",
  "bitflags 2.8.0",
  "byteorder",
  "bytes",
