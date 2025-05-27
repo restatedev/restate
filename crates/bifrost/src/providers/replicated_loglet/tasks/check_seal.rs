@@ -35,21 +35,21 @@ use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
 /// This allows PeriodicFindTail to detect seal that was triggered externally to unblock read
 /// streams running locally
 ///
-///
-/// Note 1: This is designed to be used with the local-sequencer but in the future it may be
+/// Note: This is designed to be used with the local-sequencer but in the future it may be
 /// extended to be more general purpose.
-///
-/// Note 2: This task can return Open if it cannot reach out to any node, so we should not use it
-/// for operations that rely on absolute correctness of the tail. For those, use FindTailTask
-/// instead.
 pub struct CheckSealTask;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum CheckSealOutcome {
-    FullySealed,
-    Sealing,
-    ProbablyOpen,
-    Open,
+    // We have F-majority of sealed nodes
+    Sealed,
+    // We have write-quorum nodes that are open. `is_partially_sealed` is set to `true` if any node
+    // in the nodeset was observed to be sealed.
+    Open { is_partially_sealed: bool },
+    // We can't determine if we are fully sealed or if we are fully open. No sufficient responses
+    // were received to determine the seal status. However, `is_partially_sealed` is set to `true`
+    // if any node was observed to be sealed.
+    Unknown { is_partially_sealed: bool },
 }
 
 impl CheckSealTask {
@@ -62,22 +62,23 @@ impl CheckSealTask {
     ) -> Result<CheckSealOutcome, ShutdownError> {
         let metadata = Metadata::current();
         if known_global_tail.is_sealed() {
-            return Ok(CheckSealOutcome::FullySealed);
+            return Ok(CheckSealOutcome::Sealed);
         }
         debug!(
             loglet_id = %my_params.loglet_id,
             "Checking seal status for loglet"
         );
         // If all nodes in the nodeset is in "provisioning", we can confidently short-circuit
-        // the result to LogletOffset::Oldest and the loglet is definitely unsealed.
+        // the result to LogletOffset::Oldest and the loglet is definitely unsealed since such
+        // nodes can transition into read-write at a later stage.
         if my_params
             .nodeset
             .all_provisioning(&metadata.nodes_config_ref())
         {
-            return Ok(CheckSealOutcome::Open);
+            return Ok(CheckSealOutcome::Open {
+                is_partially_sealed: false,
+            });
         }
-        // todo: If effective nodeset is empty, should we consider that the loglet is implicitly
-        // sealed?
 
         let effective_nodeset = my_params.nodeset.to_effective(&metadata.nodes_config_ref());
 
@@ -160,7 +161,15 @@ impl CheckSealTask {
             // non-authoritative nodes cannot accept normal writes, only repair writes.
             if nodeset_checker.check_fmajority(|attr| *attr).passed() {
                 // no need to detach, we don't need responses from the rest of the nodes
-                return Ok(CheckSealOutcome::FullySealed);
+                return Ok(CheckSealOutcome::Sealed);
+            }
+
+            // We have sufficient results to say we are Open or Sealing
+            if nodeset_checker.check_write_quorum(|attr| !(*attr)) {
+                let is_partially_sealed = nodeset_checker.any(|attr| *attr);
+                return Ok(CheckSealOutcome::Open {
+                    is_partially_sealed,
+                });
             }
 
             // keep grabbing results
@@ -182,13 +191,7 @@ impl CheckSealTask {
         }
 
         // are we partially sealed?
-        if nodeset_checker.any(|attr| *attr) {
-            return Ok(CheckSealOutcome::Sealing);
-        }
-
-        if nodeset_checker.check_fmajority(|attr| !(*attr)).passed() {
-            return Ok(CheckSealOutcome::Open);
-        }
+        let is_partially_sealed = nodeset_checker.any(|attr| *attr);
 
         debug!(
             loglet_id = %my_params.loglet_id,
@@ -197,7 +200,9 @@ impl CheckSealTask {
             replication = %my_params.replication,
             "Insufficient nodes responded to GetLogletInfo requests, we cannot determine seal status, we'll assume it's unsealed for now",
         );
-        return Ok(CheckSealOutcome::ProbablyOpen);
+        return Ok(CheckSealOutcome::Unknown {
+            is_partially_sealed,
+        });
     }
 }
 
