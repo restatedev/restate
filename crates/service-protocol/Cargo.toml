@@ -17,7 +17,6 @@ test-util = ["restate-types/test-util"]
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
-restate-base64-util = { workspace = true, optional = true }
 restate-errors = { workspace = true, optional = true }
 restate-service-client = { workspace = true, optional = true }
 restate-types = { workspace = true, optional = true }
@@ -41,9 +40,9 @@ tokio = { workspace = true, optional = true, features = ["time"] }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
+# We need the codec feature to test Decoder/Encoder activated by the message feature :-(
+restate-service-protocol = { path = ".", features = ["codec"]}
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
 tokio = { workspace = true }
-tracing-subscriber = { workspace = true }
-uuid = { workspace = true }

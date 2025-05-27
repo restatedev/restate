@@ -1,0 +1,62 @@
+name: Cargo hack clippy
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  hack-clippy:
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: read
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [warp-ubuntu-latest-x64-16x]
+    env:
+      RUST_BACKTRACE: full
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+          rustflags: ""
+          cache: false
+
+      - name: Setup Rust Caching
+        uses: WarpBuilds/rust-cache@v2 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
+        with:
+          cache-on-failure: "true"
+
+      - name: Install cargo-hakari and cargo-hack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hakari,cargo-hack
+
+      - name: Disable hakari
+        run: cargo hakari disable
+
+      - name: Install protoc
+        uses: ./.github/actions/install-protoc
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Setup just
+        uses: extractions/setup-just@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check Cargo.lock file is updated
+        run: cargo update -w --locked
+
+      - name: Run verify
+        run: just hack-clippy
