@@ -61,6 +61,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.modified_at,
             ss.inboxed_at,
             ss.scheduled_at,
+            ss.scheduled_start_at,
             ss.running_at,
             ss.completed_at,
 
