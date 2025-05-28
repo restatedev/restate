@@ -9,14 +9,14 @@ publish = false
 
 [features]
 default = []
-grpc-client = []
-grpc-server = []
+grpc-client = ["tonic/channel", "tonic/zstd", "tonic/gzip"]
+grpc-server = ["tonic/server"]
 
 [dependencies]
 restate-types = { workspace = true }
 
 prost = { workspace = true }
-tonic = { workspace = true, features = ["codegen", "prost", "gzip"] }
+tonic = { workspace = true, features = ["codegen", "prost"] }
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [build-dependencies]

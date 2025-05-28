@@ -10,8 +10,8 @@ publish = false
 [features]
 default = []
 test-util = ["restate-types/test-util"]
-grpc-client = ["tonic/transport", "prost"]
-grpc-server = ["tonic", "prost"]
+grpc-client = ["tonic/transport", "tonic/gzip", "tonic/zstd", "prost"]
+grpc-server = ["tonic/server", "prost"]
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
@@ -27,7 +27,7 @@ prost = { workspace = true, optional = true }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true, optional = true, features = ["codegen", "prost", "gzip", "zstd"] }
+tonic = { workspace = true, optional = true, features = ["codegen", "prost"] }
 tracing = { workspace = true }
 
 [build-dependencies]
