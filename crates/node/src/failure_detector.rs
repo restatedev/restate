@@ -13,6 +13,7 @@ mod node_state;
 
 use std::time::Duration;
 
+use futures::stream::FuturesUnordered;
 use metrics::counter;
 use tokio::time::Instant;
 use tokio::time::MissedTickBehavior;
@@ -31,6 +32,8 @@ use restate_core::{
 };
 use restate_types::health::NodeStatus;
 use restate_types::live::LiveLoad;
+use restate_types::net::RpcRequest;
+use restate_types::net::node::GetClusterState;
 use restate_types::net::node::Gossip;
 use restate_types::net::node::GossipFlags;
 use restate_types::nodes_config::NodesConfiguration;
@@ -120,13 +123,21 @@ impl<T: NetworkSender> FailureDetector<T> {
             self.replica_set_states.clone(),
             cs_updater,
         );
-        // We are starting up. let others know as early as possible so they can update their
+        // We are starting up. Let others know as early as possible so they can update their
         // nodes configuration, and implicitly start the suspect timer for this node.
         let mut my_node_status_watch = my_node_health.node_status().subscribe();
 
         // We send the first bring-up before we enable gossip network service.
         let node_status = *my_node_status_watch.borrow_and_update();
         self.broadcast_bring_up(node_status, &mut fd_state);
+
+        // spawn get-cluster-state to pre-seed our view of the cluster
+        let mut get_cs_futs = FuturesUnordered::new();
+        for (_, node) in fd_state.peers() {
+            if let Ok(reply_token) = node.send_get_cluster_state(&self.networking) {
+                get_cs_futs.push(reply_token);
+            }
+        }
 
         // We should only gossip after we have fully started and stop during
         // shutdown.
@@ -163,6 +174,18 @@ impl<T: NetworkSender> FailureDetector<T> {
                     // can fail the task if we have been preempted
                     fd_state.refresh_nodes_config(nodes_config.live_load())?;
                 }
+                Some(Ok(cs_reply)) = get_cs_futs.next() => {
+                    let opts = opts.live_load();
+                    if cs_reply.status != restate_types::net::node::CsReplyStatus::Ok {
+                        continue;
+                    }
+
+                    if !fd_state.is_stable(opts) && !fd_state.am_i_alive() {
+                        fd_state.update_from_cluster_state_message(opts, cs_reply);
+                    }
+                    // we are not interested in further replies.
+                    get_cs_futs.clear();
+                }
                 tick_instant = self.gossip_interval.tick() => {
                     let opts = opts.live_load();
                     self.tick(opts, tick_instant, &mut fd_state, nodes_config.live_load())?;
@@ -173,9 +196,13 @@ impl<T: NetworkSender> FailureDetector<T> {
                         ServiceMessage::Unary(msg) => {
                             self.on_gossip_message(opts, msg, &mut fd_state);
                         }
-                        ServiceMessage::Rpc(msg) => {
+                        ServiceMessage::Rpc(msg) if msg.msg_type() == GetNodeState::TYPE => {
                             // V1 GetNodeState messages
-                            self.on_rpc(msg);
+                            self.on_get_node_state_rpc(msg);
+                        }
+                        ServiceMessage::Rpc(msg) if msg.msg_type() == GetClusterState::TYPE => {
+                            // V2 GetClusterState messages
+                            self.on_get_cluster_state_rpc(&fd_state, opts, msg);
                         }
                         _ => {
                             op.fail(Verdict::MessageUnrecognized);
@@ -292,7 +319,7 @@ impl<T: NetworkSender> FailureDetector<T> {
     }
 
     /// Handle V1's GetNodeState rpc request
-    fn on_rpc(&mut self, message: Incoming<RawSvcRpc<GossipService>>) {
+    fn on_get_node_state_rpc(&mut self, message: Incoming<RawSvcRpc<GossipService>>) {
         let request = match message.try_into_typed::<GetNodeState>() {
             Ok(request) => request,
             Err(msg) => {
@@ -314,6 +341,54 @@ impl<T: NetworkSender> FailureDetector<T> {
                 uptime,
             });
         });
+    }
+
+    /// Handle V2's GetClusterState rpc request
+    fn on_get_cluster_state_rpc(
+        &mut self,
+        state: &FdState,
+        opts: &GossipOptions,
+        message: Incoming<RawSvcRpc<GossipService>>,
+    ) {
+        use restate_types::net::node::{
+            ClusterStateReply, CsNode, CsReplyStatus, NodeState, PartitionReplicaSet,
+        };
+
+        let request = match message.try_into_typed::<GetClusterState>() {
+            Ok(request) => request,
+            Err(msg) => {
+                msg.fail(Verdict::MessageUnrecognized);
+                return;
+            }
+        };
+
+        if !state.is_stable(opts) || state.is_lonely(opts) || !state.am_i_alive() {
+            request
+                .into_reciprocal()
+                .send(ClusterStateReply::not_ready());
+        } else {
+            let nodes = state
+                .all_node_states()
+                .map(|(node_id, state)| CsNode {
+                    node_id,
+                    state: NodeState::from(state),
+                })
+                .collect();
+            let partitions = state
+                .partitions()
+                .map(|(id, membership)| PartitionReplicaSet {
+                    id,
+                    observed_current_membership: membership.observed_current_membership,
+                    observed_next_membership: membership.observed_next_membership,
+                })
+                .collect();
+
+            request.into_reciprocal().send(ClusterStateReply {
+                status: CsReplyStatus::Ok,
+                nodes,
+                partitions,
+            });
+        }
     }
 
     fn broadcast_bring_up(&mut self, node_status: NodeStatus, state: &mut FdState) {
