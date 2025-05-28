@@ -237,15 +237,15 @@ where
     async fn run(&mut self) -> LeaderEvent {
         loop {
             tokio::select! {
-                _ = self.find_logs_tail_interval.tick() => {
-                    self.logs_controller.find_log_tails();
-                }
+                // _ = self.find_logs_tail_interval.tick() => {
+                //     self.logs_controller.find_log_tails();
+                // }
                 Some(_) = OptionFuture::from(self.log_trim_check_interval.as_mut().map(|interval| interval.tick())) => {
                     return LeaderEvent::TrimLogs;
                 }
-                result = self.logs_controller.run_async_operations() => {
-                    result
-                }
+                // result = self.logs_controller.run_async_operations() => {
+                //     result
+                // }
                 Ok(_) = self.logs_watcher.changed() => {
                     return LeaderEvent::LogsUpdate;
                 }
