@@ -267,14 +267,8 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
-        let logs = Metadata::with_current(|m| m.logs_ref());
         let partition_table = Metadata::with_current(|m| m.partition_table_ref());
 
-        if logs.num_logs() != partition_table.len() {
-            // either the partition table or the logs are not fully initialized, hence there is
-            // nothing we can do atm. we need to wait until both partitions and logs are created
-            return Ok(());
-        }
         let version = partition_table.version();
 
         // todo a bulk get of all EpochMetadata if self.partitions.is_empty()
