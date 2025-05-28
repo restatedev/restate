@@ -11,7 +11,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Version;
-use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::{PartitionId, SnapshotId};
 use crate::logs::{LogId, Lsn};
 use crate::net::{ServiceTag, define_service, define_unary_message};
@@ -42,32 +41,24 @@ pub struct ControlProcessors {
 pub struct ControlProcessor {
     pub partition_id: PartitionId,
     pub command: ProcessorCommand,
+    // version of the current partition configuration used for creating the command for selecting
+    // the leader.
+    pub current_version: Version,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, derive_more::Display)]
 pub enum ProcessorCommand {
+    // #[deprecated(
+    //     since = "1.3.3",
+    //     note = "Stopping should happen based on the PartitionReplicaSetStates"
+    // )]
     Stop,
+    // #[deprecated(
+    //     since = "1.3.3",
+    //     note = "Starting followers should happen based on the PartitionReplicaSetStates"
+    // )]
     Follower,
     Leader,
-}
-
-impl ProcessorCommand {
-    pub fn as_run_mode(&self) -> Option<RunMode> {
-        match self {
-            ProcessorCommand::Stop => None,
-            ProcessorCommand::Follower => Some(RunMode::Follower),
-            ProcessorCommand::Leader => Some(RunMode::Leader),
-        }
-    }
-}
-
-impl From<RunMode> for ProcessorCommand {
-    fn from(value: RunMode) -> Self {
-        match value {
-            RunMode::Leader => ProcessorCommand::Leader,
-            RunMode::Follower => ProcessorCommand::Follower,
-        }
-    }
 }
 
 define_rpc! {

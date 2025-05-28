@@ -1103,9 +1103,9 @@ dependencies = [
 
 [[package]]
 name = "bilrost"
-version = "0.1012.3"
+version = "0.1013.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "815ed941f4e34d221bda5ac688ff1f80f579ca0c1b062d381347be6d53786e02"
+checksum = "7e8e7a9f7362e2e380c13b6df94f81576c32c7b5d25e608f6279232e8f0aee76"
 dependencies = [
  "bilrost-derive",
  "bytes",
@@ -1115,9 +1115,9 @@ dependencies = [
 
 [[package]]
 name = "bilrost-derive"
-version = "0.1012.3"
+version = "0.1013.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7460f57756524d00acaca4d8c1af4188667739d10b9a2911fd430f6b2857d2d6"
+checksum = "20f1ceb0a2d313f690ef55bfd857d257bf9df859b2db08d2c1e690a10eaf449a"
 dependencies = [
  "eyre",
  "itertools 0.14.0",

@@ -169,7 +169,11 @@ where
     fn from_service(service: &Service<T>) -> Leader<T> {
         let configuration = service.configuration.pinned();
 
-        let scheduler = Scheduler::new(service.metadata_writer.clone(), service.networking.clone());
+        let scheduler = Scheduler::new(
+            service.metadata_writer.clone(),
+            service.networking.clone(),
+            service.replica_set_states.clone(),
+        );
 
         let logs_controller =
             LogsController::new(service.bifrost.clone(), service.metadata_writer.clone());

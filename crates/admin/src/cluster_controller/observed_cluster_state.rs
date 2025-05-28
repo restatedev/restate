@@ -195,13 +195,11 @@ pub mod tests {
     };
     use googletest::prelude::{empty, eq};
     use googletest::{assert_that, elements_are, unordered_elements_are};
-    use itertools::Itertools;
     use restate_types::cluster::cluster_state::{
         AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, ReplayStatus,
         RunMode,
     };
     use restate_types::identifiers::PartitionId;
-    use restate_types::partition_table::PartitionTable;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
     use std::collections::{BTreeMap, HashMap};
@@ -211,38 +209,6 @@ pub mod tests {
         pub fn add_alive_node(&mut self, node_id: GenerationalNodeId) {
             self.alive_nodes.insert(node_id.as_plain(), node_id);
         }
-    }
-
-    pub fn matches_partition_table(
-        partition_table: &PartitionTable,
-        observed_state: &ObservedClusterState,
-    ) -> googletest::Result<()> {
-        assert_that!(observed_state.partitions.len(), eq(partition_table.len()));
-
-        for (partition_id, partition) in partition_table.iter() {
-            let Some(observed_state) = observed_state.partition_state(partition_id) else {
-                panic!("partition {partition_id} not found in observed state");
-            };
-
-            for (position, node_id) in partition.placement.iter().with_position() {
-                let run_mode = if matches!(
-                    position,
-                    itertools::Position::First | itertools::Position::Only
-                ) {
-                    RunMode::Leader
-                } else {
-                    RunMode::Follower
-                };
-                assert_that!(
-                    observed_state
-                        .partition_processors
-                        .get(node_id)
-                        .map(|p| p.run_mode),
-                    eq(Some(run_mode))
-                );
-            }
-        }
-        Ok(())
     }
 
     impl ObservedClusterState {

@@ -15,7 +15,7 @@ use bitflags::bitflags;
 use prost_dto::{FromProst, IntoProst};
 use serde::{Deserialize, Serialize};
 
-use restate_encoding::{BilrostAs, BilrostNewType, NetSerde};
+use restate_encoding::{ArcedSlice, BilrostAs, BilrostNewType, NetSerde};
 
 use super::{RpcResponse, ServiceTag};
 use crate::GenerationalNodeId;
@@ -284,6 +284,7 @@ bitflags! {
 }
 
 #[derive(
+    bilrost::Message,
     derive_more::Into,
     derive_more::From,
     derive_more::Deref,
@@ -292,11 +293,9 @@ bitflags! {
     Debug,
     Clone,
     Default,
-    BilrostAs,
     NetSerde,
 )]
-#[bilrost_as(dto::Payloads)]
-pub struct Payloads(Arc<[Record]>);
+pub struct Payloads(#[bilrost(encoding(ArcedSlice<unpacked>))] Arc<[Record]>);
 
 impl From<Vec<Record>> for Payloads {
     fn from(value: Vec<Record>) -> Self {
@@ -870,26 +869,6 @@ mod dto {
 
     use super::Gap;
     use crate::logs::Record;
-
-    #[derive(bilrost::Message)]
-    pub struct Payloads(Vec<Record>);
-
-    impl From<&super::Payloads> for Payloads {
-        fn from(value: &super::Payloads) -> Self {
-            let mut payloads = Vec::with_capacity(value.0.len());
-            for record in value.iter() {
-                payloads.push(record.clone());
-            }
-
-            Self(payloads)
-        }
-    }
-
-    impl From<Payloads> for super::Payloads {
-        fn from(value: Payloads) -> Self {
-            Self::from(value.0)
-        }
-    }
 
     #[derive(Debug, Clone, bilrost::Oneof, NetSerde)]
     enum MaybeRecordInner {

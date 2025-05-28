@@ -55,10 +55,12 @@ pub mod timer;
 use std::num::NonZero;
 use std::ops::RangeInclusive;
 
-use bilrost::encoding::{EmptyState, ForOverwrite, General, ValueDecoder, ValueEncoder, Wiretyped};
+use bilrost::encoding::{
+    EmptyState, ForOverwrite, General, GeneralGeneric, ValueDecoder, ValueEncoder, Wiretyped,
+};
 use serde_with::serde_as;
 
-use restate_encoding::{BilrostAs, BilrostDisplayFromStr, NetSerde};
+use restate_encoding::{BilrostAs, NetSerde};
 
 pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
 pub use node_id::*;
@@ -120,39 +122,41 @@ macro_rules! impl_option_non_zero {
 
 impl_option_non_zero!(u8, u16, u32, u64, usize);
 
-impl<P> ValueEncoder<General> for OptionNonZero<P>
+impl<const _P: u8, P> ValueEncoder<GeneralGeneric<_P>, OptionNonZero<P>> for ()
 where
-    P: ValueEncoder<General> + Default + Copy,
+    P: Default + Copy,
+    (): ValueEncoder<General, P>,
 {
-    fn encode_value<B: ::bytes::BufMut + ?Sized>(value: &Self, buf: &mut B) {
+    fn encode_value<B: ::bytes::BufMut + ?Sized>(value: &OptionNonZero<P>, buf: &mut B) {
         let value = value.0.unwrap_or_default();
-        <P as ValueEncoder<General>>::encode_value(&value, buf)
+        <() as ValueEncoder<General, P>>::encode_value(&value, buf)
     }
 
-    fn value_encoded_len(value: &Self) -> usize {
+    fn value_encoded_len(value: &OptionNonZero<P>) -> usize {
         let value = value.0.unwrap_or_default();
-        <P as ValueEncoder<General>>::value_encoded_len(&value)
+        <() as ValueEncoder<General, P>>::value_encoded_len(&value)
     }
 
-    fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(value: &Self, buf: &mut B) {
+    fn prepend_value<B: bilrost::buf::ReverseBuf + ?Sized>(value: &OptionNonZero<P>, buf: &mut B) {
         let value = value.0.unwrap_or_default();
-        <P as ValueEncoder<General>>::prepend_value(&value, buf)
+        <() as ValueEncoder<General, P>>::prepend_value(&value, buf)
     }
 }
 
 #[allow(clippy::all)]
-impl<P> ValueDecoder<General> for OptionNonZero<P>
+impl<const _P: u8, P> ValueDecoder<GeneralGeneric<_P>, OptionNonZero<P>> for ()
 where
-    P: ValueDecoder<General> + Default + Copy + PartialEq,
+    P: Default + Copy + PartialEq,
+    (): ValueDecoder<General, P>,
 {
     fn decode_value<B: ::bytes::Buf + ?Sized>(
-        value: &mut Self,
+        value: &mut OptionNonZero<P>,
         buf: ::bilrost::encoding::Capped<B>,
         ctx: ::bilrost::encoding::DecodeContext,
     ) -> ::std::result::Result<(), ::bilrost::DecodeError> {
         let zero = P::default();
         let mut inner = zero;
-        <P as ValueDecoder<General>>::decode_value(&mut inner, buf, ctx)?;
+        <() as ValueDecoder<General, P>>::decode_value(&mut inner, buf, ctx)?;
         if inner != zero {
             value.0 = Some(inner);
         }
@@ -162,35 +166,29 @@ where
 }
 
 #[allow(clippy::all)]
-impl<P> Wiretyped<General> for OptionNonZero<P>
+impl<const _P: u8, P> Wiretyped<GeneralGeneric<_P>, OptionNonZero<P>> for ()
 where
-    P: Wiretyped<General>,
+    (): Wiretyped<General, P>,
 {
-    const WIRE_TYPE: ::bilrost::encoding::WireType = <P as Wiretyped<General>>::WIRE_TYPE;
+    const WIRE_TYPE: ::bilrost::encoding::WireType = <() as Wiretyped<General, P>>::WIRE_TYPE;
 }
 
 #[allow(clippy::all)]
-impl<P> EmptyState for OptionNonZero<P> {
-    fn clear(&mut self) {
-        self.0 = None;
+impl<P> EmptyState<(), OptionNonZero<P>> for () {
+    fn clear(val: &mut OptionNonZero<P>) {
+        val.0 = None;
     }
-    fn empty() -> Self
-    where
-        Self: Sized,
-    {
-        Self::default()
+    fn empty() -> OptionNonZero<P> {
+        OptionNonZero::default()
     }
-    fn is_empty(&self) -> bool {
-        self.0.is_none()
+    fn is_empty(val: &OptionNonZero<P>) -> bool {
+        val.0.is_none()
     }
 }
 
-impl<P> ForOverwrite for OptionNonZero<P> {
-    fn for_overwrite() -> Self
-    where
-        Self: Sized,
-    {
-        Self::default()
+impl<P> ForOverwrite<(), OptionNonZero<P>> for () {
+    fn for_overwrite() -> OptionNonZero<P> {
+        OptionNonZero::default()
     }
 }
 
@@ -274,25 +272,31 @@ where
 #[bilrost_as(RangeInclusiveMessage<Idx>)]
 pub struct NetRangeInclusive<Idx>(RangeInclusive<Idx>)
 where
-    Idx: Copy + EmptyState + ValueEncoder<General> + ValueDecoder<General> + 'static;
+    Idx: Copy + 'static,
+    (): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>;
 
 impl<Idx> Default for NetRangeInclusive<Idx>
 where
-    Idx: Copy + EmptyState + ValueEncoder<General> + ValueDecoder<General>,
+    Idx: Copy + 'static,
+    (): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>,
 {
     fn default() -> Self {
-        Self(RangeInclusive::new(Idx::empty(), Idx::empty()))
+        Self(RangeInclusive::new(
+            <() as EmptyState<(), Idx>>::empty(),
+            <() as EmptyState<(), Idx>>::empty(),
+        ))
     }
 }
 
 #[derive(bilrost::Message)]
 struct RangeInclusiveMessage<Idx>((Idx, Idx))
 where
-    Idx: EmptyState + ValueEncoder<General> + ValueDecoder<General>;
+    (): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>;
 
 impl<Idx> From<&NetRangeInclusive<Idx>> for RangeInclusiveMessage<Idx>
 where
-    Idx: Copy + EmptyState + ValueEncoder<General> + ValueDecoder<General>,
+    Idx: Copy,
+    (): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>,
 {
     fn from(value: &NetRangeInclusive<Idx>) -> Self {
         Self((*value.0.start(), *value.0.end()))
@@ -301,7 +305,8 @@ where
 
 impl<Idx> From<RangeInclusiveMessage<Idx>> for NetRangeInclusive<Idx>
 where
-    Idx: Copy + EmptyState + ValueEncoder<General> + ValueDecoder<General>,
+    Idx: Copy,
+    (): EmptyState<(), Idx> + ValueEncoder<General, Idx> + ValueDecoder<General, Idx>,
 {
     fn from(value: RangeInclusiveMessage<Idx>) -> Self {
         Self(RangeInclusive::new(value.0.0, value.0.1))
@@ -322,11 +327,11 @@ where
     derive_more::FromStr,
     serde::Serialize,
     serde::Deserialize,
-    BilrostAs,
 )]
-#[bilrost_as(BilrostDisplayFromStr)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NetJsonValue(serde_json::Value);
+
+restate_encoding::bilrost_as_display_from_str!(NetJsonValue);
 
 impl Default for NetJsonValue {
     fn default() -> Self {
@@ -347,15 +352,15 @@ impl Default for NetJsonValue {
     derive_more::FromStr,
     serde::Serialize,
     serde::Deserialize,
-    BilrostAs,
 )]
-#[bilrost_as(BilrostDisplayFromStr)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NetHumanDuration(
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     humantime::Duration,
 );
+
+restate_encoding::bilrost_as_display_from_str!(NetHumanDuration);
 
 impl Default for NetHumanDuration {
     fn default() -> Self {
