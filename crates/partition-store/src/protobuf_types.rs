@@ -176,7 +176,8 @@ pub mod v1 {
             PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
         };
         use restate_types::invocation::{
-            InvocationMutationResponseSink, InvocationTermination, TerminationFlavor,
+            IngressInvocationResponseSink, InvocationMutationResponseSink, InvocationTermination,
+            TerminationFlavor,
         };
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::journal::raw::RawEntry;
@@ -3525,8 +3526,10 @@ pub mod v1 {
                                             .map_err(ConversionError::invalid_data)
                                     })
                                     .transpose()?
-                                    .map(|request_id| InvocationMutationResponseSink::Ingress {
-                                        request_id,
+                                    .map(|request_id| {
+                                        InvocationMutationResponseSink::Ingress(
+                                            IngressInvocationResponseSink { request_id },
+                                        )
                                     }),
                             },
                         )
@@ -3547,8 +3550,10 @@ pub mod v1 {
                                             .map_err(ConversionError::invalid_data)
                                     })
                                     .transpose()?
-                                    .map(|request_id| InvocationMutationResponseSink::Ingress {
-                                        request_id,
+                                    .map(|request_id| {
+                                        InvocationMutationResponseSink::Ingress(
+                                            IngressInvocationResponseSink { request_id },
+                                        )
                                     }),
                             },
                         )
@@ -3602,7 +3607,9 @@ pub mod v1 {
                                     invocation_termination.invocation_id,
                                 )),
                                 request_id: invocation_termination.response_sink.map(
-                                    |InvocationMutationResponseSink::Ingress { request_id }| {
+                                    |InvocationMutationResponseSink::Ingress(
+                                        IngressInvocationResponseSink { request_id },
+                                    )| {
                                         Bytes::copy_from_slice(&request_id.to_bytes())
                                     },
                                 ),
@@ -3614,7 +3621,9 @@ pub mod v1 {
                                     invocation_termination.invocation_id,
                                 )),
                                 request_id: invocation_termination.response_sink.map(
-                                    |InvocationMutationResponseSink::Ingress { request_id }| {
+                                    |InvocationMutationResponseSink::Ingress(
+                                        IngressInvocationResponseSink { request_id },
+                                    )| {
                                         Bytes::copy_from_slice(&request_id.to_bytes())
                                     },
                                 ),

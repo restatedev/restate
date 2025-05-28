@@ -169,7 +169,7 @@ pub mod actions {
         request_id: PartitionProcessorRpcRequestId,
         purge_invocation_response: PurgeInvocationResponse,
     ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardPurgeResponse {
+        pat!(Action::ForwardPurgeInvocationResponse {
             request_id: eq(request_id),
             response: eq(purge_invocation_response)
         })

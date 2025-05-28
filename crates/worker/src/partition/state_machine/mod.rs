@@ -64,11 +64,12 @@ use restate_types::invocation::client::{
     PurgeInvocationResponse,
 };
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationEpoch, InvocationMutationResponseSink, InvocationQuery,
-    InvocationResponse, InvocationTarget, InvocationTargetType, InvocationTermination,
-    JournalCompletionTarget, NotifySignalRequest, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SubmitNotificationSink,
-    TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
+    AttachInvocationRequest, IngressInvocationResponseSink, InvocationEpoch,
+    InvocationMutationResponseSink, InvocationQuery, InvocationResponse, InvocationTarget,
+    InvocationTargetType, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
+    ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    Source, SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType,
+    WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
 use restate_types::journal::Completion;
@@ -1599,67 +1600,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    async fn on_purge_invocation(
-        &mut self,
-        invocation_id: InvocationId,
-        response_sink: Option<InvocationMutationResponseSink>,
-    ) -> Result<(), Error>
-    where
-        S: InvocationStatusTable
-            + IdempotencyTable
-            + VirtualObjectStatusTable
-            + StateTable
-            + PromiseTable,
-    {
-        match self.get_invocation_status(&invocation_id).await? {
-            InvocationStatus::Completed(CompletedInvocation {
-                invocation_target,
-                idempotency_key,
-                ..
-            }) => {
-                self.do_free_invocation(invocation_id).await?;
-
-                // Also cleanup the associated idempotency key if any
-                if let Some(idempotency_key) = idempotency_key {
-                    self.do_delete_idempotency_id(IdempotencyId::combine(
-                        invocation_id,
-                        &invocation_target,
-                        idempotency_key,
-                    ))
-                    .await?;
-                }
-
-                // For workflow, we should also clean up the service lock, associated state and promises.
-                if invocation_target.invocation_target_ty()
-                    == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-                {
-                    let service_id = invocation_target
-                        .as_keyed_service_id()
-                        .expect("Workflow methods must have keyed service id");
-
-                    self.do_unlock_service(service_id.clone()).await?;
-                    self.do_clear_all_state(service_id.clone(), invocation_id)
-                        .await?;
-                    self.do_clear_all_promises(service_id).await?;
-                }
-
-                self.reply_to_purge(response_sink, PurgeInvocationResponse::Ok);
-            }
-            InvocationStatus::Free => {
-                trace!("Received purge command for unknown invocation with id '{invocation_id}'.");
-                self.reply_to_purge(response_sink, PurgeInvocationResponse::NotFound);
-            }
-            _ => {
-                trace!(
-                    "Ignoring purge command as the invocation '{invocation_id}' is still ongoing."
-                );
-                self.reply_to_purge(response_sink, PurgeInvocationResponse::NotCompleted);
-            }
-        };
-
-        Ok(())
-    }
-
     async fn on_timer(&mut self, timer_value: TimerKeyValue) -> Result<(), Error>
     where
         S: IdempotencyTable
@@ -1714,7 +1654,13 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.on_service_invocation(service_invocation).await
             }
             Timer::CleanInvocationStatus(invocation_id) => {
-                self.on_purge_invocation(invocation_id, None).await
+                lifecycle::OnPurgeCommand {
+                    invocation_id,
+                    response_sink: None,
+                }
+                .apply(self)
+                .await?;
+                Ok(())
             }
             Timer::NeoInvoke(invocation_id) => self.on_neo_invoke_timer(invocation_id).await,
         }
@@ -3405,7 +3351,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         if response_sink.is_none() {
             return;
         }
-        let InvocationMutationResponseSink::Ingress { request_id } = response_sink.unwrap();
+        let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
+            response_sink.unwrap();
         debug_if_leader!(
             self.is_leader,
             "Send cancel response to request id '{:?}': {:?}",
@@ -3427,7 +3374,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         if response_sink.is_none() {
             return;
         }
-        let InvocationMutationResponseSink::Ingress { request_id } = response_sink.unwrap();
+        let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
+            response_sink.unwrap();
         debug_if_leader!(
             self.is_leader,
             "Send kill response to request id '{:?}': {:?}",
@@ -3441,7 +3389,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         });
     }
 
-    fn reply_to_purge(
+    fn reply_to_purge_invocation(
         &mut self,
         response_sink: Option<InvocationMutationResponseSink>,
         response: PurgeInvocationResponse,
@@ -3449,7 +3397,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         if response_sink.is_none() {
             return;
         }
-        let InvocationMutationResponseSink::Ingress { request_id } = response_sink.unwrap();
+        let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
+            response_sink.unwrap();
         debug_if_leader!(
             self.is_leader,
             "Send purge response to request id '{:?}': {:?}",
@@ -3457,10 +3406,35 @@ impl<S> StateMachineApplyContext<'_, S> {
             response
         );
 
-        self.action_collector.push(Action::ForwardPurgeResponse {
+        self.action_collector
+            .push(Action::ForwardPurgeInvocationResponse {
+                request_id,
+                response,
+            });
+    }
+
+    fn reply_to_purge_journal(
+        &mut self,
+        response_sink: Option<InvocationMutationResponseSink>,
+        response: PurgeInvocationResponse,
+    ) {
+        if response_sink.is_none() {
+            return;
+        }
+        let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
+            response_sink.unwrap();
+        debug_if_leader!(
+            self.is_leader,
+            "Send purge response to request id '{:?}': {:?}",
             request_id,
-            response,
-        });
+            response
+        );
+
+        self.action_collector
+            .push(Action::ForwardPurgeJournalResponse {
+                request_id,
+                response,
+            });
     }
 
     fn send_submit_notification_if_needed(

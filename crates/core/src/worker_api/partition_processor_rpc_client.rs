@@ -467,4 +467,26 @@ where
             }
         })
     }
+
+    async fn purge_journal(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> Result<PurgeInvocationResponse, InvocationClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id },
+            )
+            .await?;
+
+        Ok(match response {
+            PartitionProcessorRpcResponse::PurgeJournal(purge_invocation_response) => {
+                purge_invocation_response.into()
+            }
+            _ => {
+                panic!("Expecting PurgeInvocation rpc response")
+            }
+        })
+    }
 }

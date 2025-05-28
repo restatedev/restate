@@ -177,6 +177,14 @@ impl InvocationClient for Mock {
     ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send {
         pending()
     }
+
+    fn purge_journal(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+    ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
 }
 
 async fn generate_rest_api_doc() -> anyhow::Result<()> {

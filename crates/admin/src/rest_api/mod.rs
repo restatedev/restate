@@ -99,6 +99,10 @@ where
             patch(openapi_handler!(invocations::purge_invocation)),
         )
         .route(
+            "/invocations/:invocation_id/purge-journal",
+            patch(openapi_handler!(invocations::purge_journal)),
+        )
+        .route(
             "/subscriptions",
             post(openapi_handler!(subscriptions::create_subscription)),
         )

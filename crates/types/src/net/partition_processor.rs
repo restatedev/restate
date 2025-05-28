@@ -71,6 +71,7 @@ pub enum PartitionProcessorRpcRequestInner {
     CancelInvocation { invocation_id: InvocationId },
     KillInvocation { invocation_id: InvocationId },
     PurgeInvocation { invocation_id: InvocationId },
+    PurgeJournal { invocation_id: InvocationId },
 }
 
 impl WithPartitionKey for PartitionProcessorRpcRequestInner {
@@ -87,6 +88,9 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
                 invocation_id.partition_key()
             }
             PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id } => {
+                invocation_id.partition_key()
+            }
+            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
                 invocation_id.partition_key()
             }
         }
@@ -211,4 +215,5 @@ pub enum PartitionProcessorRpcResponse {
     CancelInvocation(CancelInvocationRpcResponse),
     KillInvocation(KillInvocationRpcResponse),
     PurgeInvocation(PurgeInvocationRpcResponse),
+    PurgeJournal(PurgeInvocationRpcResponse),
 }

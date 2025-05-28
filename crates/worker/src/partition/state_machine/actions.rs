@@ -88,7 +88,11 @@ pub enum Action {
         request_id: PartitionProcessorRpcRequestId,
         response: CancelInvocationResponse,
     },
-    ForwardPurgeResponse {
+    ForwardPurgeInvocationResponse {
+        request_id: PartitionProcessorRpcRequestId,
+        response: PurgeInvocationResponse,
+    },
+    ForwardPurgeJournalResponse {
         request_id: PartitionProcessorRpcRequestId,
         response: PurgeInvocationResponse,
     },

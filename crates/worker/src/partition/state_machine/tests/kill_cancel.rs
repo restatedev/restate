@@ -18,7 +18,7 @@ use restate_storage_api::journal_table::JournalTable;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::EntryIndex;
-use restate_types::invocation::TerminationFlavor;
+use restate_types::invocation::{IngressInvocationResponseSink, TerminationFlavor};
 use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal_v2::NotificationId;
 use restate_types::service_protocol;
@@ -69,7 +69,9 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
         .apply(Command::TerminateInvocation(InvocationTermination {
             invocation_id: inboxed_id,
             flavor: TerminationFlavor::Kill,
-            response_sink: Some(InvocationMutationResponseSink::Ingress { request_id }),
+            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                IngressInvocationResponseSink { request_id },
+            )),
         }))
         .await;
 
@@ -513,7 +515,9 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         .apply(Command::TerminateInvocation(InvocationTermination {
             invocation_id,
             flavor: TerminationFlavor::Cancel,
-            response_sink: Some(InvocationMutationResponseSink::Ingress { request_id }),
+            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                IngressInvocationResponseSink { request_id },
+            )),
         }))
         .await;
 

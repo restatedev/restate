@@ -49,10 +49,10 @@ use restate_types::identifiers::{
 use restate_types::invocation;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationMutationResponseSink, InvocationQuery, InvocationTarget,
-    InvocationTargetType, InvocationTermination, NotifySignalRequest, PurgeInvocationRequest,
-    ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, SubmitNotificationSink,
-    TerminationFlavor, WorkflowHandlerType,
+    AttachInvocationRequest, IngressInvocationResponseSink, InvocationMutationResponseSink,
+    InvocationQuery, InvocationTarget, InvocationTargetType, InvocationTermination,
+    NotifySignalRequest, PurgeInvocationRequest, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, SubmitNotificationSink, TerminationFlavor, WorkflowHandlerType,
 };
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
@@ -703,9 +703,9 @@ where
                         Command::TerminateInvocation(InvocationTermination {
                             invocation_id,
                             flavor: TerminationFlavor::Cancel,
-                            response_sink: Some(InvocationMutationResponseSink::Ingress {
-                                request_id,
-                            }),
+                            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                IngressInvocationResponseSink { request_id },
+                            )),
                         }),
                     )
                     .await
@@ -719,9 +719,9 @@ where
                         Command::TerminateInvocation(InvocationTermination {
                             invocation_id,
                             flavor: TerminationFlavor::Kill,
-                            response_sink: Some(InvocationMutationResponseSink::Ingress {
-                                request_id,
-                            }),
+                            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                IngressInvocationResponseSink { request_id },
+                            )),
                         }),
                     )
                     .await
@@ -734,9 +734,24 @@ where
                         invocation_id.partition_key(),
                         Command::PurgeInvocation(PurgeInvocationRequest {
                             invocation_id,
-                            response_sink: Some(InvocationMutationResponseSink::Ingress {
-                                request_id,
-                            }),
+                            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                IngressInvocationResponseSink { request_id },
+                            )),
+                        }),
+                    )
+                    .await
+            }
+            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
+                self.leadership_state
+                    .handle_rpc_proposal_command(
+                        request_id,
+                        response_tx,
+                        invocation_id.partition_key(),
+                        Command::PurgeJournal(PurgeInvocationRequest {
+                            invocation_id,
+                            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                IngressInvocationResponseSink { request_id },
+                            )),
                         }),
                     )
                     .await

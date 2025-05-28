@@ -184,6 +184,7 @@ where
                             },
                             command: Command::PurgeJournal(PurgeInvocationRequest {
                                 invocation_id,
+                                response_sink: None,
                             }),
                         }),
                     )

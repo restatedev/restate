@@ -167,4 +167,11 @@ pub trait InvocationClient {
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
     ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send;
+
+    /// Purge the given invocation journal.
+    fn purge_journal(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send;
 }

@@ -15,7 +15,8 @@ use restate_storage_api::invocation_status_table::CompletedInvocation;
 use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
+    AttachInvocationRequest, IngressInvocationResponseSink, InvocationQuery, InvocationTarget,
+    PurgeInvocationRequest,
 };
 use std::time::Duration;
 
@@ -340,7 +341,9 @@ async fn purge_completed_workflow() {
     let actions = test_env
         .apply(Command::PurgeInvocation(PurgeInvocationRequest {
             invocation_id,
-            response_sink: Some(InvocationMutationResponseSink::Ingress { request_id }),
+            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                IngressInvocationResponseSink { request_id },
+            )),
         }))
         .await;
     assert_that!(

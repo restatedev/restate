@@ -260,3 +260,46 @@ where
 
     Ok(())
 }
+
+generate_meta_api_error!(PurgeJournalError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, PurgeInvocationNotCompletedError]);
+
+/// Purge an invocation
+#[openapi(
+    summary = "Purge an invocation journal",
+    description = "Purge the given invocation journal. This cleanups only the journal for the given invocation, retaining the metadata. This command applies only to completed invocations.",
+    operation_id = "purge_journal",
+    tags = "invocation",
+    parameters(path(
+        name = "invocation_id",
+        description = "Invocation identifier.",
+        schema = "std::string::String"
+    ))
+)]
+pub async fn purge_journal<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
+    Path(invocation_id): Path<String>,
+) -> Result<(), PurgeJournalError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .purge_journal(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .await
+        .map_err(InvocationClientError)?
+    {
+        PurgeInvocationResponse::Ok => {}
+        PurgeInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        PurgeInvocationResponse::NotCompleted => {
+            Err(PurgeInvocationNotCompletedError(invocation_id.to_string()))?
+        }
+    };
+
+    Ok(())
+}
