@@ -126,7 +126,7 @@ async fn render_handlers_status(
     svc: ServiceMetadata,
     svc_status: &ServiceStatus,
 ) -> Result<()> {
-    for handler in svc.handlers {
+    for (_, handler) in svc.handlers {
         let mut row = vec![];
         row.push(Cell::new(format!("  {}", &handler.name)));
         // Pending

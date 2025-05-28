@@ -95,6 +95,35 @@ pub fn invoker_entry_effect_for_epoch(
     })
 }
 
+pub fn invoker_end_effect(invocation_id: InvocationId) -> Command {
+    invoker_end_effect_for_epoch(invocation_id, 0)
+}
+
+pub fn invoker_end_effect_for_epoch(
+    invocation_id: InvocationId,
+    invocation_epoch: InvocationEpoch,
+) -> Command {
+    Command::InvokerEffect(InvokerEffect {
+        invocation_id,
+        invocation_epoch,
+        kind: InvokerEffectKind::End,
+    })
+}
+
+pub fn pinned_deployment(
+    invocation_id: InvocationId,
+    service_protocol_version: ServiceProtocolVersion,
+) -> Command {
+    Command::InvokerEffect(InvokerEffect {
+        invocation_id,
+        invocation_epoch: 0,
+        kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
+            deployment_id: DeploymentId::default(),
+            service_protocol_version,
+        }),
+    })
+}
+
 pub fn invoker_suspended(
     invocation_id: InvocationId,
     waiting_for_notifications: impl Into<HashSet<journal_v2::NotificationId>>,
@@ -129,15 +158,8 @@ pub async fn mock_start_invocation_with_invocation_target(
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
-            argument: Default::default(),
             source: Source::Ingress(PartitionProcessorRpcRequestId::new()),
-            response_sink: None,
-            span_context: Default::default(),
-            headers: vec![],
-            execution_time: None,
-            completion_retention_duration: None,
-            idempotency_key: None,
-            submit_notification_sink: None,
+            ..ServiceInvocation::mock()
         }))
         .await;
 
@@ -163,13 +185,6 @@ pub async fn mock_start_invocation(state_machine: &mut TestEnv) -> InvocationId 
 
 pub async fn mock_pinned_deployment_v5(state_machine: &mut TestEnv, invocation_id: InvocationId) {
     let _ = state_machine
-        .apply(Command::InvokerEffect(InvokerEffect {
-            invocation_id,
-            invocation_epoch: 0,
-            kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
-                deployment_id: DeploymentId::default(),
-                service_protocol_version: ServiceProtocolVersion::V5,
-            }),
-        }))
+        .apply(pinned_deployment(invocation_id, ServiceProtocolVersion::V5))
         .await;
 }

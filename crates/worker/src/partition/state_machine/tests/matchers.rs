@@ -23,7 +23,9 @@ pub mod storage {
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
     use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
-    use restate_storage_api::invocation_status_table::InvocationStatus;
+    use restate_storage_api::invocation_status_table::{
+        InvocationStatus, InvocationStatusDiscriminants,
+    };
     use restate_storage_api::journal_table::JournalEntry;
     use restate_types::identifiers::InvocationId;
     use restate_types::invocation::InvocationTarget;
@@ -69,6 +71,16 @@ pub mod storage {
         pat!(JournalEntry::Entry(eq(
             ProtobufRawEntryCodec::serialize_enriched(entry)
         )))
+    }
+
+    pub fn is_variant(
+        discriminant: InvocationStatusDiscriminants,
+    ) -> impl Matcher<ActualT = InvocationStatus> {
+        property_matcher::internal::property_matcher(
+            |o: &InvocationStatus| o.discriminant(),
+            "discriminant()",
+            some(eq(discriminant)),
+        )
     }
 }
 

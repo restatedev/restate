@@ -210,6 +210,40 @@ impl TestEnv {
             .unwrap();
         tx.commit().await.unwrap();
     }
+
+    pub async fn verify_journal_components(
+        &mut self,
+        invocation_id: InvocationId,
+        entry_types: impl IntoIterator<Item = journal_v2::EntryType>,
+    ) {
+        let expected_entry_types = entry_types.into_iter().collect::<Vec<_>>();
+        let expected_commands = expected_entry_types
+            .iter()
+            .filter(|e| e.is_command())
+            .count();
+        assert_that!(
+            self.storage.get_invocation_status(&invocation_id).await,
+            ok(all!(
+                matchers::storage::has_journal_length(expected_entry_types.len() as u32),
+                matchers::storage::has_commands(expected_commands as u32)
+            ))
+        );
+        let actual_entry_types = self
+            .read_journal_to_vec(invocation_id, expected_entry_types.len() as EntryIndex)
+            .await
+            .into_iter()
+            .map(|e| e.ty())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_entry_types, expected_entry_types);
+
+        // Verify we don't go out of bounds
+        assert_that!(
+            self.storage
+                .get_journal_entry(&invocation_id, expected_entry_types.len() as u32)
+                .await,
+            ok(none())
+        );
+    }
 }
 
 type TestResult = Result<(), anyhow::Error>;
@@ -882,17 +916,11 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
-            argument: Default::default(),
             source: Source::Ingress(request_id_1),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),
-            span_context: Default::default(),
-            headers: vec![],
-            execution_time: None,
-            completion_retention_duration: None,
-            idempotency_key: None,
-            submit_notification_sink: None,
+            ..ServiceInvocation::mock()
         }))
         .await;
     assert_that!(

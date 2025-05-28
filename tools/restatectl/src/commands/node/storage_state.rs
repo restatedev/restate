@@ -13,21 +13,18 @@ use std::collections::HashMap;
 use anyhow::Context;
 use cling::prelude::*;
 
+use crate::commands::node::update_state;
+use crate::connection::ConnectionInfo;
 use restate_cli_util::c_println;
 use restate_metadata_store::MetadataStoreClient;
 use restate_metadata_store::protobuf::metadata_proxy_svc::client::MetadataStoreProxy;
 use restate_types::config::MetadataClientOptions;
 use restate_types::logs::metadata::ProviderKind;
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::{NodesConfiguration, Role, StorageState};
+use restate_types::nodes_config::{Role, StorageState};
 use restate_types::replicated_loglet::logserver_candidate_filter;
 use restate_types::replication::{NodeSetChecker, NodeSetSelector, NodeSetSelectorOptions};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
-use crate::connection::{ConnectionInfo, NodeOperationError};
-
-// note 1: this is until we have a way to proxy metadata requests through nodes
-// note 2: currently supports replicated metadata only, node must be one of metadata nodes
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "set_storage_state")]
 pub struct SetOpts {
@@ -170,7 +167,13 @@ async fn set_storage_state(connection: &ConnectionInfo, opts: &SetOpts) -> anyho
             let metadata_store_client =
                 MetadataStoreClient::new(metadata_store_proxy, Some(backoff_policy.clone()));
 
-            update_storage_state(&metadata_store_client, &current_states, opts.storage_state).await
+            update_state(
+                &metadata_store_client,
+                &current_states,
+                opts.storage_state,
+                |node_config| &mut node_config.log_server_config.storage_state,
+            )
+            .await
         })
         .await?;
 
@@ -183,45 +186,4 @@ async fn set_storage_state(connection: &ConnectionInfo, opts: &SetOpts) -> anyho
         );
     }
     Ok(())
-}
-
-async fn update_storage_state(
-    metadata_client: &MetadataStoreClient,
-    nodes: &HashMap<GenerationalNodeId, StorageState>,
-    target_state: StorageState,
-) -> Result<(), NodeOperationError> {
-    metadata_client
-        .read_modify_write(
-            NODES_CONFIG_KEY.clone(),
-            move |nodes_config: Option<NodesConfiguration>| {
-                let mut nodes_config = nodes_config.context("Missing nodes configuration")?;
-
-                for (my_node_id, expected_state) in nodes {
-                    // If this fails, it means that a newer node has started somewhere else, and we
-                    // should not attempt to update the storage-state. Instead, we fail.
-                    let mut node = nodes_config
-                        // note that we find by the generational node id.
-                        .find_node_by_id(*my_node_id)?
-                        .clone();
-
-                    if node.log_server_config.storage_state != *expected_state {
-                        // Something might have caused this state to change.
-                        return Err(anyhow::anyhow!(
-                            "Node {} has changed it state during the update, expected={}, found={}",
-                            my_node_id,
-                            expected_state,
-                            node.log_server_config.storage_state,
-                        ));
-                    }
-
-                    node.log_server_config.storage_state = target_state;
-                    nodes_config.upsert_node(node);
-                }
-                nodes_config.increment_version();
-                Ok(nodes_config)
-            },
-        )
-        .await
-        .map(|_| ())
-        .map_err(Into::into)
 }

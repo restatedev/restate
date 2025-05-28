@@ -46,6 +46,7 @@ futures-util = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
+assert2 = {workspace = true }
 arrow = { workspace = true, features = ["ipc"] }
 bytes = { workspace = true }
 bytesize = { workspace = true }

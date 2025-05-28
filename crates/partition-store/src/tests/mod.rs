@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::pin;
+use std::time::Duration;
 
 use futures::Stream;
 use tokio_stream::StreamExt;
@@ -94,7 +95,8 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         span_context: Default::default(),
         headers: vec![],
         execution_time: None,
-        completion_retention_duration: None,
+        completion_retention_duration: Duration::ZERO,
+        journal_retention_duration: Duration::ZERO,
         idempotency_key: None,
         submit_notification_sink: None,
     }

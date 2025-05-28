@@ -9,8 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use super::Schema;
-use crate::invocation::InvocationTargetType;
+use crate::invocation::{InvocationRetention, InvocationTargetType, WorkflowHandlerType};
 
+use crate::config::Configuration;
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
@@ -23,26 +24,42 @@ pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 
 pub const DEFAULT_WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    from = "serde_hacks::InvocationTargetMetadata",
+    into = "serde_hacks::InvocationTargetMetadata"
+)]
 pub struct InvocationTargetMetadata {
     pub public: bool,
+
     /// Retention timer to be used for the completion. See [`InvocationTargetMetadata::compute_retention`] for more details.
-    pub completion_retention: Option<Duration>,
-    /// Retention timer that should be used only if an idempotency key is set. See [`InvocationTargetMetadata::compute_retention`] for more details.
-    pub idempotency_retention: Duration,
+    pub completion_retention: Duration,
+    /// Retention timer to be used for the journal. See [`InvocationTargetMetadata::compute_retention`] for more details.
+    pub journal_retention: Duration,
+
     pub target_ty: InvocationTargetType,
     pub input_rules: InputRules,
     pub output_rules: OutputRules,
 }
 
 impl InvocationTargetMetadata {
-    pub fn compute_retention(&self, has_idempotency_key: bool) -> Option<Duration> {
-        if has_idempotency_key {
-            Some(cmp::max(
-                self.completion_retention.unwrap_or_default(),
-                self.idempotency_retention,
-            ))
-        } else {
-            self.completion_retention
+    pub fn compute_retention(&self, has_idempotency_key: bool) -> InvocationRetention {
+        // See https://github.com/restatedev/restate/issues/892#issuecomment-2841609088
+        match (self.target_ty, has_idempotency_key) {
+            (InvocationTargetType::Workflow(WorkflowHandlerType::Workflow), _) | (_, true) => {
+                // We should retain the completion when the call is to a workflow, or has idempotency key
+                InvocationRetention {
+                    completion_retention: self.completion_retention,
+                    // We need to make sure journal_retention is smaller or equal to completion_retention,
+                    // due to implementation requirement that invocation status must be retained at least as long as the journal.
+                    journal_retention: cmp::min(self.journal_retention, self.completion_retention),
+                }
+            }
+            (_, _) if !self.journal_retention.is_zero() => InvocationRetention {
+                // To retain the journal, we must retain the completion too. No way out of this.
+                completion_retention: self.journal_retention,
+                journal_retention: self.journal_retention,
+            },
+            _ => InvocationRetention::none(),
         }
     }
 }
@@ -70,6 +87,15 @@ impl InvocationTargetResolver for Schema {
                 .map(|handler_schemas| handler_schemas.target_meta.clone())
         })
         .flatten()
+        .map(|mut meta| {
+            if let Some(journal_retention_override) = Configuration::pinned()
+                .admin
+                .experimental_feature_force_journal_retention
+            {
+                meta.journal_retention = journal_retention_override
+            }
+            meta
+        })
     }
 }
 
@@ -492,11 +518,100 @@ pub mod test_util {
         pub fn mock(invocation_target_type: InvocationTargetType) -> Self {
             Self {
                 public: true,
-                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                completion_retention: None,
+                completion_retention: DEFAULT_IDEMPOTENCY_RETENTION,
+                journal_retention: Duration::ZERO,
                 target_ty: invocation_target_type,
                 input_rules: Default::default(),
                 output_rules: Default::default(),
+            }
+        }
+    }
+}
+
+mod serde_hacks {
+    use super::*;
+
+    /// Some good old serde hacks here to make sure we can parse the old data structure.
+    /// See the tests for more details on the old data structure and the various cases.
+    /// Revisit this for Restate 1.5
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct InvocationTargetMetadata {
+        pub public: bool,
+
+        #[serde(default)]
+        pub completion_retention: Option<Duration>,
+        /// This is unused at this point, we just write it for backward compatibility.
+        #[serde(default)]
+        pub idempotency_retention: Duration,
+        #[serde(default, skip_serializing_if = "Duration::is_zero")]
+        pub journal_retention: Duration,
+
+        pub target_ty: InvocationTargetType,
+        pub input_rules: InputRules,
+        pub output_rules: OutputRules,
+    }
+
+    impl From<super::InvocationTargetMetadata> for InvocationTargetMetadata {
+        fn from(
+            super::InvocationTargetMetadata {
+                public,
+                completion_retention,
+                journal_retention,
+                target_ty,
+                input_rules,
+                output_rules,
+            }: super::InvocationTargetMetadata,
+        ) -> Self {
+            // This is the 1.3 business logic we need to please here.
+            // Note that completion_retention was set only for Workflow methods anyway
+            //   if has_idempotency_key {
+            //     Some(cmp::max(
+            //       self.completion_retention.unwrap_or_default(),
+            //       self.idempotency_retention,
+            //     ))
+            //   } else {
+            //     self.completion_retention
+            //   }
+            let completion_retention_old =
+                if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
+                    Some(completion_retention)
+                } else {
+                    None
+                };
+            Self {
+                public,
+                completion_retention: completion_retention_old,
+                // Just always set it, won't hurt and doesn't violate the code below.
+                idempotency_retention: completion_retention,
+                journal_retention,
+                target_ty,
+                input_rules,
+                output_rules,
+            }
+        }
+    }
+
+    impl From<InvocationTargetMetadata> for super::InvocationTargetMetadata {
+        fn from(
+            InvocationTargetMetadata {
+                public,
+                completion_retention,
+                idempotency_retention,
+                journal_retention,
+                target_ty,
+                input_rules,
+                output_rules,
+            }: InvocationTargetMetadata,
+        ) -> Self {
+            Self {
+                public,
+                // In the old data structure, either completion_retention was filled and used, or idempotency retention was filled.
+                // So just try to pick first the one, then the other
+                completion_retention: completion_retention.unwrap_or(idempotency_retention),
+                journal_retention,
+                target_ty,
+                input_rules,
+                output_rules,
             }
         }
     }
@@ -506,195 +621,317 @@ pub mod test_util {
 mod tests {
     use super::*;
 
-    macro_rules! assert_input_valid {
-        ($rule:expr, $ct:expr, $body:expr) => {
-            let res = $rule.validate($ct, &$body);
-            assert!(
-                res.is_ok(),
-                "Rule {:?} with content-type {:?} and body {:?} should be valid, error: {:?}",
-                $rule,
-                $ct as Option<&'static str>,
-                $body,
-                res.unwrap_err()
-            )
-        };
-    }
+    mod input_output_rules {
+        use super::*;
 
-    macro_rules! assert_input_not_valid {
-        ($rule:expr, $ct:expr, $body:expr) => {
-            let res = $rule.validate($ct, &$body);
-            assert!(
-                res.is_err(),
-                "Rule {:?} with content-type {:?} and body {:?} should be invalid",
-                $rule,
-                $ct as Option<&'static str>,
-                $body
-            )
-        };
-    }
+        macro_rules! assert_input_valid {
+            ($rule:expr, $ct:expr, $body:expr) => {
+                let res = $rule.validate($ct, &$body);
+                assert!(
+                    res.is_ok(),
+                    "Rule {:?} with content-type {:?} and body {:?} should be valid, error: {:?}",
+                    $rule,
+                    $ct as Option<&'static str>,
+                    $body,
+                    res.unwrap_err()
+                )
+            };
+        }
 
-    #[test]
-    fn validate_default() {
-        let input_rules = InputRules::default();
+        macro_rules! assert_input_not_valid {
+            ($rule:expr, $ct:expr, $body:expr) => {
+                let res = $rule.validate($ct, &$body);
+                assert!(
+                    res.is_err(),
+                    "Rule {:?} with content-type {:?} and body {:?} should be invalid",
+                    $rule,
+                    $ct as Option<&'static str>,
+                    $body
+                )
+            };
+        }
 
-        assert_input_valid!(input_rules, Some("application/json"), Bytes::new());
-        assert_input_valid!(input_rules, Some("text/plain"), Bytes::new());
-        assert_input_valid!(
-            input_rules,
-            Some("application/json"),
-            Bytes::from_static(b"{}")
-        );
-        assert_input_not_valid!(input_rules, None, Bytes::from_static(b"123"));
-    }
+        #[test]
+        fn validate_default() {
+            let input_rules = InputRules::default();
 
-    #[test]
-    fn validate_empty_only() {
-        let input_rules = InputRules {
-            input_validation_rules: vec![InputValidationRule::NoBodyAndContentType],
-        };
+            assert_input_valid!(input_rules, Some("application/json"), Bytes::new());
+            assert_input_valid!(input_rules, Some("text/plain"), Bytes::new());
+            assert_input_valid!(
+                input_rules,
+                Some("application/json"),
+                Bytes::from_static(b"{}")
+            );
+            assert_input_not_valid!(input_rules, None, Bytes::from_static(b"123"));
+        }
 
-        assert_input_valid!(input_rules, None, Bytes::new());
-        assert_input_not_valid!(input_rules, Some("application/json"), Bytes::new());
-        assert_input_not_valid!(input_rules, None, Bytes::from_static(b"{}"));
-    }
+        #[test]
+        fn validate_empty_only() {
+            let input_rules = InputRules {
+                input_validation_rules: vec![InputValidationRule::NoBodyAndContentType],
+            };
 
-    #[test]
-    fn validate_any_content_type() {
-        let input_rules = InputRules {
-            input_validation_rules: vec![InputValidationRule::ContentType {
-                content_type: InputContentType::Any,
-            }],
-        };
+            assert_input_valid!(input_rules, None, Bytes::new());
+            assert_input_not_valid!(input_rules, Some("application/json"), Bytes::new());
+            assert_input_not_valid!(input_rules, None, Bytes::from_static(b"{}"));
+        }
 
-        assert_input_valid!(
-            input_rules,
-            Some("application/restate+json"),
-            Bytes::from_static(b"{}")
-        );
-        assert_input_valid!(input_rules, Some("application/restate+json"), Bytes::new());
-        assert_input_not_valid!(input_rules, None, Bytes::from_static(b"{}"));
-        assert_input_not_valid!(input_rules, None, Bytes::new());
-    }
-
-    #[test]
-    fn validate_mime_content_type() {
-        let input_rules = InputRules {
-            input_validation_rules: vec![InputValidationRule::ContentType {
-                content_type: InputContentType::MimeType("application".into()),
-            }],
-        };
-
-        assert_input_valid!(input_rules, Some("application/restate+json"), Bytes::new());
-        assert_input_valid!(
-            input_rules,
-            Some("application/json; charset=utf8"),
-            Bytes::new()
-        );
-        assert_input_not_valid!(input_rules, Some("text/json"), Bytes::new());
-    }
-
-    #[test]
-    fn validate_mime_and_subtype_content_type() {
-        let input_rules = InputRules {
-            input_validation_rules: vec![InputValidationRule::ContentType {
-                content_type: InputContentType::MimeTypeAndSubtype(
-                    "application".into(),
-                    "json".into(),
-                ),
-            }],
-        };
-
-        assert_input_valid!(input_rules, Some("application/json"), Bytes::new());
-        assert_input_valid!(
-            input_rules,
-            Some("application/json; charset=utf8"),
-            Bytes::new()
-        );
-        assert_input_not_valid!(input_rules, Some("application/cbor"), Bytes::new());
-    }
-
-    #[test]
-    fn validate_either_empty_or_non_empty_json() {
-        let input_rules = InputRules {
-            input_validation_rules: vec![
-                InputValidationRule::NoBodyAndContentType,
-                InputValidationRule::JsonValue {
+        #[test]
+        fn validate_any_content_type() {
+            let input_rules = InputRules {
+                input_validation_rules: vec![InputValidationRule::ContentType {
                     content_type: InputContentType::Any,
+                }],
+            };
+
+            assert_input_valid!(
+                input_rules,
+                Some("application/restate+json"),
+                Bytes::from_static(b"{}")
+            );
+            assert_input_valid!(input_rules, Some("application/restate+json"), Bytes::new());
+            assert_input_not_valid!(input_rules, None, Bytes::from_static(b"{}"));
+            assert_input_not_valid!(input_rules, None, Bytes::new());
+        }
+
+        #[test]
+        fn validate_mime_content_type() {
+            let input_rules = InputRules {
+                input_validation_rules: vec![InputValidationRule::ContentType {
+                    content_type: InputContentType::MimeType("application".into()),
+                }],
+            };
+
+            assert_input_valid!(input_rules, Some("application/restate+json"), Bytes::new());
+            assert_input_valid!(
+                input_rules,
+                Some("application/json; charset=utf8"),
+                Bytes::new()
+            );
+            assert_input_not_valid!(input_rules, Some("text/json"), Bytes::new());
+        }
+
+        #[test]
+        fn validate_mime_and_subtype_content_type() {
+            let input_rules = InputRules {
+                input_validation_rules: vec![InputValidationRule::ContentType {
+                    content_type: InputContentType::MimeTypeAndSubtype(
+                        "application".into(),
+                        "json".into(),
+                    ),
+                }],
+            };
+
+            assert_input_valid!(input_rules, Some("application/json"), Bytes::new());
+            assert_input_valid!(
+                input_rules,
+                Some("application/json; charset=utf8"),
+                Bytes::new()
+            );
+            assert_input_not_valid!(input_rules, Some("application/cbor"), Bytes::new());
+        }
+
+        #[test]
+        fn validate_either_empty_or_non_empty_json() {
+            let input_rules = InputRules {
+                input_validation_rules: vec![
+                    InputValidationRule::NoBodyAndContentType,
+                    InputValidationRule::JsonValue {
+                        content_type: InputContentType::Any,
+                        schema: Default::default(),
+                    },
+                ],
+            };
+
+            assert_input_valid!(input_rules, None, Bytes::new());
+            assert_input_valid!(
+                input_rules,
+                Some("application/restate+json"),
+                Bytes::from_static(b"{}")
+            );
+            assert_input_not_valid!(input_rules, Some("application/json"), Bytes::new());
+        }
+
+        #[test]
+        fn validate_json_only() {
+            let input_rules = InputRules {
+                input_validation_rules: vec![InputValidationRule::JsonValue {
+                    content_type: InputContentType::MimeTypeAndSubtype(
+                        "application".into(),
+                        "restate+json".into(),
+                    ),
                     schema: Default::default(),
+                }],
+            };
+
+            assert_input_valid!(
+                input_rules,
+                Some("application/restate+json"),
+                Bytes::from_static(b"{}")
+            );
+            assert_input_not_valid!(
+                input_rules,
+                Some("application/json"),
+                Bytes::from_static(b"{}")
+            );
+            assert_input_not_valid!(input_rules, None, Bytes::from_static(b"{}"));
+            assert_input_not_valid!(input_rules, Some("application/restate+json"), Bytes::new());
+        }
+
+        #[test]
+        fn infer_content_type_default() {
+            let input_rules = OutputRules::default();
+
+            assert_eq!(
+                input_rules.infer_content_type(false),
+                Some(http::HeaderValue::from_static("application/json"))
+            );
+            assert_eq!(input_rules.infer_content_type(true), None);
+        }
+
+        #[test]
+        fn infer_content_type_set_content_type_if_empty() {
+            let ct = http::HeaderValue::from_static("application/restate");
+            let input_rules = OutputRules {
+                content_type_rule: OutputContentTypeRule::Set {
+                    content_type: ct.clone(),
+                    set_content_type_if_empty: true,
+                    has_json_schema: false,
                 },
-            ],
-        };
+                json_schema: None,
+            };
 
-        assert_input_valid!(input_rules, None, Bytes::new());
-        assert_input_valid!(
-            input_rules,
-            Some("application/restate+json"),
-            Bytes::from_static(b"{}")
-        );
-        assert_input_not_valid!(input_rules, Some("application/json"), Bytes::new());
+            assert_eq!(input_rules.infer_content_type(false), Some(ct.clone()));
+            assert_eq!(input_rules.infer_content_type(true), Some(ct));
+        }
+
+        #[test]
+        fn infer_content_type_empty() {
+            let input_rules = OutputRules {
+                content_type_rule: OutputContentTypeRule::None,
+                json_schema: None,
+            };
+
+            assert_eq!(input_rules.infer_content_type(false), None);
+            assert_eq!(input_rules.infer_content_type(true), None);
+        }
     }
 
-    #[test]
-    fn validate_json_only() {
-        let input_rules = InputRules {
-            input_validation_rules: vec![InputValidationRule::JsonValue {
-                content_type: InputContentType::MimeTypeAndSubtype(
-                    "application".into(),
-                    "restate+json".into(),
-                ),
-                schema: Default::default(),
-            }],
-        };
+    mod invocation_target_metadata {
+        use super::*;
 
-        assert_input_valid!(
-            input_rules,
-            Some("application/restate+json"),
-            Bytes::from_static(b"{}")
-        );
-        assert_input_not_valid!(
-            input_rules,
-            Some("application/json"),
-            Bytes::from_static(b"{}")
-        );
-        assert_input_not_valid!(input_rules, None, Bytes::from_static(b"{}"));
-        assert_input_not_valid!(input_rules, Some("application/restate+json"), Bytes::new());
-    }
+        pub const IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(1);
+        pub const WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(2);
 
-    #[test]
-    fn infer_content_type_default() {
-        let input_rules = OutputRules::default();
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        pub struct OldInvocationTargetMetadata {
+            pub public: bool,
+            pub completion_retention: Option<Duration>,
+            pub idempotency_retention: Duration,
+            pub target_ty: InvocationTargetType,
+            pub input_rules: InputRules,
+            pub output_rules: OutputRules,
+        }
 
-        assert_eq!(
-            input_rules.infer_content_type(false),
-            Some(http::HeaderValue::from_static("application/json"))
-        );
-        assert_eq!(input_rules.infer_content_type(true), None);
-    }
+        impl OldInvocationTargetMetadata {
+            pub fn compute_retention(&self, has_idempotency_key: bool) -> Option<Duration> {
+                if has_idempotency_key {
+                    Some(cmp::max(
+                        self.completion_retention.unwrap_or_default(),
+                        self.idempotency_retention,
+                    ))
+                } else {
+                    self.completion_retention
+                }
+            }
+        }
 
-    #[test]
-    fn infer_content_type_set_content_type_if_empty() {
-        let ct = http::HeaderValue::from_static("application/restate");
-        let input_rules = OutputRules {
-            content_type_rule: OutputContentTypeRule::Set {
-                content_type: ct.clone(),
-                set_content_type_if_empty: true,
-                has_json_schema: false,
-            },
-            json_schema: None,
-        };
+        #[test]
+        fn workflow_invoke_forward_compatibility() {
+            let expected_retention = InvocationRetention {
+                completion_retention: WORKFLOW_COMPLETION_RETENTION,
+                journal_retention: Default::default(),
+            };
 
-        assert_eq!(input_rules.infer_content_type(false), Some(ct.clone()));
-        assert_eq!(input_rules.infer_content_type(true), Some(ct));
-    }
+            let old = OldInvocationTargetMetadata {
+                public: false,
+                completion_retention: Some(WORKFLOW_COMPLETION_RETENTION),
+                target_ty: InvocationTargetType::Workflow(WorkflowHandlerType::Workflow),
+                input_rules: Default::default(),
+                output_rules: Default::default(),
+                idempotency_retention: IDEMPOTENCY_RETENTION,
+            };
 
-    #[test]
-    fn infer_content_type_empty() {
-        let input_rules = OutputRules {
-            content_type_rule: OutputContentTypeRule::None,
-            json_schema: None,
-        };
+            let new: InvocationTargetMetadata =
+                flexbuffers::from_slice(flexbuffers::to_vec(old).unwrap().as_slice()).unwrap();
+            assert_eq!(new.compute_retention(false), expected_retention);
 
-        assert_eq!(input_rules.infer_content_type(false), None);
-        assert_eq!(input_rules.infer_content_type(true), None);
+            // Roundtrip should work fine
+            let new: InvocationTargetMetadata =
+                flexbuffers::from_slice(flexbuffers::to_vec(new).unwrap().as_slice()).unwrap();
+            assert_eq!(new.compute_retention(false), expected_retention);
+        }
+
+        #[test]
+        fn idempotent_invoke_forward_compatibility() {
+            let expected_retention = InvocationRetention {
+                completion_retention: IDEMPOTENCY_RETENTION,
+                journal_retention: Default::default(),
+            };
+
+            let old = OldInvocationTargetMetadata {
+                public: false,
+                completion_retention: None,
+                target_ty: InvocationTargetType::Workflow(WorkflowHandlerType::Workflow),
+                input_rules: Default::default(),
+                output_rules: Default::default(),
+                idempotency_retention: IDEMPOTENCY_RETENTION,
+            };
+
+            let new: InvocationTargetMetadata =
+                flexbuffers::from_slice(flexbuffers::to_vec(old).unwrap().as_slice()).unwrap();
+            assert_eq!(new.compute_retention(true), expected_retention);
+
+            // Roundtrip should work fine
+            let new: InvocationTargetMetadata =
+                flexbuffers::from_slice(flexbuffers::to_vec(new).unwrap().as_slice()).unwrap();
+            assert_eq!(new.compute_retention(true), expected_retention);
+        }
+
+        #[test]
+        fn workflow_invoke_backward_compatibility() {
+            let new = InvocationTargetMetadata {
+                public: false,
+                target_ty: InvocationTargetType::Workflow(WorkflowHandlerType::Workflow),
+                completion_retention: WORKFLOW_COMPLETION_RETENTION,
+                journal_retention: Default::default(),
+                input_rules: Default::default(),
+                output_rules: Default::default(),
+            };
+
+            let old: OldInvocationTargetMetadata =
+                flexbuffers::from_slice(flexbuffers::to_vec(new).unwrap().as_slice()).unwrap();
+            assert_eq!(
+                old.compute_retention(false),
+                Some(WORKFLOW_COMPLETION_RETENTION)
+            );
+        }
+
+        #[test]
+        fn idempotent_invoke_backward_compatibility() {
+            let new = InvocationTargetMetadata {
+                public: false,
+                completion_retention: IDEMPOTENCY_RETENTION,
+                journal_retention: Default::default(),
+                target_ty: InvocationTargetType::Service,
+                input_rules: Default::default(),
+                output_rules: Default::default(),
+            };
+
+            let old: OldInvocationTargetMetadata =
+                flexbuffers::from_slice(flexbuffers::to_vec(new).unwrap().as_slice()).unwrap();
+            assert_eq!(old.compute_retention(true), Some(IDEMPOTENCY_RETENTION));
+            assert_eq!(old.compute_retention(false), None);
+        }
     }
 }

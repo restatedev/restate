@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -15,7 +16,7 @@ use enumset::enum_set;
 use futures_util::StreamExt;
 use googletest::{IntoTestResult, fail};
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig};
-use restate_types::replication::ReplicationProperty;
+use restate_types::replication::{NodeSet, ReplicationProperty};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::try_join;
@@ -33,12 +34,15 @@ use restate_local_cluster_runner::{
     node::{BinarySource, Node},
 };
 use restate_types::config::{LogFormat, MetadataClientKind, NetworkingOptions};
+use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
+use restate_types::metadata_store::keys::partition_processor_epoch_key;
+use restate_types::partitions::PartitionConfiguration;
 use restate_types::protobuf::cluster::RunMode;
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::retries::RetryPolicy;
-use restate_types::{config::Configuration, nodes_config::Role};
+use restate_types::{PlainNodeId, config::Configuration, nodes_config::Role};
 
 mod common;
 
@@ -49,6 +53,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     base_config.bifrost.default_provider = Replicated;
     base_config.common.log_filter = "restate=debug,warn".to_owned();
     base_config.common.log_format = LogFormat::Compact;
+    base_config.common.log_disable_ansi_codes = true;
 
     let no_snapshot_repository_config = base_config.clone();
 
@@ -84,8 +89,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     cluster.nodes[0]
         .provision_cluster(
             None,
-            // We want to run partition processor on node-1 and a future node-2
-            ReplicationProperty::new_unchecked(2),
+            ReplicationProperty::new_unchecked(1),
             Some(ProviderConfiguration::Replicated(replicated_loglet_config)),
         )
         .await
@@ -185,11 +189,36 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
 
     let mut trim_gap_encountered =
         worker_2.lines("Partition processor stopped due to a log trim gap, and no snapshot repository is configured".parse()?);
+    let mut joined_cluster = worker_2.lines("My Node ID is".parse()?);
 
-    info!("Waiting for partition processor to encounter log trim gap");
     let mut worker_2 = worker_2
         .start_clustered(cluster.base_dir(), cluster.cluster_name())
         .await?;
+
+    info!("Waiting until node-2 has joined the cluster");
+    assert!(
+        joined_cluster.next().await.is_some(),
+        "node-2 should join the cluster"
+    );
+
+    // reconfigure partition 0 to include node-2
+    let metadata_client = cluster.nodes[0]
+        .metadata_client()
+        .await
+        .into_test_result()?;
+    let epoch_key = partition_processor_epoch_key(PartitionId::new_unchecked(0));
+    metadata_client
+        .read_modify_write(epoch_key, |epoch_metadata: Option<EpochMetadata>| {
+            let epoch_metadata = epoch_metadata.expect("epoch metadata to be present");
+            Ok::<_, String>(epoch_metadata.reconfigure(PartitionConfiguration::new(
+                ReplicationProperty::new_unchecked(2),
+                NodeSet::from([PlainNodeId::new(1), PlainNodeId::new(2)]),
+                HashMap::default(),
+            )))
+        })
+        .await?;
+
+    info!("Waiting for partition processor to encounter log trim gap");
     assert!(
         trim_gap_encountered.next().await.is_some(),
         "Trim gap was never encountered"
@@ -221,6 +250,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let mut worker_2 = worker_2
         .start_clustered(cluster.base_dir(), cluster.cluster_name())
         .await?;
+
     assert!(
         worker_2_imported_snapshot.next().await.is_some(),
         "Importing partition store snapshot never happened"

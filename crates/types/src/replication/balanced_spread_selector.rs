@@ -566,16 +566,12 @@ fn is_candidate_viable(
 mod tests {
     use googletest::prelude::*;
 
+    use super::*;
     use crate::locality::LocationScope;
     use crate::nodes_config::{NodeConfig, NodesConfiguration, Role, WorkerConfig, WorkerState};
+    use crate::partitions::worker_candidate_filter;
     use crate::replication::{NodeSet, ReplicationProperty};
     use crate::{GenerationalNodeId, PlainNodeId};
-
-    use super::*;
-
-    pub fn worker_candidate_filter(_node_id: PlainNodeId, config: &NodeConfig) -> bool {
-        config.has_role(Role::Worker) && config.worker_config.worker_state == WorkerState::Active
-    }
 
     fn generate_node(
         id: impl Into<PlainNodeId>,

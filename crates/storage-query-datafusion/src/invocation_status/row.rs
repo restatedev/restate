@@ -70,10 +70,16 @@ pub(crate) fn append_invocation_status_row(
         InvocationStatus::Scheduled(scheduled) => {
             row.status("scheduled");
             fill_invoked_by(&mut row, output, scheduled.metadata.source);
+            if let Some(execution_time) = scheduled.metadata.execution_time {
+                row.scheduled_start_at(execution_time.as_u64() as i64)
+            }
         }
         InvocationStatus::Inboxed(inboxed) => {
             row.status("inboxed");
             fill_invoked_by(&mut row, output, inboxed.metadata.source);
+            if let Some(execution_time) = inboxed.metadata.execution_time {
+                row.scheduled_start_at(execution_time.as_u64() as i64)
+            }
         }
         InvocationStatus::Invoked(metadata) => {
             row.status("invoked");
@@ -83,15 +89,12 @@ pub(crate) fn append_invocation_status_row(
             row.status("suspended");
             fill_in_flight_invocation_metadata(&mut row, output, metadata);
         }
-        InvocationStatus::Free => {
-            row.status("free");
-        }
         InvocationStatus::Completed(completed) => {
             row.status("completed");
             fill_invoked_by(&mut row, output, completed.source);
-
-            // We fill the span context only for the new table, as the old table will contain always the empty value
-            fill_span_context(&mut row, output, &completed.span_context);
+            if let Some(execution_time) = completed.execution_time {
+                row.scheduled_start_at(execution_time.as_u64() as i64)
+            }
 
             match completed.response_result {
                 ResponseResult::Success(_) => {
@@ -102,6 +105,9 @@ pub(crate) fn append_invocation_status_row(
                     row.completion_failure(format_using(output, &failure));
                 }
             }
+        }
+        InvocationStatus::Free => {
+            row.status("free");
         }
     };
 }
@@ -121,7 +127,10 @@ fn fill_in_flight_invocation_metadata(
                 .unsigned_abs(),
         );
     }
-    fill_invoked_by(row, output, meta.source)
+    fill_invoked_by(row, output, meta.source);
+    if let Some(execution_time) = meta.execution_time {
+        row.scheduled_start_at(execution_time.as_u64() as i64)
+    }
 }
 
 #[inline]

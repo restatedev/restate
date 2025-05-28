@@ -138,7 +138,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         let mut methods_table = Table::new_styled();
         methods_table.set_styled_header(vec!["HANDLER", "INPUT", "OUTPUT", "ACTIVE-INVOCATIONS"]);
 
-        for handler in &service.handlers {
+        for handler in service.handlers.values() {
             // how many inv pinned on this deployment+service+method.
             let active_inv = active_inv
                 .iter()

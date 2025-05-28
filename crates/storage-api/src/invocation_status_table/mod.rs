@@ -246,8 +246,19 @@ impl InvocationStatus {
     #[inline]
     pub fn into_journal_metadata(self) -> Option<JournalMetadata> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(metadata.journal_metadata),
-            InvocationStatus::Suspended { metadata, .. } => Some(metadata.journal_metadata),
+            InvocationStatus::Invoked(InFlightInvocationMetadata {
+                journal_metadata, ..
+            })
+            | InvocationStatus::Suspended {
+                metadata:
+                    InFlightInvocationMetadata {
+                        journal_metadata, ..
+                    },
+                ..
+            }
+            | InvocationStatus::Completed(CompletedInvocation {
+                journal_metadata, ..
+            }) => Some(journal_metadata),
             _ => None,
         }
     }
@@ -255,8 +266,19 @@ impl InvocationStatus {
     #[inline]
     pub fn get_journal_metadata(&self) -> Option<&JournalMetadata> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(&metadata.journal_metadata),
-            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.journal_metadata),
+            InvocationStatus::Invoked(InFlightInvocationMetadata {
+                journal_metadata, ..
+            })
+            | InvocationStatus::Suspended {
+                metadata:
+                    InFlightInvocationMetadata {
+                        journal_metadata, ..
+                    },
+                ..
+            }
+            | InvocationStatus::Completed(CompletedInvocation {
+                journal_metadata, ..
+            }) => Some(journal_metadata),
             _ => None,
         }
     }
@@ -264,8 +286,19 @@ impl InvocationStatus {
     #[inline]
     pub fn get_journal_metadata_mut(&mut self) -> Option<&mut JournalMetadata> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(&mut metadata.journal_metadata),
-            InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.journal_metadata),
+            InvocationStatus::Invoked(InFlightInvocationMetadata {
+                journal_metadata, ..
+            })
+            | InvocationStatus::Suspended {
+                metadata:
+                    InFlightInvocationMetadata {
+                        journal_metadata, ..
+                    },
+                ..
+            }
+            | InvocationStatus::Completed(CompletedInvocation {
+                journal_metadata, ..
+            }) => Some(journal_metadata),
             _ => None,
         }
     }
@@ -344,6 +377,18 @@ impl InvocationStatus {
             _ => None,
         }
     }
+
+    #[inline]
+    pub fn discriminant(&self) -> Option<InvocationStatusDiscriminants> {
+        match self {
+            InvocationStatus::Scheduled(_) => Some(InvocationStatusDiscriminants::Scheduled),
+            InvocationStatus::Inboxed(_) => Some(InvocationStatusDiscriminants::Inboxed),
+            InvocationStatus::Invoked(_) => Some(InvocationStatusDiscriminants::Invoked),
+            InvocationStatus::Suspended { .. } => Some(InvocationStatusDiscriminants::Suspended),
+            InvocationStatus::Completed(_) => Some(InvocationStatusDiscriminants::Completed),
+            InvocationStatus::Free => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,6 +426,10 @@ impl JournalMetadata {
     pub fn initialize(span_context: ServiceInvocationSpanContext) -> Self {
         Self::new(0, 0, span_context)
     }
+
+    pub fn empty() -> Self {
+        Self::initialize(ServiceInvocationSpanContext::empty())
+    }
 }
 
 /// This is similar to [ServiceInvocation].
@@ -399,8 +448,13 @@ pub struct PreFlightInvocationMetadata {
     pub headers: Vec<Header>,
     /// Time when the request should be executed
     pub execution_time: Option<MillisSinceEpoch>,
+
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_duration: Duration,
+
+    /// If zero, the journal will not be retained.
+    pub journal_retention_duration: Duration,
+
     pub idempotency_key: Option<ByteString>,
 }
 
@@ -428,9 +482,8 @@ impl PreFlightInvocationMetadata {
             span_context: service_invocation.span_context,
             headers: service_invocation.headers,
             execution_time: service_invocation.execution_time,
-            completion_retention_duration: service_invocation
-                .completion_retention_duration
-                .unwrap_or_default(),
+            completion_retention_duration: service_invocation.completion_retention_duration,
+            journal_retention_duration: service_invocation.journal_retention_duration,
             idempotency_key: service_invocation.idempotency_key,
         }
     }
@@ -541,8 +594,15 @@ pub struct InFlightInvocationMetadata {
     pub response_sinks: HashSet<ServiceInvocationResponseSink>,
     pub timestamps: StatusTimestamps,
     pub source: Source,
+    /// For invocations that were originally scheduled, retains the time when the request was originally scheduled to execute
+    pub execution_time: Option<MillisSinceEpoch>,
+
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_duration: Duration,
+
+    /// If zero, the journal will not be retained.
+    pub journal_retention_duration: Duration,
+
     pub idempotency_key: Option<ByteString>,
     // TODO remove this when we remove protocol <= v3
     pub hotfix_apply_cancellation_after_deployment_is_pinned: bool,
@@ -568,8 +628,11 @@ impl InFlightInvocationMetadata {
                 response_sinks: pre_flight_invocation_metadata.response_sinks,
                 timestamps: pre_flight_invocation_metadata.timestamps,
                 source: pre_flight_invocation_metadata.source,
+                execution_time: pre_flight_invocation_metadata.execution_time,
                 completion_retention_duration: pre_flight_invocation_metadata
                     .completion_retention_duration,
+                journal_retention_duration: pre_flight_invocation_metadata
+                    .journal_retention_duration,
                 idempotency_key: pre_flight_invocation_metadata.idempotency_key,
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 current_invocation_epoch: 0,
@@ -601,17 +664,30 @@ impl InFlightInvocationMetadata {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletedInvocation {
     pub invocation_target: InvocationTarget,
-    pub span_context: ServiceInvocationSpanContext,
     pub source: Source,
+    /// For invocations that were originally scheduled, retains the time when the request was originally scheduled to execute
+    pub execution_time: Option<MillisSinceEpoch>,
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
     pub response_result: ResponseResult,
+
     pub completion_retention_duration: Duration,
+    pub journal_retention_duration: Duration,
+
+    pub journal_metadata: JournalMetadata,
+    pub pinned_deployment: Option<PinnedDeployment>,
+}
+
+#[derive(PartialEq, Eq)]
+pub enum JournalRetentionPolicy {
+    Retain,
+    Drop,
 }
 
 impl CompletedInvocation {
     pub fn from_in_flight_invocation_metadata(
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
+        journal_retention_policy: JournalRetentionPolicy,
         response_result: ResponseResult,
     ) -> Self {
         in_flight_invocation_metadata
@@ -620,13 +696,20 @@ impl CompletedInvocation {
 
         Self {
             invocation_target: in_flight_invocation_metadata.invocation_target,
-            span_context: in_flight_invocation_metadata.journal_metadata.span_context,
             source: in_flight_invocation_metadata.source,
+            execution_time: in_flight_invocation_metadata.execution_time,
             idempotency_key: in_flight_invocation_metadata.idempotency_key,
             timestamps: in_flight_invocation_metadata.timestamps,
             response_result,
             completion_retention_duration: in_flight_invocation_metadata
                 .completion_retention_duration,
+            journal_retention_duration: in_flight_invocation_metadata.journal_retention_duration,
+            journal_metadata: if journal_retention_policy == JournalRetentionPolicy::Retain {
+                in_flight_invocation_metadata.journal_metadata
+            } else {
+                JournalMetadata::empty()
+            },
+            pinned_deployment: in_flight_invocation_metadata.pinned_deployment,
         }
     }
 
@@ -698,7 +781,9 @@ mod test_util {
                 response_sinks: HashSet::new(),
                 timestamps: StatusTimestamps::now(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                execution_time: None,
                 completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
                 idempotency_key: None,
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 current_invocation_epoch: 0,
@@ -720,12 +805,15 @@ mod test_util {
                     "mock",
                     VirtualObjectHandlerType::Exclusive,
                 ),
-                span_context: ServiceInvocationSpanContext::default(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                execution_time: None,
                 idempotency_key: None,
                 timestamps,
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
+                journal_retention_duration: Duration::ZERO,
+                journal_metadata: JournalMetadata::empty(),
+                pinned_deployment: None,
             }
         }
 
@@ -737,12 +825,15 @@ mod test_util {
                     "mock",
                     VirtualObjectHandlerType::Exclusive,
                 ),
-                span_context: ServiceInvocationSpanContext::default(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                execution_time: None,
                 idempotency_key: None,
                 timestamps: StatusTimestamps::now(),
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
+                journal_metadata: JournalMetadata::empty(),
+                journal_retention_duration: Duration::ZERO,
+                pinned_deployment: None,
             }
         }
     }
