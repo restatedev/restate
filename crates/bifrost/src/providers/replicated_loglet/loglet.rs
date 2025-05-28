@@ -186,50 +186,46 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
         if latest_tail.is_sealed() {
             return Ok(latest_tail);
         }
-        let find_tail_opts = if self.sequencer.maybe_sealed() {
-            // auto-force seal check if we have reasons to believe that it might be sealing
-            FindTailFlags::ForceSealCheck
-        } else {
-            find_tail_opts
-        };
 
         match self.sequencer {
             SequencerAccess::Local { ref handle } => {
-                if find_tail_opts == FindTailFlags::ForceSealCheck {
-                    if self.sequencer.maybe_sealed() {
-                        // let's fire a seal to ensure this seal is complete.
-                        self.seal().await?;
-                    } else {
-                        // We might have been sealed by external node and the sequencer is unaware. In this
-                        // case, we run a check seal task to determine if we suspect that sealing is
-                        // happening.
-                        let result = CheckSealTask::run(
-                            &self.my_params,
-                            handle.sequencer_state().remote_log_servers(),
-                            &self.known_global_tail,
-                            &self.networking,
-                        )
-                        .await?;
-                        // things might have changed during this time
-                        if self.known_global_tail.get().is_sealed() {
-                            return Ok(*self.known_global_tail.get());
+                // keep an eye on the seal status if we have reasons to believe that an in-flight
+                // seal is happening.
+                if find_tail_opts == FindTailFlags::ForceSealCheck || self.sequencer.maybe_sealed()
+                {
+                    // We might have been sealed by external node and the sequencer is unaware. In this
+                    // case, we run a check seal task to determine if we suspect that sealing is
+                    // happening.
+                    let result = CheckSealTask::run(
+                        &self.my_params,
+                        handle.sequencer_state().remote_log_servers(),
+                        &self.known_global_tail,
+                        &self.networking,
+                    )
+                    .await?;
+                    // things might have changed during this time
+                    if self.known_global_tail.get().is_sealed() {
+                        return Ok(*self.known_global_tail.get());
+                    }
+                    match result {
+                        CheckSealOutcome::Unknown {
+                            is_partially_sealed: true,
                         }
-                        match result {
-                            CheckSealOutcome::Sealing => {
-                                // We are likely to be sealing...
-                                // let's fire a seal to ensure this seal is complete.
-                                self.seal().await?;
-                            }
-                            CheckSealOutcome::FullySealed => {
-                                // already fully sealed, just make sure the sequencer is drained.
-                                handle.drain().await;
-                                // note that we can only do that if we are the sequencer because
-                                // our known_global_tail is authoritative. We have no doubt about
-                                // whether the tail needs to be repaired or not.
-                                self.known_global_tail.notify_seal();
-                            }
-                            _ => {}
+                        | CheckSealOutcome::Open {
+                            is_partially_sealed: true,
+                        } => {
+                            // We are still open, but we might in the middle on in-flight seal.
+                            self.sequencer.mark_as_maybe_sealed();
                         }
+                        CheckSealOutcome::Sealed => {
+                            // already fully sealed, just make sure the sequencer is drained.
+                            handle.drain().await;
+                            // note that we can only do that if we are the sequencer because
+                            // our known_global_tail is authoritative. We have no doubt about
+                            // whether the tail needs to be repaired or not.
+                            self.known_global_tail.notify_seal();
+                        }
+                        _ => {}
                     }
                 }
                 return Ok(*self.known_global_tail.get());
