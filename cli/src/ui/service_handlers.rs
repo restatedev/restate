@@ -14,7 +14,9 @@ use restate_cli_util::ui::console::{Icon, StyledTable};
 use restate_types::invocation::ServiceType;
 use restate_types::schema::service::HandlerMetadata;
 
-pub fn create_service_handlers_table(handlers: &[HandlerMetadata]) -> Table {
+pub fn create_service_handlers_table<'a>(
+    handlers: impl Iterator<Item = &'a HandlerMetadata>,
+) -> Table {
     let mut table = Table::new_styled();
     table.set_styled_header(vec!["HANDLER", "INPUT", "OUTPUT"]);
 
@@ -28,12 +30,11 @@ pub fn create_service_handlers_table(handlers: &[HandlerMetadata]) -> Table {
     table
 }
 
-pub fn create_service_handlers_table_diff(
-    old_service_handlers: &[HandlerMetadata],
-    new_service_handlers: &[HandlerMetadata],
+pub fn create_service_handlers_table_diff<'a>(
+    old_service_handlers: impl Iterator<Item = &'a HandlerMetadata>,
+    new_service_handlers: impl Iterator<Item = &'a HandlerMetadata>,
 ) -> Table {
     let mut old_service_handlers = old_service_handlers
-        .iter()
         .map(|m| (m.name.clone(), m))
         .collect::<std::collections::HashMap<_, _>>();
 

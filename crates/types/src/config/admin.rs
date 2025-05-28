@@ -111,6 +111,10 @@ pub struct AdminOptions {
 
     #[cfg(any(test, feature = "test-util"))]
     pub disable_cluster_controller: bool,
+
+    #[serde_as(as = "Option<restate_serde_util::DurationString>")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub experimental_feature_force_journal_retention: Option<Duration>,
 }
 
 impl AdminOptions {
@@ -182,6 +186,7 @@ impl Default for AdminOptions {
             disable_cluster_controller: false,
             disable_web_ui: false,
             log_tail_update_interval: Duration::from_secs(5 * 60).into(),
+            experimental_feature_force_journal_retention: None,
         }
     }
 }
@@ -230,6 +235,8 @@ impl From<AdminOptionsShadow> for AdminOptions {
             disable_web_ui: value.disable_web_ui,
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: value.disable_cluster_controller,
+            experimental_feature_force_journal_retention: value
+                .experimental_feature_force_journal_retention,
         }
     }
 }
@@ -274,6 +281,9 @@ struct AdminOptionsShadow {
 
     #[cfg(any(test, feature = "test-util"))]
     disable_cluster_controller: bool,
+
+    #[serde_as(as = "Option<restate_serde_util::DurationString>")]
+    pub experimental_feature_force_journal_retention: Option<Duration>,
 }
 
 struct PartitionReplicationFromReplicationProperty;

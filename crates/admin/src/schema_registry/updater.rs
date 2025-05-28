@@ -33,7 +33,40 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::error::Error;
+use std::ops::Not;
+use std::time::Duration;
 use tracing::{debug, info, warn};
+
+/// Behavior when a handler is removed during service update
+enum RemovedHandlerBehavior {
+    /// Fail with an error when a handler is removed
+    Fail,
+    /// Log a warning but allow the removal
+    Warn,
+}
+
+/// Behavior when service type changes during update
+enum ServiceTypeMismatchBehavior {
+    /// Fail with an error when service type changes
+    Fail,
+    /// Log a warning but allow the type change
+    Warn,
+}
+
+/// Behavior for service level settings during update
+enum ServiceLevelSettingsBehavior {
+    /// Preserve existing service level settings
+    Preserve,
+    /// Reset to defaults
+    #[allow(dead_code)]
+    UseDefaults,
+}
+
+impl ServiceLevelSettingsBehavior {
+    fn preserve(&self) -> bool {
+        matches!(self, ServiceLevelSettingsBehavior::Preserve)
+    }
+}
 
 /// Responsible for updating the provided [`Schema`] with new
 /// schema information. It makes sure that the version of schema information
@@ -96,7 +129,7 @@ impl SchemaUpdater {
                     ));
                 }
 
-                for service in &existing_deployment.services {
+                for service in existing_deployment.services.values() {
                     // If a service is not available anymore in the new deployment, we need to remove it
                     if !proposed_services.contains_key(&service.name) {
                         warn!(
@@ -123,117 +156,23 @@ impl SchemaUpdater {
 
         // Compute service schemas
         for (service_name, service) in proposed_services {
-            let service_type = ServiceType::from(service.ty);
-
-            // For the time being when updating we overwrite existing data
-            let service_schema = if let Some(existing_service) =
-                self.schema_information.services.get(service_name.as_ref())
-            {
-                let handlers = DiscoveredHandlerMetadata::compute_handlers(
-                    service
-                        .handlers
-                        .into_iter()
-                        .map(|h| {
-                            DiscoveredHandlerMetadata::from_schema(
-                                service_name.as_ref(),
-                                service_type,
-                                h,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                    existing_service.location.public,
-                );
-
-                let removed_handlers: Vec<String> = existing_service
-                    .handlers
-                    .keys()
-                    .filter(|name| !handlers.contains_key(*name))
-                    .map(|name| name.to_string())
-                    .collect();
-
-                if !removed_handlers.is_empty() {
-                    if force {
-                        warn!(
-                            restate.deployment.id = %deployment_id,
-                            restate.deployment.address = %deployment_metadata.address_display(),
-                            "Going to remove the following methods from service type {} due to a forced deployment update: {:?}.",
-                            service.name.as_str(),
-                            removed_handlers
-                        );
-                    } else {
-                        return Err(SchemaError::Service(ServiceError::RemovedHandlers(
-                            service_name,
-                            removed_handlers,
-                        )));
-                    }
-                }
-
-                if existing_service.ty != service_type {
-                    if force {
-                        warn!(
-                            restate.deployment.id = %deployment_id,
-                            restate.deployment.address = %deployment_metadata.address_display(),
-                            "Going to overwrite service type {} due to a forced deployment update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
-                            service_name,
-                            existing_service.ty,
-                            service_type
-                        );
-                    } else {
-                        return Err(SchemaError::Service(ServiceError::DifferentType(
-                            service_name,
-                        )));
-                    }
-                }
-
-                info!(
-                    rpc.service = %service_name,
-                    "Overwriting existing service schemas"
-                );
-                let mut service_schemas = existing_service.clone();
-                service_schemas.revision = existing_service.revision.wrapping_add(1);
-                service_schemas.ty = service_type;
-                service_schemas.handlers = handlers;
-                service_schemas.location.latest_deployment = deployment_id;
-                service_schemas.service_openapi_cache = Default::default();
-                service_schemas.documentation = service.documentation;
-                service_schemas.metadata = service.metadata;
-
-                service_schemas
-            } else {
-                ServiceSchemas {
-                    revision: 1,
-                    handlers: DiscoveredHandlerMetadata::compute_handlers(
-                        service
-                            .handlers
-                            .into_iter()
-                            .map(|h| {
-                                DiscoveredHandlerMetadata::from_schema(
-                                    service_name.as_ref(),
-                                    service_type,
-                                    h,
-                                )
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                        true,
-                    ),
-                    ty: service_type,
-                    location: ServiceLocation {
-                        latest_deployment: deployment_id,
-                        public: true,
-                    },
-                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                    workflow_completion_retention: if service_type == ServiceType::Workflow {
-                        Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
-                    } else {
-                        None
-                    },
-                    inactivity_timeout: None,
-                    abort_timeout: None,
-                    service_openapi_cache: Default::default(),
-                    documentation: service.documentation,
-                    metadata: service.metadata,
-                }
-            };
+            let service_schema = self.create_or_update_service_schemas(
+                &deployment_metadata,
+                deployment_id,
+                &service_name,
+                service,
+                if force {
+                    RemovedHandlerBehavior::Warn
+                } else {
+                    RemovedHandlerBehavior::Fail
+                },
+                if force {
+                    ServiceTypeMismatchBehavior::Warn
+                } else {
+                    ServiceTypeMismatchBehavior::Fail
+                },
+                ServiceLevelSettingsBehavior::Preserve,
+            )?;
 
             services_to_add.insert(service_name, service_schema);
         }
@@ -250,8 +189,8 @@ impl SchemaUpdater {
                 let metadata = schema.as_service_metadata(name.clone().into_inner());
                 self.schema_information
                     .services
-                    .insert(name.into_inner(), schema);
-                metadata
+                    .insert(name.clone().into_inner(), schema);
+                (name.into_inner(), metadata)
             })
             .collect();
 
@@ -305,7 +244,7 @@ impl SchemaUpdater {
 
         let mut services_to_remove = Vec::default();
 
-        for service in &existing_deployment.services {
+        for service in existing_deployment.services.values() {
             if !proposed_services.contains_key(&service.name) {
                 services_to_remove.push(service.name.clone());
             }
@@ -322,90 +261,15 @@ impl SchemaUpdater {
 
         // Compute service schemas
         for (service_name, service) in proposed_services {
-            let service_type = ServiceType::from(service.ty);
-            let service_schema = if let Some(existing_service) =
-                self.schema_information.services.get(service_name.as_ref())
-            {
-                let handlers = DiscoveredHandlerMetadata::compute_handlers(
-                    service
-                        .handlers
-                        .into_iter()
-                        .map(|h| {
-                            DiscoveredHandlerMetadata::from_schema(
-                                service_name.as_ref(),
-                                service_type,
-                                h,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                    existing_service.location.public,
-                );
-
-                let removed_handlers: Vec<String> = existing_service
-                    .handlers
-                    .keys()
-                    .filter(|name| !handlers.contains_key(*name))
-                    .map(|name| name.to_string())
-                    .collect();
-
-                if !removed_handlers.is_empty() {
-                    return Err(SchemaError::Service(ServiceError::RemovedHandlers(
-                        service_name,
-                        removed_handlers,
-                    )));
-                }
-
-                if existing_service.ty != service_type {
-                    return Err(SchemaError::Service(ServiceError::DifferentType(
-                        service_name,
-                    )));
-                }
-
-                let mut service_schemas = existing_service.clone();
-                service_schemas.revision = existing_service.revision.wrapping_add(1);
-                service_schemas.ty = service_type;
-                service_schemas.handlers = handlers;
-                service_schemas.location.latest_deployment = deployment_id;
-                service_schemas.service_openapi_cache = Default::default();
-                service_schemas.documentation = service.documentation;
-                service_schemas.metadata = service.metadata;
-
-                service_schemas
-            } else {
-                ServiceSchemas {
-                    revision: 1,
-                    handlers: DiscoveredHandlerMetadata::compute_handlers(
-                        service
-                            .handlers
-                            .into_iter()
-                            .map(|h| {
-                                DiscoveredHandlerMetadata::from_schema(
-                                    service_name.as_ref(),
-                                    service_type,
-                                    h,
-                                )
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                        true,
-                    ),
-                    ty: service_type,
-                    location: ServiceLocation {
-                        latest_deployment: deployment_id,
-                        public: true,
-                    },
-                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                    workflow_completion_retention: if service_type == ServiceType::Workflow {
-                        Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
-                    } else {
-                        None
-                    },
-                    inactivity_timeout: None,
-                    abort_timeout: None,
-                    service_openapi_cache: Default::default(),
-                    documentation: service.documentation,
-                    metadata: service.metadata,
-                }
-            };
+            let service_schema = self.create_or_update_service_schemas(
+                &deployment_metadata,
+                deployment_id,
+                &service_name,
+                service,
+                RemovedHandlerBehavior::Fail,
+                ServiceTypeMismatchBehavior::Fail,
+                ServiceLevelSettingsBehavior::Preserve,
+            )?;
 
             services_to_add.insert(service_name, service_schema);
         }
@@ -426,7 +290,7 @@ impl SchemaUpdater {
                         );
                         self.schema_information
                             .services
-                            .insert(name.into_inner(), schema);
+                            .insert(name.clone().into_inner(), schema);
                     },
                     Some(_) => {
                         debug!(
@@ -438,11 +302,11 @@ impl SchemaUpdater {
                         // we have a new service, it deserves a schema as normal
                         self.schema_information
                             .services
-                            .insert(name.into_inner(), schema);
+                            .insert(name.clone().into_inner(), schema);
                     }
                 }
 
-                metadata
+                (name.into_inner(), metadata)
             })
             .collect();
 
@@ -459,9 +323,212 @@ impl SchemaUpdater {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn create_or_update_service_schemas(
+        &self,
+        deployment_metadata: &DeploymentMetadata,
+        deployment_id: DeploymentId,
+        service_name: &ServiceName,
+        service: endpoint_manifest::Service,
+        removed_handler_behavior: RemovedHandlerBehavior,
+        service_type_mismatch_behavior: ServiceTypeMismatchBehavior,
+        service_level_settings_behavior: ServiceLevelSettingsBehavior,
+    ) -> Result<ServiceSchemas, SchemaError> {
+        let service_type = ServiceType::from(service.ty);
+
+        // For the time being when updating we overwrite existing data
+        let service_schema = if let Some(existing_service) =
+            self.schema_information.services.get(service_name.as_ref())
+        {
+            // Little problem here that can lead to some surprising stuff.
+            //
+            // When updating a service, and setting the service/handler options (e.g. the idempotency retention, private, etc)
+            // in the manifest, I override whatever was stored before. Makes sense.
+            //
+            // But when not setting these values, we keep whatever was configured before (either from manifest, or from Admin REST API).
+            // This makes little sense now that we have these settings in the manifest, but it preserves the old behavior.
+            // At some point we should "break" this behavior, and on service updates simply apply defaults when nothing is configured in the manifest,
+            // in order to favour people using annotations, rather than the clunky Admin REST API.
+            let public = service.private.map(bool::not).unwrap_or(
+                if service_level_settings_behavior.preserve() {
+                    existing_service.location.public
+                } else {
+                    true
+                },
+            );
+            let idempotency_retention = service.idempotency_retention_duration().or(
+                if service_level_settings_behavior.preserve() {
+                    existing_service.idempotency_retention
+                } else {
+                    // TODO(slinydeveloper) Remove this in Restate 1.5, no need for this defaulting anymore!
+                    Some(DEFAULT_IDEMPOTENCY_RETENTION)
+                },
+            );
+            let journal_retention = service.journal_retention_duration().or(
+                if service_level_settings_behavior.preserve() {
+                    existing_service.journal_retention
+                } else {
+                    None
+                },
+            );
+            let workflow_completion_retention = if service_level_settings_behavior.preserve() {
+                existing_service.workflow_completion_retention
+            } else if service_type == ServiceType::Workflow {
+                Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+            } else {
+                None
+            };
+            let inactivity_timeout = service.inactivity_timeout_duration().or(
+                if service_level_settings_behavior.preserve() {
+                    existing_service.inactivity_timeout
+                } else {
+                    None
+                },
+            );
+            let abort_timeout = service.abort_timeout_duration().or(
+                if service_level_settings_behavior.preserve() {
+                    existing_service.abort_timeout
+                } else {
+                    None
+                },
+            );
+
+            let handlers = DiscoveredHandlerMetadata::compute_handlers(
+                service
+                    .handlers
+                    .into_iter()
+                    .map(|h| {
+                        DiscoveredHandlerMetadata::from_schema(
+                            service_name.as_ref(),
+                            service_type,
+                            h,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                public,
+                idempotency_retention,
+                workflow_completion_retention,
+                journal_retention,
+            );
+
+            let removed_handlers: Vec<String> = existing_service
+                .handlers
+                .keys()
+                .filter(|name| !handlers.contains_key(*name))
+                .map(|name| name.to_string())
+                .collect();
+
+            if !removed_handlers.is_empty() {
+                if matches!(removed_handler_behavior, RemovedHandlerBehavior::Fail) {
+                    return Err(SchemaError::Service(ServiceError::RemovedHandlers(
+                        service_name.clone(),
+                        removed_handlers,
+                    )));
+                } else {
+                    warn!(
+                        restate.deployment.id = %deployment_id,
+                        restate.deployment.address = %deployment_metadata.address_display(),
+                        "Going to remove the following methods from service type {} due to a forced deployment update: {:?}.",
+                        service.name.as_str(),
+                        removed_handlers
+                    );
+                }
+            }
+
+            if existing_service.ty != service_type {
+                if matches!(
+                    service_type_mismatch_behavior,
+                    ServiceTypeMismatchBehavior::Fail
+                ) {
+                    return Err(SchemaError::Service(ServiceError::DifferentType(
+                        service_name.clone(),
+                    )));
+                } else {
+                    warn!(
+                        restate.deployment.id = %deployment_id,
+                        restate.deployment.address = %deployment_metadata.address_display(),
+                        "Going to overwrite service type {} due to a forced deployment update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
+                        service_name,
+                        existing_service.ty,
+                        service_type
+                    );
+                }
+            }
+
+            info!(
+                rpc.service = %service_name,
+                "Overwriting existing service schemas"
+            );
+            let mut service_schemas = existing_service.clone();
+            service_schemas.revision = existing_service.revision.wrapping_add(1);
+            service_schemas.ty = service_type;
+            service_schemas.handlers = handlers;
+            service_schemas.location.latest_deployment = deployment_id;
+            service_schemas.location.public = public;
+            service_schemas.service_openapi_cache = Default::default();
+            service_schemas.documentation = service.documentation;
+            service_schemas.metadata = service.metadata;
+            service_schemas.journal_retention = journal_retention;
+            service_schemas.workflow_completion_retention = workflow_completion_retention;
+            service_schemas.idempotency_retention = idempotency_retention;
+            service_schemas.inactivity_timeout = inactivity_timeout;
+            service_schemas.abort_timeout = abort_timeout;
+            service_schemas
+        } else {
+            let public = service.private.map(bool::not).unwrap_or(true);
+            let idempotency_retention = service
+                .idempotency_retention_duration()
+                // TODO(slinydeveloper) Remove this in Restate 1.5, no need for this defaulting anymore!
+                .or(Some(DEFAULT_IDEMPOTENCY_RETENTION));
+            let journal_retention = service.journal_retention_duration();
+            let workflow_completion_retention = if service_type == ServiceType::Workflow {
+                Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+            } else {
+                None
+            };
+            let inactivity_timeout = service.inactivity_timeout_duration();
+            let abort_timeout = service.abort_timeout_duration();
+
+            ServiceSchemas {
+                revision: 1,
+                handlers: DiscoveredHandlerMetadata::compute_handlers(
+                    service
+                        .handlers
+                        .into_iter()
+                        .map(|h| {
+                            DiscoveredHandlerMetadata::from_schema(
+                                service_name.as_ref(),
+                                service_type,
+                                h,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    public,
+                    idempotency_retention,
+                    workflow_completion_retention,
+                    journal_retention,
+                ),
+                ty: service_type,
+                location: ServiceLocation {
+                    latest_deployment: deployment_id,
+                    public,
+                },
+                idempotency_retention,
+                workflow_completion_retention,
+                journal_retention,
+                inactivity_timeout,
+                abort_timeout,
+                service_openapi_cache: Default::default(),
+                documentation: service.documentation,
+                metadata: service.metadata,
+            }
+        };
+        Ok(service_schema)
+    }
+
     pub fn remove_deployment(&mut self, deployment_id: DeploymentId) {
         if let Some(deployment) = self.schema_information.deployments.remove(&deployment_id) {
-            for service_metadata in deployment.services {
+            for (_, service_metadata) in deployment.services {
                 match self
                     .schema_information
                     .services
@@ -628,14 +695,19 @@ impl SchemaUpdater {
                         schemas.service_openapi_cache = Default::default();
                     }
                     ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
-                        schemas.idempotency_retention = new_idempotency_retention;
-                        for h in schemas.handlers.values_mut() {
-                            h.target_meta.idempotency_retention = new_idempotency_retention;
+                        schemas.idempotency_retention = Some(new_idempotency_retention);
+                        for h in schemas.handlers.values_mut().filter(|w| {
+                            // idempotency retention doesn't apply to workflow handlers
+                            w.target_meta.target_ty
+                                != InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                        }) {
+                            h.target_meta.completion_retention = new_idempotency_retention;
                         }
                     }
                     ModifyServiceChange::WorkflowCompletionRetention(
                         new_workflow_completion_retention,
                     ) => {
+                        // This applies only to workflow services
                         if schemas.ty != ServiceType::Workflow {
                             return Err(SchemaError::Service(
                                 ServiceError::CannotModifyRetentionTime(schemas.ty),
@@ -647,8 +719,7 @@ impl SchemaUpdater {
                             w.target_meta.target_ty
                                 == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
                         }) {
-                            h.target_meta.completion_retention =
-                                Some(new_workflow_completion_retention);
+                            h.target_meta.completion_retention = new_workflow_completion_retention;
                         }
                     }
                     ModifyServiceChange::InactivityTimeout(inactivity_timeout) => {
@@ -673,6 +744,11 @@ struct DiscoveredHandlerMetadata {
     ty: InvocationTargetType,
     documentation: Option<String>,
     metadata: HashMap<String, String>,
+    journal_retention: Option<Duration>,
+    idempotency_retention: Option<Duration>,
+    workflow_completion_retention: Option<Duration>,
+    inactivity_timeout: Option<Duration>,
+    abort_timeout: Option<Duration>,
     input: InputRules,
     output: OutputRules,
 }
@@ -708,11 +784,37 @@ impl DiscoveredHandlerMetadata {
             }
         };
 
+        if handler.workflow_completion_retention.is_some()
+            && ty != InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            return Err(ServiceError::UnexpectedWorkflowCompletionRetention(
+                handler.name.as_str().to_owned(),
+            ));
+        }
+        if handler.idempotency_retention.is_some()
+            && ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            return Err(ServiceError::UnexpectedIdempotencyRetention(
+                handler.name.as_str().to_owned(),
+            ));
+        }
+
+        let journal_retention = handler.journal_retention_duration();
+        let idempotency_retention = handler.idempotency_retention_duration();
+        let workflow_completion_retention = handler.workflow_completion_retention_duration();
+        let inactivity_timeout = handler.inactivity_timeout_duration();
+        let abort_timeout = handler.abort_timeout_duration();
+
         Ok(Self {
             name: handler.name.to_string(),
             ty,
             documentation: handler.documentation,
             metadata: handler.metadata,
+            journal_retention,
+            idempotency_retention,
+            workflow_completion_retention,
+            inactivity_timeout,
+            abort_timeout,
             input: handler
                 .input
                 .map(|input_payload| {
@@ -829,27 +931,57 @@ impl DiscoveredHandlerMetadata {
     fn compute_handlers(
         handlers: Vec<DiscoveredHandlerMetadata>,
         public: bool,
+        service_level_idempotency_retention: Option<Duration>,
+        service_level_workflow_completion_retention: Option<Duration>,
+        service_level_journal_retention: Option<Duration>,
     ) -> HashMap<String, HandlerSchemas> {
         handlers
             .into_iter()
             .map(|handler| {
+                // Defaulting and overriding
+                let completion_retention = if handler.ty
+                    == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                {
+                    handler
+                        .workflow_completion_retention
+                        .or(service_level_workflow_completion_retention)
+                        .unwrap_or(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+                } else {
+                    handler
+                        .idempotency_retention
+                        .or(service_level_idempotency_retention)
+                        .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION)
+                };
+                // TODO enable this in Restate 1.4
+                // let journal_retention =
+                //     handler.journal_retention.or(service_level_journal_retention).unwrap_or(
+                //      if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
+                //         DEFAULT_WORKFLOW_COMPLETION_RETENTION
+                //      } else {
+                //         Duration::ZERO
+                //      }
+                //     );
+                let journal_retention = handler
+                    .journal_retention
+                    .or(service_level_journal_retention)
+                    .unwrap_or(Duration::ZERO);
+
                 (
                     handler.name,
                     HandlerSchemas {
                         target_meta: InvocationTargetMetadata {
                             public,
-                            idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                            completion_retention: if handler.ty
-                                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-                            {
-                                Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
-                            } else {
-                                None
-                            },
+                            completion_retention,
+                            journal_retention,
                             target_ty: handler.ty,
                             input_rules: handler.input,
                             output_rules: handler.output,
                         },
+                        idempotency_retention: handler.idempotency_retention,
+                        workflow_completion_retention: handler.workflow_completion_retention,
+                        journal_retention: handler.journal_retention,
+                        inactivity_timeout: handler.inactivity_timeout,
+                        abort_timeout: handler.abort_timeout,
                         documentation: handler.documentation,
                         metadata: handler.metadata,
                     },
@@ -886,55 +1018,90 @@ mod tests {
     use test_log::test;
 
     const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
+    const GREET_HANDLER_NAME: &str = "greet";
     const ANOTHER_GREETER_SERVICE_NAME: &str = "greeter.AnotherGreeter";
+
+    fn greeter_service_greet_handler() -> endpoint_manifest::Handler {
+        endpoint_manifest::Handler {
+            abort_timeout: None,
+            documentation: None,
+            idempotency_retention: None,
+            name: GREET_HANDLER_NAME.parse().unwrap(),
+            ty: None,
+            input: None,
+            output: None,
+            metadata: Default::default(),
+            inactivity_timeout: None,
+            journal_retention: None,
+            workflow_completion_retention: None,
+        }
+    }
 
     fn greeter_service() -> endpoint_manifest::Service {
         endpoint_manifest::Service {
+            abort_timeout: None,
             documentation: None,
+            private: None,
             ty: endpoint_manifest::ServiceType::Service,
             name: GREETER_SERVICE_NAME.parse().unwrap(),
-            handlers: vec![endpoint_manifest::Handler {
-                documentation: None,
-                name: "greet".parse().unwrap(),
-                ty: None,
-                input: None,
-                output: None,
-                metadata: Default::default(),
-            }],
+            handlers: vec![greeter_service_greet_handler()],
+            idempotency_retention: None,
+            inactivity_timeout: None,
+            journal_retention: None,
             metadata: Default::default(),
         }
     }
 
     fn greeter_virtual_object() -> endpoint_manifest::Service {
         endpoint_manifest::Service {
+            abort_timeout: None,
             documentation: None,
+            private: None,
             ty: endpoint_manifest::ServiceType::VirtualObject,
             name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![endpoint_manifest::Handler {
+                abort_timeout: None,
                 documentation: None,
+                idempotency_retention: None,
                 name: "greet".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
                 metadata: Default::default(),
+                inactivity_timeout: None,
+                journal_retention: None,
+                workflow_completion_retention: None,
             }],
+            idempotency_retention: None,
+            inactivity_timeout: None,
+            journal_retention: None,
             metadata: Default::default(),
         }
     }
 
     fn another_greeter_service() -> endpoint_manifest::Service {
         endpoint_manifest::Service {
+            abort_timeout: None,
             documentation: None,
+            private: None,
             ty: endpoint_manifest::ServiceType::Service,
             name: ANOTHER_GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![endpoint_manifest::Handler {
+                abort_timeout: None,
                 documentation: None,
+                idempotency_retention: None,
                 name: "another_greeter".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
                 metadata: Default::default(),
+                inactivity_timeout: None,
+                journal_retention: None,
+                workflow_completion_retention: None,
             }],
+            idempotency_retention: None,
+            inactivity_timeout: None,
+            journal_retention: None,
             metadata: Default::default(),
         }
     }
@@ -1187,44 +1354,69 @@ mod tests {
 
         fn greeter_v1_service() -> endpoint_manifest::Service {
             endpoint_manifest::Service {
+                abort_timeout: None,
                 documentation: None,
+                private: None,
                 ty: endpoint_manifest::ServiceType::Service,
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![
                     endpoint_manifest::Handler {
+                        abort_timeout: None,
                         documentation: None,
+                        idempotency_retention: None,
                         name: "greet".parse().unwrap(),
                         ty: None,
                         input: None,
                         output: None,
                         metadata: Default::default(),
+                        inactivity_timeout: None,
+                        journal_retention: None,
+                        workflow_completion_retention: None,
                     },
                     endpoint_manifest::Handler {
+                        abort_timeout: None,
                         documentation: None,
+                        idempotency_retention: None,
                         name: "doSomething".parse().unwrap(),
                         ty: None,
                         input: None,
                         output: None,
                         metadata: Default::default(),
+                        inactivity_timeout: None,
+                        journal_retention: None,
+                        workflow_completion_retention: None,
                     },
                 ],
+                idempotency_retention: None,
+                inactivity_timeout: None,
+                journal_retention: None,
                 metadata: Default::default(),
             }
         }
 
         fn greeter_v2_service() -> endpoint_manifest::Service {
             endpoint_manifest::Service {
+                abort_timeout: None,
                 documentation: None,
+                private: None,
                 ty: endpoint_manifest::ServiceType::Service,
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![endpoint_manifest::Handler {
+                    abort_timeout: None,
                     documentation: None,
+                    idempotency_retention: None,
                     name: "greet".parse().unwrap(),
                     ty: None,
                     input: None,
                     output: None,
                     metadata: Default::default(),
+                    inactivity_timeout: None,
+                    journal_retention: None,
+                    workflow_completion_retention: None,
                 }],
+                idempotency_retention: None,
+                inactivity_timeout: None,
+                journal_retention: None,
                 metadata: Default::default(),
             }
         }
@@ -1511,12 +1703,17 @@ mod tests {
         updated_greeter_service
             .handlers
             .push(endpoint_manifest::Handler {
+                abort_timeout: None,
                 documentation: None,
+                idempotency_retention: None,
                 name: "greetAgain".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
                 metadata: Default::default(),
+                inactivity_timeout: None,
+                journal_retention: None,
+                workflow_completion_retention: None,
             });
 
         updater
@@ -1542,8 +1739,7 @@ mod tests {
         assert_eq!(
             updated_deployment_1
                 .services
-                .iter()
-                .find(|svc| svc.name == GREETER_SERVICE_NAME)
+                .get(GREETER_SERVICE_NAME)
                 .unwrap()
                 .handlers
                 .len(),
@@ -1578,12 +1774,17 @@ mod tests {
         updated_greeter_service
             .handlers
             .push(endpoint_manifest::Handler {
+                abort_timeout: None,
                 documentation: None,
+                idempotency_retention: None,
                 name: "greetAgain".parse().unwrap(),
                 ty: None,
                 input: None,
                 output: None,
                 metadata: Default::default(),
+                inactivity_timeout: None,
+                journal_retention: None,
+                workflow_completion_retention: None,
             });
 
         updater
@@ -1614,8 +1815,7 @@ mod tests {
         assert_eq!(
             updated_deployment_1
                 .services
-                .iter()
-                .find(|svc| svc.name == GREETER_SERVICE_NAME)
+                .get(GREETER_SERVICE_NAME)
                 .unwrap()
                 .handlers
                 .len(),
@@ -1625,8 +1825,7 @@ mod tests {
         assert_eq!(
             updated_deployment_2
                 .services
-                .iter()
-                .find(|svc| svc.name == GREETER_SERVICE_NAME)
+                .get(GREETER_SERVICE_NAME)
                 .unwrap()
                 .handlers
                 .len(),
@@ -1766,5 +1965,300 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    mod endpoint_manifest_options_propagation {
+        use super::*;
+
+        use googletest::prelude::*;
+        use restate_types::config::Configuration;
+        use restate_types::invocation::InvocationRetention;
+        use restate_types::schema::service::InvocationAttemptTimeouts;
+        use std::num::NonZeroU64;
+        use std::time::Duration;
+        use test_log::test;
+
+        fn init_discover_and_resolve_target(
+            svc: endpoint_manifest::Service,
+            service_name: &str,
+            handler_name: &str,
+        ) -> InvocationTargetMetadata {
+            let schema_information = Schema::default();
+            let mut updater = SchemaUpdater::new(schema_information);
+
+            let mut deployment = Deployment::mock();
+            deployment.id = updater
+                .add_deployment(deployment.metadata.clone(), vec![svc], false)
+                .unwrap();
+
+            let schema = updater.into_inner();
+
+            schema.assert_service_revision(service_name, 1);
+            schema.assert_service_deployment(service_name, deployment.id);
+
+            schema.assert_service_handler(service_name, handler_name)
+        }
+
+        #[test]
+        fn private_service() {
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    private: Some(true),
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(target.public, eq(false));
+        }
+
+        #[test]
+        fn service_level_journal_retention() {
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(60),
+                    journal_retention: Duration::from_secs(60),
+                })
+            )
+        }
+
+        #[test]
+        fn handler_level_journal_retention() {
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    handlers: vec![endpoint_manifest::Handler {
+                        journal_retention: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        ..greeter_service_greet_handler()
+                    }],
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(30),
+                    journal_retention: Duration::from_secs(30),
+                })
+            )
+        }
+
+        #[test]
+        fn handler_level_journal_retention_overrides_the_service_level_journal_retention() {
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    handlers: vec![endpoint_manifest::Handler {
+                        journal_retention: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        ..greeter_service_greet_handler()
+                    }],
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(30),
+                    journal_retention: Duration::from_secs(30),
+                })
+            )
+        }
+
+        #[test]
+        fn service_level_journal_retention_with_idempotency_key() {
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    idempotency_retention: Some(NonZeroU64::new(120 * 1000).unwrap()),
+                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                target.compute_retention(true),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(120),
+                    journal_retention: Duration::from_secs(60),
+                })
+            )
+        }
+
+        #[test]
+        fn handler_level_journal_retention_with_idempotency_key() {
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    idempotency_retention: Some(NonZeroU64::new(120 * 1000).unwrap()),
+                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    handlers: vec![endpoint_manifest::Handler {
+                        journal_retention: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        ..greeter_service_greet_handler()
+                    }],
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                target.compute_retention(true),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(120),
+                    journal_retention: Duration::from_secs(30),
+                })
+            )
+        }
+
+        #[test]
+        fn handler_level_journal_retention_overrides_the_service_level_journal_retention_with_idempotency_key()
+         {
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    handlers: vec![endpoint_manifest::Handler {
+                        idempotency_retention: Some(NonZeroU64::new(120 * 1000).unwrap()),
+                        journal_retention: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        ..greeter_service_greet_handler()
+                    }],
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                target.compute_retention(true),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(120),
+                    journal_retention: Duration::from_secs(30),
+                })
+            )
+        }
+
+        #[test]
+        fn journal_retention_greater_than_completion_retention() {
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    journal_retention: Some(NonZeroU64::new(120 * 1000).unwrap()),
+                    handlers: vec![endpoint_manifest::Handler {
+                        idempotency_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                        ..greeter_service_greet_handler()
+                    }],
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                target.compute_retention(true),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(60),
+                    journal_retention: Duration::from_secs(60),
+                })
+            )
+        }
+
+        #[test]
+        fn journal_retention_global_override_is_respected() {
+            let mut config = Configuration::default();
+            config.admin.experimental_feature_force_journal_retention =
+                Some(Duration::from_secs(300));
+            restate_types::config::set_current_config(config);
+
+            let target = init_discover_and_resolve_target(
+                greeter_service(),
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(300),
+                    journal_retention: Duration::from_secs(300),
+                })
+            )
+        }
+
+        fn init_discover_and_resolve_timeouts(
+            svc: endpoint_manifest::Service,
+            service_name: &str,
+            handler_name: &str,
+        ) -> InvocationAttemptTimeouts {
+            let schema_information = Schema::default();
+            let mut updater = SchemaUpdater::new(schema_information);
+
+            let mut deployment = Deployment::mock();
+            deployment.id = updater
+                .add_deployment(deployment.metadata.clone(), vec![svc], false)
+                .unwrap();
+
+            let schema = updater.into_inner();
+
+            schema.assert_service_revision(service_name, 1);
+            schema.assert_service_deployment(service_name, deployment.id);
+
+            schema
+                .resolve_invocation_attempt_timeouts(&deployment.id, service_name, handler_name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Invocation target for deployment {} and target {}/{} must exists",
+                        deployment.id, service_name, handler_name
+                    )
+                })
+        }
+
+        #[test]
+        fn service_level_timeouts() {
+            let timeouts = init_discover_and_resolve_timeouts(
+                endpoint_manifest::Service {
+                    abort_timeout: Some(NonZeroU64::new(120 * 1000).unwrap()),
+                    inactivity_timeout: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                timeouts,
+                eq(InvocationAttemptTimeouts {
+                    abort_timeout: Some(Duration::from_secs(120)),
+                    inactivity_timeout: Some(Duration::from_secs(60)),
+                })
+            )
+        }
+
+        #[test]
+        fn service_level_timeouts_with_handler_overrides() {
+            let timeouts = init_discover_and_resolve_timeouts(
+                endpoint_manifest::Service {
+                    abort_timeout: Some(NonZeroU64::new(120 * 1000).unwrap()),
+                    inactivity_timeout: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    handlers: vec![endpoint_manifest::Handler {
+                        inactivity_timeout: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        ..greeter_service_greet_handler()
+                    }],
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                timeouts,
+                eq(InvocationAttemptTimeouts {
+                    abort_timeout: Some(Duration::from_secs(120)),
+                    inactivity_timeout: Some(Duration::from_secs(30)),
+                })
+            )
+        }
     }
 }

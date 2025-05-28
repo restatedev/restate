@@ -25,11 +25,11 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
 use serde_with::{FromInto, serde_as};
-use std::fmt;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::time::Duration;
+use std::{cmp, fmt};
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry::trace::TraceId;
@@ -278,6 +278,31 @@ impl fmt::Display for InvocationTarget {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvocationRetention {
+    /// Retention duration of the completed status. If zero, the completed status is not retained, and invocation won't be deduplicated.
+    pub completion_retention: Duration,
+    /// Retention duration of the journal. If zero, the journal is not retained.
+    pub journal_retention: Duration,
+}
+
+impl InvocationRetention {
+    pub fn none() -> Self {
+        Self {
+            completion_retention: Duration::ZERO,
+            journal_retention: Duration::ZERO,
+        }
+    }
+}
+
+impl Default for InvocationRetention {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+#[serde_as]
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationRequestHeader {
     pub id: InvocationId,
@@ -291,8 +316,16 @@ pub struct InvocationRequestHeader {
     /// Time when the request should be executed. If none, it's executed immediately.
     pub execution_time: Option<MillisSinceEpoch>,
 
-    /// Retention duration of the completed status. If none, the completed status is not retained.
-    pub completion_retention_duration: Option<Duration>,
+    /// Retention duration of the completed status.
+    /// If zero, the completed status is not retained.
+    #[serde(default)]
+    #[serde_as(deserialize_as = "serde_with::DefaultOnNull")]
+    completion_retention_duration: Duration,
+    /// Retention duration of the journal.
+    /// If zero, the journal is not retained.
+    /// If `completion_retention_duration < journal_retention_duration`, then completion retention is used as journal retention.
+    #[serde(default, skip_serializing_if = "Duration::is_zero")]
+    journal_retention_duration: Duration,
 }
 
 impl InvocationRequestHeader {
@@ -304,7 +337,8 @@ impl InvocationRequestHeader {
             span_context: ServiceInvocationSpanContext::empty(),
             idempotency_key: None,
             execution_time: None,
-            completion_retention_duration: None,
+            completion_retention_duration: Duration::ZERO,
+            journal_retention_duration: Duration::ZERO,
         }
     }
 
@@ -316,9 +350,22 @@ impl InvocationRequestHeader {
         self.headers.extend(headers);
     }
 
+    pub fn with_retention(&mut self, invocation_retention: InvocationRetention) {
+        self.completion_retention_duration = invocation_retention.completion_retention;
+        self.journal_retention_duration = invocation_retention.journal_retention;
+    }
+
     /// Invocations are idempotent if they have an idempotency key specified or are of type workflow
     pub fn is_idempotent(&self) -> bool {
         self.idempotency_key.is_some() || matches!(self.target.service_ty(), ServiceType::Workflow)
+    }
+
+    pub fn completion_retention_duration(&self) -> Duration {
+        self.completion_retention_duration
+    }
+
+    pub fn journal_retention_duration(&self) -> Duration {
+        self.journal_retention_duration
     }
 }
 
@@ -365,16 +412,22 @@ pub struct ServiceInvocation {
     pub source: Source,
     pub span_context: ServiceInvocationSpanContext,
     pub headers: Vec<Header>,
+
     /// Time when the request should be executed
     pub execution_time: Option<MillisSinceEpoch>,
-    pub completion_retention_duration: Option<Duration>,
+
+    /// Retention duration of the completed status. If zero, the completed status is not retained, and invocation won't be deduplicated.
+    pub completion_retention_duration: Duration,
+    /// Retention duration of the journal. If zero, the journal is not retained. This should be smaller than `completion_retention_duration`.
+    pub journal_retention_duration: Duration,
+
     pub idempotency_key: Option<ByteString>,
 
     // Where to send the response, if any
     pub response_sink: Option<ServiceInvocationResponseSink>,
-    // Where to send the submit notification, if any.
-    //  The submit notification is sent back both when this invocation request attached to an existing invocation,
-    //  or when this request started a fresh invocation.
+    /// Where to send the submit notification, if any.
+    /// The submit notification is sent back both when this invocation request attached to an existing invocation,
+    /// or when this request started a fresh invocation.
     pub submit_notification_sink: Option<SubmitNotificationSink>,
 }
 
@@ -400,6 +453,10 @@ impl ServiceInvocation {
             headers: request.header.headers,
             execution_time: request.header.execution_time,
             completion_retention_duration: request.header.completion_retention_duration,
+            journal_retention_duration: cmp::min(
+                request.header.journal_retention_duration,
+                request.header.completion_retention_duration,
+            ),
             idempotency_key: request.header.idempotency_key,
             response_sink: None,
             submit_notification_sink: None,
@@ -420,7 +477,8 @@ impl ServiceInvocation {
             span_context: ServiceInvocationSpanContext::empty(),
             headers: vec![],
             execution_time: None,
-            completion_retention_duration: None,
+            completion_retention_duration: Duration::ZERO,
+            journal_retention_duration: Duration::ZERO,
             idempotency_key: None,
             submit_notification_sink: None,
         }
@@ -440,6 +498,11 @@ impl ServiceInvocation {
     pub fn is_idempotent(&self) -> bool {
         self.idempotency_key.is_some()
             || matches!(self.invocation_target.service_ty(), ServiceType::Workflow)
+    }
+
+    pub fn with_retention(&mut self, invocation_retention: InvocationRetention) {
+        self.completion_retention_duration = invocation_retention.completion_retention;
+        self.journal_retention_duration = invocation_retention.journal_retention;
     }
 }
 
@@ -1059,6 +1122,8 @@ mod serde_hacks {
         pub headers: Vec<Header>,
         pub execution_time: Option<MillisSinceEpoch>,
         pub completion_retention_duration: Option<Duration>,
+        #[serde(default, skip_serializing_if = "Duration::is_zero")]
+        pub journal_retention_duration: Duration,
         pub idempotency_key: Option<ByteString>,
         pub response_sink: Option<ServiceInvocationResponseSink>,
         pub submit_notification_sink: Option<SubmitNotificationSink>,
@@ -1087,6 +1152,7 @@ mod serde_hacks {
                 headers,
                 execution_time,
                 completion_retention_duration,
+                journal_retention_duration,
                 idempotency_key,
                 response_sink,
                 submit_notification_sink,
@@ -1100,7 +1166,8 @@ mod serde_hacks {
                 span_context,
                 headers,
                 execution_time,
-                completion_retention_duration,
+                completion_retention_duration: completion_retention_duration.unwrap_or_default(),
+                journal_retention_duration,
                 idempotency_key,
                 response_sink: response_sink.map(Into::into),
                 submit_notification_sink: submit_notification_sink.map(Into::into),
@@ -1127,6 +1194,7 @@ mod serde_hacks {
                 headers,
                 execution_time,
                 completion_retention_duration,
+                journal_retention_duration,
                 idempotency_key,
                 response_sink,
                 submit_notification_sink,
@@ -1145,7 +1213,8 @@ mod serde_hacks {
                 span_context,
                 headers,
                 execution_time,
-                completion_retention_duration,
+                completion_retention_duration: Some(completion_retention_duration),
+                journal_retention_duration,
                 idempotency_key,
                 response_sink: response_sink.map(Into::into),
                 submit_notification_sink: submit_notification_sink.map(Into::into),
@@ -1374,7 +1443,8 @@ mod mocks {
                 span_context: Default::default(),
                 headers: vec![],
                 execution_time: None,
-                completion_retention_duration: None,
+                completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
                 idempotency_key: None,
                 submit_notification_sink: None,
             }

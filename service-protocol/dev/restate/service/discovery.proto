@@ -21,4 +21,6 @@ enum ServiceDiscoveryProtocolVersion {
   V1 = 1;
   // add custom metadata and documentation for services/handlers
   V2 = 2;
+  // add options for private service, journal retention, idempotency retention, workflow completion retention, inactivity timeout, abort timeout
+  V3 = 3;
 }

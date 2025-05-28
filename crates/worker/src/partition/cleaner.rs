@@ -130,14 +130,15 @@ where
                 //  thus it will be cleaned up with the old timer.
                 continue;
             };
-            let Some(expiration_time) = SystemTime::from(completed_time)
+            let Some(status_expiration_time) = SystemTime::from(completed_time)
                 .checked_add(completed_invocation.completion_retention_duration)
             else {
                 // If sum overflow, then the cleanup time lies far enough in the future
                 continue;
             };
 
-            if SystemTime::now() >= expiration_time {
+            let now = SystemTime::now();
+            if now >= status_expiration_time {
                 restate_bifrost::append_to_bifrost(
                     bifrost,
                     Arc::new(Envelope {
@@ -152,8 +153,42 @@ where
                     }),
                 )
                 .await
-                .context("Cannot append to bifrost")?;
-            };
+                .context("Cannot append to bifrost purge invocation")?;
+                continue;
+            }
+
+            // We don't cleanup the status yet, let's check if there's a journal to cleanup
+            // When length != 0 it means that the purge journal feature was activated from the SDK side (through annotations and the new manifest),
+            // or from the relative experimental feature in the Admin API. In this case, the user opted-in this feature and it can't go back to 1.3
+            if completed_invocation.journal_metadata.length != 0 {
+                let Some(journal_expiration_time) = SystemTime::from(completed_time)
+                    .checked_add(completed_invocation.journal_retention_duration)
+                else {
+                    // If sum overflow, then the cleanup time lies far enough in the future
+                    continue;
+                };
+
+                if now >= journal_expiration_time {
+                    restate_bifrost::append_to_bifrost(
+                        bifrost,
+                        Arc::new(Envelope {
+                            header: Header {
+                                source: bifrost_envelope_source.clone(),
+                                dest: Destination::Processor {
+                                    partition_key: invocation_id.partition_key(),
+                                    dedup: None,
+                                },
+                            },
+                            command: Command::PurgeJournal(PurgeInvocationRequest {
+                                invocation_id,
+                            }),
+                        }),
+                    )
+                    .await
+                    .context("Cannot append to bifrost purge journal")?;
+                    continue;
+                }
+            }
         }
 
         Ok(())

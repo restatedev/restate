@@ -57,6 +57,7 @@ pub trait JournalTable: ReadOnlyJournalTable {
         related_completion_ids: &[CompletionId],
     ) -> impl Future<Output = Result<()>> + Send;
 
+    /// When length is available, it is suggested to provide it as it makes the delete more efficient.
     fn delete_journal(
         &mut self,
         invocation_id: InvocationId,

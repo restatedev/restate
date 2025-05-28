@@ -143,6 +143,7 @@ message InvocationStatusV2 {
   SpanContext span_context = 4;
   repeated ServiceInvocationResponseSink response_sinks = 7;
   Duration completion_retention_duration = 11;
+  Duration journal_retention_duration = 29;
 
   // Timestamps
   uint64 creation_time = 5;
@@ -328,9 +329,10 @@ message ServiceInvocation {
   Source source = 6;
   repeated Header headers = 7;
   uint64 execution_time = 8;
-  Duration completion_retention_time = 9;
+  Duration completion_retention_duration = 9;
   optional string idempotency_key = 10;
   SubmitNotificationSink submit_notification_sink = 11;
+  Duration journal_retention_duration = 12;
 }
 
 message StateMutation {
@@ -526,6 +528,7 @@ message Entry {
     InvocationTarget invocation_target = 2;
     SpanContext span_context = 3;
     Duration completion_retention_duration = 4;
+    Duration journal_retention_duration = 5;
   }
 
   enum EntryType {

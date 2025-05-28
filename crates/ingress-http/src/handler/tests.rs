@@ -395,8 +395,8 @@ async fn idempotency_key_parsing() {
                 Some(ByteString::from_static("123456"))
             );
             assert_eq!(
-                invocation_request.header.completion_retention_duration,
-                Some(Duration::from_secs(60 * 60 * 24))
+                invocation_request.header.completion_retention_duration(),
+                Duration::from_secs(60 * 60 * 24)
             );
 
             ready(Ok(InvocationOutput {
@@ -460,8 +460,8 @@ async fn idempotency_key_and_send() {
                 Some(ByteString::from_static("123456"))
             );
             assert_eq!(
-                invocation_request.header.completion_retention_duration,
-                Some(Duration::from_secs(60 * 60 * 24))
+                invocation_request.header.completion_retention_duration(),
+                Duration::from_secs(60 * 60 * 24)
             );
 
             ready(Ok(SubmittedInvocationNotification {
@@ -521,8 +521,8 @@ async fn idempotency_key_and_send_with_different_invocation_id() {
                 Some(ByteString::from_static("123456"))
             );
             assert_eq!(
-                invocation_request.header.completion_retention_duration,
-                Some(Duration::from_secs(60 * 60 * 24))
+                invocation_request.header.completion_retention_duration(),
+                Duration::from_secs(60 * 60 * 24)
             );
 
             ready(Ok(SubmittedInvocationNotification {

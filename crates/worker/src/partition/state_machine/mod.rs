@@ -33,7 +33,7 @@ use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempoten
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatusTable,
-    PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
+    JournalRetentionPolicy, PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_table::ReadOnlyJournalTable;
@@ -454,8 +454,20 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.on_terminate_invocation(invocation_termination).await
             }
             Command::PurgeInvocation(purge_invocation_request) => {
-                self.on_purge_invocation(purge_invocation_request.invocation_id)
-                    .await
+                lifecycle::OnPurgeCommand {
+                    invocation_id: purge_invocation_request.invocation_id,
+                }
+                .apply(self)
+                .await?;
+                Ok(())
+            }
+            Command::PurgeJournal(purge_invocation_request) => {
+                lifecycle::OnPurgeJournalCommand {
+                    invocation_id: purge_invocation_request.invocation_id,
+                }
+                .apply(self)
+                .await?;
+                Ok(())
             }
             Command::PatchState(mutation) => self.handle_external_state_mutation(mutation).await,
             Command::AnnounceLeader(_) => {
@@ -1915,7 +1927,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
-        let completion_retention_time = invocation_metadata.completion_retention_duration;
+        let completion_retention = invocation_metadata.completion_retention_duration;
+        let journal_retention = invocation_metadata.journal_retention_duration;
 
         let should_remove_journal_table_v2 = invocation_metadata
             .pinned_deployment
@@ -1926,7 +1939,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
-        if !invocation_metadata.response_sinks.is_empty() || !completion_retention_time.is_zero() {
+        if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
             let response_result = if let Some(response_result) = response_result_override {
                 response_result
             } else if let Some(response_result) = self
@@ -1972,9 +1985,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             );
 
             // Store the completed status, if needed
-            if !completion_retention_time.is_zero() {
+            if !completion_retention.is_zero() {
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
+                    if journal_retention.is_zero() {
+                        JournalRetentionPolicy::Drop
+                    } else {
+                        JournalRetentionPolicy::Retain
+                    },
                     response_result,
                 );
                 self.do_store_completed_invocation(invocation_id, completed_invocation)
@@ -1993,16 +2011,18 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
 
         // If no retention, immediately cleanup the invocation status
-        if completion_retention_time.is_zero() {
+        if completion_retention.is_zero() {
             self.do_free_invocation(invocation_id).await?;
         }
 
-        self.do_drop_journal(
-            invocation_id,
-            journal_length,
-            should_remove_journal_table_v2,
-        )
-        .await?;
+        if journal_retention.is_zero() {
+            self.do_drop_journal(
+                invocation_id,
+                journal_length,
+                should_remove_journal_table_v2,
+            )
+            .await?;
+        }
 
         // Consume inbox and move on
         self.consume_inbox(&invocation_target).await?;
@@ -2582,7 +2602,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                         span_context: span_context.clone(),
                         headers: request.headers,
                         execution_time: None,
-                        completion_retention_duration: *completion_retention_time,
+                        completion_retention_duration: (*completion_retention_time)
+                            .unwrap_or_default(),
+                        journal_retention_duration: Default::default(),
                         idempotency_key: request.idempotency_key,
                         submit_notification_sink: None,
                     };
@@ -2647,7 +2669,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                     span_context: span_context.clone(),
                     headers: request.headers,
                     execution_time: delay,
-                    completion_retention_duration: *completion_retention_time,
+                    completion_retention_duration: (*completion_retention_time).unwrap_or_default(),
+                    journal_retention_duration: Default::default(),
                     idempotency_key: request.idempotency_key,
                     submit_notification_sink: None,
                 };

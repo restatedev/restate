@@ -187,6 +187,7 @@ fn delete_journal<S: StorageAccess>(
     journal_length: EntryIndex,
 ) -> Result<()> {
     let _x = RocksDbPerfGuard::new("delete-journal");
+
     let mut key = write_journal_entry_key(invocation_id, 0);
     let k = &mut key;
     for journal_index in 0..journal_length {
