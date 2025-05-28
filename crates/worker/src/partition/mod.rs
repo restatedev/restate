@@ -18,6 +18,7 @@ use assert2::let_assert;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
 use metrics::{SharedString, counter, gauge, histogram};
+use restate_types::retries::RetryPolicy;
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{Span, debug, error, info, instrument, trace, warn};
@@ -25,7 +26,7 @@ use tracing::{Span, debug, error, info, instrument, trace, warn};
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
 use restate_core::network::{Oneshot, Reciprocal, ServiceMessage, Verdict};
-use restate_core::{ShutdownError, cancellation_watcher};
+use restate_core::{Metadata, ShutdownError, cancellation_watcher};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -54,7 +55,7 @@ use restate_types::invocation::{
     SubmitNotificationSink, WorkflowHandlerType,
 };
 use restate_types::logs::MatchKeyQuery;
-use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
 use restate_types::net::RpcRequest;
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, GetInvocationOutputResponseMode, PartitionLeaderService,
@@ -311,14 +312,49 @@ where
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
 
         self.status.last_applied_log_lsn = Some(last_applied_lsn);
+        let log_id = Metadata::with_current(|m| {
+            m.partition_table_ref()
+                .get(&self.partition_id)
+                .map(|p| p.log_id())
+        });
 
+        let Some(log_id) = log_id else {
+            return Err(ProcessorError::Other(anyhow::anyhow!(
+                "Partition {} was not found in partition table!",
+                self.partition_id
+            )));
+        };
+
+        // If the underlying log is not provision, now is the time to provision it.
+        // We'll retry a few times before giving back control to PPM
+        //
+        // The primary reason for retries is the initial cluster provision case where nodes might
+        // still be starting up and we don't have enough nodes to form legal nodesets.
+        let mut retries = RetryPolicy::exponential(
+            Duration::from_secs(1),
+            1.5,
+            Some(3),
+            Some(Duration::from_secs(5)),
+        )
+        .into_iter();
+        while let Err(e) = self.bifrost.admin().ensure_log_exists(log_id).await {
+            // We cannot provision the log for this partition
+            if let Some(dur) = retries.next() {
+                debug!(
+                    "Cannot create a bifrost log for partition {}, will retry in {:?}; reason={}",
+                    self.partition_id, dur, e
+                );
+                tokio::time::sleep(dur).await;
+            } else {
+                return Err(e.into());
+            }
+        }
+
+        debug!("Finding tail for partition",);
         // propagate errors and let the PPM handle error retries
         let current_tail = self
             .bifrost
-            .find_tail(
-                LogId::from(self.partition_id),
-                FindTailOptions::ConsistentRead,
-            )
+            .find_tail(log_id, FindTailOptions::ConsistentRead)
             .await?;
 
         debug!(
@@ -374,12 +410,7 @@ where
 
         let mut record_stream = self
             .bifrost
-            .create_reader(
-                LogId::from(self.partition_id),
-                key_query.clone(),
-                last_applied_lsn.next(),
-                Lsn::MAX,
-            )?
+            .create_reader(log_id, key_query.clone(), last_applied_lsn.next(), Lsn::MAX)?
             .map(|entry| match entry {
                 Ok(entry) => {
                     trace!(?entry, "Read entry");

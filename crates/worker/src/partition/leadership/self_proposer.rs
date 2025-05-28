@@ -44,7 +44,7 @@ impl SelfProposer {
         let bifrost_appender = bifrost
             .create_background_appender(
                 LogId::from(partition_id),
-                ErrorRecoveryStrategy::extend_preferred(),
+                ErrorRecoveryStrategy::ExtendChainPreferred,
                 BIFROST_QUEUE_SIZE,
                 MAX_BIFROST_APPEND_BATCH,
             )?
