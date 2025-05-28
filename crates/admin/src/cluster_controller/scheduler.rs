@@ -15,7 +15,6 @@ use std::iter;
 use std::time::Duration;
 
 use ahash::HashMap;
-use assert2::let_assert;
 use tracing::{Level, debug, enabled, info, instrument, trace};
 
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
@@ -278,11 +277,11 @@ impl<T: TransportConnect> Scheduler<T> {
                     if Self::requires_reconfiguration(entry.get(), nodes_config) {
                         trace!("Partition {} requires reconfiguration", partition_id);
 
-                        let_assert!(
-                            PartitionReplication::Limit(partition_replication) =
-                                partition_table.replication(),
-                            "Limit should be the only used partition replication type"
-                        );
+                        let partition_replication =
+                            Self::partition_replication_to_replication_property(
+                                nodes_config,
+                                &partition_table,
+                            );
 
                         // select all valid worker candidates as the preferred nodes for the next
                         // configuration
@@ -301,7 +300,7 @@ impl<T: TransportConnect> Scheduler<T> {
                         if let Some(next) = Self::choose_partition_configuration(
                             *partition_id,
                             nodes_config,
-                            partition_replication.clone(),
+                            partition_replication,
                             preferred_nodes,
                         ) {
                             *entry.get_mut() = Self::reconfigure_partition_configuration(
@@ -327,10 +326,9 @@ impl<T: TransportConnect> Scheduler<T> {
                     entry
                 }
                 entry => {
-                    let_assert!(
-                        PartitionReplication::Limit(partition_replication) =
-                            partition_table.replication(),
-                        "Limit should be the only used partition replication type"
+                    let partition_replication = Self::partition_replication_to_replication_property(
+                        nodes_config,
+                        &partition_table,
                     );
 
                     // no or no valid current configuration, pick a valid configuration
@@ -420,6 +418,27 @@ impl<T: TransportConnect> Scheduler<T> {
         }
 
         Ok(())
+    }
+
+    fn partition_replication_to_replication_property(
+        nodes_config: &NodesConfiguration,
+        partition_table: &PartitionTable,
+    ) -> ReplicationProperty {
+        let partition_replication = match partition_table.replication() {
+            PartitionReplication::Everywhere => {
+                // only kept for backwards compatibility; this can be removed once
+                // we no longer need to support the Everywhere variant
+                // for everywhere we pick all current worker candidates but at least 1
+                let candidates = nodes_config
+                    .iter()
+                    .filter(|(node_id, node_config)| worker_candidate_filter(*node_id, node_config))
+                    .count()
+                    .max(1);
+                ReplicationProperty::new_unchecked(candidates.min(usize::from(u8::MAX)) as u8)
+            }
+            PartitionReplication::Limit(partition_replication) => partition_replication.clone(),
+        };
+        partition_replication
     }
 
     async fn store_initial_partition_configuration(
