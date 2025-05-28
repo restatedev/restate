@@ -22,7 +22,7 @@ use std::mem::size_of;
 use std::str::FromStr;
 use ulid::Ulid;
 
-use restate_encoding::{BilrostAs, BilrostDisplayFromStr, BilrostNewType, NetSerde};
+use restate_encoding::{BilrostNewType, NetSerde};
 
 use crate::base62_util::base62_encode_fixed_width;
 use crate::base62_util::base62_max_length_for_type;
@@ -425,15 +425,15 @@ impl Display for ServiceId {
     serde_with::SerializeDisplay,
     serde_with::DeserializeFromStr,
     Default,
-    BilrostAs,
 )]
-#[bilrost_as(BilrostDisplayFromStr)]
 pub struct InvocationId {
     /// Partition key of the called service
     partition_key: PartitionKey,
     /// Uniquely identifies this invocation instance
     inner: InvocationUuid,
 }
+
+restate_encoding::bilrost_as_display_from_str!(InvocationId);
 
 pub trait WithInvocationId {
     /// Returns the invocation id
