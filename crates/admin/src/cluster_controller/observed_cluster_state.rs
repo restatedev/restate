@@ -171,6 +171,12 @@ impl ObservedPartitionState {
             },
         );
     }
+
+    pub fn replay_status(&self, node_id: &PlainNodeId) -> Option<ReplayStatus> {
+        self.partition_processors
+            .get(node_id)
+            .map(|p| p.replay_status)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

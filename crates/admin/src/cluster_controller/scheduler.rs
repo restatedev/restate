@@ -24,7 +24,7 @@ use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_metadata_store::{
     MetadataStoreClient, ReadError, ReadModifyWriteError, ReadWriteError, WriteError,
 };
-use restate_types::cluster::cluster_state::RunMode;
+use restate_types::cluster::cluster_state::{ReplayStatus, RunMode};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata::Precondition;
@@ -80,7 +80,7 @@ impl<T: PartitionProcessorPlacementHints> PartitionProcessorPlacementHints for &
 
 #[derive(Debug, Clone)]
 struct PartitionState {
-    leader: Option<PlainNodeId>,
+    target_leader: Option<PlainNodeId>,
     current: PartitionConfiguration,
     next: Option<PartitionConfiguration>,
 }
@@ -88,7 +88,7 @@ struct PartitionState {
 impl PartitionState {
     fn new(current: PartitionConfiguration, next: Option<PartitionConfiguration>) -> Self {
         Self {
-            leader: None,
+            target_leader: None,
             current,
             next,
         }
@@ -105,6 +105,13 @@ impl PartitionState {
         if self.current.version() < current.version() {
             self.current = current;
             updated = true;
+
+            if self
+                .target_leader
+                .is_some_and(|leader| !self.current.replica_set().contains(leader))
+            {
+                self.target_leader = None;
+            }
         }
 
         if let Some(next) = next {
@@ -149,7 +156,7 @@ impl PartitionState {
         observed_cluster_state: &ObservedClusterState,
         commands: &mut BTreeMap<PlainNodeId, Vec<ControlProcessor>>,
     ) {
-        if let Some(leader) = &self.leader {
+        if let Some(leader) = &self.target_leader {
             if !observed_cluster_state
                 .partition_state(partition_id)
                 .and_then(|state| state.partition_processors.get(leader))
@@ -634,6 +641,17 @@ impl<T: TransportConnect> Scheduler<T> {
         .ok()
     }
 
+    /// Selects a leader based on the current target leader, observed cluster state and preferred leader.
+    ///
+    /// 1. Try to keep the observed leader
+    /// 2. Prefer worker nodes that are caught up
+    ///    2.1 Choose the current target leader
+    ///    2.2 Choose the preferred leader
+    ///    2.3 Pick any of the nodes in the current partition configuration
+    /// 3. Pick worker nodes that are alive
+    ///    3.1 Choose the current target leader
+    ///    3.2 Choose the preferred leader
+    ///    3.3 Pick any of the nodes in the current partition configuration
     fn select_leader(
         &mut self,
         partition_id: &PartitionId,
@@ -643,7 +661,7 @@ impl<T: TransportConnect> Scheduler<T> {
             return;
         };
 
-        // pick the alive node currently running as leader if it is a replica in current
+        // 1. keep current observed leader
         if let Some(leader) = observed_cluster_state
             .partition_state(partition_id)
             .and_then(|partition_state| {
@@ -661,28 +679,69 @@ impl<T: TransportConnect> Scheduler<T> {
                 observed_cluster_state.alive_generation(leader).is_some(),
                 "only alive nodes should run the leader"
             );
-            partition.leader = Some(leader);
+            partition.target_leader = Some(leader);
             return;
         }
 
-        // no leader is currently running in current; pick from the alive nodes in the current configuration
-        if let Some(alive_replica) = partition
-            .current
-            .replica_set()
-            .iter()
-            .find(|node_id| observed_cluster_state.alive_generation(**node_id).is_some())
+        if let Some(observed_partition_state) = observed_cluster_state.partition_state(partition_id)
         {
-            partition.leader = Some(*alive_replica);
-            return;
+            if let Some(leader) =
+                Self::select_leader_by_priority(partition, observed_cluster_state, |node_id| {
+                    observed_partition_state
+                        .replay_status(&node_id)
+                        .is_some_and(|status| status == ReplayStatus::Active)
+                })
+            {
+                partition.target_leader = Some(leader);
+                return;
+            }
         }
 
-        // couldn't find a leader because no node in current was alive
-        partition.leader = None;
+        if let Some(leader) =
+            Self::select_leader_by_priority(partition, observed_cluster_state, |_node_id| true)
+        {
+            partition.target_leader = Some(leader);
+        }
+
+        // keep the current target leader as we couldn't find any suitable substitute
+    }
+
+    fn select_leader_by_priority(
+        partition: &PartitionState,
+        observed_cluster_state: &ObservedClusterState,
+        additional_criterion: impl Fn(PlainNodeId) -> bool,
+    ) -> Option<PlainNodeId> {
+        // 1. keep the current target leader if it is still alive because we might have instructed
+        // it already
+        if partition.target_leader.is_some_and(|leader| {
+            observed_cluster_state.alive_generation(leader).is_some()
+                && partition.contains_replica_current(leader)
+                && additional_criterion(leader)
+        }) {
+            return partition.target_leader;
+        }
+
+        // 2. select any of the alive nodes in current
+        if let Some(alive_replica) =
+            partition
+                .current
+                .replica_set()
+                .iter()
+                .copied()
+                .find(|node_id| {
+                    observed_cluster_state.alive_generation(*node_id).is_some()
+                        && additional_criterion(*node_id)
+                })
+        {
+            return Some(alive_replica);
+        }
+
+        None
     }
 
     fn update_placement(&self, partition_id: &PartitionId, placement: &mut PartitionPlacement) {
         if let Some(partition) = self.partitions.get(partition_id) {
-            if let Some(leader) = partition.leader {
+            if let Some(leader) = partition.target_leader {
                 // a bit wasteful to create new nodesets over and over again if nothing changes; but
                 // it's hopefully not for too long
                 *placement = partition.replicas().cloned().collect();
