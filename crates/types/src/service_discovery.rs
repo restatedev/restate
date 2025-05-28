@@ -17,7 +17,7 @@ include!(concat!(
 pub const MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION: ServiceDiscoveryProtocolVersion =
     ServiceDiscoveryProtocolVersion::V1;
 pub const MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION: ServiceDiscoveryProtocolVersion =
-    ServiceDiscoveryProtocolVersion::V2;
+    ServiceDiscoveryProtocolVersion::V3;
 
 impl ServiceDiscoveryProtocolVersion {
     pub fn as_repr(&self) -> i32 {
