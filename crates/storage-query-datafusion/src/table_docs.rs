@@ -164,6 +164,9 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
             .remove("scheduled_at")
             .expect("scheduled_at should exist"),
         sys_invocation_status
+            .remove("scheduled_start_at")
+            .expect("scheduled_start_at should exist"),
+        sys_invocation_status
             .remove("running_at")
             .expect("running_at should exist"),
         sys_invocation_status

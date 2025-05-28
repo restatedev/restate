@@ -103,6 +103,9 @@ define_table!(sys_invocation_status(
     /// Timestamp indicating when the invocation was scheduled, if ever.
     scheduled_at: TimestampMillisecond,
 
+    /// If the invocation was scheduled, indicates the timestamp when the invocation should start.
+    scheduled_start_at: TimestampMillisecond,
+
     /// Timestamp indicating when the invocation first transitioned to running, if ever.
     running_at: TimestampMillisecond,
 

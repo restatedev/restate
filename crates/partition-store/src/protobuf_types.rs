@@ -530,6 +530,7 @@ pub mod v1 {
                                     service_protocol_version,
                                 )?,
                                 source,
+                                execution_time: execution_time.map(MillisSinceEpoch::new),
                                 completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
@@ -562,6 +563,7 @@ pub mod v1 {
                                     service_protocol_version,
                                 )?,
                                 source,
+                                execution_time: execution_time.map(MillisSinceEpoch::new),
                                 completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
@@ -600,6 +602,7 @@ pub mod v1 {
                                 timestamps,
                                 invocation_target,
                                 source,
+                                execution_time: execution_time.map(MillisSinceEpoch::new),
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 response_result: expect_or_fail!(result)?.try_into()?,
                                 completion_retention_duration: completion_retention_duration
@@ -758,9 +761,13 @@ pub mod v1 {
                             response_sinks,
                             timestamps,
                             source,
+                            execution_time,
                             completion_retention_duration,
-                            journal_retention_duration, idempotency_key,
-                            hotfix_apply_cancellation_after_deployment_is_pinned, current_invocation_epoch, completion_range_epoch_map
+                            journal_retention_duration,
+                            idempotency_key,
+                            hotfix_apply_cancellation_after_deployment_is_pinned,
+                            current_invocation_epoch,
+                            completion_range_epoch_map
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -801,7 +808,7 @@ pub mod v1 {
                                 .collect(),
                             argument: None,
                             headers: vec![],
-                            execution_time: None,
+                            execution_time: execution_time.map(|t| t.as_u64()),
                             completion_retention_duration: Some(
                                 completion_retention_duration.into(),
                             ),    journal_retention_duration: Some(journal_retention_duration.into()),
@@ -832,8 +839,12 @@ pub mod v1 {
                                 response_sinks,
                                 timestamps,
                                 source,
+                                execution_time,
                                 completion_retention_duration,
-                                journal_retention_duration, idempotency_key, hotfix_apply_cancellation_after_deployment_is_pinned, current_invocation_epoch, completion_range_epoch_map,
+                                journal_retention_duration,
+                                idempotency_key,
+                                hotfix_apply_cancellation_after_deployment_is_pinned,
+                                current_invocation_epoch, completion_range_epoch_map,
                             },
                         waiting_for_notifications,
                     } => {
@@ -892,7 +903,7 @@ pub mod v1 {
                                 .collect(),
                             argument: None,
                             headers: vec![],
-                            execution_time: None,
+                            execution_time: execution_time.map(|t| t.as_u64()),
                             completion_retention_duration: Some(
                                 completion_retention_duration.into(),
                             ),    journal_retention_duration: Some(journal_retention_duration.into()),
@@ -918,7 +929,7 @@ pub mod v1 {
                         restate_storage_api::invocation_status_table::CompletedInvocation {
                             invocation_target,
                             source,
-                            idempotency_key,
+                            execution_time, idempotency_key,
                             timestamps,
                             response_result,
                             completion_retention_duration,
@@ -957,7 +968,7 @@ pub mod v1 {
                             response_sinks: vec![],
                             argument: None,
                             headers: vec![],
-                            execution_time: None,
+                            execution_time: execution_time.map(|t| t.as_u64()),
                             completion_retention_duration: Some(completion_retention_duration.into()),    journal_retention_duration: Some(journal_retention_duration.into()),
                             idempotency_key: idempotency_key.map(|key| key.to_string()),
                             inbox_sequence_number: None,
@@ -1224,6 +1235,7 @@ pub mod v1 {
                                 None,
                             ),
                         source,
+                        execution_time: None,
                         completion_retention_duration: completion_retention_time,
                         journal_retention_duration: Default::default(),
                         idempotency_key,
@@ -1344,6 +1356,7 @@ pub mod v1 {
                                 None,
                             ),
                         source: caller,
+                        execution_time: None,
                         completion_retention_duration: completion_retention_time,
                         journal_retention_duration: Default::default(),
                         idempotency_key,
@@ -1563,6 +1576,7 @@ pub mod v1 {
                         // The value Duration::MAX here disables the new cleaner task business logic.
                         // Look at crates/worker/src/partition/cleaner.rs for more details.
                         completion_retention_duration: std::time::Duration::MAX,
+                        execution_time: None,
                         journal_retention_duration: Default::default(),
                         journal_metadata: JournalMetadata::empty(),
                         pinned_deployment: None,
@@ -1578,6 +1592,7 @@ pub mod v1 {
                 let restate_storage_api::invocation_status_table::CompletedInvocation {
                     invocation_target,
                     source,
+                    execution_time: _,
                     idempotency_key,
                     timestamps,
                     response_result,
