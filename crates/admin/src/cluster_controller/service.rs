@@ -16,11 +16,17 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use codederror::CodedError;
 use futures::never::Never;
+use rand::prelude::IteratorRandom;
+use rand::rng;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
+use self::state::ClusterControllerState;
+use super::cluster_state_refresher::ClusterStateRefresher;
+use super::grpc_svc_handler::ClusterCtrlSvcHandler;
+use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use restate_bifrost::{Bifrost, SealedSegment};
 use restate_core::cancellation_token;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
@@ -42,6 +48,7 @@ use restate_types::logs::metadata::{
 };
 use restate_types::logs::{LogId, LogletId, Lsn};
 use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, StorageState};
 use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
@@ -49,13 +56,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::{GenerationalNodeId, NodeId, Version};
-
-use self::state::ClusterControllerState;
-use super::cluster_state_refresher::ClusterStateRefresher;
-use super::grpc_svc_handler::ClusterCtrlSvcHandler;
-use crate::cluster_controller::logs_controller;
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -778,7 +779,7 @@ impl SealAndExtendTask {
                 u64::from(next_loglet_id).to_string().into(),
             ),
             ProviderConfiguration::Replicated(config) => {
-                let loglet_params = logs_controller::build_new_replicated_loglet_configuration(
+                let loglet_params = Self::build_new_replicated_loglet_configuration(
                     self.log_id,
                     config,
                     next_loglet_id,
@@ -797,6 +798,89 @@ impl SealAndExtendTask {
         };
 
         Ok((provider, params))
+    }
+
+    /// Build a new segment configuration for a replicated loglet based on the observed cluster state
+    /// and the previous configuration.
+    pub fn build_new_replicated_loglet_configuration(
+        log_id: LogId,
+        replicated_loglet_config: &ReplicatedLogletConfig,
+        loglet_id: LogletId,
+        nodes_config: &NodesConfiguration,
+        observed_cluster_state: &ObservedClusterState,
+        preferred_nodes: Option<&NodeSet>,
+        preferred_sequencer: Option<NodeId>,
+    ) -> Option<ReplicatedLogletParams> {
+        use restate_types::replication::{NodeSetSelector, NodeSetSelectorOptions};
+        use tracing::warn;
+
+        let mut rng = rng();
+
+        let replication = replicated_loglet_config.replication_property.clone();
+
+        let sequencer = preferred_sequencer
+            .and_then(|node_id| observed_cluster_state.alive_generation(node_id))
+            .or_else(|| {
+                // we can place the sequencer on any alive node
+                observed_cluster_state
+                    .alive_nodes()
+                    .choose(&mut rng)
+                    .cloned()
+            })?;
+
+        let opts = NodeSetSelectorOptions::new(u32::from(log_id) as u64)
+            .with_target_size(replicated_loglet_config.target_nodeset_size)
+            .with_preferred_nodes_opt(preferred_nodes)
+            .with_top_priority_node(sequencer.id());
+
+        let selection = NodeSetSelector::select(
+            nodes_config,
+            &replication,
+            restate_types::replicated_loglet::logserver_candidate_filter,
+            Self::logserver_writeable_node_filter(observed_cluster_state),
+            opts,
+        );
+
+        match selection {
+            Ok(nodeset) => {
+                // todo(asoli): here is the right place to do additional validation and reject the nodeset if it
+                // fails to meet some safety margin. For now, we'll accept the nodeset as it meets the
+                // minimum replication requirement only.
+                debug_assert!(nodeset.len() >= replication.num_copies() as usize);
+                if replication.num_copies() > 1
+                    && nodeset.len() == replication.num_copies() as usize
+                {
+                    warn!(
+                        ?log_id,
+                        %replication,
+                        generated_nodeset_size = nodeset.len(),
+                        "The number of writeable log-servers is too small for the configured \
+                        replication, there will be no fault-tolerance until you add more nodes."
+                    );
+                }
+                Some(ReplicatedLogletParams {
+                    loglet_id,
+                    sequencer,
+                    replication,
+                    nodeset,
+                })
+            }
+            Err(err) => {
+                warn!(?log_id, "Cannot select node-set for log: {err}");
+                None
+            }
+        }
+    }
+
+    fn logserver_writeable_node_filter(
+        observed_cluster_state: &ObservedClusterState,
+    ) -> impl Fn(PlainNodeId, &NodeConfig) -> bool + '_ {
+        |node_id: PlainNodeId, config: &NodeConfig| {
+            matches!(
+                config.log_server_config.storage_state,
+                StorageState::ReadWrite
+            ) && observed_cluster_state.alive_generation(node_id).is_some()
+        }
     }
 }
 #[cfg(test)]
