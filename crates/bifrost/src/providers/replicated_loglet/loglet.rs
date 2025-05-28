@@ -215,12 +215,17 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
                             return Ok(*self.known_global_tail.get());
                         }
                         match result {
-                            CheckSealOutcome::Sealing => {
+                            CheckSealOutcome::Unknown {
+                                is_partially_sealed: true,
+                            }
+                            | CheckSealOutcome::Open {
+                                is_partially_sealed: true,
+                            } => {
                                 // We are likely to be sealing...
                                 // let's fire a seal to ensure this seal is complete.
                                 self.seal().await?;
                             }
-                            CheckSealOutcome::FullySealed => {
+                            CheckSealOutcome::Sealed => {
                                 // already fully sealed, just make sure the sequencer is drained.
                                 handle.drain().await;
                                 // note that we can only do that if we are the sequencer because
