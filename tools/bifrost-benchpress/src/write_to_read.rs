@@ -96,7 +96,7 @@ pub async fn run(_common_args: &Arguments, args: &WriteToReadOpts, bifrost: Bifr
                 let appender_handle = bifrost
                     .create_background_appender(
                         LOG_ID,
-                        ErrorRecoveryStrategy::extend_preferred(),
+                        ErrorRecoveryStrategy::ExtendChainPreferred,
                         args.write_buffer_size,
                         args.max_batch_size,
                     )?

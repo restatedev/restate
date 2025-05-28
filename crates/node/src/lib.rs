@@ -487,6 +487,10 @@ impl Node {
             }
         };
 
+        // Ensures bifrost has initial metadata synced up before starting the worker.
+        // Need to run start in new tc scope to have access to metadata()
+        self.bifrost.start().await?;
+
         info!(
             name = %my_node_config.name,
             roles = %my_node_config.roles,
@@ -502,23 +506,19 @@ impl Node {
         let my_node_id = metadata.my_node_id();
         debug_assert!(nodes_config.find_node_by_id(my_node_id).is_ok());
 
-        // Start partition routing information refresher
-        spawn_partition_routing_refresher(self.partition_routing_refresher)?;
-
-        // Ensures bifrost has initial metadata synced up before starting the worker.
-        // Need to run start in new tc scope to have access to metadata()
-        self.bifrost.start().await?;
-
         if let Some(log_server) = self.log_server {
             log_server.start(metadata_writer).await?;
         }
 
-        if let Some(worker_role) = self.worker_role {
-            TaskCenter::spawn(TaskKind::SystemBoot, "worker-init", worker_role.start())?;
-        }
+        // Start partition routing information refresher
+        spawn_partition_routing_refresher(self.partition_routing_refresher)?;
 
         if let Some(ingress_role) = self.ingress_role {
             TaskCenter::spawn(TaskKind::IngressServer, "ingress-http", ingress_role.run())?;
+        }
+
+        if let Some(worker_role) = self.worker_role {
+            TaskCenter::spawn(TaskKind::SystemBoot, "worker-init", worker_role.start())?;
         }
 
         if let Some(admin_role) = self.admin_role {
