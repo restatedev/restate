@@ -1340,7 +1340,9 @@ impl Decoder for ServiceProtocolV4Codec {
                 })
             }
 
-            RawEntryInner::Event(e) => EntryLite::Event(e.clone()),
+            RawEntryInner::Event(e) => Event::try_from(e.clone())
+                .map_err(|e| DecodingError::from(GenericError::from(e)))?
+                .into(),
         })
     }
 }

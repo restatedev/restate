@@ -1881,6 +1881,7 @@ mod tests {
         // Handle error coming after the abort (this should be noop)
         service_inner
             .handle_invocation_task_failed(
+                &invoker_options,
                 MOCK_PARTITION,
                 invocation_id,
                 0,
@@ -1934,6 +1935,7 @@ mod tests {
         // Also handle error on epoch 0 should have no effect
         service_inner
             .handle_invocation_task_failed(
+                &InvokerOptions::default(),
                 MOCK_PARTITION,
                 invocation_id,
                 0,
