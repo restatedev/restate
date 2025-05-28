@@ -109,7 +109,7 @@ mod mocks {
     };
     use restate_types::schema::service::test_util::MockServiceMetadataResolver;
     use restate_types::schema::service::{
-        HandlerMetadata, InvocationAttemptTimeouts, ServiceMetadata, ServiceMetadataResolver,
+        HandlerMetadata, InvocationAttemptOptions, ServiceMetadata, ServiceMetadataResolver,
     };
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
@@ -155,6 +155,7 @@ mod mocks {
                         journal_retention: None,
                         inactivity_timeout: None,
                         abort_timeout: None,
+                        enable_lazy_state: None,
                         input_description: "any".to_string(),
                         output_description: "any".to_string(),
                         input_json_schema: None,
@@ -172,6 +173,7 @@ mod mocks {
                 journal_retention: None,
                 inactivity_timeout: None,
                 abort_timeout: None,
+                enable_lazy_state: None,
             });
             self.1
                 .add(service_name, [(handler_name, invocation_target_metadata)]);
@@ -193,12 +195,12 @@ mod mocks {
             self.0.resolve_latest_service(service_name)
         }
 
-        fn resolve_invocation_attempt_timeouts(
+        fn resolve_invocation_attempt_options(
             &self,
             _deployment_id: &DeploymentId,
             _service_name: impl AsRef<str>,
             _handler_name: impl AsRef<str>,
-        ) -> Option<InvocationAttemptTimeouts> {
+        ) -> Option<InvocationAttemptOptions> {
             todo!()
         }
 

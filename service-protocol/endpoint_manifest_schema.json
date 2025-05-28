@@ -167,6 +167,10 @@
                   "minimum": 1,
                   "description": "Workflow completion retention duration, expressed in milliseconds. This is valid ONLY when HandlerType == WORKFLOW"
                 },
+                "enableLazyState":  {
+                  "type": "boolean",
+                  "description": "If true, lazy state is enabled."
+                },
                 "metadata": {
                   "type": "object",
                   "description": "Custom metadata of this handler definition. This metadata is shown on the Admin API when querying the service/handler definition.",
@@ -200,6 +204,10 @@
             "type": "integer",
             "minimum": 1,
             "description": "Idempotency retention duration, expressed in milliseconds. When ServiceType == WORKFLOW, this option will be applied only to the shared handlers. See workflowCompletionRetention for more details."
+          },
+          "enableLazyState":  {
+            "type": "boolean",
+            "description": "If true, lazy state is enabled."
           },
           "private":  {
             "type": "boolean",
