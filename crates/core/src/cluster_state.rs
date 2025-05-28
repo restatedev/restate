@@ -17,24 +17,10 @@ use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
 use tokio::sync::watch;
 
+pub use restate_types::net::node::NodeState;
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
 type Generation = u32;
-
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash)]
-#[repr(u8)]
-pub enum NodeState {
-    #[default]
-    Dead = 0,
-    Alive,
-    FailingOver,
-}
-
-impl NodeState {
-    pub fn is_alive(self) -> bool {
-        matches!(self, Self::Alive | Self::FailingOver)
-    }
-}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct State {
