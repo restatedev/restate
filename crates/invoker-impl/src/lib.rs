@@ -1361,7 +1361,7 @@ mod tests {
     use restate_types::retries::RetryPolicy;
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::invocation_target::InvocationTargetMetadata;
-    use restate_types::schema::service::{InvocationAttemptTimeouts, ServiceMetadata};
+    use restate_types::schema::service::{InvocationAttemptOptions, ServiceMetadata};
 
     use crate::error::{InvokerError, SdkInvocationErrorV2};
     use crate::quota::InvokerConcurrencyQuota;
@@ -1520,12 +1520,12 @@ mod tests {
             None
         }
 
-        fn resolve_invocation_attempt_timeouts(
+        fn resolve_invocation_attempt_options(
             &self,
             _: &DeploymentId,
             _: impl AsRef<str>,
             _: impl AsRef<str>,
-        ) -> Option<InvocationAttemptTimeouts> {
+        ) -> Option<InvocationAttemptOptions> {
             None
         }
 
