@@ -1,0 +1,25 @@
+[package]
+name = "mock-lambda-invoker"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true}
+restate-service-protocol = {workspace = true}
+restate-service-protocol-v4 = {workspace =  true, features = ["message-codec", "entry-codec", "default"]}
+restate-service-client = { workspace =  true}
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+restate-types = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+
+[lib]
+path = "src/lib.rs"
