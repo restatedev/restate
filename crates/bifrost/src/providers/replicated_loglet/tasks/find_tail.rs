@@ -14,7 +14,7 @@ use tokio::task::JoinSet;
 use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
 
 use restate_core::network::{NetworkSender, Networking, RpcError, Swimlane, TransportConnect};
-use restate_core::{Metadata, TaskCenterFutureExt};
+use restate_core::{Metadata, TaskCenter, TaskCenterFutureExt, my_node_id};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
@@ -84,6 +84,15 @@ impl<T: TransportConnect> FindTailTask<T> {
         }
     }
 
+    pub fn is_sequencer_alive(&self) -> bool {
+        TaskCenter::with_current(|tc| {
+            let cs = tc.cluster_state();
+            // if our own node is not seen to be alive yet, then we should still try to connect to
+            // the sequencer.
+            cs.is_alive(self.my_params.sequencer.into()) || !cs.is_alive(my_node_id().into())
+        })
+    }
+
     #[instrument(skip_all)]
     pub async fn run(self, opts: FindTailFlags) -> FindTailResult {
         let metadata = Metadata::current();
@@ -115,45 +124,78 @@ impl<T: TransportConnect> FindTailTask<T> {
             force_seal_check: opts == FindTailFlags::ForceSealCheck,
         };
 
-        // todo: use cluster-state information when this becomes node-level available to avoid
-        // the sequencer node if it's known to be dead.
-        if let Ok(seq_state) = self
-            .networking
-            .call_rpc(
-                self.my_params.sequencer,
-                Swimlane::default(),
-                get_seq_state,
-                Some(self.my_params.loglet_id.into()),
-                // todo: configure timeout?
-                Some(Duration::from_millis(500)),
-            )
-            .await
-        {
-            if seq_state.header.status.is_ok() {
-                let global_tail = seq_state
-                    .header
-                    .known_global_tail
-                    .expect("global tail must be known by sequencer");
-                return if seq_state
-                    .header
-                    .sealed
-                    .expect("sequencer must set sealed if status=ok")
-                {
-                    FindTailResult::Sealed { global_tail }
-                } else {
-                    FindTailResult::Open { global_tail }
-                };
+        if self.is_sequencer_alive() {
+            if let Ok(seq_state) = self
+                .networking
+                .call_rpc(
+                    self.my_params.sequencer,
+                    Swimlane::default(),
+                    get_seq_state,
+                    Some(self.my_params.loglet_id.into()),
+                    // todo: configure timeout?
+                    Some(Duration::from_millis(500)),
+                )
+                .await
+            {
+                if seq_state.header.status.is_ok() {
+                    let global_tail = seq_state
+                        .header
+                        .known_global_tail
+                        .expect("global tail must be known by sequencer");
+                    return if seq_state
+                        .header
+                        .sealed
+                        .expect("sequencer must set sealed if status=ok")
+                    {
+                        FindTailResult::Sealed { global_tail }
+                    } else {
+                        FindTailResult::Open { global_tail }
+                    };
+                }
             }
         }
         // After this point we don't try the sequencer.
 
         // Be warned, this is a complex state machine.
         //
-        // We need two pieces of information
-        // 1) Global tail location
-        // 2) Seal status
+        // We need to determine two pieces of information:
+        // 1) Seal status
+        // 2) Global tail offset (global committed)
         //
-        // How to determine tail?
+        // # 1. Determining the seal status:
+        // - SEALED: if f-majority of nodes are SEALED
+        // - OPEN: if write-quorum of nodes are OPEN
+        // - UNKNOWN: We cannot establish any of the above due to insufficient responses, if we can
+        // determine a safe tail value, we should return it. Therefore, in this routine, we
+        // sometimes return `Open` when we are not entirely sure that we are sealed as long as we
+        // uphold the invariants described below.
+        //
+        // # 2. How to determine the global tail offset?
+        // The global commit offset (tail) is the highest offset that was fully committed
+        // (write-quorum) and that was likely acknowledged to writers as a committed offset. The
+        // correctness of the consensus protocol rely on us upholding the following invariants:
+        //   a) If we report that an offset is globally committed, no future find-tail call under
+        //   any failure scenario will report a lower value.
+        //   b) If a loglet is sealed at offset N, the loglet *must* remain sealed for all higher offset.
+        //   c) It's acceptable for a global offset to be observed one time as open then later as
+        //   sealed. The opposite _might_ happen without impacting correctness as long as it's
+        //   exactly the same offset.
+        //   d) A client that received commit acknowledgement for a record *must* observe this
+        //   record in future reads of the loglet. This means that if we decided that tail is N and
+        //   the loglet is SEALED, no writer will ever receive an acknowledgment for any records
+        //   after offset N, even if such records have eventually been written to the loglet.
+        //
+        //   This is to uphold the invariant of bifrost; if this state machine returned a tail
+        //   offset and the SEALED status, bifrost can use this value as the tail offset of the
+        //   segment when sealing/updating the chain, even if future calls to this function
+        //   returned higher offsets.
+        //
+        //   In order to achieve this we require:
+        //   1- Responses from f-majority of nodes. This guarantees that we observe the maximum
+        //   offset that was potentially committed partially or fully.
+        //   2- We piggyback on `known_global_tail` that's communicated through network headers to
+        //   speed up finding the previously agreed upon tail.
+        //
         // 1- Use NodeSetChecker to find all possible nodes that can form an f-majority
         // 2- Send GetLogletInfo for all nodes in effective nodeset
         // 3- Keep checking responses as they arrive until f-majority of nodes return their tail+seal
@@ -204,6 +246,14 @@ impl<T: TransportConnect> FindTailTask<T> {
                 &self.my_params.replication,
             );
 
+            // To determine seal status. We need f-majority sealed or write-quorum of open. Whichever
+            // comes first determines the seal status.
+            //
+            // To determine the tail, we need to f-majority responses. The maximum local offset of
+            // that that set becomes the convergence target.
+            //
+            // - f-majority of nodes to respond with their tail+seal status
+            // - write-quorum of nodes
             while let Some(task_result) = inflight_info_requests.join_next().await {
                 let Ok((node_id, info)) = task_result else {
                     // task panicked or runtime is shutting down.
@@ -251,7 +301,9 @@ impl<T: TransportConnect> FindTailTask<T> {
                             .expect("at least one node is known and sealed");
                         let current_known_global = self.known_global_tail.latest_offset();
                         if max_local_tail < current_known_global {
-                            // what? Something went seriously wrong.
+                            // what? Something went seriously wrong. This indicates that we somehow
+                            // have previously determined that global tail is higher than the max
+                            // observed local tail on f-majority of nodes.
                             panic!(
                                 "max_local_tail={max_local_tail} is less than known_global_tail={current_known_global}"
                             );
@@ -263,8 +315,8 @@ impl<T: TransportConnect> FindTailTask<T> {
                         nodeset_checker.check_write_quorum(|attribute| match attribute {
                             // We have all copies of the max-local-tail replicated. It's safe to
                             // consider this offset as committed.
-                            NodeTailStatus::Known { local_tail, sealed } => {
-                                *sealed && (*local_tail >= max_local_tail)
+                            NodeTailStatus::Known { local_tail, .. } => {
+                                *local_tail >= max_local_tail
                             }
                             _ => false,
                         }) {
@@ -376,13 +428,6 @@ impl<T: TransportConnect> FindTailTask<T> {
                         .max()
                         .expect("at least one node is known and sealed");
 
-                    // Maybe we are already there?
-                    if self.known_global_tail.latest_offset() >= max_local_tail {
-                        return FindTailResult::Open {
-                            global_tail: self.known_global_tail.latest_offset(),
-                        };
-                    }
-
                     // Is there a full write-quorum for the requested tail?
                     if nodeset_checker.check_write_quorum(|attribute| match attribute {
                         // We have all copies of the max-local-tail replicated. It's safe to
@@ -396,6 +441,17 @@ impl<T: TransportConnect> FindTailTask<T> {
                     }) {
                         return FindTailResult::Open {
                             global_tail: max_local_tail,
+                        };
+                    }
+
+                    // Maybe we are already there?
+                    // NOTE: This is a hack-ish optimization that treats the `Open` status as
+                    // more like "probably open" because we _might_ actually be sealed but we just
+                    // don't know it yet.
+                    if self.known_global_tail.latest_offset() >= max_local_tail {
+                        // todo: add an explicit ProbablyOpen/Unknown response variant
+                        return FindTailResult::Open {
+                            global_tail: self.known_global_tail.latest_offset(),
                         };
                     }
 
@@ -450,11 +506,6 @@ impl<T: TransportConnect> FindTailTask<T> {
                             continue 'check_nodeset;
                         }
 
-                        if self.known_global_tail.latest_offset() >= max_local_tail {
-                            return FindTailResult::Open {
-                                global_tail: self.known_global_tail.latest_offset(),
-                            };
-                        }
                         // Is there a full write-quorum for the requested tail?
                         if nodeset_checker.check_write_quorum(|attribute| match attribute {
                             // We have all copies of the max-local-tail replicated. It's safe to
@@ -470,6 +521,17 @@ impl<T: TransportConnect> FindTailTask<T> {
                                 global_tail: max_local_tail,
                             };
                         }
+
+                        // NOTE: This is a hack-ish optimization that that treats the `Open` status as
+                        // more like "probably open" because we _might_ actually be sealed but we just
+                        // don't know it yet.
+                        if self.known_global_tail.latest_offset() >= max_local_tail {
+                            // todo: add an explicit ProbablyOpen/Unknown response variant
+                            return FindTailResult::Open {
+                                global_tail: self.known_global_tail.latest_offset(),
+                            };
+                        }
+
                         if !updated {
                             // Nothing left to wait on. The tail didn't reach expected
                             // target and no more nodes are expected to send us responses.
