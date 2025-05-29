@@ -718,44 +718,44 @@ impl LogsControllerInner {
         node_set_selector_hints: impl NodeSetSelectorHints,
     ) -> Result<()> {
         // we don't do concurrent updates to avoid complexity
-        if self.logs_write_in_progress.is_some() {
-            return Ok(());
-        }
-
-        self.seal_logs(nodes_config, observed_cluster_state, effects);
-
-        let mut builder = self.current_logs.deref().clone().into_builder();
-        self.provision_logs(
-            observed_cluster_state,
-            &mut builder,
-            &node_set_selector_hints,
-        );
-        self.reconfigure_logs(
-            observed_cluster_state,
-            &mut builder,
-            node_set_selector_hints,
-        )?;
-
-        if let Some(logs) = builder.build_if_modified() {
-            if enabled!(Level::TRACE) {
-                debug!(?logs, "Proposing new log chain version {}", logs.version());
-            } else {
-                debug!("Proposing new log chain version {}", logs.version());
-            }
-
-            self.logs_write_in_progress = Some(logs.version());
-            let logs = Arc::new(logs);
-            effects.push(Effect::WriteLogs {
-                logs: Arc::clone(&logs),
-                previous_version: self.current_logs.version(),
-                debounce: None,
-            });
-            // we already update the current logs but will wait until we learn whether the update
-            // was successful or not. If not, then we'll reset our internal state wrt the new
-            // logs version.
-            self.current_logs = logs;
-        }
-
+        // if self.logs_write_in_progress.is_some() {
+        //     return Ok(());
+        // }
+        //
+        // self.seal_logs(nodes_config, observed_cluster_state, effects);
+        //
+        // let mut builder = self.current_logs.deref().clone().into_builder();
+        // self.provision_logs(
+        //     observed_cluster_state,
+        //     &mut builder,
+        //     &node_set_selector_hints,
+        // );
+        // self.reconfigure_logs(
+        //     observed_cluster_state,
+        //     &mut builder,
+        //     node_set_selector_hints,
+        // )?;
+        //
+        // if let Some(logs) = builder.build_if_modified() {
+        //     if enabled!(Level::TRACE) {
+        //         debug!(?logs, "Proposing new log chain version {}", logs.version());
+        //     } else {
+        //         debug!("Proposing new log chain version {}", logs.version());
+        //     }
+        //
+        //     self.logs_write_in_progress = Some(logs.version());
+        //     let logs = Arc::new(logs);
+        //     effects.push(Effect::WriteLogs {
+        //         logs: Arc::clone(&logs),
+        //         previous_version: self.current_logs.version(),
+        //         debounce: None,
+        //     });
+        //     // we already update the current logs but will wait until we learn whether the update
+        //     // was successful or not. If not, then we'll reset our internal state wrt the new
+        //     // logs version.
+        //     self.current_logs = logs;
+        // }
+        //
         Ok(())
     }
 
@@ -1010,7 +1010,7 @@ impl LogsController {
             find_logs_tail_semaphore: Arc::new(Semaphore::new(1)),
         };
 
-        this.find_log_tails();
+        // this.find_log_tails();
         this
     }
 
@@ -1088,25 +1088,25 @@ impl LogsController {
         observed_cluster_state: &ObservedClusterState,
         node_set_selector_hints: impl NodeSetSelectorHints,
     ) -> Result<(), anyhow::Error> {
-        self.inner.on_observed_cluster_state_update(
-            nodes_config,
-            observed_cluster_state,
-            self.effects.as_mut().expect("to be present"),
-            node_set_selector_hints,
-        )?;
-        self.apply_effects();
-
+        // self.inner.on_observed_cluster_state_update(
+        //     nodes_config,
+        //     observed_cluster_state,
+        //     self.effects.as_mut().expect("to be present"),
+        //     node_set_selector_hints,
+        // )?;
+        // self.apply_effects();
+        //
         Ok(())
     }
 
     pub fn on_partition_table_update(&mut self, partition_table: &PartitionTable) {
-        self.inner.on_partition_table_update(partition_table);
+        // self.inner.on_partition_table_update(partition_table);
     }
 
     pub fn on_logs_update(&mut self, logs: Pinned<Logs>) {
-        self.inner
-            .on_logs_update(logs, self.effects.as_mut().expect("to be present"));
-        self.apply_effects();
+        // self.inner
+        //     .on_logs_update(logs, self.effects.as_mut().expect("to be present"));
+        // self.apply_effects();
     }
 
     fn apply_effects(&mut self) {
@@ -1263,42 +1263,44 @@ pub struct LogsBasedPartitionProcessorPlacementHints<'a> {
 
 impl scheduler::PartitionProcessorPlacementHints for LogsBasedPartitionProcessorPlacementHints<'_> {
     fn preferred_nodes(&self, partition_id: &PartitionId) -> impl Iterator<Item = &PlainNodeId> {
-        let log_id = LogId::from(*partition_id);
-
-        self.logs_controller
-            .inner
-            .logs_state
-            .get(&log_id)
-            .and_then(|log_state| match log_state {
-                LogState::Available { configuration, .. } => configuration
-                    .as_ref()
-                    .map(|configuration| itertools::Either::Left(configuration.node_set_iter())),
-                LogState::Sealing { .. }
-                | LogState::Sealed { .. }
-                | LogState::Provisioning { .. } => None,
-            })
-            .unwrap_or_else(|| itertools::Either::Right(iter::empty()))
+        // let log_id = LogId::from(*partition_id);
+        //
+        // self.logs_controller
+        //     .inner
+        //     .logs_state
+        //     .get(&log_id)
+        //     .and_then(|log_state| match log_state {
+        //         LogState::Available { configuration, .. } => configuration
+        //             .as_ref()
+        //             .map(|configuration| itertools::Either::Left(configuration.node_set_iter())),
+        //         LogState::Sealing { .. }
+        //         | LogState::Sealed { .. }
+        //         | LogState::Provisioning { .. } => None,
+        //     })
+        //     .unwrap_or_else(|| itertools::Either::Right(iter::empty()))
+        iter::empty()
     }
 
     fn preferred_leader(&self, partition_id: &PartitionId) -> Option<PlainNodeId> {
-        let log_id = LogId::from(*partition_id);
-
-        self.logs_controller
-            .inner
-            .logs_state
-            .get(&log_id)
-            .and_then(|log_state| match log_state {
-                LogState::Available { configuration, .. } => {
-                    configuration.as_ref().and_then(|configuration| {
-                        configuration
-                            .sequencer_node()
-                            .map(GenerationalNodeId::as_plain)
-                    })
-                }
-                LogState::Sealing { .. }
-                | LogState::Sealed { .. }
-                | LogState::Provisioning { .. } => None,
-            })
+        // let log_id = LogId::from(*partition_id);
+        //
+        // self.logs_controller
+        //     .inner
+        //     .logs_state
+        //     .get(&log_id)
+        //     .and_then(|log_state| match log_state {
+        //         LogState::Available { configuration, .. } => {
+        //             configuration.as_ref().and_then(|configuration| {
+        //                 configuration
+        //                     .sequencer_node()
+        //                     .map(GenerationalNodeId::as_plain)
+        //             })
+        //         }
+        //         LogState::Sealing { .. }
+        //         | LogState::Sealed { .. }
+        //         | LogState::Provisioning { .. } => None,
+        //     })
+        None
     }
 }
 
