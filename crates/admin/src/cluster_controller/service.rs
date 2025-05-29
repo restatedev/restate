@@ -16,6 +16,8 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 use codederror::CodedError;
 use futures::never::Never;
+use rand::rng;
+use rand::seq::IteratorRandom;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
@@ -42,6 +44,7 @@ use restate_types::logs::metadata::{
 };
 use restate_types::logs::{LogId, LogletId, Lsn};
 use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, StorageState};
 use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
@@ -49,12 +52,11 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::{GenerationalNodeId, NodeId, Version};
+use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version};
 
 use self::state::ClusterControllerState;
 use super::cluster_state_refresher::ClusterStateRefresher;
 use super::grpc_svc_handler::ClusterCtrlSvcHandler;
-use crate::cluster_controller::logs_controller;
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -330,9 +332,10 @@ impl<T: TransportConnect> Service<T> {
 
         let cs = TaskCenter::with_current(|tc| tc.cluster_state().clone());
         let mut cs_changed = std::pin::pin!(cs.changed());
+        let mut nodes_config = Metadata::with_current(|m| m.updateable_nodes_config());
 
         // initialize the state based on the initial cluster state
-        state.update(&self, &cs);
+        state.update(&self, nodes_config.live_load(), &cs);
 
         loop {
             tokio::select! {
@@ -344,17 +347,19 @@ impl<T: TransportConnect> Service<T> {
                     // register waiting for the next update
                     cs_changed.set(cs.changed());
 
-                    state.update(&self, &cs);
+                    let nodes_config = nodes_config.live_load();
+                    state.update(&self, nodes_config, &cs);
 
                     self.observed_cluster_state.update_liveness(&cs);
-                    if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state).await {
+                    if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state, nodes_config).await {
                         warn!(%err, "Failed to handle observed cluster state. This can impair the overall cluster operations");
                     }
                 },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
+                    let nodes_config = nodes_config.live_load();
                     self.observed_cluster_state.update_partitions(&cluster_state);
 
-                    if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state).await {
+                    if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state, nodes_config).await {
                         warn!(%err, "Failed to handle observed cluster state. This can impair the overall cluster operations");
                     }
                 }
@@ -778,7 +783,7 @@ impl SealAndExtendTask {
                 u64::from(next_loglet_id).to_string().into(),
             ),
             ProviderConfiguration::Replicated(config) => {
-                let loglet_params = logs_controller::build_new_replicated_loglet_configuration(
+                let loglet_params = build_new_replicated_loglet_configuration(
                     self.log_id,
                     config,
                     next_loglet_id,
@@ -799,6 +804,88 @@ impl SealAndExtendTask {
         Ok((provider, params))
     }
 }
+
+/// Build a new segment configuration for a replicated loglet based on the observed cluster state
+/// and the previous configuration.
+pub fn build_new_replicated_loglet_configuration(
+    log_id: LogId,
+    replicated_loglet_config: &ReplicatedLogletConfig,
+    loglet_id: LogletId,
+    nodes_config: &NodesConfiguration,
+    observed_cluster_state: &ObservedClusterState,
+    preferred_nodes: Option<&NodeSet>,
+    preferred_sequencer: Option<NodeId>,
+) -> Option<ReplicatedLogletParams> {
+    use restate_types::replication::{NodeSetSelector, NodeSetSelectorOptions};
+    use tracing::warn;
+
+    let mut rng = rng();
+
+    let replication = replicated_loglet_config.replication_property.clone();
+
+    let sequencer = preferred_sequencer
+        .and_then(|node_id| observed_cluster_state.alive_generation(node_id))
+        .or_else(|| {
+            // we can place the sequencer on any alive node
+            observed_cluster_state
+                .alive_nodes()
+                .choose(&mut rng)
+                .cloned()
+        })?;
+
+    let opts = NodeSetSelectorOptions::new(u32::from(log_id) as u64)
+        .with_target_size(replicated_loglet_config.target_nodeset_size)
+        .with_preferred_nodes_opt(preferred_nodes)
+        .with_top_priority_node(sequencer.id());
+
+    let selection = NodeSetSelector::select(
+        nodes_config,
+        &replication,
+        restate_types::replicated_loglet::logserver_candidate_filter,
+        logserver_writeable_node_filter(observed_cluster_state),
+        opts,
+    );
+
+    match selection {
+        Ok(nodeset) => {
+            // todo(asoli): here is the right place to do additional validation and reject the nodeset if it
+            // fails to meet some safety margin. For now, we'll accept the nodeset as it meets the
+            // minimum replication requirement only.
+            debug_assert!(nodeset.len() >= replication.num_copies() as usize);
+            if replication.num_copies() > 1 && nodeset.len() == replication.num_copies() as usize {
+                warn!(
+                    ?log_id,
+                    %replication,
+                    generated_nodeset_size = nodeset.len(),
+                    "The number of writeable log-servers is too small for the configured \
+                    replication, there will be no fault-tolerance until you add more nodes."
+                );
+            }
+            Some(ReplicatedLogletParams {
+                loglet_id,
+                sequencer,
+                replication,
+                nodeset,
+            })
+        }
+        Err(err) => {
+            warn!(?log_id, "Cannot select node-set for log: {err}");
+            None
+        }
+    }
+}
+
+fn logserver_writeable_node_filter(
+    observed_cluster_state: &ObservedClusterState,
+) -> impl Fn(PlainNodeId, &NodeConfig) -> bool + '_ {
+    |node_id: PlainNodeId, config: &NodeConfig| {
+        matches!(
+            config.log_server_config.storage_state,
+            StorageState::ReadWrite
+        ) && observed_cluster_state.alive_generation(node_id).is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Service;

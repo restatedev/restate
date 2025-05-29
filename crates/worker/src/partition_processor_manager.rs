@@ -535,12 +535,7 @@ impl PartitionProcessorManager {
                     },
                 };
 
-                // only restart partition processors if the partition processor manager is still supposed to run
-                if !restate_core::is_cancellation_requested() {
-                    if !self.start_partition_processor_if_replica(partition_id, delay) {
-                        debug!("Partition processor stopped: {result:?}");
-                    }
-                } else {
+                if !self.start_partition_processor_if_replica(partition_id, delay) {
                     debug!("Partition processor stopped: {result:?}");
                 }
 
@@ -1182,6 +1177,11 @@ impl PartitionProcessorManager {
         partition_id: PartitionId,
         delay: Option<Duration>,
     ) -> bool {
+        // only restart partition processors if the partition processor manager is still supposed to run
+        if restate_core::is_cancellation_requested() {
+            return false;
+        }
+
         if self
             .replica_set_states
             .get_membership_state(partition_id)
