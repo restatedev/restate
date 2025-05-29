@@ -176,10 +176,6 @@ where
 
         let log_trim_check_interval = create_log_trim_check_interval(&configuration.admin);
 
-        let mut find_logs_tail_interval =
-            time::interval(configuration.admin.log_tail_update_interval.into());
-        find_logs_tail_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
         let (epoch_metadata_tx, epoch_metadata_rx) = tokio::sync::mpsc::channel(1);
 
         TaskCenter::spawn_unmanaged(TaskKind::Background, "epoch-metadata-fetch", {

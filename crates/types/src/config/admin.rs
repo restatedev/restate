@@ -81,14 +81,6 @@ pub struct AdminOptions {
     /// This configuration option is deprecated and ignored in Restate >= 1.2.
     pub log_trim_threshold: Option<u64>,
 
-    /// # Log Tail Update interval
-    ///
-    /// Controls the interval at which cluster controller tries to refind the tails of logs. This
-    /// is a safety-net check in case of a concurrent cluster controller crash.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub log_tail_update_interval: humantime::Duration,
-
     /// # Default partition replication factor
     ///
     /// The default replication factor for partition processors, this impacts how many replicas
@@ -185,7 +177,6 @@ impl Default for AdminOptions {
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             disable_web_ui: false,
-            log_tail_update_interval: Duration::from_secs(5 * 60).into(),
             experimental_feature_force_journal_retention: None,
         }
     }
@@ -230,7 +221,6 @@ impl From<AdminOptionsShadow> for AdminOptions {
             heartbeat_interval: value.heartbeat_interval,
             log_trim_check_interval,
             log_trim_threshold: value.log_trim_threshold,
-            log_tail_update_interval: value.log_tail_update_interval,
             default_partition_replication: partition_replication,
             disable_web_ui: value.disable_web_ui,
             #[cfg(any(test, feature = "test-util"))]
@@ -268,9 +258,6 @@ struct AdminOptionsShadow {
     log_trim_interval: Option<humantime::Duration>,
 
     log_trim_threshold: Option<u64>,
-
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    log_tail_update_interval: humantime::Duration,
 
     #[serde_as(
         as = "Option<serde_with::PickFirst<(_, PartitionReplicationFromReplicationProperty)>>"
