@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use dotenvy::dotenv;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_log::AsTrace;
 
 use crate::opts::{CommonOpts, ConfirmMode, NetworkOpts, TableStyle, TimeFormat, UiOpts};
@@ -94,12 +94,15 @@ impl CliContext {
         dialoguer::console::set_colors_enabled(colorful);
 
         // Setup logging from env and from -v .. -vvvv
-        tracing_subscriber::fmt()
+        if let Err(err) = tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .with_max_level(opts.verbose.log_level_filter().as_trace())
             .with_ansi(colorful)
-            .init();
+            .try_init()
+        {
+            warn!("Failed to initialize tracing subscriber: {}", err);
+        }
 
         // We only log after we've initialized the logger with the desired log
         // level.
