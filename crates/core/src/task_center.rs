@@ -40,10 +40,10 @@ use tokio::task_local;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
-use restate_types::GenerationalNodeId;
 use restate_types::SharedString;
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
+use restate_types::{GenerationalNodeId, NodeId};
 
 use crate::cluster_state::ClusterState;
 use crate::metric_definitions::{self, STATUS_COMPLETED, STATUS_FAILED, TC_FINISHED, TC_SPAWN};
@@ -131,6 +131,15 @@ impl TaskCenter {
     /// Returns an error if a shutdown has been requested.
     pub fn check_shutdown() -> Result<(), ShutdownError> {
         Self::with_current(|tc| tc.check_shutdown())
+    }
+
+    /// Returns true if our node ID is set and our failure detector says that we are alive.
+    pub fn is_my_node_alive() -> bool {
+        let Some(node_id) = Metadata::with_current(|m| m.my_node_id_opt()) else {
+            return false;
+        };
+
+        Self::with_current(|tc| tc.cluster_state().is_alive(NodeId::from(node_id)))
     }
 
     /// Launch a new task

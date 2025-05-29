@@ -37,7 +37,7 @@ use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
 /// a sealed loglet while it's tailing a log.
 ///
 /// Please keep this enum ordered, i.e. anything > Allowed should still mean allowed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, derive_more::Display)]
 pub enum ErrorRecoveryStrategy {
     /// Do not extend the chain, wait indefinitely instead until the error disappears.
     Wait = 1,
@@ -48,24 +48,9 @@ pub enum ErrorRecoveryStrategy {
     ExtendChainPreferred,
 }
 
-impl ErrorRecoveryStrategy {
-    /// Conditional on a temporary feature gate `auto-extend` until transition is complete
-    pub fn extend_preferred() -> Self {
-        if cfg!(feature = "auto-extend") {
-            Self::ExtendChainPreferred
-        } else {
-            Self::Wait
-        }
-    }
-}
-
 impl Default for ErrorRecoveryStrategy {
     fn default() -> Self {
-        if cfg!(feature = "auto-extend") {
-            Self::ExtendChainAllowed
-        } else {
-            Self::Wait
-        }
+        Self::ExtendChainAllowed
     }
 }
 
