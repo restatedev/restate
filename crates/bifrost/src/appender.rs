@@ -22,7 +22,7 @@ use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn, Record};
 use restate_types::storage::StorageEncode;
 
-use crate::bifrost::{BifrostInner, ErrorRecoveryStrategy};
+use crate::bifrost::{BifrostInner, ErrorRecoveryStrategy, PreferenceToken};
 use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::{BifrostAdmin, Error, InputRecord, Result};
@@ -36,6 +36,8 @@ pub struct Appender {
     loglet_cache: Option<LogletWrapper>,
     #[debug(skip)]
     bifrost_inner: Arc<BifrostInner>,
+    #[debug(skip)]
+    _preference_token: Option<PreferenceToken>,
 }
 
 impl Appender {
@@ -45,12 +47,16 @@ impl Appender {
         bifrost_inner: Arc<BifrostInner>,
     ) -> Self {
         let config = Configuration::live();
+        let _preference_token = (error_recovery_strategy
+            == ErrorRecoveryStrategy::ExtendChainPreferred)
+            .then_some(bifrost_inner.acquire_preference_token(log_id));
         Self {
             log_id,
             config,
             error_recovery_strategy,
             loglet_cache: Default::default(),
             bifrost_inner,
+            _preference_token,
         }
     }
 

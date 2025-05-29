@@ -16,7 +16,7 @@ pub use restate_types::logs::TailOffsetWatch;
 
 // exports
 pub use error::*;
-pub use provider::{LogletProvider, LogletProviderFactory};
+pub use provider::{Improvement, LogletProvider, LogletProviderFactory};
 
 use std::borrow::Cow;
 use std::pin::Pin;

@@ -86,6 +86,16 @@ pub struct BifrostOptions {
     /// Defaults: 250MB
     #[cfg_attr(feature = "schemars", schemars(with = "ByteCount"))]
     pub record_cache_memory_size: ByteCount,
+
+    /// # Disable Automatic Improvement
+    ///
+    /// When enabled, automatic improvement periodically checks with the loglet provider
+    /// if the loglet configuration can be improved by performing a reconfiguration.
+    ///
+    /// This allows the log to pick up replication property changes, apply better placement
+    /// of replicas, or for other reasons.
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub disable_auto_improvement: bool,
 }
 
 impl BifrostOptions {
@@ -121,6 +131,7 @@ impl Default for BifrostOptions {
             auto_recovery_interval: Duration::from_secs(15).into(),
             seal_retry_interval: Duration::from_secs(2).into(),
             record_cache_memory_size: ByteCount::from(250u64 * 1024 * 1024), // 250 MiB
+            disable_auto_improvement: false,
         }
     }
 }
