@@ -53,6 +53,7 @@ mod tests {
     use cling::Cling;
     use futures::StreamExt;
 
+    use restate_futures_util::overdue::OverdueLoggingExt;
     use restate_local_cluster_runner::{
         cluster::Cluster,
         node::{BinarySource, Node},
@@ -63,8 +64,9 @@ mod tests {
         config::Configuration, logs::metadata::ProviderKind, net::AdvertisedAddress,
         replication::ReplicationProperty,
     };
+    use tracing::info;
 
-    #[tokio::test]
+    #[test_log::test(tokio::test)]
     async fn restatectl_smoke_test() -> googletest::Result<()> {
         let mut config = Configuration::default();
         config.common.default_num_partitions = 1.try_into()?;
@@ -87,11 +89,31 @@ mod tests {
             .build()
             .start()
             .await?;
+        // registering the search pattern as early as possible since we might miss it if it was
+        // logged too quickly.
+        let mut node = cluster.nodes[0].lines("Partition [0-9]+ started".parse()?);
 
-        cluster.wait_healthy(Duration::from_secs(30)).await?;
+        cluster
+            .wait_healthy(Duration::from_secs(30))
+            .log_slow_after(
+                Duration::from_secs(10),
+                tracing::Level::INFO,
+                "Cluster is not healthy yet",
+            )
+            .with_overdue(Duration::from_secs(20), tracing::Level::WARN)
+            .await?;
         {
-            let mut node = cluster.nodes[0].lines("Partition [0-9]+ started".parse()?);
-            node.next().await;
+            // wait for the node to report that the partition has started
+            node.next()
+                .log_slow_after(
+                    Duration::from_secs(10),
+                    tracing::Level::INFO,
+                    "Node didn't start PPs yet",
+                )
+                .with_overdue(Duration::from_secs(20), tracing::Level::WARN)
+                .await;
+
+            drop(node);
         }
 
         let_assert!(
@@ -100,6 +122,8 @@ mod tests {
         );
         let_assert!(AdvertisedAddress::Uds(sock_path) = &addresses[0]);
         let node_address = format!("unix:{}", cluster.base_dir().join(sock_path).display());
+
+        info!("Running restatectl....");
 
         let os_args: Vec<_> = vec![
             "restatectl",
@@ -112,7 +136,6 @@ mod tests {
         .map(OsString::from)
         .collect();
         let restatectl = Cling::<restatectl::CliApp>::try_parse_from(os_args)?;
-        // Note that we can only run this once per test as restatectl will initialize the global tracing subscriber:
         let result = restatectl.run().await;
         assert!(result.is_success());
 

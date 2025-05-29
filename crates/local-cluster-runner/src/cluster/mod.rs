@@ -178,6 +178,7 @@ impl StartedCluster {
         tokio::try_join!(
             self.wait_check_healthy(HealthCheck::MetadataServer, dur),
             self.wait_check_healthy(HealthCheck::Admin, dur),
+            self.wait_check_healthy(HealthCheck::Worker, dur),
             self.wait_check_healthy(HealthCheck::Ingress, dur),
             self.wait_check_healthy(HealthCheck::LogServer, dur),
         )?;

@@ -790,6 +790,24 @@ impl StartedNode {
             .is_provisioning()
     }
 
+    /// Check to see if the worker is provisioned.
+    pub async fn worker_provisioned(&self) -> bool {
+        let nodes_config = self.get_nodes_configuration().await;
+
+        let Ok(Some(nodes_config)) = nodes_config else {
+            return false;
+        };
+
+        let Some(node_id) = nodes_config
+            .find_node_by_name(self.node_name())
+            .map(|n| n.current_generation.as_plain())
+        else {
+            return false;
+        };
+
+        !nodes_config.get_worker_state(&node_id).is_provisioning()
+    }
+
     async fn get_nodes_configuration(&self) -> Result<Option<NodesConfiguration>, ReadError> {
         let metadata_client = self
             .metadata_client()
@@ -968,6 +986,7 @@ impl Drop for StartedNode {
 pub enum HealthCheck {
     Admin,
     Ingress,
+    Worker,
     LogServer,
     MetadataServer,
 }
@@ -977,6 +996,7 @@ impl HealthCheck {
         match self {
             HealthCheck::Admin => node.admin_address().is_some(),
             HealthCheck::Ingress => node.ingress_address().is_some(),
+            HealthCheck::Worker => node.config().has_role(Role::Worker),
             HealthCheck::LogServer => node.config().has_role(Role::LogServer),
             HealthCheck::MetadataServer => node.config().has_role(Role::MetadataServer),
         }
@@ -987,6 +1007,7 @@ impl HealthCheck {
             HealthCheck::Admin => node.admin_healthy().await,
             HealthCheck::Ingress => node.ingress_healthy().await,
             HealthCheck::LogServer => node.logserver_provisioned().await,
+            HealthCheck::Worker => node.worker_provisioned().await,
             HealthCheck::MetadataServer => node.metadata_server_joined_cluster().await,
         }
     }
