@@ -18,7 +18,6 @@ use ahash::HashMap;
 use assert2::let_assert;
 use tracing::{Level, debug, enabled, info, instrument, trace};
 
-use crate::cluster_controller::logs_controller;
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
@@ -29,7 +28,6 @@ use restate_metadata_store::{
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
-use restate_types::logs::LogId;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::partition_processor_manager::{
@@ -43,7 +41,7 @@ use restate_types::replication::balanced_spread_selector::{
     BalancedSpreadSelector, SelectorOptions,
 };
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::{NodeId, PlainNodeId, Version, Versioned};
+use restate_types::{PlainNodeId, Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading scheduling plan from metadata store: {0}")]
@@ -242,16 +240,11 @@ impl<T: TransportConnect> Scheduler<T> {
         &mut self,
         observed_cluster_state: &ObservedClusterState,
         nodes_config: &NodesConfiguration,
-        placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
         trace!(?observed_cluster_state, "On observed cluster state");
 
-        self.ensure_valid_partition_configuration(
-            observed_cluster_state,
-            nodes_config,
-            placement_hints,
-        )
-        .await?;
+        self.ensure_valid_partition_configuration(observed_cluster_state, nodes_config)
+            .await?;
 
         // todo move draining workers to disabled if they no longer run any partition processors;
         //  since the worker state is stored in the NodesConfiguration and the replica sets are
@@ -269,16 +262,9 @@ impl<T: TransportConnect> Scheduler<T> {
         &mut self,
         observed_cluster_state: &ObservedClusterState,
         nodes_config: &NodesConfiguration,
-        placement_hints: impl PartitionProcessorPlacementHints,
     ) -> Result<(), Error> {
-        let logs = Metadata::with_current(|m| m.logs_ref());
         let partition_table = Metadata::with_current(|m| m.partition_table_ref());
 
-        if logs.num_logs() != partition_table.len() {
-            // either the partition table or the logs are not fully initialized, hence there is
-            // nothing we can do atm. we need to wait until both partitions and logs are created
-            return Ok(());
-        }
         let version = partition_table.version();
 
         // todo a bulk get of all EpochMetadata if self.partitions.is_empty()
@@ -341,11 +327,6 @@ impl<T: TransportConnect> Scheduler<T> {
                     entry
                 }
                 entry => {
-                    let preferred_nodes: NodeSet = placement_hints
-                        .preferred_nodes(partition_id)
-                        .cloned()
-                        .chain(placement_hints.preferred_leader(partition_id))
-                        .collect();
                     let_assert!(
                         PartitionReplication::Limit(partition_replication) =
                             partition_table.replication(),
@@ -357,7 +338,7 @@ impl<T: TransportConnect> Scheduler<T> {
                         *partition_id,
                         nodes_config,
                         partition_replication.clone(),
-                        preferred_nodes,
+                        NodeSet::default(),
                     ) {
                         let occupied_entry = entry.insert_entry(
                             Self::store_initial_partition_configuration(
@@ -408,11 +389,7 @@ impl<T: TransportConnect> Scheduler<T> {
             }
 
             // select the leader based on the observed cluster state
-            self.select_leader(
-                partition_id,
-                observed_cluster_state,
-                placement_hints.preferred_leader(partition_id),
-            );
+            self.select_leader(partition_id, observed_cluster_state);
         }
 
         // update the PartitionTable placement which is still needed for routing messages from the
@@ -642,23 +619,10 @@ impl<T: TransportConnect> Scheduler<T> {
         &mut self,
         partition_id: &PartitionId,
         observed_cluster_state: &ObservedClusterState,
-        preferred_leader: Option<PlainNodeId>,
     ) {
         let Some(partition) = self.partitions.get_mut(partition_id) else {
             return;
         };
-
-        // try to select the preferred leader first if it's still alive and part of current
-        if let Some(preferred_leader) = preferred_leader {
-            if observed_cluster_state
-                .alive_generation(preferred_leader)
-                .is_some()
-                && partition.contains_replica_current(preferred_leader)
-            {
-                partition.leader = Some(preferred_leader);
-                return;
-            }
-        }
 
         // pick the alive node currently running as leader if it is a replica in current
         if let Some(leader) = observed_cluster_state
@@ -813,28 +777,5 @@ impl<T: TransportConnect> Scheduler<T> {
         }
 
         Ok(())
-    }
-}
-
-/// Placement hints for the [`logs_controller::LogsController`] based on the current
-/// state of the scheduler.
-pub struct SchedulerNodeSetSelectorHints<'a, T> {
-    scheduler: &'a Scheduler<T>,
-}
-
-impl<'a, T> SchedulerNodeSetSelectorHints<'a, T> {
-    pub fn new(scheduler: &'a Scheduler<T>) -> Self {
-        Self { scheduler }
-    }
-}
-
-impl<T> logs_controller::NodeSetSelectorHints for SchedulerNodeSetSelectorHints<'_, T> {
-    fn preferred_sequencer(&self, log_id: &LogId) -> Option<NodeId> {
-        let partition_id = PartitionId::from(*log_id);
-
-        self.scheduler
-            .partitions
-            .get(&partition_id)
-            .and_then(|partition| partition.leader.map(NodeId::from))
     }
 }
