@@ -10,7 +10,6 @@
 
 pub mod cluster_state_refresher;
 pub mod grpc_svc_handler;
-mod logs_controller;
 mod observed_cluster_state;
 pub mod scheduler;
 pub mod service;
