@@ -181,6 +181,11 @@ impl NodeSet {
         self.0.is_superset(&other.0)
     }
 
+    /// Returns true if it's the same nodeset but potentially shuffled
+    pub fn is_equivalent(&self, other: &NodeSet) -> bool {
+        self.0.is_superset(&other.0) && self.0.len() == other.0.len()
+    }
+
     pub fn as_slice(&self) -> &indexmap::set::Slice<PlainNodeId> {
         self.0.as_slice()
     }
