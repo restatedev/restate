@@ -8,30 +8,38 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ahash::{HashMap, HashMapExt};
 use enum_map::Enum;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 use tokio_stream::StreamExt;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use restate_core::{
-    ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind, cancellation_watcher,
+    Metadata, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind,
+    cancellation_watcher,
 };
 use restate_metadata_store::{ReadModifyWriteError, ReadWriteError, retry_on_retryable_error};
 use restate_types::config::Configuration;
-use restate_types::logs::metadata::{Logs, ProviderKind};
+use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::retries::with_jitter;
 
+use crate::BifrostAdmin;
 use crate::bifrost::BifrostInner;
-use crate::loglet::LogletProvider;
+use crate::loglet::{Improvement, LogletProvider};
 
 pub type WatchdogSender = tokio::sync::mpsc::UnboundedSender<WatchdogCommand>;
 type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;
+
+const IMPROVEMENT_ROUND_INTERVAL: Duration = Duration::from_secs(1);
+// this duration is jitter-ed with +/- 50% to splay updates
+const IMPROVEMENT_ACTION_AFTER: Duration = Duration::from_secs(5);
 
 /// The watchdog is a task manager for background jobs that needs to run on bifrost.
 /// tasks managed by the watchdogs are cooperative and should not be terminated abruptly.
@@ -44,7 +52,26 @@ pub struct Watchdog {
     inbound: WatchdogReceiver,
     live_providers: Vec<Arc<dyn LogletProvider>>,
     in_flight_trim: Option<restate_core::task_center::TaskHandle<()>>,
+    my_preferred_logs: HashMap<LogId, PreferredLog>,
     pending_trims: TrimRequests,
+}
+
+struct PreferredLog {
+    /// the number of appender tasks that have indicated that they are the preferred writer
+    ref_cnt: usize,
+    /// the last time we checked this log for improvement
+    last_checked: Instant,
+    in_flight: Option<(SegmentIndex, TaskHandle<()>)>,
+}
+
+impl Default for PreferredLog {
+    fn default() -> Self {
+        Self {
+            ref_cnt: 1,
+            last_checked: Instant::now(),
+            in_flight: None,
+        }
+    }
 }
 
 type TrimRequests = HashMap<LogId, Lsn>;
@@ -62,11 +89,30 @@ impl Watchdog {
             live_providers: Vec::with_capacity(ProviderKind::LENGTH),
             in_flight_trim: None,
             pending_trims: HashMap::with_capacity(128),
+            my_preferred_logs: HashMap::default(),
         }
     }
 
     fn handle_command(&mut self, cmd: WatchdogCommand) {
         match cmd {
+            WatchdogCommand::PreferenceAcquire(log_id) => {
+                self.my_preferred_logs
+                    .entry(log_id)
+                    .and_modify(|l| l.ref_cnt += 1)
+                    .or_default();
+            }
+            WatchdogCommand::PreferenceRelease(log_id) => {
+                match self.my_preferred_logs.entry(log_id) {
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        let current = entry.get_mut();
+                        current.ref_cnt = current.ref_cnt.saturating_sub(1);
+                        if current.ref_cnt == 0 {
+                            entry.remove();
+                        }
+                    }
+                    std::collections::hash_map::Entry::Vacant(_) => {}
+                }
+            }
             WatchdogCommand::WatchProvider(provider) => {
                 self.live_providers.push(provider.clone());
                 let _ = TaskCenter::spawn(
@@ -155,6 +201,10 @@ impl Watchdog {
         tokio::pin!(shutdown);
         trace!("Bifrost watchdog started");
 
+        let mut improvement_interval = tokio::time::interval(IMPROVEMENT_ROUND_INTERVAL);
+        let mut logs = Metadata::with_current(|m| m.updateable_logs_metadata());
+        let mut config = Configuration::live();
+
         loop {
             if self.in_flight_trim.is_none() && !self.pending_trims.is_empty() {
                 let trims = self.pending_trims.drain().collect();
@@ -168,20 +218,133 @@ impl Watchdog {
             }
 
             tokio::select! {
-            biased;
-            _ = &mut shutdown => {
-                self.shutdown().await;
-                break;
-            }
-            Some(cmd) = self.inbound.recv() => {
-                self.handle_command(cmd)
-            }
-            Some(_) = OptionFuture::from(self.in_flight_trim.as_mut()) => {
-                self.in_flight_trim = None;
-            }
+                biased;
+                _ = &mut shutdown => {
+                    self.shutdown().await;
+                    break;
+                }
+                Some(cmd) = self.inbound.recv() => {
+                    self.handle_command(cmd)
+                }
+                _tick = improvement_interval.tick() => {
+                    if !config.live_load().bifrost.disable_auto_improvement && TaskCenter::is_my_node_alive() {
+                        // check if we have logs to improve
+                        let logs = logs.live_load();
+                        self.improve_logs(logs);
+                    }
+                }
+                Some(_) = OptionFuture::from(self.in_flight_trim.as_mut()) => {
+                    self.in_flight_trim = None;
+                }
             }
         }
         Ok(())
+    }
+
+    /// Checks if we have logs with preferred writers running being local and reconfigures them for
+    /// better performance/placement if needed.
+    ///
+    /// This will only take action over 1/3 of the preferred logs at a time to reduce
+    /// the chances of stomping.
+    fn improve_logs(&mut self, logs: &Logs) {
+        let allowed_to_action = self.my_preferred_logs.len().div_ceil(3);
+        let mut actioned = 0;
+        for (log_id, preferred) in self.my_preferred_logs.iter_mut() {
+            debug_assert!(preferred.ref_cnt > 0);
+            if preferred.last_checked.elapsed() < with_jitter(IMPROVEMENT_ACTION_AFTER, 0.5) {
+                continue;
+            }
+            let Some(chain) = logs.chain(log_id) else {
+                // check again later
+                preferred.last_checked = Instant::now();
+                continue;
+            };
+
+            let provider_config = &logs.configuration().default_provider;
+            let tail_segment = chain.tail();
+            let segment_index = tail_segment.index();
+            let current_provider = tail_segment.config.kind;
+
+            // wW abort the task it has not finished and the tail segment has moved beyond what the
+            // task is about.
+            //
+            // if there is a task in-flight, we let it continue and we touch the checked instant
+            // since we don't need to do anything here.
+            if let Some((in_flight_segment_index, in_flight_task)) = &preferred.in_flight {
+                if *in_flight_segment_index < segment_index {
+                    // the task is outdated, we can cancel it
+                    in_flight_task.abort();
+                    preferred.in_flight = None;
+                } else if !in_flight_task.is_finished() {
+                    // check again later
+                    preferred.last_checked = Instant::now();
+                    continue;
+                } else if in_flight_task.is_finished() {
+                    preferred.in_flight = None;
+                    // reset the check time to slow down reaction time
+                    preferred.last_checked = Instant::now();
+                    continue;
+                }
+            }
+
+            let may_improve = if current_provider != provider_config.kind() {
+                Improvement::Possible {
+                    reason: format!(
+                        "provider change from {current_provider} to {}",
+                        provider_config.kind(),
+                    ),
+                }
+            } else {
+                let current_params = &tail_segment.config.params;
+                let Ok(provider) = self.inner.provider_for(provider_config.kind()) else {
+                    // check again later
+                    preferred.last_checked = Instant::now();
+                    continue;
+                };
+                match provider.may_improve_params(*log_id, current_params, provider_config) {
+                    Ok(improvement) => improvement,
+                    Err(err) => {
+                        debug!(
+                            log_id = %log_id,
+                            %segment_index,
+                            %err,
+                            "[Auto Improvement] Bifrost watchdog failed to check if the log can be improved",
+                        );
+                        Improvement::None
+                    }
+                }
+            };
+
+            preferred.last_checked = Instant::now();
+            if let Improvement::Possible { reason } = may_improve {
+                actioned += 1;
+                info!(
+                    log_id = %log_id,
+                    %segment_index,
+                    "[Auto Improvement] Bifrost will reconfigure the log because {reason}"
+                );
+                let Ok(task) =
+                    TaskCenter::spawn_unmanaged(TaskKind::Disposable, "seal-for-improvement", {
+                        let log_id = *log_id;
+                        let bifrost = Arc::clone(&self.inner);
+                        async move {
+                            let _ = BifrostAdmin::new(&bifrost)
+                                .seal_and_auto_extend_chain(log_id, Some(segment_index))
+                                .await;
+                        }
+                    })
+                else {
+                    // we are shutting down, there is no point in continuing
+                    return;
+                };
+
+                preferred.in_flight = Some((segment_index, task));
+            }
+            // only action on 1/3 of the logs in every round
+            if actioned >= allowed_to_action {
+                return;
+            }
+        }
     }
 
     fn store_trim_request(&mut self, log_id: LogId, requested_trim_point: Lsn) {
@@ -305,6 +468,10 @@ async fn trim_chains_if_needed(
 
 pub enum WatchdogCommand {
     WatchProvider(Arc<dyn LogletProvider>),
+    /// A log appender running on this node has indicated that it's the preferred writer
+    PreferenceAcquire(LogId),
+    /// Indicating that a preference token has been dropped
+    PreferenceRelease(LogId),
     LogTrimmed {
         log_id: LogId,
         /// NOTE: This is **not** the actual trim point, this could easily be Lsn::MAX (legal)

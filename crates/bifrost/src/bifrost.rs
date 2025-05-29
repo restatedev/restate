@@ -494,6 +494,14 @@ impl BifrostInner {
         }
     }
 
+    /// Acquire a token to tell bifrost that this node is the intended primary writer for this log.
+    ///
+    /// The preference can be kept for as long as the token is not dropped. Multiple tokens can be
+    /// taken for the same log. Preference is only lost after the last token is dropped.
+    pub fn acquire_preference_token(&self, log_id: LogId) -> PreferenceToken {
+        PreferenceToken::new(self.watchdog.clone(), log_id)
+    }
+
     // --- Helper functions --- //
     /// Get the provider for a given kind. A provider must be enabled and BifrostService **must**
     /// be started before calling this.
@@ -595,6 +603,49 @@ impl MaybeLoglet {
                 panic!("Expected Loglet, found Trim segment with next_base_lsn={next_base_lsn}")
             }
         }
+    }
+}
+
+/// A token to tell bifrost that this node is the intended primary writer for this log.
+///
+/// The preference can be kept for as long as the token is not dropped. Multiple tokens can be
+/// taken for the same log. Preference is only lost after the last token is dropped.
+///
+/// Note that multiple nodes can take preference for the same log, depending on the default
+/// provider, those nodes might compete in optimizing the loglet locality differently, causing
+/// bouncing or ping-pongs.
+pub struct PreferenceToken {
+    log_id: LogId,
+    sender: WatchdogSender,
+}
+
+impl PreferenceToken {
+    fn new(sender: WatchdogSender, log_id: LogId) -> Self {
+        // notify the watchdog that we are preferred
+        let _ = sender.send(WatchdogCommand::PreferenceAcquire(log_id));
+        Self { log_id, sender }
+    }
+}
+
+impl Clone for PreferenceToken {
+    fn clone(&self) -> Self {
+        // notify the watchdog that we are still preferred
+        let _ = self
+            .sender
+            .send(WatchdogCommand::PreferenceAcquire(self.log_id));
+        Self {
+            log_id: self.log_id,
+            sender: self.sender.clone(),
+        }
+    }
+}
+
+impl Drop for PreferenceToken {
+    fn drop(&mut self) {
+        // notify the watchdog that we are no longer preferred
+        let _ = self
+            .sender
+            .send(WatchdogCommand::PreferenceRelease(self.log_id));
     }
 }
 
