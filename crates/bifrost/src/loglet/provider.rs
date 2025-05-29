@@ -29,6 +29,15 @@ pub trait LogletProviderFactory: Send + 'static {
     async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider + 'static>, OperationError>;
 }
 
+/// Explains whether a potential improvement is possible or not for a given log
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+pub enum Improvement {
+    #[display("improvement possible; {reason}")]
+    Possible { reason: String },
+    #[display("no improvement possible")]
+    None,
+}
+
 #[async_trait]
 pub trait LogletProvider: Send + Sync {
     /// Create a loglet client for a given segment and configuration.
@@ -52,6 +61,21 @@ pub trait LogletProvider: Send + Sync {
         chain: Option<&Chain>,
         defaults: &ProviderConfiguration,
     ) -> Result<LogletParams, OperationError>;
+
+    /// Returns true if the provider is considering better params for to improve on the current
+    /// params.
+    ///
+    /// NOTE: this assumes that `current` is produced by the same provider kind.
+    ///
+    /// By default, this will return [[`Improvement::None`]] unless a provider overrides it.
+    fn may_improve_params(
+        &self,
+        _log_id: LogId,
+        _current: &LogletParams,
+        _defaults: &ProviderConfiguration,
+    ) -> Result<Improvement, OperationError> {
+        Ok(Improvement::None)
+    }
 
     /// A hook that's called after provider is started.
     async fn post_start(&self) {}

@@ -32,7 +32,7 @@ use super::loglet::ReplicatedLoglet;
 use super::metric_definitions;
 use super::network::{SequencerDataRpcHandler, SequencerInfoRpcHandler};
 use crate::Error;
-use crate::loglet::{Loglet, LogletProvider, LogletProviderFactory, OperationError};
+use crate::loglet::{Improvement, Loglet, LogletProvider, LogletProviderFactory, OperationError};
 use crate::providers::replicated_loglet::error::ReplicatedLogletError;
 use crate::providers::replicated_loglet::loglet::FindTailFlags;
 use crate::providers::replicated_loglet::tasks::PeriodicTailChecker;
@@ -200,6 +200,95 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
     ) -> Result<Arc<dyn Loglet>, Error> {
         let loglet = self.get_or_create_loglet(log_id, segment_index, params)?;
         Ok(loglet as Arc<dyn Loglet>)
+    }
+
+    fn may_improve_params(
+        &self,
+        log_id: LogId,
+        current_params: &LogletParams,
+        defaults: &ProviderConfiguration,
+    ) -> Result<Improvement, OperationError> {
+        let ProviderConfiguration::Replicated(defaults) = defaults else {
+            panic!("ProviderConfiguration::Replicated is expected");
+        };
+
+        let current_params = ReplicatedLogletParams::deserialize_from(current_params.as_bytes())
+            .map_err(|e| {
+                ReplicatedLogletError::LogletParamsParsingError(
+                    log_id,
+                    0.into(), /* dummy index */
+                    e,
+                )
+            })?;
+
+        let mut preferred_nodes = current_params.nodeset.clone();
+
+        let my_node = my_node_id();
+
+        // improvement to apply the replication property
+        if current_params.replication != defaults.replication_property {
+            return Ok(Improvement::Possible {
+                reason: format!(
+                    "replication can change from {} to {}",
+                    current_params.replication, defaults.replication_property
+                ),
+            });
+        }
+
+        // improvement by moving the sequencer to this node
+        if current_params.sequencer != my_node {
+            return Ok(Improvement::Possible {
+                reason: format!(
+                    "sequencer can move from {} to {}",
+                    current_params.sequencer, my_node
+                ),
+            });
+        }
+
+        // If we are a log-server, it should be preferred.
+        if Configuration::pinned().roles().contains(Role::LogServer) {
+            preferred_nodes.insert(my_node);
+        }
+
+        let opts = NodeSetSelectorOptions::new(u32::from(log_id) as u64)
+            .with_target_size(defaults.target_nodeset_size)
+            .with_preferred_nodes(&preferred_nodes)
+            .with_top_priority_node(my_node);
+
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+
+        let selection = NodeSetSelector::select(
+            &nodes_config,
+            &defaults.replication_property,
+            logserver_candidate_filter,
+            |_, config| {
+                matches!(
+                    config.log_server_config.storage_state,
+                    StorageState::ReadWrite
+                )
+            },
+            opts,
+        );
+
+        let new_nodeset = selection.map_err(OperationError::retryable)?;
+        debug_assert!(new_nodeset.len() >= defaults.replication_property.num_copies() as usize);
+        if new_nodeset.len() < current_params.nodeset.len() {
+            // a bigger nodeset is a better nodeset, we reject a smaller offer
+            return Ok(Improvement::None);
+        }
+        // if it's identical, just shuffled around, then no, do nothing.
+        if current_params.nodeset.is_subset(&new_nodeset)
+            && new_nodeset.len() == current_params.nodeset.len()
+        {
+            return Ok(Improvement::None);
+        }
+
+        Ok(Improvement::Possible {
+            reason: format!(
+                "nodeset update from {} to {}",
+                current_params.nodeset, new_nodeset
+            ),
+        })
     }
 
     fn propose_new_loglet_params(
