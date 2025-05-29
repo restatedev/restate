@@ -26,10 +26,12 @@ use restate_core::MetadataKind;
 use restate_core::ShutdownError;
 use restate_types::Version;
 use restate_types::Versioned;
+use restate_types::live::Live;
 use restate_types::logs::KeyFilter;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::SequenceNumber;
 use restate_types::logs::TailState;
+use restate_types::logs::metadata::Logs;
 use restate_types::logs::metadata::MaybeSegment;
 use restate_types::logs::{LogId, Lsn};
 
@@ -59,6 +61,11 @@ pub struct LogReadStream {
     ///  This is akin to the lsn that can be passed to `read(from)` to read the
     ///  next record in the log.
     read_pointer: Lsn,
+    #[pin]
+    log_metadata: Live<Logs>,
+    latest_checked_version: Version,
+    #[pin]
+    next_log_metadata_watch_fut: Option<BoxFuture<'static, Result<Version, ShutdownError>>>,
     #[pin]
     state: State,
     /// Current substream we are reading from
@@ -96,11 +103,7 @@ enum State {
         tail_watch: Option<BoxStream<'static, TailState>>,
     },
     /// Waiting for the tail LSN of the substream's loglet to be determined (sealing in-progress)
-    AwaitingReconfiguration {
-        /// Future to continue waiting on log metadata updates
-        #[pin]
-        log_metadata_watch_fut: Option<BoxFuture<'static, Result<Version, ShutdownError>>>,
-    },
+    AwaitingReconfiguration,
     Terminated,
 }
 
@@ -116,12 +119,16 @@ impl LogReadStream {
     ) -> Result<Self> {
         // Accidental reads from Lsn::INVALID are reset to Lsn::OLDEST
         let start_lsn = std::cmp::max(Lsn::OLDEST, start_lsn);
+        let log_metadata = Metadata::with_current(|m| m.updateable_logs_metadata());
         Ok(Self {
             bifrost_inner,
             log_id,
             filter,
             read_pointer: start_lsn,
             end_lsn,
+            latest_checked_version: Version::INVALID,
+            next_log_metadata_watch_fut: None,
+            log_metadata,
             substream: None,
             state: State::New,
         })
@@ -181,6 +188,20 @@ impl Stream for LogReadStream {
                 return Poll::Ready(None);
             }
 
+            let logs = this.log_metadata.live_load();
+            if *this.latest_checked_version < logs.version() {
+                // we are checking this version now.
+                *this.latest_checked_version = logs.version();
+                let next_version = logs.version().next();
+                let metadata_watch_fut = Box::pin(async move {
+                    Metadata::current()
+                        .wait_for_version(MetadataKind::Logs, next_version)
+                        .await
+                });
+                this.next_log_metadata_watch_fut
+                    .set(Some(metadata_watch_fut));
+            }
+
             match state {
                 StateProj::New => {
                     let find_loglet_fut = Box::pin(
@@ -230,8 +251,10 @@ impl Stream for LogReadStream {
                         None
                     };
                     // => Start Reading
+                    // let log_metadata = Metadata::with_current(|m| m.updateable_logs_metadata());
                     this.substream.set(Some(substream));
                     this.state.set(State::Reading {
+                        // log_metadata,
                         safe_known_tail,
                         tail_watch,
                     });
@@ -270,33 +293,64 @@ impl Stream for LogReadStream {
                                 || safe_known_tail
                                     .is_some_and(|known_tail| *this.read_pointer >= known_tail)
                             {
+                                // We check if there was a change in the log chain that caused a
+                                // new segment to be created after this one. If this is true, we
+                                // can short-circuit the wait for the seal signal and use that as
+                                // our tail_lsn. We do this because `TailState::Open` won't always
+                                // guarantee open-ness but `TailState::Sealed` is a guaranteed
+                                // signal.
+                                //
+                                if logs.chain(this.log_id).is_none_or(|c| {
+                                    c.tail_index() > substream.loglet().segment_index()
+                                }) {
+                                    // a new segment must have been added, time to use it for tail.
+                                    this.state.set(State::AwaitingReconfiguration);
+                                    continue;
+                                }
                                 // Wait for tail update...
                                 let Some(tail_watch) = tail_watch.as_pin_mut() else {
                                     panic!("tail_watch must be set on non-sealed read streams");
                                 };
+
                                 // If the loglet is being sealed, we must wait for reconfiguration to complete.
-                                let maybe_tail = ready!(tail_watch.poll_next(cx));
+                                let maybe_tail = tail_watch.poll_next(cx);
                                 match maybe_tail {
-                                    None => {
+                                    Poll::Pending => {
+                                        // we also want to wait for tail segment changes
+                                        if let Some(watch_fut) =
+                                            this.next_log_metadata_watch_fut.as_mut().as_pin_mut()
+                                        {
+                                            // The issue is that we might get the new segment while the registered
+                                            // waker is bound to tail_watch. In that case, the tail watch will not
+                                            // be awaken because tail can stall at the last observed state indefinitely.
+                                            // Therefore, we'll not get a chance to re-check the tail segment
+                                            // unless something else wakes us up.
+                                            let _ = ready!(watch_fut.poll(cx))?;
+                                            continue;
+                                        } else {
+                                            unreachable!(
+                                                "metadata_watch must be set on non-sealed read streams"
+                                            );
+                                        }
+                                    }
+                                    Poll::Ready(None) => {
                                         // Shutdown....
                                         this.substream.set(None);
                                         this.state.set(State::Terminated);
                                         return Poll::Ready(Some(Err(ShutdownError.into())));
                                     }
-                                    Some(TailState::Open(tail)) => {
+                                    Poll::Ready(Some(TailState::Open(tail))) => {
                                         // Safe to consider this as a tail.
                                         *safe_known_tail = Some(tail);
                                     }
-                                    Some(TailState::Sealed(_)) => {
+                                    Poll::Ready(Some(TailState::Sealed(_))) => {
                                         // Wait for reconfiguration to complete.
                                         //
                                         // Note that we don't reset the substream here because
                                         // reconfiguration might bring us back to Reading on the
                                         // same substream, we don't want to lose the resources
                                         // allocated by underlying the stream.
-                                        this.state.set(State::AwaitingReconfiguration {
-                                            log_metadata_watch_fut: None,
-                                        });
+                                        this.state.set(State::AwaitingReconfiguration);
                                         continue;
                                     }
                                 }
@@ -305,9 +359,23 @@ impl Stream for LogReadStream {
                         // We are well within the bounds of this loglet. Continue reading.
                         Some(_) => { /* fall-through */ }
                     }
-                    let maybe_record = ready!(substream.poll_next(cx));
+                    let maybe_record = substream.poll_next(cx);
                     match maybe_record {
-                        Some(Ok(record)) => {
+                        Poll::Pending => {
+                            // we also want to wait for tail segment changes so we get woken up if
+                            // the segment was sealed even if the tail watch didn't report so.
+                            if let Some(watch_fut) =
+                                this.next_log_metadata_watch_fut.as_mut().as_pin_mut()
+                            {
+                                let _ = ready!(watch_fut.poll(cx))?;
+                                continue;
+                            } else {
+                                unreachable!(
+                                    "metadata_watch must be set on non-sealed read streams"
+                                );
+                            }
+                        }
+                        Poll::Ready(Some(Ok(record))) => {
                             let new_pointer = Self::calculate_read_pointer(&record);
                             debug_assert!(new_pointer > *this.read_pointer);
                             *this.read_pointer = new_pointer;
@@ -326,8 +394,8 @@ impl Stream for LogReadStream {
                         }
                         // The assumption here is that underlying stream won't move its read
                         // pointer on error.
-                        Some(Err(e)) => return Poll::Ready(Some(Err(e.into()))),
-                        None => {
+                        Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e.into()))),
+                        Poll::Ready(None) => {
                             // We should, almost never, reach this.
                             this.substream.set(None);
                             this.state.set(State::Terminated);
@@ -337,22 +405,13 @@ impl Stream for LogReadStream {
                 }
 
                 // Waiting for the substream's loglet to be sealed
-                StateProj::AwaitingReconfiguration {
-                    mut log_metadata_watch_fut,
-                } => {
-                    // If a metadata watch is set, poll it.
-                    if let Some(watch_fut) = log_metadata_watch_fut.as_mut().as_pin_mut() {
-                        let _ = ready!(watch_fut.poll(cx))?;
-                    }
-
+                StateProj::AwaitingReconfiguration => {
                     let Some(mut substream) = this.substream.as_mut().as_pin_mut() else {
                         panic!("substream must be set at this point");
                     };
 
-                    let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
-
                     // The log is gone!
-                    let Some(chain) = log_metadata.chain(this.log_id) else {
+                    let Some(chain) = logs.chain(this.log_id) else {
                         this.substream.set(None);
                         this.state.set(State::Terminated);
                         return Poll::Ready(Some(Err(Error::UnknownLogId(*this.log_id))));
@@ -375,9 +434,8 @@ impl Stream for LogReadStream {
                                 this.state.set(State::FindingLoglet { find_loglet_fut });
                                 continue;
                             }
-                            if segment.tail_lsn.is_some() {
-                                let sealed_tail = segment.tail_lsn.unwrap();
-                                substream.set_tail_lsn(segment.tail_lsn.unwrap());
+                            if let Some(sealed_tail) = segment.tail_lsn {
+                                substream.set_tail_lsn(sealed_tail);
                                 // go back to reading.
                                 this.state.set(State::Reading {
                                     safe_known_tail: Some(sealed_tail),
@@ -398,16 +456,14 @@ impl Stream for LogReadStream {
                     };
 
                     // Reconfiguration still ongoing...
-                    let metadata_version = log_metadata.version();
-
                     // No hope at this metadata version, wait for the next update.
-                    let metadata_watch_fut = Box::pin(async move {
-                        Metadata::current()
-                            .wait_for_version(MetadataKind::Logs, metadata_version.next())
-                            .await
-                    });
-                    log_metadata_watch_fut.set(Some(metadata_watch_fut));
-                    continue;
+                    if let Some(watch_fut) = this.next_log_metadata_watch_fut.as_mut().as_pin_mut()
+                    {
+                        let _ = ready!(watch_fut.poll(cx))?;
+                        continue;
+                    } else {
+                        unreachable!("metadata_watch must be set on non-sealed read streams");
+                    }
                 }
                 StateProj::Terminated => {
                     return Poll::Ready(None);

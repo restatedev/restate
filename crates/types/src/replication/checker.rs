@@ -848,6 +848,98 @@ mod tests {
     }
 
     #[test]
+    fn nodeset_checker_tight() -> Result<()> {
+        const NUM_NODES: u32 = 2;
+        const LOCATION: &str = "";
+        // all_authoritative, all flat structure (no location)
+        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        // all_authoritative
+        for i in 1..=NUM_NODES {
+            nodes_config.upsert_node(generate_logserver_node(
+                i,
+                StorageState::ReadWrite,
+                LOCATION,
+            ));
+        }
+
+        let nodeset: NodeSet = (1..=2).collect();
+        // flat node-level replication
+        let replication = ReplicationProperty::new(2.try_into().unwrap());
+        let mut checker: NodeSetChecker<bool> =
+            NodeSetChecker::new(&nodeset, &nodes_config, &replication);
+
+        // all nodes in the nodeset are authoritative
+        assert_that!(checker.count_nodes(StorageState::is_authoritative), eq(2));
+
+        // checker.set_attribute_on_each([1, 2, 4], true);
+        // assert_that!(checker.check_write_quorum(|attr| *attr), eq(true));
+        //
+        // // 2 nodes are false in this node-set, not enough for write-quorum
+        // assert_that!(checker.check_write_quorum(|attr| !(*attr)), eq(false));
+
+        // Assuming we have [N1, N2] and replication={node: 2}
+        // Assuming that true means SEALED and false means Open and unset means that a node didn't
+        // respond yet.
+        //
+        // F-majority of SEALED means we are sealed. In this case we are not sealed.
+        assert_that!(
+            checker.check_fmajority(|attr| *attr),
+            eq(FMajorityResult::None)
+        );
+
+        // Making sure that we are not interpreting unset as false.
+        assert_that!(
+            checker.check_fmajority(|attr| !(*attr)),
+            eq(FMajorityResult::None)
+        );
+
+        // A loglet is Open if write-quorum of nodes is open. We are unset, we shouldn't consider
+        // this as equivalent to Open (false).
+        assert_that!(checker.check_write_quorum(|attr| !(*attr)), eq(false));
+
+        // # Scenario A: 1 Node is SEALED. The other node didn't respond.
+        checker.set_attribute(1, true);
+        // F-Majority if sealed.
+        assert_that!(
+            checker.check_fmajority(|attr| *attr),
+            eq(FMajorityResult::Success)
+        );
+        // Flip-side, we can't say we have write quorum
+        assert_that!(checker.check_write_quorum(|attr| !(*attr)), eq(false));
+
+        // # Scenario B: 1 Node is OPEN, The node didn't respond.
+        checker.set_attribute(1, false);
+        // F-Majority is NOT sealed.
+        assert_that!(
+            checker.check_fmajority(|attr| *attr),
+            eq(FMajorityResult::None)
+        );
+        // And we don't have enough responses to say that the loglet is open
+        assert_that!(checker.check_write_quorum(|attr| !(*attr)), eq(false));
+        // Only when N2 is Open we can say it's open
+        checker.set_attribute(2, false);
+        assert_that!(checker.check_write_quorum(|attr| !(*attr)), eq(true));
+        // making sure that we are not mistakingly saying that it's sealed
+        assert_that!(
+            checker.check_fmajority(|attr| *attr),
+            eq(FMajorityResult::None)
+        );
+
+        // Scenario C: Both nodes are sealed.
+        checker.set_attribute(1, true);
+        checker.set_attribute(2, true);
+        // checking if write-quorum nodes are open, NO.
+        assert_that!(checker.check_write_quorum(|attr| !(*attr)), eq(false));
+        // checking if f-majority is sealed, YES.
+        assert_that!(
+            checker.check_fmajority(|attr| *attr),
+            eq(FMajorityResult::Success)
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn nodeset_checker_non_existent_nodes() -> Result<()> {
         const LOCATION: &str = "";
         // all_authoritative, all flat structure (no location)
