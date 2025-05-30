@@ -81,8 +81,6 @@ pub struct Node {
             pub fn with_random_ports(self) {
                 self.base_config.admin.bind_address =
                     random_socket_address().expect("to find a random port for the admin server");
-                self.base_config.admin.query_engine.pgsql_bind_address =
-                    random_socket_address().expect("to find a random port for the pgsql server");
                 self.base_config.ingress.bind_address =
                     random_socket_address().expect("to find a random port for the ingress server");
             }
