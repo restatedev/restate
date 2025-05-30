@@ -5,6 +5,7 @@ metadata:
   name: {{ include "restate.fullname" . }}
   labels:
     {{- include "restate.labels" . | nindent 4 }}
+  namespace: {{ .Release.Namespace }}
 spec:
   serviceName: {{ include "restate.fullname" . }}-cluster
   replicas: {{ .Values.replicaCount }}
