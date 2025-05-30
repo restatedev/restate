@@ -370,6 +370,9 @@ where
             let cleaner_task_id =
                 TaskCenter::spawn_child(TaskKind::Cleaner, "cleaner", cleaner.run())?;
 
+            let mut self_proposer = self_proposer.take().expect("must be present");
+            self_proposer.mark_as_leader().await;
+
             self.state = State::Leader(LeaderState::new(
                 self.partition_processor_metadata.partition_id,
                 *leader_epoch,
@@ -381,7 +384,7 @@ where
                 cleaner_task_id,
                 shuffle_hint_tx,
                 timer_service,
-                self_proposer.take().expect("must be present"),
+                self_proposer,
                 invoker_rx,
                 shuffle_rx,
             ));

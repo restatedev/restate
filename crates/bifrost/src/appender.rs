@@ -37,7 +37,7 @@ pub struct Appender {
     #[debug(skip)]
     bifrost_inner: Arc<BifrostInner>,
     #[debug(skip)]
-    _preference_token: Option<PreferenceToken>,
+    preference_token: Option<PreferenceToken>,
 }
 
 impl Appender {
@@ -47,17 +47,26 @@ impl Appender {
         bifrost_inner: Arc<BifrostInner>,
     ) -> Self {
         let config = Configuration::live();
-        let _preference_token = (error_recovery_strategy
-            == ErrorRecoveryStrategy::ExtendChainPreferred)
-            .then_some(bifrost_inner.acquire_preference_token(log_id));
         Self {
             log_id,
             config,
             error_recovery_strategy,
             loglet_cache: Default::default(),
             bifrost_inner,
-            _preference_token,
+            preference_token: None,
         }
+    }
+
+    /// Marks this node as a preferred writer for the underlying log
+    pub fn mark_as_preferred(&mut self) {
+        if self.preference_token.is_none() {
+            self.preference_token = Some(self.bifrost_inner.acquire_preference_token(self.log_id));
+        }
+    }
+
+    /// Removes the preference about this node being the preferred writer for the log
+    pub fn forget_preference(&mut self) {
+        self.preference_token.take();
     }
 
     /// Appends a single record to the log.
