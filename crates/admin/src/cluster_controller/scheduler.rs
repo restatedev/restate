@@ -503,7 +503,7 @@ impl<T: TransportConnect> Scheduler<T> {
             .await
         {
             Ok(epoch_metadata) => {
-                debug!("Reconfigured partition {} to {:?}", partition_id, next);
+                debug!(%partition_id, "Reconfigured partition to {next:?}");
                 let (_, _, current, next) = epoch_metadata.into_inner();
                 Ok(PartitionState::new(current, next))
             }
@@ -548,7 +548,11 @@ impl<T: TransportConnect> Scheduler<T> {
             }
         }).await {
             Ok(epoch_metadata) => {
-                info!("Successfully transitioned from partition processor configuration {} to {}", current_version, next_version);
+                info!(
+                    %partition_id,
+                    replica_set = %epoch_metadata.current().replica_set(),
+                    "Transitioned from partition configuration {current_version} to {next_version}"
+                );
                 let (_, _, current, next) = epoch_metadata.into_inner();
                 Ok(PartitionConfigurationUpdate {
                     current,
