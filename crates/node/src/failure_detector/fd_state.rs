@@ -249,9 +249,9 @@ impl FdState {
             .filter_map(|node| {
                 let maybe_updated_state =
                     if node.gen_node_id.as_plain() == self.my_node_id.as_plain() {
-                        node.maybe_update_state(opts, is_standalone)
+                        node.maybe_update_state(opts, self.my_node_id, is_standalone)
                     } else {
-                        node.maybe_update_state(opts, false)
+                        node.maybe_update_state(opts, self.my_node_id, false)
                     };
 
                 match maybe_updated_state {
@@ -323,6 +323,7 @@ impl FdState {
         // Depending on which flags are set, this could carry info about other nodes
         // or a special message from the sender itself.
         if msg.flags.intersects(GossipFlags::Special) {
+            let my_node_id = self.my_node_id;
             let sender_node = self.get_node_or_insert(sender_id);
             let new_state = if msg.flags.intersects(GossipFlags::BringUp) {
                 // Note that we do not touch the age in this case, we are not ready to consider this as a
@@ -335,7 +336,7 @@ impl FdState {
                 // mark the sender alive
                 sender_node.maybe_reset(sender_id, sender_nc_version, msg.instance_ts);
                 sender_node.gossip_age = 0;
-                sender_node.maybe_update_state(opts, false)
+                sender_node.maybe_update_state(opts, my_node_id, false)
             } else if is_sender_in_failover {
                 // sender is failing over
                 sender_node.maybe_reset(sender_id, sender_nc_version, msg.instance_ts);
@@ -352,7 +353,7 @@ impl FdState {
                     sender_node.gossip_age
                 };
                 sender_node.in_failover = true;
-                sender_node.maybe_update_state(opts, false)
+                sender_node.maybe_update_state(opts, my_node_id, false)
             } else {
                 // for more flags in the future
                 None
@@ -560,7 +561,11 @@ impl FdState {
 
     pub fn update_my_node_state(&mut self, opts: &GossipOptions) {
         let is_standalone = self.node_states.len() == 1;
-        if let Some(new_state) = self.my_node_mut().maybe_update_state(opts, is_standalone) {
+        let my_node_id = self.my_node_id;
+        if let Some(new_state) =
+            self.my_node_mut()
+                .maybe_update_state(opts, my_node_id, is_standalone)
+        {
             self.cs_updater
                 .upsert_node_state(self.my_node_id, new_state.into());
         }
