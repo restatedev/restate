@@ -184,6 +184,10 @@ impl LeaderState {
             }
         };
 
+        // Completely unnecessary but left here for being defensive against any potential future
+        // re-use of the self proposer
+        self.self_proposer.mark_as_non_leader().await;
+
         let cleaner_handle =
             OptionFuture::from(TaskCenter::current().cancel_task(self.cleaner_task_id));
 

@@ -57,6 +57,16 @@ impl SelfProposer {
         })
     }
 
+    pub async fn mark_as_leader(&mut self) {
+        // we wouldn't fail if this didn't work out, subsequent operations will fail anyway.
+        let _ = self.bifrost_appender.sender().mark_as_preferred().await;
+    }
+
+    pub async fn mark_as_non_leader(&mut self) {
+        // we wouldn't fail if this didn't work out, subsequent operations will fail anyway.
+        let _ = self.bifrost_appender.sender().forget_preference().await;
+    }
+
     pub async fn propose(
         &mut self,
         partition_key: PartitionKey,
