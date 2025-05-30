@@ -79,6 +79,7 @@ impl LogletProvider for LocalLogletProvider {
             hash_map::Entry::Vacant(entry) => {
                 // Create loglet
                 // NOTE: local-loglet expects params to be a `u64` string-encoded unique identifier under the hood.
+                println!("Creating loglet with params: {}", params.to_string());
                 let loglet = LocalLoglet::create(
                     params
                         .parse()
@@ -105,7 +106,7 @@ impl LogletProvider for LocalLogletProvider {
             .map(|c| c.tail_index().next())
             .unwrap_or(SegmentIndex::OLDEST);
         Ok(LogletParams::from(
-            LogletId::new(log_id, new_segment_index).to_string(),
+            u64::from(LogletId::new(log_id, new_segment_index)).to_string(),
         ))
     }
 
