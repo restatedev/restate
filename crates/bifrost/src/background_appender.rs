@@ -133,11 +133,19 @@ where
                 AppendOperation::Canary(notify) => {
                     notify.notify_one();
                 }
+                AppendOperation::MarkAsPreferred => {
+                    appender.mark_as_preferred();
+                }
+                AppendOperation::ForgetPreference => {
+                    appender.forget_preference();
+                }
             }
         }
 
         // Failure to append will stop the whole task
-        appender.append_batch_erased(batch.into()).await?;
+        if !batch.is_empty() {
+            appender.append_batch_erased(batch.into()).await?;
+        }
 
         // Notify those who asked for a commit notification
         notif_buffer.drain(..).for_each(|tx| {
@@ -363,6 +371,34 @@ impl<T: StorageEncode> LogSender<T> {
         notify.notified().await;
         Ok(())
     }
+
+    /// Marks this node as a preferred writer for the underlying log
+    pub async fn mark_as_preferred(&self) -> Result<(), EnqueueError<()>> {
+        if self
+            .tx
+            .send(AppendOperation::MarkAsPreferred)
+            .await
+            .is_err()
+        {
+            return Err(EnqueueError::Closed(()));
+        };
+
+        Ok(())
+    }
+
+    /// Removes the preference about this node being the preferred writer for the log
+    pub async fn forget_preference(&self) -> Result<(), EnqueueError<()>> {
+        if self
+            .tx
+            .send(AppendOperation::ForgetPreference)
+            .await
+            .is_err()
+        {
+            return Err(EnqueueError::Closed(()));
+        };
+
+        Ok(())
+    }
 }
 
 /// A future that resolves when a record is committed by the background appender.
@@ -387,4 +423,8 @@ enum AppendOperation {
     // A message denoting a request to be notified when it's processed by the appender.
     // It's used to check if previously enqueued appends have been committed or not
     Canary(Arc<Notify>),
+    /// Let's bifrost know that this node is the preferred writer of this log
+    MarkAsPreferred,
+    /// Let's bifrost know that this node might not be the preferred writer of this log
+    ForgetPreference,
 }
