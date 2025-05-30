@@ -101,7 +101,7 @@ impl Default for GossipOptions {
         Self {
             gossip_failure_threshold: NonZeroU32::new(10).expect("be non zero"),
             gossip_fd_stability_threshold: NonZeroU32::new(3).expect("be non zero"),
-            gossip_tick_interval: Duration::from_millis(150).into(),
+            gossip_tick_interval: Duration::from_millis(100).into(),
             gossip_num_peers: NonZeroU32::new(2).expect("be non zero"),
             gossip_suspect_interval: Duration::from_secs(5).into(),
             gossip_loneliness_threshold: NonZeroU32::new(30).expect("be non zero"),
