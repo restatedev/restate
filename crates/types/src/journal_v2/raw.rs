@@ -8,15 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::errors::GenericError;
 use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use crate::journal_v2::encoding::DecodingError;
 use crate::journal_v2::{
-    CommandType, Decoder, Entry, EntryMetadata, EntryType, Event, NotificationId, NotificationType,
+    CommandType, Decoder, Entry, EntryMetadata, EntryType, Event, EventType, NotificationId,
+    NotificationType,
 };
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
+use serde::Serialize;
+use serde_with::serde_as;
+use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -104,7 +109,7 @@ impl EntryMetadata for RawEntry {
 pub enum RawEntryInner {
     Command(RawCommand),
     Notification(RawNotification),
-    Event(Event),
+    Event(RawEvent),
 }
 
 // -- Raw command
@@ -220,5 +225,86 @@ impl RawNotification {
 impl EntryMetadata for RawNotification {
     fn ty(&self) -> EntryType {
         EntryType::Notification(self.ty)
+    }
+}
+
+// -- Raw event
+
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RawEvent {
+    ty: String,
+    #[serde_as(as = "HashMap<_, serde_with::json::JsonString>")]
+    metadata: HashMap<String, serde_json::Value>,
+}
+
+impl RawEvent {
+    pub fn new<T: IntoIterator<Item = (String, String)>>(
+        event_type: EventType,
+        metadata: T,
+    ) -> Self {
+        RawEvent {
+            ty: event_type.to_string(),
+            metadata: HashMap::from_iter(metadata.into_iter().map(|(k, v)| {
+                (
+                    k,
+                    serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v)),
+                )
+            })),
+        }
+    }
+
+    pub fn into_inner(self) -> (String, HashMap<String, serde_json::Value>) {
+        (self.ty, self.metadata)
+    }
+}
+
+impl EntryMetadata for RawEvent {
+    fn ty(&self) -> EntryType {
+        EntryType::Event
+    }
+}
+
+// The conversion RawEvent <-> Event is defined at this level directly.
+
+impl TryFrom<RawEvent> for Event {
+    type Error = GenericError;
+
+    fn try_from(value: RawEvent) -> Result<Self, Self::Error> {
+        let entry_type = value
+            .ty
+            .parse::<EventType>()
+            .expect("this conversion is not supposed to fail, because it defines a default");
+
+        Ok(match entry_type {
+            EventType::TransientError => Event::TransientError(serde_json::from_value(
+                serde_json::Value::Object(value.metadata.into_iter().collect()),
+            )?),
+            EventType::Generic(_) => Event::Generic(value),
+        })
+    }
+}
+
+impl From<Event> for RawEvent {
+    fn from(value: Event) -> Self {
+        fn to_raw_event(et: EventType, e: impl Serialize) -> RawEvent {
+            if let serde_json::Value::Object(m) =
+                serde_json::to_value(e).expect("event conversion to value should never fail")
+            {
+                RawEvent {
+                    ty: et.to_string(),
+                    metadata: m.into_iter().collect(),
+                }
+            } else {
+                panic!("event conversion should always return an object")
+            }
+        }
+
+        match value {
+            Event::TransientError(transient_error) => {
+                to_raw_event(EventType::TransientError, transient_error)
+            }
+            Event::Generic(event) => event,
+        }
     }
 }

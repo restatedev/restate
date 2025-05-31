@@ -63,6 +63,7 @@ use restate_types::journal::{
     CompleteAwakeableEntry, Completion, CompletionResult, EntryResult, InvokeRequest,
 };
 use restate_types::journal::{Entry, EntryType};
+use restate_types::journal_v2::raw::TryFromEntry;
 use restate_types::live::Constant;
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::{HashMap, HashSet};
@@ -185,7 +186,7 @@ impl TestEnv {
             invocation_id,
             journal_length,
         )
-        .expect("storage to be working") // TODO: propagate errors
+        .expect("storage to be working")
         .try_collect::<Vec<_>>()
         .await
         .unwrap_or_else(|_| panic!("can read journal {invocation_id} of length {journal_length}"))
@@ -195,6 +196,23 @@ impl TestEnv {
                 .unwrap_or_else(|_| panic!("entry index {i} can be decoded"))
         })
         .collect()
+    }
+
+    pub async fn read_journal_entry<E: TryFromEntry>(
+        &mut self,
+        invocation_id: InvocationId,
+        idx: EntryIndex,
+    ) -> E {
+        restate_storage_api::journal_table_v2::ReadOnlyJournalTable::get_journal_entry(
+            self.storage(),
+            invocation_id,
+            idx,
+        )
+        .await
+        .expect("storage to be working")
+        .expect("Entry to be present")
+        .decode::<ServiceProtocolV4Codec, E>()
+        .expect("Entry to be of the specified type")
     }
 
     pub async fn modify_invocation_status(
