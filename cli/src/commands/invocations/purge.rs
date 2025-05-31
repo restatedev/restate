@@ -61,7 +61,8 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
     if invocations.is_empty() {
         bail!(
-            "No invocations found for query {}! Note that the purge command works only on completed invocations. If you need to cancel/kill an invocation, consider using the cancel command.",
+            "No invocations found for query {}! Note that the purge command only works on completed invocations. \
+            If you need to cancel/kill an invocation, consider using the cancel command instead.",
             opts.query
         );
     };
