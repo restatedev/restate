@@ -248,7 +248,7 @@ impl Watchdog {
     /// the chances of stomping.
     fn improve_logs(&mut self, logs: &Logs) {
         let allowed_to_action = self.my_preferred_logs.len().div_ceil(3);
-        let mut actioned = 0;
+        let mut actioned: Vec<LogId> = Vec::default();
         for (log_id, preferred) in self.my_preferred_logs.iter_mut() {
             debug_assert!(preferred.ref_cnt > 0);
             if preferred.last_checked.elapsed() < with_jitter(IMPROVEMENT_ACTION_AFTER, 0.5) {
@@ -317,8 +317,8 @@ impl Watchdog {
 
             preferred.last_checked = Instant::now();
             if let Improvement::Possible { reason } = may_improve {
-                actioned += 1;
-                info!(
+                actioned.push(*log_id);
+                debug!(
                     log_id = %log_id,
                     %segment_index,
                     "[Auto Improvement] Bifrost will reconfigure the log because {reason}"
@@ -335,15 +335,22 @@ impl Watchdog {
                     })
                 else {
                     // we are shutting down, there is no point in continuing
-                    return;
+                    break;
                 };
 
                 preferred.in_flight = Some((segment_index, task));
             }
             // only action on 1/3 of the logs in every round
-            if actioned >= allowed_to_action {
-                return;
+            if actioned.len() >= allowed_to_action {
+                break;
             }
+        }
+
+        if actioned.len() > 0 {
+            info!(
+                "[Auto Improvement] Bifrost will reconfigure logs to improve placement. logs={:?}",
+                actioned
+            );
         }
     }
 
