@@ -46,6 +46,7 @@ pub use tail::*;
     derive_more::Into,
     Serialize,
     Deserialize,
+    bilrost::Message,
 )]
 #[debug("{}", _0)]
 pub struct LogId(u32);
