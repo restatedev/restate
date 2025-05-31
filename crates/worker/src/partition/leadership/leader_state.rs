@@ -461,6 +461,46 @@ impl LeaderState {
                     .await
                     .map_err(Error::Invoker)?;
             }
+            Action::ForwardKillResponse {
+                request_id,
+                response,
+            } => {
+                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
+                    response_tx.send(Ok(PartitionProcessorRpcResponse::KillInvocation(
+                        response.into(),
+                    )));
+                }
+            }
+            Action::ForwardCancelResponse {
+                request_id,
+                response,
+            } => {
+                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
+                    response_tx.send(Ok(PartitionProcessorRpcResponse::CancelInvocation(
+                        response.into(),
+                    )));
+                }
+            }
+            Action::ForwardPurgeInvocationResponse {
+                request_id,
+                response,
+            } => {
+                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
+                    response_tx.send(Ok(PartitionProcessorRpcResponse::PurgeInvocation(
+                        response.into(),
+                    )));
+                }
+            }
+            Action::ForwardPurgeJournalResponse {
+                request_id,
+                response,
+            } => {
+                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
+                    response_tx.send(Ok(PartitionProcessorRpcResponse::PurgeJournal(
+                        response.into(),
+                    )));
+                }
+            }
         }
 
         Ok(())

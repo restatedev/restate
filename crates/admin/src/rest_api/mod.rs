@@ -25,14 +25,16 @@ use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::okapi::openapi3::{ExternalDocs, Tag};
 use okapi_operation::*;
 use restate_types::identifiers::PartitionKey;
+use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::subscriptions::SubscriptionValidator;
 use restate_wal_protocol::{Destination, Header, Source};
 
 use crate::state::AdminServiceState;
 
-pub fn create_router<V>(state: AdminServiceState<V>) -> axum::Router<()>
+pub fn create_router<V, IC>(state: AdminServiceState<V, IC>) -> axum::Router<()>
 where
     V: SubscriptionValidator + Send + Sync + Clone + 'static,
+    IC: InvocationClient + Send + Sync + Clone + 'static,
 {
     let mut router = axum_integration::Router::new()
         .route(
@@ -83,6 +85,22 @@ where
         .route(
             "/invocations/:invocation_id",
             delete(openapi_handler!(invocations::delete_invocation)),
+        )
+        .route(
+            "/invocations/:invocation_id/kill",
+            patch(openapi_handler!(invocations::kill_invocation)),
+        )
+        .route(
+            "/invocations/:invocation_id/cancel",
+            patch(openapi_handler!(invocations::cancel_invocation)),
+        )
+        .route(
+            "/invocations/:invocation_id/purge",
+            patch(openapi_handler!(invocations::purge_invocation)),
+        )
+        .route(
+            "/invocations/:invocation_id/purge-journal",
+            patch(openapi_handler!(invocations::purge_journal)),
         )
         .route(
             "/subscriptions",

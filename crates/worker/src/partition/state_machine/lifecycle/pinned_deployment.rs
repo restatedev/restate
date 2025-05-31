@@ -93,7 +93,7 @@ where
             //     invocation_id,
             //     invocation_status,
             // }.apply(ctx).await
-            ctx.on_cancel_invocation(self.invocation_id).await?;
+            ctx.on_cancel_invocation(self.invocation_id, None).await?;
         }
 
         Ok(())

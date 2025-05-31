@@ -13,11 +13,14 @@ use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationS
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::JournalTable;
 use restate_types::identifiers::InvocationId;
+use restate_types::invocation::InvocationMutationResponseSink;
+use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use tracing::trace;
 
 pub struct OnPurgeJournalCommand {
     pub invocation_id: InvocationId,
+    pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
@@ -26,7 +29,10 @@ where
     S: JournalTable + InvocationStatusTable + journal_table::JournalTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        let OnPurgeJournalCommand { invocation_id } = self;
+        let OnPurgeJournalCommand {
+            invocation_id,
+            response_sink,
+        } = self;
         match ctx.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Completed(mut completed) => {
                 let should_remove_journal_table_v2 = completed
@@ -54,16 +60,19 @@ where
                 ctx.storage
                     .put_invocation_status(&invocation_id, &InvocationStatus::Completed(completed))
                     .await?;
+                ctx.reply_to_purge_journal(response_sink, PurgeInvocationResponse::Ok);
             }
             InvocationStatus::Free => {
                 trace!(
                     "Received purge journal command for unknown invocation with id '{invocation_id}'."
                 );
+                ctx.reply_to_purge_journal(response_sink, PurgeInvocationResponse::NotFound);
             }
             _ => {
                 trace!(
                     "Ignoring purge journal command as the invocation '{invocation_id}' is still ongoing."
                 );
+                ctx.reply_to_purge_journal(response_sink, PurgeInvocationResponse::NotCompleted);
             }
         };
 
@@ -173,6 +182,7 @@ mod tests {
         test_env
             .apply(Command::PurgeJournal(PurgeInvocationRequest {
                 invocation_id,
+                response_sink: None,
             }))
             .await;
 
@@ -216,6 +226,7 @@ mod tests {
         test_env
             .apply(Command::PurgeInvocation(PurgeInvocationRequest {
                 invocation_id,
+                response_sink: None,
             }))
             .await;
 
