@@ -14,4 +14,3 @@ pub(crate) mod util;
 pub use app::CliApp;
 mod build_info;
 pub(crate) mod connection;
-pub mod lambda;
