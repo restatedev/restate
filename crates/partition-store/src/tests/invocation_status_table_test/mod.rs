@@ -27,7 +27,8 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::{
-    InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
+    InvocationTarget, RestateVersion, ServiceInvocationSpanContext, Source,
+    VirtualObjectHandlerType,
 };
 use restate_types::time::MillisSinceEpoch;
 
@@ -79,10 +80,18 @@ static RPC_REQUEST_ID: LazyLock<PartitionProcessorRpcRequestId> =
 fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Invoked(InFlightInvocationMetadata {
         invocation_target,
+        created_using_restate_version: RestateVersion::current(),
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
         pinned_deployment: None,
         response_sinks: HashSet::new(),
-        timestamps: StatusTimestamps::init(MillisSinceEpoch::new(0)),
+        timestamps: StatusTimestamps::new(
+            MillisSinceEpoch::new(0),
+            MillisSinceEpoch::new(0),
+            None,
+            None,
+            None,
+            None,
+        ),
         source: Source::Ingress(*RPC_REQUEST_ID),
         execution_time: None,
         completion_retention_duration: Duration::ZERO,
@@ -98,10 +107,18 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Suspended {
         metadata: InFlightInvocationMetadata {
             invocation_target,
+            created_using_restate_version: RestateVersion::current(),
             journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
             pinned_deployment: None,
             response_sinks: HashSet::new(),
-            timestamps: StatusTimestamps::init(MillisSinceEpoch::new(0)),
+            timestamps: StatusTimestamps::new(
+                MillisSinceEpoch::new(0),
+                MillisSinceEpoch::new(0),
+                None,
+                None,
+                None,
+                None,
+            ),
             source: Source::Ingress(*RPC_REQUEST_ID),
             execution_time: None,
             completion_retention_duration: Duration::ZERO,
@@ -193,7 +210,12 @@ async fn test_migration() {
     let mut rocksdb = storage_test_environment().await;
 
     let invocation_id = InvocationId::mock_random();
-    let status = InvocationStatus::Invoked(InFlightInvocationMetadata::mock());
+    let in_flight_invocation_status = InFlightInvocationMetadata {
+        // Old data structure doesn't support created_using_restate_version
+        created_using_restate_version: RestateVersion::unknown(),
+        ..InFlightInvocationMetadata::mock()
+    };
+    let status = InvocationStatus::Invoked(in_flight_invocation_status);
 
     // Let's mock the old invocation status
     let mut txn = rocksdb.transaction();

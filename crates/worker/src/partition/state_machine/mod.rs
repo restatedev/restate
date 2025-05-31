@@ -63,9 +63,9 @@ use restate_types::invocation::client::InvocationOutputResponse;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationEpoch, InvocationQuery, InvocationResponse,
     InvocationTarget, InvocationTargetType, InvocationTermination, JournalCompletionTarget,
-    NotifySignalRequest, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, Source, SubmitNotificationSink, TerminationFlavor,
-    VirtualObjectHandlerType, WorkflowHandlerType,
+    NotifySignalRequest, ResponseResult, RestateVersion, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SubmitNotificationSink,
+    TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
 use restate_types::journal::Completion;
@@ -2607,6 +2607,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         journal_retention_duration: Default::default(),
                         idempotency_key: request.idempotency_key,
                         submit_notification_sink: None,
+                        restate_version: RestateVersion::current(),
                     };
 
                     self.handle_outgoing_message(OutboxMessage::ServiceInvocation(
@@ -2673,6 +2674,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     journal_retention_duration: Default::default(),
                     idempotency_key: request.idempotency_key,
                     submit_notification_sink: None,
+                    restate_version: RestateVersion::current(),
                 };
 
                 self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
