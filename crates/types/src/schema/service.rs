@@ -143,6 +143,13 @@ pub struct ServiceMetadata {
     )]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub abort_timeout: Option<Duration>,
+
+    /// # Enable lazy state
+    ///
+    /// If true, lazy state will be enabled for all invocations to this service.
+    /// This is relevant only for Workflows and Virtual Objects.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enable_lazy_state: Option<bool>,
 }
 
 impl restate_serde_util::MapAsVecItem for ServiceMetadata {
@@ -275,6 +282,13 @@ pub struct HandlerMetadata {
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub abort_timeout: Option<Duration>,
 
+    /// # Enable lazy state
+    ///
+    /// If true, lazy state will be enabled for all invocations to this service.
+    /// This is relevant only for Workflows and Virtual Objects.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enable_lazy_state: Option<bool>,
+
     /// # Human readable input description
     ///
     /// If empty, no schema was provided by the user at discovery time.
@@ -306,22 +320,23 @@ impl restate_serde_util::MapAsVecItem for HandlerMetadata {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct InvocationAttemptTimeouts {
+#[derive(Debug, Eq, PartialEq, Default)]
+pub struct InvocationAttemptOptions {
     pub abort_timeout: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
+    pub enable_lazy_state: Option<bool>,
 }
 
 /// This API will return services registered by the user.
 pub trait ServiceMetadataResolver {
     fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata>;
 
-    fn resolve_invocation_attempt_timeouts(
+    fn resolve_invocation_attempt_options(
         &self,
         deployment_id: &DeploymentId,
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
-    ) -> Option<InvocationAttemptTimeouts>;
+    ) -> Option<InvocationAttemptOptions>;
 
     fn resolve_latest_service_openapi(
         &self,
@@ -336,11 +351,18 @@ pub trait ServiceMetadataResolver {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandlerSchemas {
     pub target_meta: InvocationTargetMetadata,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub idempotency_retention: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub workflow_completion_retention: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub journal_retention: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub inactivity_timeout: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub abort_timeout: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enable_lazy_state: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -359,6 +381,7 @@ impl HandlerSchemas {
             journal_retention: self.journal_retention,
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
+            enable_lazy_state: self.enable_lazy_state,
             input_description: self.target_meta.input_rules.to_string(),
             output_description: self.target_meta.output_rules.to_string(),
             input_json_schema: self.target_meta.input_rules.json_schema(),
@@ -373,11 +396,18 @@ pub struct ServiceSchemas {
     pub handlers: HashMap<String, HandlerSchemas>,
     pub ty: ServiceType,
     pub location: ServiceLocation,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub idempotency_retention: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub workflow_completion_retention: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub journal_retention: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub inactivity_timeout: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub abort_timeout: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enable_lazy_state: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -413,6 +443,7 @@ impl ServiceSchemas {
             journal_retention: self.journal_retention,
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
+            enable_lazy_state: self.enable_lazy_state,
         }
     }
 
@@ -462,12 +493,12 @@ impl ServiceMetadataResolver for Schema {
         })
     }
 
-    fn resolve_invocation_attempt_timeouts(
+    fn resolve_invocation_attempt_options(
         &self,
         deployment_id: &DeploymentId,
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
-    ) -> Option<InvocationAttemptTimeouts> {
+    ) -> Option<InvocationAttemptOptions> {
         let service_name = service_name.as_ref();
         let handler_name = handler_name.as_ref();
         self.find_existing_deployment_by_id(deployment_id)
@@ -475,11 +506,12 @@ impl ServiceMetadataResolver for Schema {
                 dep.services.get(service_name).and_then(|svc| {
                     svc.handlers
                         .get(handler_name)
-                        .map(|handler| InvocationAttemptTimeouts {
+                        .map(|handler| InvocationAttemptOptions {
                             abort_timeout: handler.abort_timeout.or(svc.abort_timeout),
                             inactivity_timeout: handler
                                 .inactivity_timeout
                                 .or(svc.inactivity_timeout),
+                            enable_lazy_state: handler.enable_lazy_state.or(svc.enable_lazy_state),
                         })
                 })
             })
@@ -530,12 +562,12 @@ pub mod test_util {
             self.0.get(service_name.as_ref()).cloned()
         }
 
-        fn resolve_invocation_attempt_timeouts(
+        fn resolve_invocation_attempt_options(
             &self,
             _deployment_id: &DeploymentId,
             _service_name: impl AsRef<str>,
             _handler_name: impl AsRef<str>,
-        ) -> Option<InvocationAttemptTimeouts> {
+        ) -> Option<InvocationAttemptOptions> {
             None
         }
 
@@ -577,6 +609,7 @@ pub mod test_util {
                                 journal_retention: None,
                                 inactivity_timeout: None,
                                 abort_timeout: None,
+                                enable_lazy_state: None,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
                                 input_json_schema: None,
@@ -596,6 +629,7 @@ pub mod test_util {
                 journal_retention: None,
                 inactivity_timeout: None,
                 abort_timeout: None,
+                enable_lazy_state: None,
             }
         }
 
@@ -620,6 +654,7 @@ pub mod test_util {
                                 journal_retention: None,
                                 inactivity_timeout: None,
                                 abort_timeout: None,
+                                enable_lazy_state: None,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
                                 input_json_schema: None,
@@ -639,6 +674,7 @@ pub mod test_util {
                 journal_retention: None,
                 inactivity_timeout: None,
                 abort_timeout: None,
+                enable_lazy_state: None,
             }
         }
     }
