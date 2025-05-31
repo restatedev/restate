@@ -138,7 +138,7 @@ pub async fn list_partitions(
         "EPOCH",
         "SEQUENCER",
         "APPLIED-LSN",
-        "PERSISTED-LSN",
+        "DURABLE-LSN",
         "SKIPPED-RECORDS",
         "ARCHIVED-LSN",
         "LSN-LAG",

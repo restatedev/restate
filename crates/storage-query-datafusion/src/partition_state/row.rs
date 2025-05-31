@@ -52,6 +52,7 @@ pub(crate) fn append_partition_row(
     row.skipped_records(state.num_skipped_records);
     row.replay_status(format_using(output, &state.replay_status));
     if let Some(lsn) = state.last_persisted_log_lsn {
+        row.durable_log_lsn(lsn.into());
         row.persisted_log_lsn(lsn.into());
     }
 

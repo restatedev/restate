@@ -67,11 +67,10 @@ pub struct AdminOptions {
     /// can be disabled by setting it to "0s".
     ///
     /// Note that this is only the interval at which logs are checked, and does not guarantee that
-    /// trim will be performed. To safely trim the log, the log records must be known to be
-    /// persisted by the corresponding partition processor(s). For single server deployments, use
-    /// the `persist-lsn-*` settings in `worker.storage`. In distributed deployments, this is
-    /// accomplished by configuring an external snapshot destination - see `worker.snapshots` for
-    /// more.
+    /// trim will be performed. The conditions for safely trim the log vary depending on the
+    /// deployment. For single nodes, the log records must be durably persisted to disk. In
+    /// distributed deployments, automatic trimming requires an external snapshot destination - see
+    /// `worker.snapshots` for more.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     log_trim_check_interval: humantime::Duration,

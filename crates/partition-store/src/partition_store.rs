@@ -42,9 +42,9 @@ use restate_types::logs::LogId;
 use restate_types::logs::Lsn;
 use restate_types::storage::StorageCodec;
 
+use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
-use crate::persisted_lsn_tracking::AppliedLsnCollectorFactory;
 use crate::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
