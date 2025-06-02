@@ -378,6 +378,7 @@ impl<T: NetworkSender> FailureDetector<T> {
                 .partitions()
                 .map(|(id, membership)| PartitionReplicaSet {
                     id,
+                    current_leader: membership.current_leader(),
                     observed_current_membership: membership.observed_current_membership,
                     observed_next_membership: membership.observed_next_membership,
                 })

@@ -217,8 +217,13 @@ impl<T: TransportConnect> Scheduler<T> {
             .next
             .as_ref()
             .map(ReplicaSetState::from_partition_configuration);
+        // NOTE: We don't update the leadership state here because we cannot be confident that
+        // the leadership epoch has been acquired or not. The leadership state will only be
+        // updated when either the actual leader or any of the followers has observed the
+        // leader epoch as being the winner of the elections.
         replica_set_states.note_observed_membership(
             partition_id,
+            Default::default(),
             &current_membership,
             &next_membership,
         );
