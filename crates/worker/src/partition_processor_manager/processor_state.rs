@@ -148,14 +148,14 @@ impl ProcessorState {
             } => {
                 match leader_state {
                     LeaderState::Leader(leader_epoch) => {
-                        // our processor that is supposed to be the leader has observed a newer leader epoch
                         if *leader_epoch
                             < processor
                                 .as_ref()
                                 .expect("must be some")
                                 .last_observed_leader_epoch()
-                                .unwrap_or(LeaderEpoch::INITIAL)
+                                .unwrap_or(LeaderEpoch::INVALID)
                         {
+                            // our processor, which is supposed to be the leader, has observed a newer leader epoch --> try to obtain a higher one
                             debug!(old_leader_epoch = %leader_epoch, "Need a higher leader epoch to retake leadership.");
                             let leader_epoch_token = LeaderEpochToken::new();
                             *leader_state = LeaderState::AwaitingLeaderEpoch(leader_epoch_token);
@@ -205,12 +205,23 @@ impl ProcessorState {
                 }
                 LeaderState::AwaitingLeaderEpoch(token) => {
                     if *token == leader_epoch_token {
-                        processor
-                            .as_ref()
-                            .expect("must be some")
-                            .run_for_leader(leader_epoch)?;
-                        debug!(%leader_epoch, "Instruct partition processor to run as leader.");
-                        *leader_state = LeaderState::Leader(leader_epoch);
+                        if leader_epoch
+                            > processor
+                                .as_ref()
+                                .expect("must be some")
+                                .last_observed_leader_epoch()
+                                .unwrap_or(LeaderEpoch::INVALID)
+                        {
+                            processor
+                                .as_ref()
+                                .expect("must be some")
+                                .run_for_leader(leader_epoch)?;
+                            debug!(%leader_epoch, "Instruct partition processor to run as leader.");
+                            *leader_state = LeaderState::Leader(leader_epoch);
+                        } else {
+                            debug!(%leader_epoch, "Ignoring leader epoch since there is already a newer known leader epoch.");
+                            *leader_state = LeaderState::Follower;
+                        }
                     } else {
                         debug!(
                             "Received leader epoch token does not match the expected token. Ignoring."
@@ -260,9 +271,26 @@ impl ProcessorState {
                     .borrow()
                     .clone();
 
-                // update the planned mode based on the current leader state
+                // The reason why we override the planned mode here is that we want to report it as
+                // soon as we start getting a leader epoch for a candidate. Once the leader epoch
+                // is obtained, we want to keep reporting the planned mode as leader until the pp
+                // tells us differently by reporting a higher observed leader epoch.
                 status.planned_mode = match leader_state {
-                    LeaderState::Leader(_) => RunMode::Leader,
+                    LeaderState::Leader(leader_epoch) => {
+                        if *leader_epoch
+                            >= status
+                                .last_observed_leader_epoch
+                                .unwrap_or(LeaderEpoch::INVALID)
+                        {
+                            // we still have a chance to become leader
+                            RunMode::Leader
+                        } else {
+                            // with our current leader epoch, we can't become leader anymore
+                            RunMode::Follower
+                        }
+                    }
+                    // we don't know yet which leader epoch we will get from the metadata store -->
+                    // assume it will be higher than the current one
                     LeaderState::AwaitingLeaderEpoch(_) => RunMode::Leader,
                     LeaderState::Follower => RunMode::Follower,
                 };
