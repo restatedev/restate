@@ -416,6 +416,32 @@ impl ConnectionInfo {
                 .clone(),
         )
     }
+
+    /// Creates and returns a (lazy) connection to any of the addresses specified in the `address`
+    /// field. This method fails with [`ConnectionInfoError::NoAvailableNodes`] if it cannot
+    /// establish a connection to any of the specified nodes.
+    pub(crate) async fn open_connection(&self) -> Result<Channel, ConnectionInfoError> {
+        let mut open_connections = self.open_connections.lock().await;
+
+        for address in &self.address {
+            if self.dead_nodes.read().unwrap().contains(address) {
+                continue;
+            }
+
+            if let Some(channel) = self.connect_internal(address, &mut open_connections).await {
+                // check whether we can reach the node
+                let mut node_client = new_node_ctl_client(channel.clone());
+                if node_client.get_ident(()).await.is_err() {
+                    // todo maybe retry before marking a node as dead?
+                    self.dead_nodes.write().unwrap().insert(address.clone());
+                } else {
+                    return Ok(channel);
+                }
+            }
+        }
+
+        Err(ConnectionInfoError::NoAvailableNodes(NoRoleError(None)))
+    }
 }
 
 /// Error type returned by a [`ConnectionInfo::try_each`] node_operation closure

@@ -14,10 +14,11 @@ use cling::{Collect, Run};
 use itertools::Itertools;
 
 use restate_cli_util::c_println;
+use restate_metadata_store::protobuf::metadata_proxy_svc::client::MetadataStoreProxy;
 use restate_metadata_store::protobuf::metadata_proxy_svc::{
     PutRequest, client::new_metadata_proxy_client,
 };
-use restate_metadata_store::serialize_value;
+use restate_metadata_store::{MetadataStoreClient, serialize_value};
 use restate_types::PlainNodeId;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -41,13 +42,23 @@ pub async fn remove_nodes(
 ) -> anyhow::Result<()> {
     let mut nodes_configuration = connection.get_nodes_configuration().await?;
     let logs = connection.get_logs().await?;
+    let partition_table = connection.get_partition_table().await?;
 
-    let disable_node_checker = DisableNodeChecker::new(&nodes_configuration, &logs);
+    let channel = connection.open_connection().await?;
+    let metadata_client = MetadataStoreClient::new(MetadataStoreProxy::new(channel), None);
+
+    let disable_node_checker = DisableNodeChecker::new(
+        &nodes_configuration,
+        &logs,
+        &partition_table,
+        &metadata_client,
+    );
 
     for node_id in &opts.nodes {
         disable_node_checker
             .safe_to_disable_node(*node_id)
-            .context("It is not safe to disable node {node_id}")?
+            .await
+            .context(format!("It is not safe to disable node {}", node_id))?
     }
 
     let precondition = Precondition::MatchesVersion(nodes_configuration.version());
