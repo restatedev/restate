@@ -548,20 +548,13 @@ impl PartitionProcessorManager {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
                     match result {
                         Ok(leader_epoch) => {
-                            if let Err(err) = processor_state
-                                .on_leader_epoch_obtained(leader_epoch, leader_epoch_token)
-                            {
-                                info!(%partition_id, %err, "Partition processor failed to process new leader epoch. Stopping it now");
-                                processor_state.stop();
-                            }
+                            processor_state
+                                .on_leader_epoch_obtained(leader_epoch, leader_epoch_token);
                         }
                         Err(err) => {
                             if processor_state.is_valid_leader_epoch_token(leader_epoch_token) {
                                 info!(%partition_id, %err, "Failed obtaining new leader epoch. Continue running as follower");
-                                if let Err(err) = processor_state.run_as_follower() {
-                                    info!(%partition_id, %err, "Partition processor failed to run as follower. Stopping it now");
-                                    processor_state.stop();
-                                }
+                                processor_state.run_as_follower();
                             } else {
                                 debug!("Received outdated new leader epoch. Ignoring it.");
                             }

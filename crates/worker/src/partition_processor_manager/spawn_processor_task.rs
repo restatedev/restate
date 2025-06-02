@@ -32,9 +32,9 @@ use restate_types::schema::Schema;
 
 use crate::PartitionProcessorBuilder;
 use crate::invoker_integration::EntryEnricher;
-use crate::partition::ProcessorError;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::snapshots::SnapshotRepository;
+use crate::partition::{ProcessorError, TargetLeaderState};
 use crate::partition_processor_manager::processor_state::StartedProcessor;
 
 pub struct SpawnPartitionProcessorTask {
@@ -113,7 +113,7 @@ impl SpawnPartitionProcessorTask {
 
         let status_reader = invoker.status_reader();
 
-        let (control_tx, control_rx) = mpsc::channel(2);
+        let (control_tx, control_rx) = watch::channel(TargetLeaderState::Follower);
         let (net_tx, net_rx) = mpsc::channel(128);
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());

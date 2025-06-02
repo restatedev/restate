@@ -85,10 +85,12 @@ pub mod snapshots;
 mod state_machine;
 pub mod types;
 
-/// Control messages from Manager to individual partition processor instances.
-pub enum PartitionProcessorControlCommand {
-    RunForLeader(LeaderEpoch),
-    StepDown,
+/// Target leader state of the partition processor.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TargetLeaderState {
+    Leader(LeaderEpoch),
+    #[default]
+    Follower,
 }
 
 #[derive(Debug)]
@@ -103,7 +105,7 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
 
     status: PartitionProcessorStatus,
     invoker_tx: InvokerInputSender,
-    control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
+    target_leader_state_rx: watch::Receiver<TargetLeaderState>,
     network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
 }
@@ -119,7 +121,7 @@ where
         partition_key_range: RangeInclusive<PartitionKey>,
         status: PartitionProcessorStatus,
         options: &WorkerOptions,
-        control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
+        target_leader_state_rx: watch::Receiver<TargetLeaderState>,
         network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         invoker_tx: InvokerInputSender,
@@ -133,7 +135,7 @@ where
             channel_size: options.internal_queue_length(),
             max_command_batch_size: options.max_command_batch_size(),
             invoker_tx,
-            control_rx,
+            target_leader_state_rx,
             network_svc_rx,
             status_watch_tx,
         }
@@ -152,7 +154,7 @@ where
             channel_size,
             max_command_batch_size,
             invoker_tx,
-            control_rx,
+            target_leader_state_rx,
             network_svc_rx: rpc_rx,
             status_watch_tx,
             status,
@@ -191,7 +193,7 @@ where
             max_command_batch_size,
             partition_store,
             bifrost,
-            control_rx,
+            target_leader_state_rx,
             network_leader_svc_rx: rpc_rx,
             status_watch_tx,
             status,
@@ -224,7 +226,7 @@ pub struct PartitionProcessor<InvokerSender> {
     leadership_state: LeadershipState<InvokerSender>,
     state_machine: StateMachine,
     bifrost: Bifrost,
-    control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
+    target_leader_state_rx: watch::Receiver<TargetLeaderState>,
     network_leader_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     status: PartitionProcessorStatus,
@@ -291,10 +293,6 @@ where
 
         // clean up pending rpcs and stop child tasks
         self.leadership_state.step_down().await;
-
-        // Drain control_rx
-        self.control_rx.close();
-        while self.control_rx.recv().await.is_some() {}
 
         // Drain leader network service
         self.network_leader_svc_rx.close();
@@ -462,10 +460,9 @@ where
             rpc_queue_len.set(rpc_rx_len as f64);
 
             tokio::select! {
-                Some(command) = self.control_rx.recv() => {
-                    if let Err(err) = self.on_command(command).await {
-                        warn!("Failed executing command: {err}");
-                    }
+                _ = self.target_leader_state_rx.changed() => {
+                    let target_leader_state = *self.target_leader_state_rx.borrow_and_update();
+                    self.on_target_leader_state(target_leader_state).await.context("failed handling target leader state change")?;
                 }
                 Some(msg) = self.network_leader_svc_rx.recv() => {
                     match msg {
@@ -566,19 +563,19 @@ where
         }
     }
 
-    async fn on_command(
+    async fn on_target_leader_state(
         &mut self,
-        command: PartitionProcessorControlCommand,
+        target_leader_state: TargetLeaderState,
     ) -> anyhow::Result<()> {
-        match command {
-            PartitionProcessorControlCommand::RunForLeader(leader_epoch) => {
+        match target_leader_state {
+            TargetLeaderState::Leader(leader_epoch) => {
                 self.status.planned_mode = RunMode::Leader;
                 self.leadership_state
                     .run_for_leader(leader_epoch)
                     .await
                     .context("failed handling RunForLeader command")?;
             }
-            PartitionProcessorControlCommand::StepDown => {
+            TargetLeaderState::Follower => {
                 self.status.planned_mode = RunMode::Follower;
                 self.leadership_state.step_down().await;
                 self.status.effective_mode = RunMode::Follower;
