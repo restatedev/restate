@@ -221,6 +221,7 @@ impl Configuration {
     }
 
     pub fn apply_cascading_values(mut self) -> Self {
+        self.worker.storage.print_deprecation_warnings();
         self.worker.storage.apply_common(&self.common);
         self.bifrost.apply_common(&self.common);
         self.metadata_server.apply_common(&self.common);

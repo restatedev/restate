@@ -28,6 +28,7 @@ use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
 use restate_types::live::Constant;
 use restate_types::state_mut::ExternalStateMutation;
 
+mod durable_lsn_tracking_test;
 mod idempotency_table_test;
 mod inbox_table_test;
 mod invocation_status_table_test;
@@ -39,8 +40,6 @@ mod snapshots_test;
 mod state_table_test;
 mod timer_table_test;
 mod virtual_object_status_table_test;
-
-mod persisted_lsn_tracking_test;
 
 async fn storage_test_environment() -> PartitionStore {
     storage_test_environment_with_manager().await.1

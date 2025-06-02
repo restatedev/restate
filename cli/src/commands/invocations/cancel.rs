@@ -12,11 +12,11 @@ use cling::prelude::*;
 
 use restate_cli_util::ui::console::{Styled, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::{c_println, c_success};
+use restate_cli_util::{c_error, c_println, c_success};
 use restate_types::identifiers::InvocationId;
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::find_active_invocations_simple;
+use crate::clients::datafusion_helpers::{InvocationState, find_active_invocations_simple};
 use crate::clients::{self, AdminClientInterface};
 use crate::ui::invocations::render_simple_invocation_list;
 
@@ -47,8 +47,8 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
     let filter = if let Ok(id) = q.parse::<InvocationId>() {
         format!("id = '{id}'")
     } else {
-        match q.find('/').unwrap_or_default() {
-            0 => format!("target LIKE '{q}/%'"),
+        let query = match q.find('/').unwrap_or_default() {
+            0 => format!("target LIKE '{q}/%' "),
             // If there's one slash, let's add the wildcard depending on the service type,
             // so we discriminate correctly with serviceName/handlerName with workflowName/workflowKey
             1 => format!(
@@ -56,15 +56,32 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
             ),
             // Can only be exact match here
             _ => format!("target LIKE '{q}'"),
-        }
+        };
+        format!("{query} AND status != 'completed'")
     };
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
     if invocations.is_empty() {
-        bail!("No invocations found for query {}!", opts.query);
+        bail!(
+            "No invocations found for query {}! Note that the cancel command only works on non-completed invocations. \
+            If you want to remove a completed invocation, consider using the purge command instead.",
+            opts.query
+        );
     };
 
     render_simple_invocation_list(&invocations);
+
+    if invocations
+        .iter()
+        .all(|inv| matches!(inv.status, InvocationState::Completed))
+    {
+        // Should only happen with explicit invocation ids, as we filter the completed state out otherwise
+        c_error!(
+            "The invocations matching your query are completed; cancel/kill has no effect on them. \
+            If you want to remove a completed invocation, consider using the purge command instead.",
+        );
+        return Ok(());
+    }
 
     // Get the invocation and confirm
     let prompt = format!(

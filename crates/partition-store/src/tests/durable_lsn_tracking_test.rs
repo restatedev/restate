@@ -34,23 +34,20 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 
     assert_eq!(
         Some(Lsn::INVALID),
-        partition_store_manager.get_persisted_lsn(partition_id)
+        partition_store_manager.get_durable_lsn(partition_id)
     );
 
     partition_store.flush_memtables(true).await?;
     assert_eq!(
         Some(Lsn::new(100)),
-        partition_store_manager.get_persisted_lsn(partition_id)
+        partition_store_manager.get_durable_lsn(partition_id)
     );
 
     drop(partition_store);
     partition_store_manager
         .close_partition_store(partition_id)
         .await?;
-    assert_eq!(
-        None,
-        partition_store_manager.get_persisted_lsn(partition_id)
-    );
+    assert_eq!(None, partition_store_manager.get_durable_lsn(partition_id));
 
     let mut partition_store = partition_store_manager
         .open_partition_store(
@@ -62,8 +59,8 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
         .await?;
     assert_eq!(
         Some(Lsn::new(100)),
-        partition_store_manager.get_persisted_lsn(partition_id),
-        "partition store manager should announce the persisted LSN on open"
+        partition_store_manager.get_durable_lsn(partition_id),
+        "partition store manager should announce the durable LSN on open"
     );
 
     partition_store.flush_memtables(true).await?;
@@ -77,15 +74,15 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 
         assert_eq!(
             Some(Lsn::new(100)),
-            partition_store_manager.get_persisted_lsn(partition_id),
-            "persisted LSN remains unchanged"
+            partition_store_manager.get_durable_lsn(partition_id),
+            "durable LSN remains unchanged"
         );
     }
 
     partition_store.flush_memtables(true).await?;
     assert_eq!(
         Some(Lsn::new(200)),
-        partition_store_manager.get_persisted_lsn(partition_id),
+        partition_store_manager.get_durable_lsn(partition_id),
     );
 
     rocksdb.shutdown().await;
