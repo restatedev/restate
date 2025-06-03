@@ -18,7 +18,6 @@ use assert2::let_assert;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
 use metrics::{SharedString, counter, gauge, histogram};
-use restate_types::retries::RetryPolicy;
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{Span, debug, error, info, instrument, trace, warn};
@@ -47,7 +46,6 @@ use restate_types::config::WorkerOptions;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
-use restate_types::invocation;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
@@ -62,8 +60,11 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner,
     PartitionProcessorRpcResponse,
 };
+use restate_types::partitions::state::PartitionReplicaSetStates;
+use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{GenerationalNodeId, invocation};
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
@@ -145,6 +146,7 @@ where
         self,
         bifrost: Bifrost,
         mut partition_store: PartitionStore,
+        replica_set_states: PartitionReplicaSetStates,
     ) -> Result<PartitionProcessor<InvokerInputSender>, StorageError> {
         let PartitionProcessorBuilder {
             partition_id,
@@ -197,6 +199,7 @@ where
             network_leader_svc_rx: rpc_rx,
             status_watch_tx,
             status,
+            replica_set_states,
         })
     }
 
@@ -230,6 +233,7 @@ pub struct PartitionProcessor<InvokerSender> {
     network_leader_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     status: PartitionProcessorStatus,
+    replica_set_states: PartitionReplicaSetStates,
 
     max_command_batch_size: usize,
     partition_store: PartitionStore,
@@ -449,6 +453,11 @@ where
         let mut action_collector = ActionCollector::default();
         let mut command_buffer = Vec::with_capacity(self.max_command_batch_size);
 
+        let mut watch_leader_changes = self
+            .replica_set_states
+            .watch_leadership_state(self.partition_id);
+        watch_leader_changes.mark_changed();
+
         info!("Partition {} started", self.partition_id);
 
         loop {
@@ -463,6 +472,18 @@ where
                 _ = self.target_leader_state_rx.changed() => {
                     let target_leader_state = *self.target_leader_state_rx.borrow_and_update();
                     self.on_target_leader_state(target_leader_state).await.context("failed handling target leader state change")?;
+                }
+                Ok(()) = watch_leader_changes.changed() => {
+                    // cloning to avoid holding the underlying RwLock.
+                    let new_state = *watch_leader_changes.borrow_and_update();
+                    if self.status.last_observed_leader_epoch.is_none_or(|last| last < new_state.current_leader_epoch) {
+                        self.status.last_observed_leader_epoch = Some(new_state.current_leader_epoch);
+                        if new_state.current_leader.is_valid() {
+                            self.status.last_observed_leader_node = Some(new_state.current_leader);
+                        }
+                    }
+                    self.leadership_state.maybe_step_down(new_state.current_leader_epoch, new_state.current_leader).await;
+                    self.status.effective_mode = self.leadership_state.effective_mode();
                 }
                 Some(msg) = self.network_leader_svc_rx.recv() => {
                     match msg {
@@ -526,6 +547,13 @@ where
                                 // older AnnounceLeader messages have the announce_leader.node_id set
                                 self.status.last_observed_leader_node = announce_leader.node_id;
                             }
+                            self.replica_set_states.note_observed_leader(
+                                self.partition_id,
+                                restate_types::partitions::state::LeadershipState {
+                                    current_leader_epoch: announce_leader.leader_epoch,
+                                    current_leader:
+                                    self.status.last_observed_leader_node.unwrap_or(GenerationalNodeId::INVALID),
+                                });
 
                             let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_store).await?;
 
