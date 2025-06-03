@@ -521,6 +521,7 @@ impl SchemaUpdater {
                 service_openapi_cache: Default::default(),
                 documentation: service.documentation,
                 metadata: service.metadata,
+                enable_lazy_state: service.enable_lazy_state,
             }
         };
         Ok(service_schema)
@@ -749,6 +750,7 @@ struct DiscoveredHandlerMetadata {
     workflow_completion_retention: Option<Duration>,
     inactivity_timeout: Option<Duration>,
     abort_timeout: Option<Duration>,
+    enable_lazy_state: Option<bool>,
     input: InputRules,
     output: OutputRules,
 }
@@ -815,6 +817,7 @@ impl DiscoveredHandlerMetadata {
             workflow_completion_retention,
             inactivity_timeout,
             abort_timeout,
+            enable_lazy_state: handler.enable_lazy_state,
             input: handler
                 .input
                 .map(|input_payload| {
@@ -982,6 +985,7 @@ impl DiscoveredHandlerMetadata {
                         journal_retention: handler.journal_retention,
                         inactivity_timeout: handler.inactivity_timeout,
                         abort_timeout: handler.abort_timeout,
+                        enable_lazy_state: handler.enable_lazy_state,
                         documentation: handler.documentation,
                         metadata: handler.metadata,
                     },
@@ -1034,6 +1038,7 @@ mod tests {
             inactivity_timeout: None,
             journal_retention: None,
             workflow_completion_retention: None,
+            enable_lazy_state: None,
         }
     }
 
@@ -1049,6 +1054,7 @@ mod tests {
             inactivity_timeout: None,
             journal_retention: None,
             metadata: Default::default(),
+            enable_lazy_state: None,
         }
     }
 
@@ -1071,11 +1077,13 @@ mod tests {
                 inactivity_timeout: None,
                 journal_retention: None,
                 workflow_completion_retention: None,
+                enable_lazy_state: None,
             }],
             idempotency_retention: None,
             inactivity_timeout: None,
             journal_retention: None,
             metadata: Default::default(),
+            enable_lazy_state: None,
         }
     }
 
@@ -1098,11 +1106,13 @@ mod tests {
                 inactivity_timeout: None,
                 journal_retention: None,
                 workflow_completion_retention: None,
+                enable_lazy_state: None,
             }],
             idempotency_retention: None,
             inactivity_timeout: None,
             journal_retention: None,
             metadata: Default::default(),
+            enable_lazy_state: None,
         }
     }
 
@@ -1372,6 +1382,7 @@ mod tests {
                         inactivity_timeout: None,
                         journal_retention: None,
                         workflow_completion_retention: None,
+                        enable_lazy_state: None,
                     },
                     endpoint_manifest::Handler {
                         abort_timeout: None,
@@ -1385,12 +1396,14 @@ mod tests {
                         inactivity_timeout: None,
                         journal_retention: None,
                         workflow_completion_retention: None,
+                        enable_lazy_state: None,
                     },
                 ],
                 idempotency_retention: None,
                 inactivity_timeout: None,
                 journal_retention: None,
                 metadata: Default::default(),
+                enable_lazy_state: None,
             }
         }
 
@@ -1413,11 +1426,13 @@ mod tests {
                     inactivity_timeout: None,
                     journal_retention: None,
                     workflow_completion_retention: None,
+                    enable_lazy_state: None,
                 }],
                 idempotency_retention: None,
                 inactivity_timeout: None,
                 journal_retention: None,
                 metadata: Default::default(),
+                enable_lazy_state: None,
             }
         }
 
@@ -1714,6 +1729,7 @@ mod tests {
                 inactivity_timeout: None,
                 journal_retention: None,
                 workflow_completion_retention: None,
+                enable_lazy_state: None,
             });
 
         updater
@@ -1785,6 +1801,7 @@ mod tests {
                 inactivity_timeout: None,
                 journal_retention: None,
                 workflow_completion_retention: None,
+                enable_lazy_state: None,
             });
 
         updater
@@ -1973,7 +1990,7 @@ mod tests {
         use googletest::prelude::*;
         use restate_types::config::Configuration;
         use restate_types::invocation::InvocationRetention;
-        use restate_types::schema::service::InvocationAttemptTimeouts;
+        use restate_types::schema::service::InvocationAttemptOptions;
         use std::num::NonZeroU64;
         use std::time::Duration;
         use test_log::test;
@@ -2193,7 +2210,7 @@ mod tests {
             svc: endpoint_manifest::Service,
             service_name: &str,
             handler_name: &str,
-        ) -> InvocationAttemptTimeouts {
+        ) -> InvocationAttemptOptions {
             let schema_information = Schema::default();
             let mut updater = SchemaUpdater::new(schema_information);
 
@@ -2208,7 +2225,7 @@ mod tests {
             schema.assert_service_deployment(service_name, deployment.id);
 
             schema
-                .resolve_invocation_attempt_timeouts(&deployment.id, service_name, handler_name)
+                .resolve_invocation_attempt_options(&deployment.id, service_name, handler_name)
                 .unwrap_or_else(|| {
                     panic!(
                         "Invocation target for deployment {} and target {}/{} must exists",
@@ -2230,9 +2247,10 @@ mod tests {
             );
             assert_that!(
                 timeouts,
-                eq(InvocationAttemptTimeouts {
+                eq(InvocationAttemptOptions {
                     abort_timeout: Some(Duration::from_secs(120)),
                     inactivity_timeout: Some(Duration::from_secs(60)),
+                    enable_lazy_state: None,
                 })
             )
         }
@@ -2254,9 +2272,10 @@ mod tests {
             );
             assert_that!(
                 timeouts,
-                eq(InvocationAttemptTimeouts {
+                eq(InvocationAttemptOptions {
                     abort_timeout: Some(Duration::from_secs(120)),
                     inactivity_timeout: Some(Duration::from_secs(30)),
+                    enable_lazy_state: None,
                 })
             )
         }

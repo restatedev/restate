@@ -50,7 +50,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{instrument, warn};
+use tracing::instrument;
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -267,38 +267,22 @@ where
         &mut self,
         input_journal: InvokeInputJournal,
     ) -> TerminalLoopState<()> {
-        let (journal_metadata, journal_stream, state_iter) = {
-            let mut txn = self.invocation_reader.transaction();
-            // Resolve journal and its metadata
-            let (journal_metadata, journal_stream) = match input_journal {
-                InvokeInputJournal::NoCachedJournal => {
-                    let (journal_meta, journal_stream) = shortcircuit!(
-                        txn.read_journal(&self.invocation_id)
-                            .await
-                            .map_err(|e| InvokerError::JournalReader(e.into()))
-                            .and_then(|opt| opt.ok_or_else(|| InvokerError::NotInvoked))
-                    );
-                    (journal_meta, future::Either::Left(journal_stream))
-                }
-                InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
-                    journal_meta,
-                    future::Either::Right(stream::iter(journal_items)),
-                ),
-            };
-            // Read eager state
-            let keyed_service_id = self.invocation_target.as_keyed_service_id();
-            let state_iter = if self.disable_eager_state || keyed_service_id.is_none() {
-                EagerState::<Empty<_>>::default().map(itertools::Either::Right)
-            } else {
-                shortcircuit!(
-                    txn.read_state(&keyed_service_id.unwrap())
+        let mut txn = self.invocation_reader.transaction();
+        // Resolve journal and its metadata
+        let (journal_metadata, journal_stream) = match input_journal {
+            InvokeInputJournal::NoCachedJournal => {
+                let (journal_meta, journal_stream) = shortcircuit!(
+                    txn.read_journal(&self.invocation_id)
                         .await
-                        .map_err(|e| InvokerError::StateReader(e.into()))
-                        .map(|r| r.map(itertools::Either::Left))
-                )
-            };
-
-            (journal_metadata, journal_stream, state_iter)
+                        .map_err(|e| InvokerError::JournalReader(e.into()))
+                        .and_then(|opt| opt.ok_or_else(|| InvokerError::NotInvoked))
+                );
+                (journal_meta, future::Either::Left(journal_stream))
+            }
+            InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
+                journal_meta,
+                future::Either::Right(stream::iter(journal_items)),
+            ),
         };
 
         // Resolve the deployment metadata
@@ -357,21 +341,41 @@ where
                     /* has_changed= */ true,
                 )
             };
-        if let Some(invocation_attempt_timeouts) = schemas.resolve_invocation_attempt_timeouts(
-            &deployment.id,
-            self.invocation_target.service_name(),
-            self.invocation_target.handler_name(),
-        ) {
-            // Override the inactivity timeout and abort timeout, if available
-            if let Some(inactivity_timeout) = invocation_attempt_timeouts.inactivity_timeout {
-                self.inactivity_timeout = inactivity_timeout;
-            }
-            if let Some(abort_timeout) = invocation_attempt_timeouts.abort_timeout {
-                self.abort_timeout = abort_timeout;
-            }
-        } else {
-            warn!("Unexpected service not found, after resolving correctly the deployment.");
+
+        let invocation_attempt_options = schemas
+            .resolve_invocation_attempt_options(
+                &deployment.id,
+                self.invocation_target.service_name(),
+                self.invocation_target.handler_name(),
+            )
+            .unwrap_or_default();
+
+        // Override the inactivity timeout and abort timeout, if available
+        if let Some(inactivity_timeout) = invocation_attempt_options.inactivity_timeout {
+            self.inactivity_timeout = inactivity_timeout;
         }
+        if let Some(abort_timeout) = invocation_attempt_options.abort_timeout {
+            self.abort_timeout = abort_timeout;
+        }
+
+        // Read eager state, if needed
+        let keyed_service_id = self.invocation_target.as_keyed_service_id();
+        let state_iter = if invocation_attempt_options.enable_lazy_state == Some(true)
+            || self.disable_eager_state
+            || keyed_service_id.is_none()
+        {
+            EagerState::<Empty<_>>::default().map(itertools::Either::Right)
+        } else {
+            shortcircuit!(
+                txn.read_state(&keyed_service_id.unwrap())
+                    .await
+                    .map_err(|e| InvokerError::StateReader(e.into()))
+                    .map(|r| r.map(itertools::Either::Left))
+            )
+        };
+
+        // No need to read from Rocksdb anymore
+        drop(txn);
 
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
             PinnedDeployment::new(deployment.id, chosen_service_protocol_version),

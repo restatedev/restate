@@ -44,7 +44,7 @@ use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{
-    InvocationAttemptTimeouts, ServiceMetadata, ServiceMetadataResolver,
+    InvocationAttemptOptions, ServiceMetadata, ServiceMetadataResolver,
 };
 use serde_json::Value;
 
@@ -59,14 +59,14 @@ impl ServiceMetadataResolver for MockSchemas {
         self.0.resolve_latest_service(service_name)
     }
 
-    fn resolve_invocation_attempt_timeouts(
+    fn resolve_invocation_attempt_options(
         &self,
         deployment_id: &DeploymentId,
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
-    ) -> Option<InvocationAttemptTimeouts> {
+    ) -> Option<InvocationAttemptOptions> {
         self.0
-            .resolve_invocation_attempt_timeouts(deployment_id, service_name, handler_name)
+            .resolve_invocation_attempt_options(deployment_id, service_name, handler_name)
     }
 
     fn resolve_latest_service_openapi(&self, _: impl AsRef<str>) -> Option<Value> {
