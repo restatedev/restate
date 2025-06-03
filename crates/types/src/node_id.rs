@@ -107,6 +107,7 @@ impl FromStr for GenerationalNodeId {
 }
 
 impl GenerationalNodeId {
+    pub const INVALID: GenerationalNodeId = PlainNodeId::INVALID.with_generation(0);
     pub const INITIAL_NODE_ID: GenerationalNodeId = PlainNodeId::MIN.with_generation(1);
 
     pub fn decode<B: Buf>(mut data: B) -> Self {
@@ -298,6 +299,7 @@ impl From<GenerationalNodeId> for PlainNodeId {
 
 impl PlainNodeId {
     // Start with 1 as plain node id to leave 0 as a special value in the future
+    pub const INVALID: PlainNodeId = PlainNodeId::new(0);
     pub const MIN: PlainNodeId = PlainNodeId::new(1);
 
     pub const fn new(id: u32) -> PlainNodeId {

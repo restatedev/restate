@@ -303,6 +303,7 @@ impl FdState {
         for partition in cs_reply.partitions {
             self.replica_set_states.note_observed_membership(
                 partition.id,
+                partition.current_leader,
                 &partition.observed_current_membership,
                 &partition.observed_next_membership,
             );
@@ -425,6 +426,7 @@ impl FdState {
             for partition in msg.partitions.into_iter() {
                 self.replica_set_states.note_observed_membership(
                     partition.id,
+                    partition.current_leader,
                     &partition.observed_current_membership,
                     &partition.observed_next_membership,
                 );
@@ -480,6 +482,32 @@ impl FdState {
                 node.gossip_age,
                 node.state,
                 node.instance_ts.as_u64(),
+            ));
+        }
+
+        result.push_str("Partitions\n");
+
+        // sorted by key
+        for (partition_id, partition) in self
+            .partitions()
+            .sorted_by_cached_key(|(partition_id, _)| **partition_id)
+        {
+            let leadership = partition.current_leader();
+            result.push_str(&format!(
+                "{}\t({}{})\t\t{}\t{}\n",
+                partition_id,
+                leadership.current_leader_epoch,
+                if leadership.current_leader.is_valid() {
+                    format!(" @ {}", leadership.current_leader)
+                } else {
+                    String::new()
+                },
+                partition.observed_current_membership.version,
+                if let Some(next) = partition.observed_next_membership.as_ref() {
+                    format!("=> {}", next.version)
+                } else {
+                    String::new()
+                },
             ));
         }
         result
@@ -553,6 +581,7 @@ impl FdState {
             .iter()
             .map(|(id, state)| net::node::PartitionReplicaSet {
                 id,
+                current_leader: state.current_leader(),
                 observed_current_membership: state.observed_current_membership,
                 observed_next_membership: state.observed_next_membership,
             })
