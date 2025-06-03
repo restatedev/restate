@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use restate_core::{ShutdownError, SyncError};
+use restate_metadata_store::ReadWriteError;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::logs::builder::BuilderError;
 use restate_types::logs::metadata::SegmentIndex;
@@ -21,7 +22,7 @@ use crate::loglet::OperationError;
 /// Result type for bifrost operations.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-#[derive(thiserror::Error, Debug)]
+#[derive(Clone, thiserror::Error, Debug)]
 pub enum Error {
     #[error("metadata store doesn't have an entry for log metadata")]
     LogsMetadataNotProvisioned,
@@ -41,7 +42,7 @@ pub enum Error {
     #[error(transparent)]
     AdminError(#[from] AdminError),
     #[error(transparent)]
-    MetadataStoreError(#[from] restate_metadata_store::ReadWriteError),
+    MetadataStoreError(#[from] Arc<ReadWriteError>),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -52,7 +53,7 @@ pub enum EnqueueError<T> {
     Closed(T),
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum AdminError {
     #[error("log {0} is permanently sealed")]
     ChainPermanentlySealed(LogId),
@@ -66,7 +67,7 @@ pub enum AdminError {
         found: SegmentIndex,
     },
     #[error("loglet params could not be deserialized: {0}")]
-    ParamsSerde(#[from] serde_json::Error),
+    ParamsSerde(#[from] Arc<serde_json::Error>),
 }
 
 impl From<OperationError> for Error {
@@ -85,8 +86,14 @@ impl From<BuilderError> for AdminError {
             BuilderError::ChainPermanentlySealed(log_id) => {
                 AdminError::ChainPermanentlySealed(log_id)
             }
-            BuilderError::ParamsSerde(error) => AdminError::ParamsSerde(error),
+            BuilderError::ParamsSerde(error) => AdminError::ParamsSerde(Arc::new(error)),
             BuilderError::SegmentConflict(lsn) => AdminError::SegmentConflict(lsn),
         }
+    }
+}
+
+impl From<ReadWriteError> for Error {
+    fn from(value: ReadWriteError) -> Self {
+        Error::MetadataStoreError(Arc::new(value))
     }
 }

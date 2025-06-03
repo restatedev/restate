@@ -24,6 +24,7 @@ use restate_types::live::BoxLiveLoad;
 use restate_types::logs::metadata::ProviderKind;
 
 use crate::bifrost::BifrostInner;
+use crate::log_chain_extender::LogChainExtender;
 #[cfg(any(test, feature = "memory-loglet"))]
 use crate::providers::memory_loglet;
 use crate::watchdog::{Watchdog, WatchdogCommand};
@@ -33,19 +34,27 @@ pub struct BifrostService {
     inner: Arc<BifrostInner>,
     bifrost: Bifrost,
     watchdog: Watchdog,
+    log_chain_extender: LogChainExtender,
     factories: HashMap<ProviderKind, Box<dyn LogletProviderFactory>>,
 }
 
 impl BifrostService {
     pub fn new(metadata_writer: MetadataWriter) -> Self {
         let (watchdog_sender, watchdog_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let inner = Arc::new(BifrostInner::new(watchdog_sender.clone(), metadata_writer));
+        let (extend_log_chain_tx, extend_log_chain_rx) = tokio::sync::mpsc::unbounded_channel();
+        let inner = Arc::new(BifrostInner::new(
+            watchdog_sender.clone(),
+            extend_log_chain_tx,
+            metadata_writer,
+        ));
         let bifrost = Bifrost::new(inner.clone());
         let watchdog = Watchdog::new(inner.clone(), watchdog_sender, watchdog_receiver);
+        let log_chain_extender = LogChainExtender::new(inner.clone(), extend_log_chain_rx);
         Self {
             inner,
             bifrost,
             watchdog,
+            log_chain_extender,
             factories: HashMap::new(),
         }
     }
@@ -162,6 +171,12 @@ impl BifrostService {
             TaskKind::BifrostWatchdog,
             "bifrost-watchdog",
             self.watchdog.run(),
+        )?;
+
+        TaskCenter::spawn(
+            TaskKind::BifrostBackgroundHighPriority,
+            "log-chain-extender",
+            self.log_chain_extender.run(),
         )?;
 
         // Bifrost started!

@@ -40,7 +40,7 @@ use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 
 use self::metadata_client_wrapper::MetadataClientWrapper;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum SyncError {
     #[error("failed syncing with metadata store: {0}")]
     MetadataStore(#[from] Arc<ReadError>),
