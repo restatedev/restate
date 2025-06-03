@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -19,7 +18,7 @@ use restate_core::protobuf::cluster_ctrl_svc::{
     GetClusterConfigurationRequest, SetClusterConfigurationRequest,
 };
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig};
-use restate_types::replication::{NodeSet, ReplicationProperty};
+use restate_types::replication::ReplicationProperty;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::try_join;
@@ -37,15 +36,12 @@ use restate_local_cluster_runner::{
     node::{BinarySource, Node},
 };
 use restate_types::config::{LogFormat, MetadataClientKind, NetworkingOptions};
-use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
-use restate_types::metadata_store::keys::partition_processor_epoch_key;
-use restate_types::partitions::PartitionConfiguration;
 use restate_types::protobuf::cluster::RunMode;
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::retries::RetryPolicy;
-use restate_types::{PlainNodeId, config::Configuration, nodes_config::Role};
+use restate_types::{config::Configuration, nodes_config::Role};
 
 mod common;
 
