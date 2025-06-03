@@ -19,7 +19,7 @@ use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, info, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::cancellation_token;
+use restate_core::{Metadata, cancellation_token};
 use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::{
     AliveNode, LegacyClusterState, PartitionProcessorStatus,
@@ -28,6 +28,7 @@ use restate_types::config::{AdminOptions, Configuration};
 use restate_types::identifiers::PartitionId;
 use restate_types::live::LiveLoad;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::partitions::Partition;
 use restate_types::retries::with_jitter;
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
@@ -189,7 +190,12 @@ impl TrimMode {
             // not guarantee that the new snapshot is visible to other cluster members.
             TrimMode::ArchivedLsn { partition_status } => {
                 for (partition_id, processor_status) in partition_status.iter() {
-                    let log_id = LogId::from(*partition_id);
+                    let log_id = Metadata::with_current(|m| {
+                        m.partition_table_ref()
+                            .get(partition_id)
+                            .map(Partition::log_id)
+                    })
+                    .expect("partition is in partition table");
 
                     // We allow trimming of archived partitions even in the presence of dead nodes; such
                     // nodes will be forced to fast-forward over any potential trim gaps when they return.
@@ -231,7 +237,13 @@ impl TrimMode {
                 // we know that there are no known dead nodes, so it's safe to take the min of all
                 // durable LSNs reported by all the partition processors as the safe trim point.
                 for (partition_id, processor_status) in partition_status.iter() {
-                    let log_id = LogId::from(*partition_id);
+                    let log_id = Metadata::with_current(|m| {
+                        m.partition_table_ref()
+                            .get(partition_id)
+                            .map(Partition::log_id)
+                    })
+                    .expect("partition is in partition table");
+
                     let min_durable_lsn = processor_status
                         .values()
                         .map(|s| s.last_persisted_log_lsn.unwrap_or(Lsn::INVALID))
@@ -259,6 +271,7 @@ mod tests {
 
     use crate::cluster_controller::service::trim_logs_task::TrimMode;
     use RunMode::{Follower, Leader};
+    use restate_core::TestCoreEnvBuilder;
     use restate_types::cluster::cluster_state::{
         AliveNode, DeadNode, LegacyClusterState, NodeState, PartitionProcessorStatus, RunMode,
     };
@@ -267,8 +280,12 @@ mod tests {
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
-    #[test]
-    fn cluster_without_snapshots_does_not_trim() {
+    #[restate_core::test(start_paused = true)]
+    async fn cluster_without_snapshots_does_not_trim() {
+        TestCoreEnvBuilder::with_incoming_only_connector()
+            .build()
+            .await;
+
         let p1 = PartitionId::from(0);
         let p2 = PartitionId::from(1);
 
@@ -326,8 +343,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cluster_with_dead_node_no_snapshots_does_not_trim() {
+    #[restate_core::test(start_paused = true)]
+    async fn cluster_with_dead_node_no_snapshots_does_not_trim() {
+        TestCoreEnvBuilder::with_incoming_only_connector()
+            .build()
+            .await;
+
         let p1 = PartitionId::from(0);
         let p2 = PartitionId::from(1);
 
@@ -384,8 +405,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn single_node_may_trim_by_durable_lsn() {
+    #[restate_core::test(start_paused = true)]
+    async fn single_node_may_trim_by_durable_lsn() {
+        TestCoreEnvBuilder::with_incoming_only_connector()
+            .build()
+            .await;
+
         let p1 = PartitionId::from(0);
         let p2 = PartitionId::from(1);
         let p3 = PartitionId::from(2);
@@ -449,8 +474,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cluster_with_snapshots_trims_by_archived_lsn() {
+    #[restate_core::test(start_paused = true)]
+    async fn cluster_with_snapshots_trims_by_archived_lsn() {
+        TestCoreEnvBuilder::with_incoming_only_connector()
+            .build()
+            .await;
+
         let p1 = PartitionId::from(0);
         let p2 = PartitionId::from(1);
         let p3 = PartitionId::from(2);
@@ -534,8 +563,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cluster_with_snapshots_trims_by_min_of_applied_or_archived_lsn() {
+    #[restate_core::test(start_paused = true)]
+    async fn cluster_with_snapshots_trims_by_min_of_applied_or_archived_lsn() {
+        TestCoreEnvBuilder::with_incoming_only_connector()
+            .build()
+            .await;
+
         let p1 = PartitionId::from(0);
 
         let n1 = GenerationalNodeId::new(1, 0);
@@ -590,8 +623,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cluster_with_dead_node_and_snapshots_trims_by_archived_lsn() {
+    #[restate_core::test(start_paused = true)]
+    async fn cluster_with_dead_node_and_snapshots_trims_by_archived_lsn() {
+        TestCoreEnvBuilder::with_incoming_only_connector()
+            .build()
+            .await;
+
         let p1 = PartitionId::from(0);
         let p2 = PartitionId::from(1);
         let p3 = PartitionId::from(2);

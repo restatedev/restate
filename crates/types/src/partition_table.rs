@@ -266,7 +266,7 @@ impl Partition {
 
     pub fn log_id(&self) -> LogId {
         self.log_id
-            .unwrap_or_else(|| LogId::from(self.partition_id))
+            .unwrap_or_else(|| LogId::default_for_partition(self.partition_id))
     }
 
     pub fn db_name(&self) -> DbName {

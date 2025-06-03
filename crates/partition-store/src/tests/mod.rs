@@ -14,6 +14,7 @@ use std::ops::RangeInclusive;
 use std::pin::pin;
 
 use futures::Stream;
+use restate_core::TestCoreEnv;
 use tokio_stream::StreamExt;
 
 use crate::{OpenMode, PartitionStore, PartitionStoreManager};
@@ -69,16 +70,16 @@ async fn storage_test_environment_with_manager() -> (PartitionStoreManager, Part
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_read_write() {
+    let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+
     let (manager, store) = storage_test_environment_with_manager().await;
 
-    //
-    // run the tests
-    //
     inbox_table_test::run_tests(store.clone()).await;
     outbox_table_test::run_tests(store.clone()).await;
     state_table_test::run_tests(store.clone()).await;
     virtual_object_status_table_test::run_tests(store.clone()).await;
     timer_table_test::run_tests(store.clone()).await;
+
     snapshots_test::run_tests(manager.clone(), store.clone()).await;
 }
 

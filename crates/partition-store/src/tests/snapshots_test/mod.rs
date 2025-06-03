@@ -45,7 +45,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
         created_at: humantime::Timestamp::from(SystemTime::from(MillisSinceEpoch::new(0))),
         snapshot_id: SnapshotId::from_parts(0, 0),
         key_range: key_range.clone(),
-        log_id: Some(LogId::from(partition_id)),
+        log_id: LogId::from(partition_id),
         min_applied_lsn: snapshot.min_applied_lsn,
         db_comparator_name: snapshot.db_comparator_name.clone(),
         files: snapshot.files.clone(),

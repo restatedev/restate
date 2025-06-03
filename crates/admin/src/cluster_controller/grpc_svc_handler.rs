@@ -197,7 +197,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .map_err(|_| Status::aborted("Node is shutting down"))?
         {
             Err(err) => {
-                info!("Failed creating partition snapshot: {err}");
+                info!("Failed to create partition snapshot: {err}");
                 Err(Status::internal(err.to_string()))
             }
             Ok(Snapshot {
