@@ -22,7 +22,7 @@ use crate::net::{
     bilrost_wire_codec, bilrost_wire_codec_with_v1_fallback, define_rpc, define_service,
     define_unary_message,
 };
-use crate::partitions::state::ReplicaSetState;
+use crate::partitions::state::{LeadershipState, ReplicaSetState};
 use crate::time::MillisSinceEpoch;
 use crate::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
 
@@ -149,6 +149,7 @@ pub struct Node {
 #[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct PartitionReplicaSet {
     pub id: PartitionId,
+    pub current_leader: LeadershipState,
     pub observed_current_membership: ReplicaSetState,
     pub observed_next_membership: Option<ReplicaSetState>,
 }

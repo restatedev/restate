@@ -87,7 +87,7 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
-use restate_types::{GenerationalNodeId, SharedString, Version};
+use restate_types::{GenerationalNodeId, SharedString};
 
 pub struct PartitionProcessorManager {
     health_status: HealthStatus<WorkerStatus>,
@@ -769,9 +769,9 @@ impl PartitionProcessorManager {
         if control_processor.current_version
             < self
                 .replica_set_states
-                .get_membership_state(partition_id)
-                .map(|m| m.observed_current_membership.version)
-                .unwrap_or(Version::MIN)
+                .membership_state(partition_id)
+                .observed_current_membership
+                .version
         {
             debug!("Ignoring control processor command because it is outdated");
             return;
@@ -1184,8 +1184,8 @@ impl PartitionProcessorManager {
 
         if self
             .replica_set_states
-            .get_membership_state(partition_id)
-            .is_some_and(|m| m.contains(Metadata::with_current(|m| m.my_node_id().as_plain())))
+            .membership_state(partition_id)
+            .contains(Metadata::with_current(|m| m.my_node_id().as_plain()))
         {
             self.start_partition_processor(partition_id, delay);
             true
@@ -1224,6 +1224,7 @@ impl PartitionProcessorManager {
             partition_key_range,
             self.updateable_config.clone(),
             self.bifrost.clone(),
+            self.replica_set_states.clone(),
             self.partition_store_manager.clone(),
             self.snapshot_repository.clone(),
             self.fast_forward_on_startup.remove(&partition_id),
@@ -1485,6 +1486,7 @@ mod tests {
             };
             replica_set_states.note_observed_membership(
                 PartitionId::MIN,
+                Default::default(),
                 current_replica_set,
                 &None,
             );
