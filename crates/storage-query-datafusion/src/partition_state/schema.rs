@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#![allow(dead_code)]
-
 use datafusion::arrow::datatypes::DataType;
 
 use crate::table_macro::*;
@@ -47,14 +45,8 @@ define_table!(
         /// Last record applied at
         last_record_applied_at: TimestampMillisecond,
 
-        /// Number of skipped records
-        skipped_records: DataType::UInt64,
-
         /// Replay status
         replay_status: DataType::Utf8,
-
-        /// Deprecated: use `durable_log_lsn` instead
-        persisted_log_lsn: DataType::UInt64,
 
         /// Durable log LSN
         durable_log_lsn: DataType::UInt64,
