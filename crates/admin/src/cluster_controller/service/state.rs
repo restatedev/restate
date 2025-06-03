@@ -303,12 +303,10 @@ where
         metadata_client: MetadataStoreClient,
         epoch_metadata_tx: tokio::sync::mpsc::Sender<HashMap<PartitionId, EpochMetadata>>,
     ) -> Result<Never, ShutdownError> {
-        let mut epoch_metadata_fetch_interval = tokio::time::interval(Duration::from_secs(5));
-        epoch_metadata_fetch_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut partition_table = Metadata::with_current(|m| m.updateable_partition_table());
 
         loop {
-            epoch_metadata_fetch_interval.tick().await;
+            debug!("Refreshing epoch metadata from metadata store for all partitions");
             let send_permit = epoch_metadata_tx
                 .reserve()
                 .await
@@ -318,6 +316,10 @@ where
             let partition_table = partition_table.live_load();
 
             for partition_id in partition_table.iter_ids() {
+                // Stop the loop if we are not leaders anymore
+                if epoch_metadata_tx.is_closed() {
+                    return Err(ShutdownError);
+                }
                 // todo replace with multi get
                 match metadata_client
                     .get::<EpochMetadata>(partition_processor_epoch_key(*partition_id))
@@ -334,6 +336,13 @@ where
             }
 
             send_permit.send(latest_epoch_metadata);
+
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(30)) => {},
+                () = epoch_metadata_tx.closed() => {
+                    return Err(ShutdownError);
+                }
+            }
         }
     }
 }
