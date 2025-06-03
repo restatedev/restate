@@ -23,7 +23,7 @@ use restate_metadata_server_grpc::grpc::{
     RemoveNodeRequest, StatusResponse, new_metadata_server_client,
 };
 use restate_metadata_store::ReadError;
-use restate_types::config::{InvalidConfigurationError, MetadataServerKind};
+use restate_types::config::InvalidConfigurationError;
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::nodes_config::MetadataServerState;
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -188,14 +188,6 @@ impl Node {
 
         base_config.common.auto_provision = false;
         base_config.common.log_disable_ansi_codes = true;
-        if roles.contains(Role::MetadataServer)
-            && !matches!(base_config.metadata_server.kind(), MetadataServerKind::Raft)
-        {
-            info!("Setting the metadata server to replicated");
-            base_config
-                .metadata_server
-                .set_kind(MetadataServerKind::Raft);
-        }
 
         for node_id in 1..=size {
             let mut effective_config = base_config.clone();

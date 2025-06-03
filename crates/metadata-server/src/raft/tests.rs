@@ -22,8 +22,8 @@ use restate_metadata_providers::create_client;
 use restate_metadata_store::serialize_value;
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    CommonOptions, Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind,
-    MetadataServerOptions, RaftOptions, set_current_config,
+    CommonOptions, Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerOptions,
+    RaftOptions, set_current_config,
 };
 use restate_types::health::Health;
 use restate_types::live::Constant;
@@ -41,9 +41,6 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     let mut configuration = Configuration::default();
     let raft_options = RaftOptions::default();
 
-    configuration
-        .metadata_server
-        .set_kind(MetadataServerKind::Raft);
     configuration.metadata_server.set_raft_options(raft_options);
     set_current_config(configuration);
 
