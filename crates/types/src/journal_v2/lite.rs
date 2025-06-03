@@ -136,6 +136,12 @@ impl_command_accessors!(GetLazyStateKeys);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GetEagerStateCommandLite {
     pub key: ByteString,
+    pub result: GetStateResultLite,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum GetStateResultLite {
+    Void,
+    Success,
 }
 impl_command_accessors!(GetEagerState);
 

@@ -15,6 +15,9 @@ use std::time::Duration;
 use enumset::enum_set;
 use futures_util::StreamExt;
 use googletest::{IntoTestResult, fail};
+use restate_core::protobuf::cluster_ctrl_svc::{
+    GetClusterConfigurationRequest, SetClusterConfigurationRequest,
+};
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig};
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use tempfile::TempDir;
@@ -201,22 +204,25 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         "node-2 should join the cluster"
     );
 
-    // reconfigure partition 0 to include node-2
-    let metadata_client = cluster.nodes[0]
-        .metadata_client()
+    let mut current_cluster_config = client
+        .get_cluster_configuration(GetClusterConfigurationRequest {})
         .await
-        .into_test_result()?;
-    let epoch_key = partition_processor_epoch_key(PartitionId::new_unchecked(0));
-    metadata_client
-        .read_modify_write(epoch_key, |epoch_metadata: Option<EpochMetadata>| {
-            let epoch_metadata = epoch_metadata.expect("epoch metadata to be present");
-            Ok::<_, String>(epoch_metadata.reconfigure(PartitionConfiguration::new(
-                ReplicationProperty::new_unchecked(2),
-                NodeSet::from([PlainNodeId::new(1), PlainNodeId::new(2)]),
-                HashMap::default(),
-            )))
+        .unwrap()
+        .into_inner();
+
+    // reconfigure partition replication to include node-2
+    current_cluster_config
+        .cluster_configuration
+        .as_mut()
+        .unwrap()
+        .partition_replication = Some(ReplicationProperty::new_unchecked(2).into());
+
+    client
+        .set_cluster_configuration(SetClusterConfigurationRequest {
+            cluster_configuration: Some(current_cluster_config.cluster_configuration.unwrap()),
         })
-        .await?;
+        .await
+        .unwrap();
 
     info!("Waiting for partition processor to encounter log trim gap");
     assert!(
