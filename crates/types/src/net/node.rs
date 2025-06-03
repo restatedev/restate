@@ -190,8 +190,11 @@ impl ClusterStateReply {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash, bilrost::Enumeration, NetSerde)]
+#[derive(
+    Debug, Default, Clone, Copy, Eq, PartialEq, Hash, bilrost::Enumeration, NetSerde, strum::Display,
+)]
 #[repr(u8)]
+#[strum(serialize_all = "kebab-case")]
 pub enum NodeState {
     #[default]
     Dead = 0,

@@ -443,6 +443,9 @@ macro_rules! define_table {
         // RowBuilder
         // --------------------------------------------------------------------------
 
+        #[automatically_derived]
+        #[allow(dead_code)]
+        #[allow(clippy::all)]
         impl<'a> [< $table_name:camel RowBuilder >]<'a> {
 
                    $(
@@ -462,6 +465,9 @@ macro_rules! define_table {
                     )+
         }
 
+        #[automatically_derived]
+        #[allow(dead_code)]
+        #[allow(clippy::all)]
         impl<'a> Drop for [< $table_name:camel RowBuilder >]<'a> {
 
             fn drop(&mut self) {
@@ -483,6 +489,9 @@ macro_rules! define_table {
         // ArrayBuilder
         // --------------------------------------------------------------------------
 
+        #[automatically_derived]
+        #[allow(dead_code)]
+        #[allow(clippy::all)]
         impl [< $table_name:camel ArrayBuilder >] {
 
              fn new(projected_schema: &::datafusion::arrow::datatypes::SchemaRef) -> Self {
@@ -520,6 +529,9 @@ macro_rules! define_table {
         // Builder
         // --------------------------------------------------------------------------
 
+        #[automatically_derived]
+        #[allow(dead_code)]
+        #[allow(clippy::all)]
         impl [< $table_name:camel Builder >] {
             #[inline]
             pub fn row(&mut self) -> [< $table_name:camel RowBuilder >] {
@@ -545,6 +557,9 @@ macro_rules! define_table {
             }
         }
 
+        #[automatically_derived]
+        #[allow(dead_code)]
+        #[allow(clippy::all)]
         impl $crate::table_util::Builder for [< $table_name:camel Builder >] {
             fn new(projected_schema: ::datafusion::arrow::datatypes::SchemaRef) -> Self {
                 Self {
@@ -577,6 +592,8 @@ macro_rules! define_table {
         // --------------------------------------------------------------------------
 
         #[cfg(feature = "table_docs")]
+        #[allow(dead_code)]
+        #[allow(clippy::all)]
         pub const TABLE_DOCS: $crate::table_docs::StaticTableDocs = $crate::table_docs::StaticTableDocs {
             name: stringify!($table_name),
             description: concat!($($description),*),

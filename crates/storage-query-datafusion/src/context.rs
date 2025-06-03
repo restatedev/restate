@@ -22,7 +22,7 @@ use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
-use restate_core::Metadata;
+use restate_core::{Metadata, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
 use restate_types::cluster::cluster_state::ClusterState;
@@ -31,6 +31,7 @@ use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::live::Live;
 use restate_types::partition_table::Partition;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use tokio::sync::watch;
@@ -212,12 +213,20 @@ where
 }
 
 pub struct ClusterTables {
+    cluster_state: restate_core::cluster_state::ClusterState,
+    replica_set_states: PartitionReplicaSetStates,
     cluster_state_watch: watch::Receiver<Arc<ClusterState>>,
 }
 
 impl ClusterTables {
-    pub fn new(cluster_state_watch: watch::Receiver<Arc<ClusterState>>) -> Self {
+    pub fn new(
+        replica_set_states: PartitionReplicaSetStates,
+        cluster_state_watch: watch::Receiver<Arc<ClusterState>>,
+    ) -> Self {
+        let cluster_state = TaskCenter::with_current(|tc| tc.cluster_state().clone());
         Self {
+            cluster_state,
+            replica_set_states,
             cluster_state_watch,
         }
     }
@@ -226,10 +235,9 @@ impl ClusterTables {
 impl RegisterTable for ClusterTables {
     async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
         let metadata = Metadata::current();
-        crate::node::register_self(ctx, metadata.clone())?;
-        crate::partition::register_self(ctx, metadata.clone())?;
+        crate::node::register_self(ctx, metadata.clone(), self.cluster_state.clone())?;
+        crate::partition::register_self(ctx, metadata.clone(), self.replica_set_states.clone())?;
         crate::log::register_self(ctx, metadata)?;
-        crate::node_state::register_self(ctx, self.cluster_state_watch.clone())?;
         crate::partition_state::register_self(ctx, self.cluster_state_watch.clone())?;
 
         ctx.datafusion_context
