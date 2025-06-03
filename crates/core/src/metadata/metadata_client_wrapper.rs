@@ -48,7 +48,7 @@ impl<'a> MetadataClientWrapper<'a> {
             .put(
                 ByteString::from_static(T::KEY),
                 value.as_ref(),
-                precondition.clone(),
+                precondition,
             )
             .await
         {
@@ -121,7 +121,7 @@ impl<'a> MetadataClientWrapper<'a> {
                 Ok(new_value) => match self
                     .writer
                     .metadata_store_client
-                    .put(key.clone(), &new_value, precondition.clone())
+                    .put(key.clone(), &new_value, precondition)
                     .await
                 {
                     Ok(()) => {

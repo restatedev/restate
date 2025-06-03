@@ -289,7 +289,7 @@ impl MetadataStore for GrpcMetadataServerClient {
                 .put(PutRequest {
                     key: key.clone().into(),
                     value: Some(value.clone().into()),
-                    precondition: Some(precondition.clone().into()),
+                    precondition: Some(precondition.into()),
                 })
                 .await
             {
@@ -325,7 +325,7 @@ impl MetadataStore for GrpcMetadataServerClient {
             return match client
                 .delete(DeleteRequest {
                     key: key.clone().into(),
-                    precondition: Some(precondition.clone().into()),
+                    precondition: Some(precondition.into()),
                 })
                 .await
             {

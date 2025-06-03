@@ -106,6 +106,7 @@ async fn basic_metadata_store_operations() -> anyhow::Result<()> {
     client
         .put(key.clone(), &other_value, Precondition::None)
         .await?;
+
     client.delete(key.clone(), Precondition::None).await?;
     assert!(client.get::<Value>(key.clone()).await?.is_none());
 
