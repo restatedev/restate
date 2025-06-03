@@ -111,7 +111,7 @@ impl KvMemoryStorage {
                     let _ = result_tx.send(Ok(result));
                 }
                 ReadOnlyRequestKind::GetVersion { key, result_tx } => {
-                    let result = self.get_version(key);
+                    let result = self.get_version(&key);
                     // err if caller has gone
                     let _ = result_tx.send(Ok(result));
                 }
@@ -121,12 +121,16 @@ impl KvMemoryStorage {
         }
     }
 
+    pub fn contains(&self, key: &str) -> bool {
+        self.kv_entries.contains_key(key)
+    }
+
     pub fn get(&self, key: ByteString) -> Option<VersionedValue> {
         self.kv_entries.get(&key).cloned()
     }
 
-    pub fn get_version(&self, key: ByteString) -> Option<Version> {
-        self.kv_entries.get(&key).map(|entry| entry.version)
+    pub fn get_version(&self, key: &ByteString) -> Option<Version> {
+        self.kv_entries.get(key).map(|entry| entry.version)
     }
 
     pub fn put(

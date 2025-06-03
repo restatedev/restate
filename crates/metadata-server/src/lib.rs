@@ -410,6 +410,20 @@ struct WriteRequest {
 }
 
 impl WriteRequest {
+    fn key(&self) -> &ByteString {
+        match &self.kind {
+            RequestKind::Put { key, .. } => key,
+            RequestKind::Delete { key, .. } => key,
+        }
+    }
+
+    fn precondition(&self) -> Precondition {
+        match &self.kind {
+            RequestKind::Put { precondition, .. } => *precondition,
+            RequestKind::Delete { precondition, .. } => *precondition,
+        }
+    }
+
     fn encode_to_vec(self) -> Result<Vec<u8>, StorageEncodeError> {
         let request = protobuf::WriteRequest::from(self);
         Ok(request.encode_to_vec())

@@ -371,6 +371,13 @@ impl MetadataStoreClient {
 
     /// Deletes the key-value pair for the given key following the provided precondition. If the
     /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
+    ///
+    /// # Important
+    /// Parts of the system expect that the version of versioned values increases monotonically
+    /// (e.g. the metadata manager when exchanging metadata information, the raft server when
+    /// rejecting write requests early). Therefore, you should only delete key-value pairs if you
+    /// are certain that these values won't be used in the future ever again!
+    #[cfg(any(test, feature = "test-util"))]
     pub async fn delete(
         &self,
         key: ByteString,
