@@ -49,11 +49,9 @@ pub(crate) fn append_partition_row(
         row.last_record_applied_at(ts.as_u64() as i64);
     }
 
-    row.skipped_records(state.num_skipped_records);
     row.replay_status(format_using(output, &state.replay_status));
     if let Some(lsn) = state.last_persisted_log_lsn {
         row.durable_log_lsn(lsn.into());
-        row.persisted_log_lsn(lsn.into());
     }
 
     if let Some(lsn) = state.last_archived_log_lsn {
