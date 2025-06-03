@@ -11,6 +11,7 @@
 use anyhow::Context;
 use clap::Parser;
 use cling::{Collect, Run};
+
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_println, c_warn};
@@ -27,19 +28,24 @@ use crate::connection::ConnectionInfo;
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "config_set")]
 pub struct ConfigSetOpts {
-    /// Partition replication strategy. If not set places
-    /// partitions replicas on all nodes.
-    /// Accepts `replication property` as a value.
-    #[clap(long)]
+    /// Replication property of logs and partitions.
+    ///
+    /// (mutually exclusive with `log-replication` and/or `partition-replication`)
+    #[clap(short, long, group = "sep1", group = "sep2")]
+    replication: Option<ReplicationProperty>,
+
+    /// Replication property of bifrost logs if using replicated log provider
+    #[clap(long, group = "sep1")]
+    log_replication: Option<ReplicationProperty>,
+
+    /// Partition replication. If unset, uses
+    /// the default `admin.default-partition-replication`
+    #[clap(long, group = "sep2")]
     partition_replication: Option<ReplicationProperty>,
 
-    /// Bifrost provider kind.
+    /// Default log provider kind
     #[clap(long)]
     log_provider: Option<ProviderKind>,
-
-    /// Replication property of bifrost logs if using replicated as log provider
-    #[clap(long)]
-    log_replication: Option<ReplicationProperty>,
 
     /// The nodeset size used for replicated log, this is an advanced feature.
     /// It's recommended to leave it unset (defaults to 0)
@@ -50,7 +56,7 @@ pub struct ConfigSetOpts {
     ///
     /// It is only possible to change the number of partitions if the current cluster value is 0.
     /// Otherwise, the set operation will fail.
-    #[clap(long)]
+    #[clap(short, long)]
     num_partitions: Option<u16>,
 }
 
@@ -69,8 +75,18 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
 
     let current_config_string = cluster_config_string(&current)?;
 
-    if let Some(replication_property) = &set_opts.partition_replication {
-        current.partition_replication = Some(replication_property.clone().into());
+    let partition_replication = set_opts
+        .partition_replication
+        .clone()
+        .or(set_opts.replication.clone());
+
+    let log_replication = set_opts
+        .log_replication
+        .clone()
+        .or(set_opts.replication.clone());
+
+    if let Some(replication_property) = partition_replication {
+        current.partition_replication = Some(replication_property.into());
     }
 
     set_opts.log_provider.inspect(|provider| {
@@ -97,7 +113,7 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
         bifrost_provider.provider = provider.to_string();
     }
 
-    if let Some(log_replication) = set_opts.log_replication.clone() {
+    if let Some(log_replication) = log_replication {
         bifrost_provider.replication_property = Some(log_replication.into());
     }
 

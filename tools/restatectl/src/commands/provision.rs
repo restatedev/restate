@@ -1,5 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
-// All rights reserved.
+// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH. All rights reserved.
 //
 // Use of this software is governed by the Business Source License
 // included in the LICENSE file.
@@ -28,21 +27,27 @@ use crate::util::grpc_channel;
 #[cling(run = "provision_cluster")]
 pub struct ProvisionOpts {
     /// Number of partitions
-    #[clap(long)]
+    #[clap(short, long)]
     num_partitions: Option<u16>,
+
+    /// Replication property of logs and partitions.
+    ///
+    /// (mutually exclusive with `log-replication` and/or `partition-replication`)
+    #[clap(short, long, group = "sep1", group = "sep2")]
+    replication: Option<ReplicationProperty>,
+
+    /// Replication property of bifrost logs if using replicated log provider
+    #[clap(long, group = "sep1")]
+    log_replication: Option<ReplicationProperty>,
 
     /// Partition replication. If unset, uses
     /// the default `admin.default-partition-replication`
-    #[clap(long)]
+    #[clap(long, group = "sep2")]
     partition_replication: Option<ReplicationProperty>,
 
     /// Default log provider kind
     #[clap(long)]
     log_provider: Option<ProviderKind>,
-
-    /// Replication property of bifrost logs if using replicated as log provider
-    #[clap(long)]
-    log_replication: Option<ReplicationProperty>,
 
     /// The nodeset size used for replicated log, this is an advanced feature.
     /// It's recommended to leave it unset (defaults to 0)
@@ -72,14 +77,26 @@ async fn provision_cluster(
 
     let mut client = new_node_ctl_client(channel);
 
+    let partition_replication = provision_opts
+        .partition_replication
+        .clone()
+        .or(provision_opts.replication.clone())
+        .map(Into::into);
+
+    let log_replication = provision_opts
+        .log_replication
+        .clone()
+        .or(provision_opts.replication.clone())
+        .map(Into::into);
+
     let request = ProvisionClusterRequest {
         dry_run: true,
         num_partitions: provision_opts.num_partitions.map(u32::from),
-        partition_replication: provision_opts.partition_replication.clone().map(Into::into),
+        partition_replication,
         log_provider: provision_opts
             .log_provider
             .map(|provider| provider.to_string()),
-        log_replication: provision_opts.log_replication.clone().map(Into::into),
+        log_replication,
         target_nodeset_size: provision_opts.log_default_nodeset_size.map(Into::into),
     };
 
