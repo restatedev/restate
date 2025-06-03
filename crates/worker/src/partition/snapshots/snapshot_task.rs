@@ -90,7 +90,7 @@ impl SnapshotPartitionTask {
             created_at: humantime::Timestamp::from(created_at),
             snapshot_id: self.snapshot_id,
             key_range: snapshot.key_range.clone(),
-            log_id: Some(snapshot.log_id),
+            log_id: snapshot.log_id,
             min_applied_lsn: snapshot.min_applied_lsn,
             db_comparator_name: snapshot.db_comparator_name.clone(),
             files: snapshot.files.clone(),
