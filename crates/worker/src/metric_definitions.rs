@@ -20,6 +20,7 @@ pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_cre
 pub const PARTITION_STORAGE_TX_COMMITTED: &str = "restate.partition.storage_tx_committed.total";
 pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_leader_action.total";
 
+pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
 pub const PARTITION_TIME_SINCE_LAST_STATUS_UPDATE: &str =
     "restate.partition.time_since_last_status_update";
@@ -37,10 +38,6 @@ pub const PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION: &str =
     "restate.partition.handle_action_batch_duration.seconds";
 pub const PARTITION_HANDLE_INVOKER_EFFECT_COMMAND: &str =
     "restate.partition.handle_invoker_effect.seconds";
-pub const PARTITION_RPC_QUEUE_UTILIZATION_PERCENT: &str =
-    "restate.partition.rpc_queue.utilization.percent";
-pub const PARTITION_RPC_QUEUE_OUTSTANDING_REQUESTS: &str =
-    "restate.partition.rpc_queue.outstanding_requests";
 pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
     "restate.partition.record_committed_to_read_latency.seconds";
 
@@ -101,6 +98,12 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_gauge!(
+        NUM_PARTITIONS,
+        Unit::Count,
+        "Total number of partitions in the partition table"
+    );
+
+    describe_gauge!(
         NUM_ACTIVE_PARTITIONS,
         Unit::Count,
         "Number of partitions started by partition processor manager on this node"
@@ -146,18 +149,6 @@ pub(crate) fn describe_metrics() {
         PARTITION_TIME_SINCE_LAST_RECORD,
         Unit::Seconds,
         "Number of seconds since the last record was applied"
-    );
-
-    describe_gauge!(
-        PARTITION_RPC_QUEUE_UTILIZATION_PERCENT,
-        Unit::Percent,
-        "Partition processor requests queue utilization, 0 to 100%"
-    );
-
-    describe_gauge!(
-        PARTITION_RPC_QUEUE_OUTSTANDING_REQUESTS,
-        Unit::Count,
-        "Number of outstanding requests in the partition processor request queue"
     );
 
     describe_counter!(

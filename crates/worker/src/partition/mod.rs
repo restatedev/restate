@@ -17,7 +17,7 @@ use anyhow::Context;
 use assert2::let_assert;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
-use metrics::{SharedString, counter, gauge, histogram};
+use metrics::{SharedString, counter, histogram};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{Span, debug, error, info, instrument, trace, warn};
@@ -61,7 +61,7 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcResponse,
 };
 use restate_types::partitions::state::PartitionReplicaSetStates;
-use restate_types::retries::RetryPolicy;
+use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, invocation};
@@ -72,7 +72,6 @@ use crate::metric_definitions::{
     PARTITION_APPLY_COMMAND_BATCH_SIZE, PARTITION_APPLY_COMMAND_DURATION, PARTITION_LABEL,
     PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
     PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_RECORD_READ_COUNT,
-    PARTITION_RPC_QUEUE_OUTSTANDING_REQUESTS, PARTITION_RPC_QUEUE_UTILIZATION_PERCENT,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
@@ -400,13 +399,10 @@ where
         let partition_id_str = SharedString::from(self.partition_id.to_string());
         let apply_command_latency = histogram!(PARTITION_APPLY_COMMAND_DURATION, PARTITION_LABEL => partition_id_str.clone());
         let record_actions_latency = histogram!(PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION);
-        let record_write_to_read_latencty = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => partition_id_str.clone());
+        let record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => partition_id_str.clone());
         let command_batch_size = histogram!(PARTITION_APPLY_COMMAND_BATCH_SIZE, PARTITION_LABEL => partition_id_str.clone());
         let command_read_count =
             counter!(PARTITION_RECORD_READ_COUNT, PARTITION_LABEL => partition_id_str.clone());
-        let rpc_queue_utilization = gauge!(PARTITION_RPC_QUEUE_UTILIZATION_PERCENT, PARTITION_LABEL => partition_id_str.clone());
-        let rpc_queue_len =
-            gauge!(PARTITION_RPC_QUEUE_OUTSTANDING_REQUESTS, PARTITION_LABEL => partition_id_str);
         // Start reading after the last applied lsn
         let key_query = KeyFilter::Within(self.partition_key_range.clone());
 
@@ -419,7 +415,7 @@ where
                     let lsn = entry.sequence_number();
                     if entry.is_data_record() {
                         entry.as_record().inspect(|record| {
-                            record_write_to_read_latencty.record(record.created_at().elapsed());
+                            record_write_to_read_latency.record(record.created_at().elapsed());
                         });
                         entry
                             .try_decode_arc::<Envelope>()
@@ -445,9 +441,9 @@ where
                 std::future::ready(Ok(envelope.matches_key_query(&key_query)))
             });
 
-        // avoid synchronized timers. We pick a randomised timer between 500 and 1023 millis.
+        // avoid synchronized timers.
         let mut status_update_timer =
-            tokio::time::interval(Duration::from_millis(500 + rand::random::<u64>() % 524));
+            tokio::time::interval(with_jitter(Duration::from_millis(500), 0.5));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut action_collector = ActionCollector::default();
@@ -461,13 +457,6 @@ where
         info!("Partition {} started", self.partition_id);
 
         loop {
-            let rpc_rx_len = self.network_leader_svc_rx.len();
-            let utilization =
-                (rpc_rx_len as f64 * 100.0) / self.network_leader_svc_rx.max_capacity() as f64;
-
-            rpc_queue_utilization.set(utilization);
-            rpc_queue_len.set(rpc_rx_len as f64);
-
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
                     let target_leader_state = *self.target_leader_state_rx.borrow_and_update();
