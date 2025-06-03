@@ -235,29 +235,8 @@ impl<'a> BifrostAdmin<'a> {
     ) -> Result<()> {
         self.inner.fail_if_shutting_down()?;
         self.inner
-            .metadata_writer
-            .global_metadata()
-            .read_modify_write(|logs: Option<Arc<Logs>>| {
-                let logs = logs.ok_or(Error::UnknownLogId(log_id))?;
-
-                let mut builder = logs.as_ref().clone().into_builder();
-                let mut chain_builder = builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
-
-                if chain_builder.tail().index() != last_segment_index {
-                    // tail is not what we expected.
-                    return Err(Error::from(AdminError::SegmentMismatch {
-                        expected: last_segment_index,
-                        found: chain_builder.tail().index(),
-                    }));
-                }
-
-                let _ = chain_builder
-                    .append_segment(base_lsn, provider, params.clone())
-                    .map_err(AdminError::from)?;
-                Ok(builder.build())
-            })
-            .await
-            .map_err(|e| e.transpose())?;
+            .extend_log_chain(log_id, last_segment_index, base_lsn, provider, params)
+            .await?;
 
         Ok(())
     }
