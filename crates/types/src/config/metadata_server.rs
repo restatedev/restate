@@ -28,7 +28,7 @@ use super::{
     feature = "schemars",
     schemars(rename = "MetadataServerOptions", default)
 )]
-#[serde(rename_all = "kebab-case", from = "MetadataServerOptionsShadow")]
+#[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct MetadataServerOptions {
     /// Limit number of in-flight requests
@@ -56,40 +56,11 @@ pub struct MetadataServerOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 
-    /// Type of metadata server to start
-    ///
-    /// The type of metadata server to start when running the metadata store role.
-    // todo remove when removing the local metadata server
-    #[serde(rename = "type")]
-    kind: Option<MetadataServerKind>,
-
     #[serde(flatten)]
     pub raft_options: RaftOptions,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, derive_more::Display)]
-#[serde(rename_all = "kebab-case", rename_all_fields = "kebab-case")]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub enum MetadataServerKind {
-    /// Raft-based metadata server kind is publicly known as the replicated metadata server
-    #[default]
-    #[serde(rename = "replicated")]
-    #[display("replicated")]
-    Raft,
-    // #[display("local")]
-    // #[deprecated(since = "1.3.0", note = "removed from 1.4.0")]
-    // Local,
-}
-
 impl MetadataServerOptions {
-    pub fn kind(&self) -> MetadataServerKind {
-        self.kind.clone().unwrap_or_default()
-    }
-
-    pub fn set_kind(&mut self, kind: MetadataServerKind) {
-        self.kind = Some(kind);
-    }
-
     pub fn set_raft_options(&mut self, raft_options: RaftOptions) {
         self.raft_options = raft_options;
     }
@@ -143,7 +114,6 @@ impl Default for MetadataServerOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.01,
             rocksdb,
-            kind: None,
             raft_options: RaftOptions::default(),
         }
     }
@@ -198,43 +168,6 @@ impl Default for RaftOptions {
             raft_tick_interval: Duration::from_millis(100).into(),
             status_update_interval: Duration::from_secs(5).into(),
             log_trim_threshold: Some(1000),
-        }
-    }
-}
-
-#[serde_as]
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct MetadataServerOptionsShadow {
-    request_queue_length: NonZeroUsize,
-
-    #[serde_as(as = "Option<NonZeroByteCount>")]
-    rocksdb_memory_budget: Option<NonZeroUsize>,
-
-    rocksdb_memory_ratio: f32,
-
-    #[serde(flatten)]
-    rocksdb: RocksDbOptions,
-
-    // defined as Option<_> for backward compatibility with version < v1.2
-    // todo remove when removing the local metadata server
-    #[serde(rename = "type")]
-    kind: Option<MetadataServerKind>,
-
-    // defined as Option<_> for backward compatibility with version < v1.2
-    #[serde(flatten)]
-    raft_options: Option<RaftOptions>,
-}
-
-impl From<MetadataServerOptionsShadow> for MetadataServerOptions {
-    fn from(value: MetadataServerOptionsShadow) -> Self {
-        MetadataServerOptions {
-            request_queue_length: value.request_queue_length,
-            rocksdb_memory_budget: value.rocksdb_memory_budget,
-            rocksdb_memory_ratio: value.rocksdb_memory_ratio,
-            rocksdb: value.rocksdb,
-            kind: value.kind,
-            raft_options: value.raft_options.unwrap_or_default(),
         }
     }
 }
