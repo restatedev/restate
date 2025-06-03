@@ -11,15 +11,15 @@
 use std::sync::Arc;
 
 use dashmap::Entry;
-use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
+use tokio::sync::{Notify, watch};
 
 use restate_encoding::NetSerde;
 
-use crate::identifiers::PartitionId;
+use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::{Lsn, SequenceNumber};
 use crate::partitions::PartitionConfiguration;
-use crate::{Merge, PlainNodeId, Version};
+use crate::{GenerationalNodeId, Merge, PlainNodeId, Version};
 
 type DashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
 
@@ -36,19 +36,57 @@ struct Inner {
 }
 
 impl PartitionReplicaSetStates {
-    /// Update the membership state for a partition
-    pub fn note_observed_membership(
+    /// Update the leadership state for a partition
+    ///
+    /// The leadership state should only be updated after we are confident that
+    /// the new leader has committed the leader epoch to the log. It's also acceptable
+    /// to delay updating it until the actual leader or any of the followers have
+    /// observed the leader epoch as being the winner of the elections.
+    pub fn note_observed_leader(
         &self,
         partition_id: PartitionId,
-        current_membership: &ReplicaSetState,
-        next_membership: &Option<ReplicaSetState>,
+        incoming_leader: LeadershipState,
     ) {
         let modified = match self.inner.partitions.entry(partition_id) {
             Entry::Occupied(mut occupied_entry) => occupied_entry
                 .get_mut()
-                .merge(current_membership, next_membership),
+                .current_leader
+                .send_if_modified(|l| l.merge(incoming_leader)),
             Entry::Vacant(entry) => {
                 entry.insert(MembershipState {
+                    current_leader: watch::Sender::new(incoming_leader),
+                    observed_current_membership: Default::default(),
+                    observed_next_membership: Default::default(),
+                });
+                true
+            }
+        };
+
+        if modified {
+            self.inner.global_notify.notify_waiters();
+        }
+    }
+
+    /// Update the membership state for a partition
+    ///
+    /// If you don't have a new leadership state, use Default::default() instead for the parameter
+    /// `leadershipstate`.
+    pub fn note_observed_membership(
+        &self,
+        partition_id: PartitionId,
+        current_leader: LeadershipState,
+        current_membership: &ReplicaSetState,
+        next_membership: &Option<ReplicaSetState>,
+    ) {
+        let modified = match self.inner.partitions.entry(partition_id) {
+            Entry::Occupied(mut occupied_entry) => {
+                occupied_entry
+                    .get_mut()
+                    .merge(current_leader, current_membership, next_membership)
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(MembershipState {
+                    current_leader: watch::Sender::new(current_leader),
                     observed_current_membership: current_membership.clone(),
                     observed_next_membership: next_membership.clone(),
                 });
@@ -61,11 +99,29 @@ impl PartitionReplicaSetStates {
         }
     }
 
-    pub fn get_membership_state(&self, partition_id: PartitionId) -> Option<MembershipState> {
-        self.inner
-            .partitions
-            .get(&partition_id)
-            .map(|k| k.value().clone())
+    pub fn watch_leadership_state(
+        &self,
+        partition_id: PartitionId,
+    ) -> watch::Receiver<LeadershipState> {
+        match self.inner.partitions.entry(partition_id) {
+            Entry::Occupied(occupied_entry) => occupied_entry.get().watch_current_leader(),
+            Entry::Vacant(entry) => {
+                let value = entry.insert(MembershipState::default());
+                self.inner.global_notify.notify_waiters();
+                value.value().watch_current_leader()
+            }
+        }
+    }
+
+    pub fn membership_state(&self, partition_id: PartitionId) -> MembershipState {
+        match self.inner.partitions.entry(partition_id) {
+            Entry::Occupied(occupied_entry) => occupied_entry.get().clone(),
+            Entry::Vacant(entry) => {
+                let value = entry.insert(MembershipState::default());
+                self.inner.global_notify.notify_waiters();
+                value.value().clone()
+            }
+        }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (PartitionId, MembershipState)> {
@@ -84,15 +140,63 @@ impl PartitionReplicaSetStates {
     }
 }
 
+#[derive(Debug, Clone, Copy, bilrost::Message, NetSerde)]
+pub struct LeadershipState {
+    pub current_leader_epoch: LeaderEpoch,
+    pub current_leader: GenerationalNodeId,
+}
+
+impl Default for LeadershipState {
+    fn default() -> Self {
+        Self {
+            current_leader_epoch: LeaderEpoch::INVALID,
+            current_leader: GenerationalNodeId::INVALID,
+        }
+    }
+}
+
+impl Merge for LeadershipState {
+    fn merge(&mut self, other: Self) -> bool {
+        match self.current_leader_epoch.cmp(&other.current_leader_epoch) {
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Less => {
+                self.current_leader_epoch = other.current_leader_epoch;
+                self.current_leader = other.current_leader;
+                true
+            }
+            std::cmp::Ordering::Equal
+                if !self.current_leader.is_valid() && other.current_leader.is_valid() =>
+            {
+                // update our current leader if the incoming knows about it and we don't.
+                self.current_leader = other.current_leader;
+                true
+            }
+            std::cmp::Ordering::Equal => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MembershipState {
+    current_leader: watch::Sender<LeadershipState>,
     pub observed_current_membership: ReplicaSetState,
     pub observed_next_membership: Option<ReplicaSetState>,
+}
+
+impl Default for MembershipState {
+    fn default() -> Self {
+        Self {
+            current_leader: watch::Sender::new(LeadershipState::default()),
+            observed_current_membership: ReplicaSetState::default(),
+            observed_next_membership: None,
+        }
+    }
 }
 
 impl MembershipState {
     fn merge(
         &mut self,
+        incoming_leadership_state: LeadershipState,
         incoming_current_membership: &ReplicaSetState,
         incoming_next_membership: &Option<ReplicaSetState>,
     ) -> bool {
@@ -124,6 +228,10 @@ impl MembershipState {
             }
             std::cmp::Ordering::Less => { /* ignore it */ }
         }
+
+        modified |= self
+            .current_leader
+            .send_if_modified(|l| l.merge(incoming_leadership_state));
 
         // dealing with next membership configuration
         let Some(incoming_next_membership) = incoming_next_membership else {
@@ -169,6 +277,14 @@ impl MembershipState {
                 .as_ref()
                 .map(|m| m.members.iter().any(|m| m.node_id == node_id))
                 .unwrap_or(false)
+    }
+
+    pub fn current_leader(&self) -> LeadershipState {
+        *self.current_leader.borrow()
+    }
+
+    pub fn watch_current_leader(&self) -> watch::Receiver<LeadershipState> {
+        self.current_leader.subscribe()
     }
 }
 
