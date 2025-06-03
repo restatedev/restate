@@ -18,7 +18,6 @@ use restate_serde_util::NonZeroByteCount;
 
 use super::{
     CommonOptions, Configuration, RocksDbOptions, RocksDbOptionsBuilder, StructWithDefaults,
-    print_warning_deprecated_value,
 };
 
 /// # Metadata store options
@@ -72,17 +71,14 @@ pub struct MetadataServerOptions {
 #[serde(rename_all = "kebab-case", rename_all_fields = "kebab-case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum MetadataServerKind {
+    /// Raft-based metadata server kind is publicly known as the replicated metadata server
     #[default]
-    #[display("local")]
-    // #[deprecated(
-    //     since = "1.3.0",
-    //     note = "The local metadata server kind will be removed with version 1.4.0"
-    // )]
-    Local,
-    // make the Raft based metadata server primarily known as the replicated metadata server
     #[serde(rename = "replicated")]
     #[display("replicated")]
     Raft,
+    // #[display("local")]
+    // #[deprecated(since = "1.3.0", note = "removed from 1.4.0")]
+    // Local,
 }
 
 impl MetadataServerOptions {
@@ -232,18 +228,6 @@ struct MetadataServerOptionsShadow {
 
 impl From<MetadataServerOptionsShadow> for MetadataServerOptions {
     fn from(value: MetadataServerOptionsShadow) -> Self {
-        if value
-            .kind
-            .as_ref()
-            .is_some_and(|kind| *kind == MetadataServerKind::Local)
-        {
-            print_warning_deprecated_value(
-                "metadata-server.type",
-                "local",
-                "The local metadata server will be removed with 1.4.0. It's recommended to unset this option or choose 'replicated'.",
-            );
-        }
-
         MetadataServerOptions {
             request_queue_length: value.request_queue_length,
             rocksdb_memory_budget: value.rocksdb_memory_budget,
@@ -273,38 +257,10 @@ impl<'de> DeserializeAs<'de, MetadataServerOptions>
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{Configuration, MetadataServerKind, MetadataServerOptions};
+    use crate::config::{Configuration, MetadataServerOptions};
     use crate::config_loader::ConfigLoaderBuilder;
     use std::fs;
     use std::num::NonZeroUsize;
-
-    #[test]
-    fn metadata_server_backwards_compatibility() -> googletest::Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let config_path_address = temp_dir.path().join("config1.toml");
-        let config_file_address = r#"
-        [metadata-store]
-        type = "local"
-        "#;
-
-        fs::write(config_path_address.clone(), config_file_address)?;
-
-        let config_loader = ConfigLoaderBuilder::default()
-            .path(Some(config_path_address))
-            .disable_apply_cascading_values(true)
-            .build()?;
-        let configuration = config_loader.load_once()?;
-
-        assert_eq!(
-            configuration.metadata_server,
-            MetadataServerOptions {
-                kind: Some(MetadataServerKind::Local),
-                ..Configuration::default().metadata_server
-            }
-        );
-
-        Ok(())
-    }
 
     #[test]
     fn metadata_server_precedence() -> googletest::Result<()> {
@@ -315,7 +271,7 @@ mod tests {
         request-queue-length = 1337
 
         [metadata-store]
-        type = "local"
+        type = "replicated"
         "#;
 
         fs::write(config_path_address.clone(), config_file_address)?;
