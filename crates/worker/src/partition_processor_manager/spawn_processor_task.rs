@@ -28,6 +28,7 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Lsn;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::Schema;
 
 use crate::PartitionProcessorBuilder;
@@ -43,6 +44,7 @@ pub struct SpawnPartitionProcessorTask {
     key_range: RangeInclusive<PartitionKey>,
     configuration: Live<Configuration>,
     bifrost: Bifrost,
+    replica_set_states: PartitionReplicaSetStates,
     partition_store_manager: PartitionStoreManager,
     snapshot_repository: Option<SnapshotRepository>,
     fast_forward_lsn: Option<Lsn>,
@@ -56,6 +58,7 @@ impl SpawnPartitionProcessorTask {
         key_range: RangeInclusive<PartitionKey>,
         configuration: Live<Configuration>,
         bifrost: Bifrost,
+        replica_set_states: PartitionReplicaSetStates,
         partition_store_manager: PartitionStoreManager,
         snapshot_repository: Option<SnapshotRepository>,
         fast_forward_lsn: Option<Lsn>,
@@ -66,6 +69,7 @@ impl SpawnPartitionProcessorTask {
             key_range,
             configuration,
             bifrost,
+            replica_set_states,
             partition_store_manager,
             snapshot_repository,
             fast_forward_lsn,
@@ -93,6 +97,7 @@ impl SpawnPartitionProcessorTask {
             key_range,
             configuration,
             bifrost,
+            replica_set_states,
             partition_store_manager,
             snapshot_repository,
             fast_forward_lsn,
@@ -167,7 +172,7 @@ impl SpawnPartitionProcessorTask {
                     .map_err(|e| ProcessorError::from(anyhow::anyhow!(e)))?;
 
                     pp_builder
-                        .build(bifrost, partition_store)
+                        .build(bifrost, partition_store, replica_set_states)
                         .await
                         .map_err(ProcessorError::from)?
                         .run()
