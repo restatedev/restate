@@ -35,6 +35,7 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::timer_table::{TimerKey, TimerTable};
 use restate_timer::TokioClock;
+use restate_types::GenerationalNodeId;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
@@ -254,6 +255,40 @@ where
     pub async fn step_down(&mut self) {
         debug!("Stepping down. Being a role model for Joe.");
         self.become_follower().await
+    }
+
+    pub async fn maybe_step_down(
+        &mut self,
+        new_leader_epoch: LeaderEpoch,
+        new_leader_node: GenerationalNodeId,
+    ) {
+        match &self.state {
+            State::Follower => {}
+            State::Candidate { leader_epoch, .. } => match leader_epoch.cmp(&new_leader_epoch) {
+                Ordering::Less => {
+                    debug!(
+                        "Lost leadership campaign. Conceding to {} at epoch {}",
+                        new_leader_node, new_leader_epoch
+                    );
+                    self.become_follower().await;
+                }
+                Ordering::Equal => { /* nothing do to */ }
+                Ordering::Greater => { /* we are in the future */ }
+            },
+            State::Leader(leader_state) => match leader_state.leader_epoch.cmp(&new_leader_epoch) {
+                Ordering::Less => {
+                    debug!(
+                        my_leadership_epoch = %leader_state.leader_epoch,
+                        %new_leader_epoch,
+                        "Every reign must end. Stepping down and becoming an conceding to {} at epoch {}",
+                        new_leader_node, new_leader_epoch
+                    );
+                    self.become_follower().await;
+                }
+                Ordering::Equal => {}
+                Ordering::Greater => {}
+            },
+        }
     }
 
     #[instrument(level = "debug", skip_all, fields(leader_epoch = %announce_leader.leader_epoch))]
