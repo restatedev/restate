@@ -7730,6 +7730,7 @@ dependencies = [
  "enumset",
  "figment",
  "flexbuffers",
+ "futures",
  "googletest",
  "hostname",
  "http 1.2.0",

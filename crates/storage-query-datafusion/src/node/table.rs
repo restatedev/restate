@@ -18,7 +18,7 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tokio::sync::mpsc::Sender;
 
 use restate_core::Metadata;
-use restate_core::cluster_state::ClusterState;
+use restate_types::cluster_state::ClusterState;
 use restate_types::nodes_config::NodesConfiguration;
 
 use crate::context::QueryContext;

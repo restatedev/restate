@@ -16,7 +16,6 @@
     clippy::mutex_atomic
 )]
 
-pub mod cluster_state;
 mod error;
 mod identification;
 mod metadata;

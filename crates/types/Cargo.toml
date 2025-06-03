@@ -96,6 +96,7 @@ restate-types = {path = ".", default-features = false, features = ["test-util"]}
 restate-test-util = { workspace = true }
 
 criterion = { workspace = true, features = ["async_tokio"] }
+futures = { workspace = true }
 tempfile = { workspace = true }
 googletest = { workspace = true }
 rand = { workspace = true }

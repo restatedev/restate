@@ -215,7 +215,7 @@ where
 }
 
 pub struct ClusterTables {
-    cluster_state: restate_core::cluster_state::ClusterState,
+    cluster_state: restate_types::cluster_state::ClusterState,
     replica_set_states: PartitionReplicaSetStates,
     cluster_state_watch: watch::Receiver<Arc<ClusterState>>,
 }

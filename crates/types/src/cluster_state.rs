@@ -17,8 +17,8 @@ use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
 use tokio::sync::watch;
 
-pub use restate_types::net::node::NodeState;
-use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
+pub use crate::net::node::NodeState;
+use crate::{GenerationalNodeId, NodeId, PlainNodeId};
 
 type Generation = u32;
 

@@ -27,7 +27,7 @@ use restate_bifrost::BifrostService;
 use restate_core::network::{
     GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
 };
-use restate_core::partitions::{PartitionRoutingRefresher, spawn_partition_routing_refresher};
+use restate_core::partitions::PartitionRouting;
 use restate_core::{Metadata, MetadataKind, MetadataWriter, TaskKind};
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_manager};
 use restate_futures_util::overdue::OverdueLoggingExt;
@@ -123,7 +123,6 @@ pub struct Node {
     server_builder: NetworkServerBuilder,
     updateable_config: Live<Configuration>,
     metadata_manager: MetadataManager,
-    partition_routing_refresher: PartitionRoutingRefresher,
     bifrost: BifrostService,
     metadata_server_role: Option<BoxedMetadataServer>,
     failure_detector: FailureDetector<Networking<GrpcConnector>>,
@@ -199,7 +198,6 @@ impl Node {
         let mut router_builder = MessageRouterBuilder::default();
         let networking = Networking::with_grpc_connector();
         metadata_manager.register_in_message_router(&mut router_builder);
-        let partition_routing_refresher = PartitionRoutingRefresher::default();
         let replica_set_states = PartitionReplicaSetStates::default();
 
         let record_cache = RecordCache::new(
@@ -254,7 +252,7 @@ impl Node {
                 WorkerRole::create(
                     TaskCenter::with_current(|tc| tc.health().worker_status()),
                     metadata.clone(),
-                    partition_routing_refresher.partition_routing(),
+                    PartitionRouting::new(replica_set_states.clone()),
                     replica_set_states.clone(),
                     updateable_config.clone(),
                     &mut router_builder,
@@ -297,7 +295,7 @@ impl Node {
                 networking.clone(),
                 metadata.updateable_schema(),
                 metadata.updateable_partition_table(),
-                partition_routing_refresher.partition_routing(),
+                PartitionRouting::new(replica_set_states.clone()),
             ))
         } else {
             None
@@ -309,7 +307,7 @@ impl Node {
                     TaskCenter::with_current(|tc| tc.health().admin_status()),
                     bifrost.clone(),
                     updateable_config.clone(),
-                    partition_routing_refresher.partition_routing(),
+                    PartitionRouting::new(replica_set_states.clone()),
                     replica_set_states.clone(),
                     networking.clone(),
                     metadata,
@@ -345,7 +343,6 @@ impl Node {
         Ok(Node {
             updateable_config,
             metadata_manager,
-            partition_routing_refresher,
             bifrost: bifrost_svc,
             metadata_server_role: metadata_store_role,
             failure_detector,
@@ -509,9 +506,6 @@ impl Node {
         if let Some(log_server) = self.log_server {
             log_server.start(metadata_writer).await?;
         }
-
-        // Start partition routing information refresher
-        spawn_partition_routing_refresher(self.partition_routing_refresher)?;
 
         if let Some(ingress_role) = self.ingress_role {
             TaskCenter::spawn(TaskKind::IngressServer, "ingress-http", ingress_role.run())?;

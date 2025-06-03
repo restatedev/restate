@@ -54,7 +54,7 @@ where
         &mut self,
         service: &Service<T>,
         nodes_config: &NodesConfiguration,
-        cs: &restate_core::cluster_state::ClusterState,
+        cs: &restate_types::cluster_state::ClusterState,
     ) {
         let maybe_leader = {
             let admin_nodes: Vec<_> = nodes_config

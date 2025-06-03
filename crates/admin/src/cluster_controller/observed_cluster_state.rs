@@ -57,7 +57,7 @@ impl ObservedClusterState {
         }
     }
 
-    pub fn update_liveness(&mut self, cs: &restate_core::cluster_state::ClusterState) {
+    pub fn update_liveness(&mut self, cs: &restate_types::cluster_state::ClusterState) {
         let mut unknown_nodes: HashSet<_> = self.nodes_to_partitions.keys().cloned().collect();
 
         for (node_id, state) in cs.all() {
@@ -392,14 +392,14 @@ pub mod tests {
             .collect(),
         };
 
-        let cs = restate_core::cluster_state::ClusterState::default();
+        let cs = restate_types::cluster_state::ClusterState::default();
         let mut updater = cs.clone().updater();
         updater
             .write()
-            .upsert_node_state(node_1, restate_core::cluster_state::NodeState::Alive);
+            .upsert_node_state(node_1, restate_types::cluster_state::NodeState::Alive);
         updater
             .write()
-            .upsert_node_state(node_2, restate_core::cluster_state::NodeState::Alive);
+            .upsert_node_state(node_2, restate_types::cluster_state::NodeState::Alive);
 
         observed_cluster_state.update_liveness(&cs);
         observed_cluster_state.update_partitions(&cluster_state);

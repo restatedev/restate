@@ -17,10 +17,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 use restate_types::SharedString;
+use restate_types::cluster_state::{ClusterState, ClusterStateUpdater};
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
 
-use crate::cluster_state::{ClusterState, ClusterStateUpdater};
 use crate::{Metadata, ShutdownError};
 
 use super::{

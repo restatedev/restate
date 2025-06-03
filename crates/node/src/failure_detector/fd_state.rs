@@ -15,8 +15,8 @@ use rand::seq::{IteratorRandom, SliceRandom};
 use tokio::time::Instant;
 use tracing::{debug, error, warn};
 
-use restate_core::cluster_state::ClusterStateUpdater;
 use restate_core::network::{ConnectThrottle, NetworkSender};
+use restate_types::cluster_state::ClusterStateUpdater;
 use restate_types::config::GossipOptions;
 use restate_types::identifiers::PartitionId;
 use restate_types::net::node::{ClusterStateReply, Gossip, GossipFlags};

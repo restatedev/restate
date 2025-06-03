@@ -82,13 +82,13 @@ impl Display for NodeState {
     }
 }
 
-impl From<NodeState> for restate_core::cluster_state::NodeState {
+impl From<NodeState> for restate_types::cluster_state::NodeState {
     fn from(state: NodeState) -> Self {
         match state {
-            NodeState::Dead => restate_core::cluster_state::NodeState::Dead,
-            NodeState::Alive => restate_core::cluster_state::NodeState::Alive,
-            NodeState::Suspect { .. } => restate_core::cluster_state::NodeState::Dead,
-            NodeState::FailingOver => restate_core::cluster_state::NodeState::FailingOver,
+            NodeState::Dead => restate_types::cluster_state::NodeState::Dead,
+            NodeState::Alive => restate_types::cluster_state::NodeState::Alive,
+            NodeState::Suspect { .. } => restate_types::cluster_state::NodeState::Dead,
+            NodeState::FailingOver => restate_types::cluster_state::NodeState::FailingOver,
         }
     }
 }

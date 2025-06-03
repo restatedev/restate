@@ -64,10 +64,6 @@ impl NodeSet {
         self.0.len()
     }
 
-    pub(crate) fn insert_at_first(&mut self, node_id: PlainNodeId) {
-        self.0.insert_before(0, node_id);
-    }
-
     /// First element in the set
     pub fn first(&self) -> Option<PlainNodeId> {
         self.0.first().copied()

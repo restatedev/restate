@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
@@ -19,8 +19,8 @@ use crate::identifiers::{PartitionId, PartitionKey};
 use crate::logs::LogId;
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
-use crate::replication::{NodeSet, ReplicationProperty};
-use crate::{PlainNodeId, Version, Versioned, flexbuffers_storage_encode_decode};
+use crate::replication::ReplicationProperty;
+use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -214,53 +214,6 @@ impl FindPartition for PartitionTable {
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Default,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    derive_more::From,
-    derive_more::AsRef,
-    derive_more::Deref,
-    derive_more::DerefMut,
-)]
-#[serde(transparent)]
-// DEPRECATED: use EpochMetadata / PartitionReplicaSetStates instead
-pub struct PartitionPlacement(NodeSet);
-
-impl PartitionPlacement {
-    pub fn leader(&self) -> Option<PlainNodeId> {
-        self.0.first()
-    }
-
-    pub fn set_leader(&mut self, node_id: PlainNodeId) {
-        self.0.insert_at_first(node_id);
-    }
-
-    fn hashed(&self) -> u64 {
-        let mut state = ahash::AHasher::default();
-        self.hash(&mut state);
-        state.finish()
-    }
-}
-
-impl FromIterator<PlainNodeId> for PartitionPlacement {
-    fn from_iter<T: IntoIterator<Item = PlainNodeId>>(iter: T) -> Self {
-        let inner = NodeSet::from_iter(iter);
-        Self(inner)
-    }
-}
-
-impl PartialEq for PartitionPlacement {
-    fn eq(&self, other: &Self) -> bool {
-        // eq implementation should respect the order of the items in the two sets
-        // not only that it has the 2 values.
-        self.0.len() == other.0.len() && self.0.iter().zip(other.0.iter()).all(|(l, r)| *l == *r)
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DbName(SmartString);
 
@@ -295,8 +248,6 @@ impl AsRef<str> for CfName {
 pub struct Partition {
     pub partition_id: PartitionId,
     pub key_range: RangeInclusive<PartitionKey>,
-    #[serde(default)]
-    pub placement: PartitionPlacement,
     log_id: Option<LogId>,
     db_name: Option<DbName>,
     cf_name: Option<CfName>,
@@ -307,7 +258,6 @@ impl Partition {
         Self {
             partition_id,
             key_range,
-            placement: PartitionPlacement::default(),
             log_id: None,
             db_name: None,
             cf_name: None,
@@ -440,20 +390,6 @@ impl PartitionTableBuilder {
         }
     }
 
-    pub fn for_each<F>(&mut self, mut modify: F)
-    where
-        F: FnMut(&PartitionId, &mut PartitionPlacement),
-    {
-        for (partition_id, partition) in self.inner.partitions.iter_mut() {
-            let hash = partition.placement.hashed();
-            modify(partition_id, &mut partition.placement);
-
-            if hash != partition.placement.hashed() {
-                self.modified = true;
-            }
-        }
-    }
-
     /// Builds the new [`PartitionTable`] with an incremented version.
     pub fn build(mut self) -> PartitionTable {
         self.inner.version = Version::MIN.max(self.inner.version.next());
@@ -490,8 +426,6 @@ pub struct PartitionShadow {
     #[serde(default)]
     pub db_name: Option<DbName>,
     pub cf_name: Option<CfName>,
-    #[serde(default)]
-    pub placement: PartitionPlacement,
 }
 
 /// Serialization helper which handles the deserialization of the current and older
@@ -527,7 +461,6 @@ impl From<PartitionTable> for PartitionTableShadow {
                             key_range: partition.key_range,
                             cf_name: partition.cf_name,
                             db_name: partition.db_name,
-                            placement: partition.placement,
                         };
 
                         (partition_id, partition_shadow)
@@ -556,7 +489,6 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
                         partition_id,
                         log_id: partition_shadow.log_id,
                         key_range: partition_shadow.key_range,
-                        placement: partition_shadow.placement,
                         db_name: partition_shadow.db_name,
                         cf_name: partition_shadow.cf_name,
                     };
@@ -638,14 +570,13 @@ mod tests {
     use bytes::BytesMut;
     use test_log::test;
 
-    use super::PartitionPlacement;
     use crate::identifiers::{PartitionId, PartitionKey};
     use crate::partition_table::{
         EqualSizedPartitionPartitioner, FindPartition, Partition, PartitionTable,
         PartitionTableBuilder,
     };
     use crate::storage::StorageCodec;
-    use crate::{PlainNodeId, Version, flexbuffers_storage_encode_decode};
+    use crate::{Version, flexbuffers_storage_encode_decode};
 
     #[test]
     fn partitioner_produces_consecutive_ranges() {
@@ -749,54 +680,5 @@ mod tests {
         assert!(partition_table.find_partition_id(1025).is_err());
 
         Ok(())
-    }
-
-    #[test]
-    fn test_placement_equal() {
-        let placement_1 = PartitionPlacement::from_iter([
-            PlainNodeId::from(1),
-            PlainNodeId::from(2),
-            PlainNodeId::from(3),
-        ]);
-
-        let placement_2 = PartitionPlacement::from_iter([
-            PlainNodeId::from(1),
-            PlainNodeId::from(2),
-            PlainNodeId::from(3),
-        ]);
-
-        assert_eq!(placement_1, placement_2);
-
-        let placement_2 = PartitionPlacement::from_iter([
-            PlainNodeId::from(2),
-            PlainNodeId::from(1),
-            PlainNodeId::from(3),
-        ]);
-
-        assert_ne!(placement_1, placement_2);
-
-        let placement_2 = PartitionPlacement::from_iter([
-            PlainNodeId::from(1),
-            PlainNodeId::from(2),
-            PlainNodeId::from(3),
-            PlainNodeId::from(4),
-        ]);
-
-        assert_ne!(placement_1, placement_2);
-    }
-
-    #[test]
-    fn test_placement_hash() {
-        let placement_1 = PartitionPlacement::from_iter([PlainNodeId::from(0)]);
-
-        let mut placement_2 =
-            PartitionPlacement::from_iter([PlainNodeId::from(0), PlainNodeId::from(0)]);
-
-        assert_eq!(placement_1, placement_2);
-        assert_eq!(placement_1.hashed(), placement_2.hashed());
-
-        placement_2.set_leader(PlainNodeId::new(1));
-        assert_ne!(placement_1, placement_2);
-        assert_ne!(placement_1.hashed(), placement_2.hashed());
     }
 }

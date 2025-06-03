@@ -10,14 +10,13 @@
 
 use enumset::EnumSet;
 
-use restate_core::cluster_state::NodeState;
+use super::schema::NodeBuilder;
+use crate::table_util::format_using;
+use restate_types::cluster_state::NodeState;
 use restate_types::{
     PlainNodeId, Version,
     nodes_config::{NodeConfig, Role},
 };
-
-use super::schema::NodeBuilder;
-use crate::table_util::format_using;
 
 pub(crate) fn append_node_row(
     builder: &mut NodeBuilder,

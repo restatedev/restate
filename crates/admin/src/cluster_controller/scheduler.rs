@@ -11,29 +11,25 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
-use std::iter;
-use std::time::Duration;
 
 use ahash::HashMap;
-use tracing::{Level, debug, enabled, info, instrument, trace};
+use tracing::{debug, info, trace};
 
 use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
-use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_metadata_store::{
     MetadataStoreClient, ReadError, ReadModifyWriteError, ReadWriteError, WriteError,
 };
 use restate_types::cluster::cluster_state::{ReplayStatus, RunMode};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
-use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
-use restate_types::partition_table::{PartitionPlacement, PartitionReplication, PartitionTable};
+use restate_types::partition_table::{PartitionReplication, PartitionTable};
 use restate_types::partitions::state::{PartitionReplicaSetStates, ReplicaSetState};
 use restate_types::partitions::{PartitionConfiguration, worker_candidate_filter};
 use restate_types::replication::balanced_spread_selector::{
@@ -117,15 +113,6 @@ impl PartitionState {
         }
 
         updated
-    }
-
-    fn replicas(&self) -> impl Iterator<Item = &PlainNodeId> {
-        self.current.replica_set().iter().chain(
-            self.next
-                .as_ref()
-                .map(|config| itertools::Either::Left(config.replica_set().iter()))
-                .unwrap_or(itertools::Either::Right(iter::empty())),
-        )
     }
 
     fn generate_instructions(
@@ -254,8 +241,6 @@ impl<T: TransportConnect> Scheduler<T> {
     ) -> Result<(), Error> {
         let partition_table = Metadata::with_current(|m| m.partition_table_ref());
 
-        let version = partition_table.version();
-
         // todo a bulk get of all EpochMetadata if self.partitions.is_empty()
 
         for partition_id in partition_table.iter_ids().copied() {
@@ -367,33 +352,6 @@ impl<T: TransportConnect> Scheduler<T> {
 
             // select the leader based on the observed cluster state
             self.select_leader(&partition_id, observed_cluster_state);
-        }
-
-        // update the PartitionTable placement which is still needed for routing messages from the
-        // ingress and datafusion
-        let mut builder = partition_table.clone().into_builder();
-        builder.for_each(|partition_id, placement| {
-            self.update_placement(partition_id, placement);
-        });
-
-        if let Some(partition_table) = builder.build_if_modified() {
-            if enabled!(Level::TRACE) {
-                debug!(
-                    ?partition_table,
-                    "Will attempt to write partition table {} to metadata store",
-                    partition_table.version()
-                );
-            } else {
-                debug!(
-                    "Will attempt to write partition table {} to metadata store",
-                    partition_table.version()
-                );
-            }
-
-            self.try_update_partition_table(version, partition_table)
-                .await?;
-
-            return Ok(());
         }
 
         Ok(())
@@ -691,61 +649,6 @@ impl<T: TransportConnect> Scheduler<T> {
         }
 
         None
-    }
-
-    fn update_placement(&self, partition_id: &PartitionId, placement: &mut PartitionPlacement) {
-        if let Some(partition) = self.partitions.get(partition_id) {
-            if let Some(leader) = partition.target_leader {
-                // a bit wasteful to create new nodesets over and over again if nothing changes; but
-                // it's hopefully not for too long
-                *placement = partition.replicas().cloned().collect();
-                placement.set_leader(leader);
-            } else {
-                placement.clear();
-            }
-        }
-    }
-
-    #[instrument(skip_all)]
-    async fn try_update_partition_table(
-        &mut self,
-        previous_version: Version,
-        partition_table: PartitionTable,
-    ) -> Result<(), Error> {
-        let new_version = partition_table.version();
-        match self
-            .metadata_writer
-            .global_metadata()
-            .put(
-                partition_table.into(),
-                Precondition::MatchesVersion(previous_version),
-            )
-            .log_slow_after(
-                Duration::from_secs(1),
-                Level::DEBUG,
-                format!("Updating partition table to version {new_version}"),
-            )
-            .with_overdue(Duration::from_secs(3), tracing::Level::INFO)
-            .await
-        {
-            Ok(_) => {
-                debug!("Partition table {new_version} has been written to metadata store",);
-            }
-            Err(WriteError::FailedPrecondition(err)) => {
-                info!(
-                    err,
-                    "Write partition table to metadata store was rejected due to version conflict, \
-                        this is benign unless it's happening repeatedly. In such case, we might be in \
-                        a tight race with another admin node"
-                );
-                // There is no need to wait for the partition table to synchronize.
-                // The update_partition_placement will get called again anyway once
-                // the partition table is updated.
-            }
-            Err(err) => return Err(err.into()),
-        }
-
-        Ok(())
     }
 
     fn instruct_nodes(&self, observed_cluster_state: &ObservedClusterState) -> Result<(), Error> {

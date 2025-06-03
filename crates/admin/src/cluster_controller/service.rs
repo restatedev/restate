@@ -48,7 +48,7 @@ use restate_types::nodes_config::{NodeConfig, NodesConfiguration, StorageState};
 use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
-use restate_types::partitions::state::PartitionReplicaSetStates;
+use restate_types::partitions::state::{MembershipState, PartitionReplicaSetStates};
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, ReplicationProperty};
@@ -524,6 +524,16 @@ impl<T: TransportConnect> Service<T> {
                 extension,
                 response_tx,
             } => {
+                let membership_state = Metadata::with_current(|metadata| {
+                    metadata
+                        .partition_table_ref()
+                        .iter()
+                        .find(|(_, partition)| partition.log_id() == log_id)
+                        .map(|(partition_id, _)| *partition_id)
+                })
+                .map(|partition_id| self.replica_set_states.membership_state(partition_id))
+                .unwrap_or_default();
+
                 let bifrost = self.bifrost.clone();
                 let observed_cluster_state = self.observed_cluster_state.clone();
 
@@ -534,6 +544,7 @@ impl<T: TransportConnect> Service<T> {
                         extension,
                         min_version,
                         bifrost,
+                        membership_state,
                         observed_cluster_state,
                     }
                     .run()
@@ -687,6 +698,7 @@ struct SealAndExtendTask {
     min_version: Version,
     extension: Option<ChainExtension>,
     bifrost: Bifrost,
+    membership_state: MembershipState,
     observed_cluster_state: ObservedClusterState,
 }
 
@@ -768,12 +780,18 @@ impl SealAndExtendTask {
             .as_ref()
             .and_then(|ext| ext.sequencer)
             .or_else(|| {
-                Metadata::with_current(|m| {
-                    let partition_id = PartitionId::from(self.log_id);
-                    m.partition_table_snapshot()
-                        .get(&partition_id)
-                        .and_then(|partition| partition.placement.leader().map(NodeId::from))
-                })
+                if self.membership_state.current_leader().current_leader
+                    != GenerationalNodeId::INVALID
+                {
+                    Some(NodeId::from(
+                        self.membership_state.current_leader().current_leader,
+                    ))
+                } else {
+                    TaskCenter::with_current(|handle| {
+                        self.membership_state
+                            .first_alive_node(handle.cluster_state())
+                    })
+                }
             });
 
         let (provider, params) = match &provider_config {
@@ -1477,7 +1495,7 @@ mod tests {
                     .roles(Role::Admin | Role::Worker)
                     .build(),
             );
-            write_guard.upsert_node_state(node_id, restate_core::cluster_state::NodeState::Alive);
+            write_guard.upsert_node_state(node_id, restate_types::cluster_state::NodeState::Alive);
         }
         let builder = modify_builder(builder.set_nodes_config(nodes_config));
 

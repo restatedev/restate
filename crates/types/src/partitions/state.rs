@@ -16,10 +16,11 @@ use tokio::sync::{Notify, watch};
 
 use restate_encoding::NetSerde;
 
+use crate::cluster_state::ClusterState;
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::{Lsn, SequenceNumber};
 use crate::partitions::PartitionConfiguration;
-use crate::{GenerationalNodeId, Merge, PlainNodeId, Version};
+use crate::{GenerationalNodeId, Merge, NodeId, PlainNodeId, Version};
 
 type DashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
 
@@ -285,6 +286,16 @@ impl MembershipState {
 
     pub fn watch_current_leader(&self) -> watch::Receiver<LeadershipState> {
         self.current_leader.subscribe()
+    }
+
+    /// Returns the first alive node from `observed_current_membership` by overlaying it with the
+    /// current cluster state.
+    pub fn first_alive_node(&self, cluster_state: &ClusterState) -> Option<NodeId> {
+        self.observed_current_membership
+            .members
+            .iter()
+            .map(|member| NodeId::from(member.node_id))
+            .find(|node_id| cluster_state.is_alive(*node_id))
     }
 }
 
