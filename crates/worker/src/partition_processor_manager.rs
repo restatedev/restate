@@ -31,7 +31,6 @@ use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, info_span, instrument, trace, warn};
 
-use crate::metric_definitions::PARTITION_APPLIED_LSN;
 use crate::metric_definitions::PARTITION_DURABLE_LSN;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
 use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
@@ -39,6 +38,7 @@ use crate::metric_definitions::PARTITION_LABEL;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
+use crate::metric_definitions::{NUM_PARTITIONS, PARTITION_APPLIED_LSN};
 use crate::partition::ProcessorError;
 use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
 use crate::partition_processor_manager::processor_state::{
@@ -237,6 +237,7 @@ impl PartitionProcessorManager {
         let metadata = Metadata::current();
 
         let mut partition_table_version_watcher = metadata.watch(MetadataKind::PartitionTable);
+        gauge!(NUM_PARTITIONS).set(self.partition_table.live_load().len() as f64);
 
         let mut snapshot_check_interval = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_secs(rand::rng().random_range(30..60)), // delay scheduled snapshots on startup
@@ -276,6 +277,7 @@ impl PartitionProcessorManager {
                 }
                 _ = partition_table_version_watcher.changed(), if self.wait_for_partition_table_update => {
                     self.wait_for_partition_table_update = false;
+                    gauge!(NUM_PARTITIONS).set(self.partition_table.live_load().len() as f64);
                     // we might have not started some followers because of missing partition table
                     // information
                     self.on_replica_set_state_changes(&replica_set_states);
