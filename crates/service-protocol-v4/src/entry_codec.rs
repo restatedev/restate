@@ -28,9 +28,10 @@ use restate_types::journal_v2::lite::{
     CompleteAwakeableCommandLite, CompleteAwakeableResultLite, CompletePromiseCommandLite,
     EntryLite, GetEagerStateCommandLite, GetEagerStateKeysCommandLite,
     GetInvocationOutputCommandLite, GetLazyStateCommandLite, GetLazyStateKeysCommandLite,
-    GetPromiseCommandLite, InputCommandLite, NotificationLite, NotificationResultLite,
-    OneWayCallCommandLite, OutputCommandLite, OutputResultLite, PeekPromiseCommandLite,
-    RunCommandLite, SendSignalCommandLite, SetStateCommandLite, SignalResultLite, SleepCommandLite,
+    GetPromiseCommandLite, GetStateResultLite, InputCommandLite, NotificationLite,
+    NotificationResultLite, OneWayCallCommandLite, OutputCommandLite, OutputResultLite,
+    PeekPromiseCommandLite, RunCommandLite, SendSignalCommandLite, SetStateCommandLite,
+    SignalResultLite, SleepCommandLite,
 };
 use restate_types::journal_v2::raw::{
     CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawEntryHeader,
@@ -1201,10 +1202,11 @@ impl Decoder for ServiceProtocolV4Codec {
                     .into()
                 }
                 CommandType::GetEagerState => {
-                    let proto::GetEagerStateCommandMessage { key, .. } =
+                    let proto::GetEagerStateCommandMessage { key, result, .. } =
                         decode_or_bail!(cmd.serialized_content(), GetEagerStateCommandMessage);
                     GetEagerStateCommandLite {
                         key: to_string_or_bail!(key).into(),
+                        result: get_or_bail!(result).try_into()?,
                     }
                     .into()
                 }
@@ -1427,6 +1429,19 @@ impl TryFrom<proto::get_eager_state_command_message::Result> for GetStateResult 
             proto::get_eager_state_command_message::Result::Value(value) => {
                 Self::Success(value.content)
             }
+            proto::get_eager_state_command_message::Result::Void(_) => Self::Void,
+        })
+    }
+}
+
+impl TryFrom<proto::get_eager_state_command_message::Result> for GetStateResultLite {
+    type Error = DecodingError;
+
+    fn try_from(
+        value: proto::get_eager_state_command_message::Result,
+    ) -> Result<Self, Self::Error> {
+        Ok(match value {
+            proto::get_eager_state_command_message::Result::Value(_) => Self::Success,
             proto::get_eager_state_command_message::Result::Void(_) => Self::Void,
         })
     }
