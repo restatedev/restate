@@ -107,7 +107,10 @@ where
 
         let cluster_query_context = QueryContext::create(
             &options.admin.query_engine,
-            ClusterTables::new(cluster_state_refresher.cluster_state_watcher().watch()),
+            ClusterTables::new(
+                replica_set_states.clone(),
+                cluster_state_refresher.cluster_state_watcher().watch(),
+            ),
         )
         .await?;
 
