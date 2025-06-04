@@ -25,7 +25,9 @@ use restate_bifrost::Bifrost;
 use restate_core::network::TransportConnect;
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::cluster::cluster_state::{AliveNode, ClusterState, PartitionProcessorStatus};
+use restate_types::cluster::cluster_state::{
+    AliveNode, ClusterState as OldClusterState, PartitionProcessorStatus,
+};
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
@@ -37,7 +39,6 @@ use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, Version};
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
 use crate::cluster_controller::scheduler::Scheduler;
 use crate::cluster_controller::service::Service;
 
@@ -96,18 +97,10 @@ where
         };
     }
 
-    pub async fn on_leader_event(
-        &mut self,
-        observed_cluster_state: &ObservedClusterState,
-        leader_event: LeaderEvent,
-    ) -> anyhow::Result<()> {
+    pub async fn on_leader_event(&mut self, leader_event: LeaderEvent) -> anyhow::Result<()> {
         match self {
             ClusterControllerState::Follower => Ok(()),
-            ClusterControllerState::Leader(leader) => {
-                leader
-                    .on_leader_event(observed_cluster_state, leader_event)
-                    .await
-            }
+            ClusterControllerState::Leader(leader) => leader.on_leader_event(leader_event).await,
         }
     }
 
@@ -120,16 +113,16 @@ where
         }
     }
 
-    pub async fn on_observed_cluster_state(
+    pub async fn on_cluster_state_change(
         &mut self,
-        observed_cluster_state: &ObservedClusterState,
+        cluster_state: &OldClusterState,
         nodes_config: &NodesConfiguration,
     ) -> anyhow::Result<()> {
         match self {
             Self::Follower => Ok(()),
             Self::Leader(leader) => {
                 leader
-                    .on_observed_cluster_state(observed_cluster_state, nodes_config)
+                    .on_cluster_state_change(cluster_state, nodes_config)
                     .await
             }
         }
@@ -200,13 +193,13 @@ where
         leader
     }
 
-    async fn on_observed_cluster_state(
+    async fn on_cluster_state_change(
         &mut self,
-        observed_cluster_state: &ObservedClusterState,
+        cluster_state: &OldClusterState,
         nodes_config: &NodesConfiguration,
     ) -> anyhow::Result<()> {
         self.scheduler
-            .on_observed_cluster_state(observed_cluster_state, nodes_config)
+            .on_cluster_state_change(cluster_state, nodes_config)
             .await?;
 
         Ok(())
@@ -235,31 +228,24 @@ where
         }
     }
 
-    pub async fn on_leader_event(
-        &mut self,
-        observed_cluster_state: &ObservedClusterState,
-        leader_event: LeaderEvent,
-    ) -> anyhow::Result<()> {
+    pub async fn on_leader_event(&mut self, leader_event: LeaderEvent) -> anyhow::Result<()> {
         match leader_event {
             LeaderEvent::TrimLogs => {
                 self.trim_logs().await;
             }
             LeaderEvent::PartitionTableUpdate => {
-                self.on_partition_table_update(observed_cluster_state)
-                    .await?;
+                self.on_partition_table_update().await?;
             }
         }
 
         Ok(())
     }
 
-    async fn on_partition_table_update(
-        &mut self,
-        observed_cluster_state: &ObservedClusterState,
-    ) -> anyhow::Result<()> {
+    async fn on_partition_table_update(&mut self) -> anyhow::Result<()> {
+        let cluster_state = self.cluster_state_watcher.current();
         self.scheduler
-            .on_observed_cluster_state(
-                observed_cluster_state,
+            .on_cluster_state_change(
+                &cluster_state,
                 &Metadata::with_current(|m| m.nodes_config_ref()),
             )
             .await?;
@@ -382,7 +368,10 @@ impl TrimMode {
     /// In clusters with more than one node, or on single nodes with a snapshot repository
     /// configured, trimming is driven by archived LSN. The durable LSN method is only used on
     /// single-nodes with no snapshots configured.
-    fn from(snapshots_repository_configured: bool, cluster_state: &Arc<ClusterState>) -> TrimMode {
+    fn from(
+        snapshots_repository_configured: bool,
+        cluster_state: &Arc<OldClusterState>,
+    ) -> TrimMode {
         let mut partition_status: BTreeMap<
             PartitionId,
             BTreeMap<GenerationalNodeId, PartitionProcessorStatus>,

@@ -353,16 +353,14 @@ impl<T: TransportConnect> Service<T> {
                     let nodes_config = nodes_config.live_load();
                     state.update(&self, nodes_config, &cs);
 
-                    self.observed_cluster_state.update_liveness(&cs);
-                    if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state, nodes_config).await {
+                    if let Err(err) = state.on_cluster_state_change(&cluster_state_watcher.current(), nodes_config).await {
                         warn!(%err, "Failed to handle observed cluster state. This can impair the overall cluster operations");
                     }
                 },
                 Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
                     let nodes_config = nodes_config.live_load();
-                    self.observed_cluster_state.update_partitions(&cluster_state);
 
-                    if let Err(err) = state.on_observed_cluster_state(&self.observed_cluster_state, nodes_config).await {
+                    if let Err(err) = state.on_cluster_state_change(&cluster_state, nodes_config).await {
                         warn!(%err, "Failed to handle observed cluster state. This can impair the overall cluster operations");
                     }
                 }
@@ -377,7 +375,7 @@ impl<T: TransportConnect> Service<T> {
                     state.reconfigure(configuration);
                 }
                 leader_event = state.run() => {
-                    if let Err(err) = state.on_leader_event(&self.observed_cluster_state, leader_event).await {
+                    if let Err(err) = state.on_leader_event(leader_event).await {
                         warn!(
                             %err,
                             "Failed to handle leader event. This can impair the overall cluster operations"

@@ -15,13 +15,13 @@ use std::collections::hash_map::Entry;
 use ahash::HashMap;
 use tracing::{debug, info, trace};
 
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use restate_core::cluster_state::ClusterState;
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_metadata_store::{
     MetadataStoreClient, ReadError, ReadModifyWriteError, ReadWriteError, WriteError,
 };
-use restate_types::cluster::cluster_state::{ReplayStatus, RunMode};
+use restate_types::cluster::cluster_state::ClusterState as OldClusterState;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -36,7 +36,7 @@ use restate_types::replication::balanced_spread_selector::{
     BalancedSpreadSelector, SelectorOptions,
 };
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::{PlainNodeId, Version, Versioned};
+use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed reading scheduling plan from metadata store: {0}")]
@@ -118,15 +118,11 @@ impl PartitionState {
     fn generate_instructions(
         &self,
         partition_id: &PartitionId,
-        observed_cluster_state: &ObservedClusterState,
+        legacy_cluster_state: &LegacyClusterState,
         commands: &mut BTreeMap<PlainNodeId, Vec<ControlProcessor>>,
     ) {
         if let Some(leader) = &self.target_leader {
-            if !observed_cluster_state
-                .partition_state(partition_id)
-                .and_then(|state| state.partition_processors.get(leader))
-                .is_some_and(|state| state.run_mode == RunMode::Leader)
-            {
+            if !legacy_cluster_state.runs_partition_processor_leader(leader, partition_id) {
                 commands.entry(*leader).or_default().push(ControlProcessor {
                     partition_id: *partition_id,
                     command: ProcessorCommand::Leader,
@@ -212,14 +208,12 @@ impl<T: TransportConnect> Scheduler<T> {
         );
     }
 
-    pub async fn on_observed_cluster_state(
+    pub async fn on_cluster_state_change(
         &mut self,
-        observed_cluster_state: &ObservedClusterState,
+        old_cluster_state: &OldClusterState,
         nodes_config: &NodesConfiguration,
     ) -> Result<(), Error> {
-        trace!(?observed_cluster_state, "On observed cluster state");
-
-        self.ensure_valid_partition_configuration(observed_cluster_state, nodes_config)
+        self.ensure_valid_partition_configuration(old_cluster_state, nodes_config)
             .await?;
 
         // todo move draining workers to disabled if they no longer run any partition processors;
@@ -229,14 +223,14 @@ impl<T: TransportConnect> Scheduler<T> {
         //  they learn about the updated nodes configuration. To reduce the risk of this, we should
         //  wait a little bit to give the nodes configuration time to be spread across the cluster.
 
-        self.instruct_nodes(observed_cluster_state)?;
+        self.instruct_nodes(legacy_cluster_state)?;
 
         Ok(())
     }
 
     async fn ensure_valid_partition_configuration(
         &mut self,
-        observed_cluster_state: &ObservedClusterState,
+        old_cluster_state: &OldClusterState,
         nodes_config: &NodesConfiguration,
     ) -> Result<(), Error> {
         let partition_table = Metadata::with_current(|m| m.partition_table_ref());
@@ -328,7 +322,7 @@ impl<T: TransportConnect> Scheduler<T> {
             // next configuration has become active
             if let Some(next) = &occupied_entry.get().next {
                 if next.replica_set().iter().any(|node_id| {
-                    observed_cluster_state.is_partition_processor_active(&partition_id, node_id)
+                    old_cluster_state.is_partition_processor_active(&partition_id, node_id)
                 }) {
                     let partition_configuration_update = Self::complete_reconfiguration(
                         self.metadata_writer.raw_metadata_store_client(),
@@ -351,7 +345,7 @@ impl<T: TransportConnect> Scheduler<T> {
             }
 
             // select the leader based on the observed cluster state
-            self.select_leader(&partition_id, observed_cluster_state);
+            self.select_leader(&partition_id, old_cluster_state);
         }
 
         Ok(())
@@ -592,45 +586,36 @@ impl<T: TransportConnect> Scheduler<T> {
     /// Selects a leader based on the current target leader, observed cluster state and preferred leader.
     ///
     /// 1. Prefer worker nodes that are caught up
-    ///    2.1 Choose the current target leader
-    ///    2.2 Choose the preferred leader
-    ///    2.3 Pick any of the nodes in the current partition configuration
     /// 2. Pick worker nodes that are alive
-    fn select_leader(
-        &mut self,
-        partition_id: &PartitionId,
-        observed_cluster_state: &ObservedClusterState,
-    ) {
+    fn select_leader(&mut self, partition_id: &PartitionId, old_cluster_state: &OldClusterState) {
         let Some(partition) = self.partitions.get_mut(partition_id) else {
             return;
         };
 
-        if let Some(observed_partition_state) = observed_cluster_state.partition_state(partition_id)
-        {
+        TaskCenter::with_current(|tc| {
+            let cluster_state = tc.cluster_state();
             if let Some(leader) =
-                Self::select_leader_by_priority(partition, observed_cluster_state, |node_id| {
-                    observed_partition_state
-                        .replay_status(&node_id)
-                        .is_some_and(|status| status == ReplayStatus::Active)
+                Self::select_leader_by_priority(partition, cluster_state, |node_id| {
+                    old_cluster_state.is_partition_processor_active(partition_id, &node_id)
                 })
             {
                 partition.target_leader = Some(leader);
                 return;
             }
-        }
 
-        if let Some(leader) =
-            Self::select_leader_by_priority(partition, observed_cluster_state, |_node_id| true)
-        {
-            partition.target_leader = Some(leader);
-        }
+            if let Some(leader) =
+                Self::select_leader_by_priority(partition, cluster_state, |_node_id| true)
+            {
+                partition.target_leader = Some(leader);
+            }
+        });
 
         // keep the current target leader as we couldn't find any suitable substitute
     }
 
     fn select_leader_by_priority(
         partition: &PartitionState,
-        observed_cluster_state: &ObservedClusterState,
+        cluster_state: &ClusterState,
         additional_criterion: impl Fn(PlainNodeId) -> bool,
     ) -> Option<PlainNodeId> {
         // select any of the alive nodes in current
@@ -641,8 +626,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 .iter()
                 .copied()
                 .find(|node_id| {
-                    observed_cluster_state.alive_generation(*node_id).is_some()
-                        && additional_criterion(*node_id)
+                    cluster_state.is_alive(NodeId::from(*node_id)) && additional_criterion(*node_id)
                 })
         {
             return Some(alive_replica);
@@ -651,11 +635,11 @@ impl<T: TransportConnect> Scheduler<T> {
         None
     }
 
-    fn instruct_nodes(&self, observed_cluster_state: &ObservedClusterState) -> Result<(), Error> {
+    fn instruct_nodes(&self, legacy_cluster_state: &LegacyClusterState) -> Result<(), Error> {
         let mut commands = BTreeMap::default();
 
         for (partition_id, partition) in &self.partitions {
-            partition.generate_instructions(partition_id, observed_cluster_state, &mut commands);
+            partition.generate_instructions(partition_id, legacy_cluster_state, &mut commands);
         }
 
         if !commands.is_empty() {

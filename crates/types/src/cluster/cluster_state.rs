@@ -63,6 +63,44 @@ impl ClusterState {
             nodes: BTreeMap::default(),
         }
     }
+
+    pub fn is_partition_processor_active(
+        &self,
+        partition_id: &PartitionId,
+        node_id: &PlainNodeId,
+    ) -> bool {
+        self.nodes
+            .get(node_id)
+            .and_then(|node| match node {
+                NodeState::Alive(alive) => alive
+                    .partitions
+                    .get(partition_id)
+                    .map(|partition_state| partition_state.replay_status == ReplayStatus::Active),
+                NodeState::Dead(_) => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns true if the given node runs the partition processor leader for the given partition
+    /// id. The decision is based on the partition processor reporting as their effective_mode
+    /// `RunMode::Leader`.
+    pub fn runs_partition_processor_leader(
+        &self,
+        node_id: &PlainNodeId,
+        partition_id: &PartitionId,
+    ) -> bool {
+        self.nodes
+            .get(node_id)
+            .map(|node| match node {
+                NodeState::Alive(alive) => alive
+                    .partitions
+                    .get(partition_id)
+                    .map(|partition_state| partition_state.effective_mode == RunMode::Leader)
+                    .unwrap_or_default(),
+                NodeState::Dead(_) => false,
+            })
+            .unwrap_or_default()
+    }
 }
 
 fn instant_to_proto(t: Instant) -> prost_types::Duration {
