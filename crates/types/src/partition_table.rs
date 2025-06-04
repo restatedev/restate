@@ -227,6 +227,7 @@ impl FindPartition for PartitionTable {
     derive_more::DerefMut,
 )]
 #[serde(transparent)]
+// DEPRECATED: use EpochMetadata / PartitionReplicaSetStates instead
 pub struct PartitionPlacement(NodeSet);
 
 impl PartitionPlacement {
@@ -269,12 +270,24 @@ impl Default for DbName {
     }
 }
 
+impl AsRef<str> for DbName {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CfName(SmartString);
 
 impl CfName {
     pub fn for_partition(partition_id: PartitionId) -> Self {
         Self(format!("{PARTITION_CF_PREFIX}{partition_id}").into())
+    }
+}
+
+impl AsRef<str> for CfName {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
     }
 }
 

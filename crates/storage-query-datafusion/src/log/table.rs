@@ -36,7 +36,7 @@ pub fn register_self(ctx: &QueryContext, metadata: Metadata) -> datafusion::comm
 }
 
 #[derive(Clone, derive_more::Debug)]
-#[debug("DeploymentMetadataScanner")]
+#[debug("LogScanner")]
 struct LogScanner(Metadata);
 
 impl Scan for LogScanner {

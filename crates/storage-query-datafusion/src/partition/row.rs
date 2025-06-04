@@ -8,35 +8,48 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::table_util::format_using;
+use restate_types::partitions::state::MembershipState;
+use restate_types::{Version, partition_table::Partition};
 
 use super::schema::PartitionBuilder;
-use itertools::{Itertools, Position};
-use restate_types::{Version, cluster::cluster_state::RunMode, partition_table::Partition};
+use crate::table_util::format_using;
 
-#[inline]
-pub(crate) fn append_partition_rows(
+pub(crate) fn append_partition_row(
     builder: &mut PartitionBuilder,
     output: &mut String,
+    membership: MembershipState,
     ver: Version,
     partition: &Partition,
 ) {
-    for (position, node_id) in partition.placement.iter().cloned().with_position() {
-        let mut row = builder.row();
-        row.metadata_ver(ver.into());
-
-        row.partition_id(partition.partition_id.into());
-        row.plain_node_id(format_using(output, &node_id));
-        row.start_key(*partition.key_range.start());
-        row.end_key(*partition.key_range.end());
-
-        match position {
-            Position::First | Position::Only => {
-                row.target_mode(format_using(output, &RunMode::Leader));
-            }
-            _ => {
-                row.target_mode(format_using(output, &RunMode::Follower));
-            }
-        }
+    let mut row = builder.row();
+    row.log_id(partition.log_id().into());
+    row.partition_id(partition.partition_id.into());
+    row.start_key(*partition.key_range.start());
+    row.end_key(*partition.key_range.end());
+    row.cf_name(partition.cf_name());
+    row.db_name(partition.db_name());
+    let leadership = membership.current_leader();
+    if leadership.current_leader.is_valid() {
+        row.leader_gen_node_id(format_using(output, &leadership.current_leader));
+        row.leader_plain_node_id(format_using(output, &leadership.current_leader.as_plain()));
     }
+    row.v_current(membership.observed_current_membership.version.into());
+    row.current_replica_set(itertools::join(
+        membership
+            .observed_current_membership
+            .members
+            .iter()
+            .map(|m| m.node_id),
+        ",",
+    ));
+    if let Some(next_membership) = membership.observed_next_membership {
+        row.v_next(next_membership.version.into());
+        row.next_replica_set(itertools::join(
+            next_membership.members.iter().map(|m| m.node_id),
+            ",",
+        ));
+    }
+
+    row.leader_epoch(format_using(output, &leadership.current_leader_epoch));
+    row.partition_table_version(ver.into());
 }

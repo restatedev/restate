@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#![allow(dead_code)]
-
 use datafusion::arrow::datatypes::DataType;
 
 use crate::table_macro::*;
@@ -22,6 +20,8 @@ define_table!(
 
         /// Current known generation ID
         gen_node_id: DataType::Utf8,
+
+        state: DataType::Utf8,
 
         /// Node Name
         name: DataType::Utf8,
@@ -50,10 +50,13 @@ define_table!(
         /// Node storage state. Only set of node is also a log-server
         storage_state: DataType::Utf8,
 
+        /// Worker state. Only set of node is also a worker
+        worker_state: DataType::Utf8,
+
         /// Node metadata server state.
         metadata_server_state: DataType::Utf8,
 
         /// Current known metadata version
-        metadata_ver: DataType::UInt32,
+        nodes_configuration_version: DataType::UInt32,
     )
 );
