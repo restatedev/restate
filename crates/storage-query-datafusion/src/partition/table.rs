@@ -19,25 +19,36 @@ use tokio::sync::mpsc::Sender;
 
 use restate_core::Metadata;
 use restate_types::partition_table::PartitionTable;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 
 use crate::context::QueryContext;
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
-use super::row::append_partition_rows;
+use super::row::append_partition_row;
 use super::schema::PartitionBuilder;
 
-pub fn register_self(ctx: &QueryContext, metadata: Metadata) -> datafusion::common::Result<()> {
+pub fn register_self(
+    ctx: &QueryContext,
+    metadata: Metadata,
+    replica_set_states: PartitionReplicaSetStates,
+) -> datafusion::common::Result<()> {
     let partitions_table = GenericTableProvider::new(
         PartitionBuilder::schema(),
-        Arc::new(PartitionScanner(metadata)),
+        Arc::new(PartitionScanner {
+            metadata,
+            replica_set_states,
+        }),
     );
     ctx.register_non_partitioned_table("partitions", Arc::new(partitions_table))
 }
 
 #[derive(Clone, derive_more::Debug)]
-#[debug("DeploymentMetadataScanner")]
-struct PartitionScanner(Metadata);
+#[debug("PartitionScanner")]
+struct PartitionScanner {
+    metadata: Metadata,
+    replica_set_states: PartitionReplicaSetStates,
+}
 
 impl Scan for PartitionScanner {
     fn scan(
@@ -47,12 +58,15 @@ impl Scan for PartitionScanner {
         _limit: Option<usize>,
     ) -> SendableRecordBatchStream {
         let schema = projection.clone();
-        let mut stream_builder = RecordBatchReceiverStream::builder(projection, 2);
+        let partition_table = self.metadata.partition_table_snapshot();
+
+        let mut stream_builder =
+            RecordBatchReceiverStream::builder(projection, partition_table.len());
         let tx = stream_builder.tx();
 
-        let partition_table = self.0.partition_table_snapshot();
+        let replica_set_states = self.replica_set_states.clone();
         stream_builder.spawn(async move {
-            for_each_partition(schema, tx, partition_table).await;
+            for_each_partition(schema, tx, partition_table, replica_set_states).await;
             Ok(())
         });
         stream_builder.build()
@@ -63,14 +77,17 @@ async fn for_each_partition(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     partition_table: Arc<PartitionTable>,
+    replica_set_states: PartitionReplicaSetStates,
 ) {
     let mut builder = PartitionBuilder::new(schema.clone());
 
     let mut output = String::new();
     for (_, partition) in partition_table.iter() {
-        append_partition_rows(
+        let membership = replica_set_states.membership_state(partition.partition_id);
+        append_partition_row(
             &mut builder,
             &mut output,
+            membership,
             partition_table.version(),
             partition,
         );

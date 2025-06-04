@@ -18,6 +18,7 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tokio::sync::mpsc::Sender;
 
 use restate_core::Metadata;
+use restate_core::cluster_state::ClusterState;
 use restate_types::nodes_config::NodesConfiguration;
 
 use crate::context::QueryContext;
@@ -27,15 +28,27 @@ use crate::table_util::Builder;
 use super::row::append_node_row;
 use super::schema::NodeBuilder;
 
-pub fn register_self(ctx: &QueryContext, metadata: Metadata) -> datafusion::common::Result<()> {
-    let nodes_table =
-        GenericTableProvider::new(NodeBuilder::schema(), Arc::new(NodesScanner(metadata)));
+pub fn register_self(
+    ctx: &QueryContext,
+    metadata: Metadata,
+    cluster_state: ClusterState,
+) -> datafusion::common::Result<()> {
+    let nodes_table = GenericTableProvider::new(
+        NodeBuilder::schema(),
+        Arc::new(NodesScanner {
+            metadata,
+            cluster_state,
+        }),
+    );
     ctx.register_non_partitioned_table("nodes", Arc::new(nodes_table))
 }
 
 #[derive(Clone, derive_more::Debug)]
-#[debug("DeploymentMetadataScanner")]
-struct NodesScanner(Metadata);
+#[debug("NodesScanner")]
+struct NodesScanner {
+    metadata: Metadata,
+    cluster_state: ClusterState,
+}
 
 impl Scan for NodesScanner {
     fn scan(
@@ -48,9 +61,10 @@ impl Scan for NodesScanner {
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 2);
         let tx = stream_builder.tx();
 
-        let nodes_config = self.0.nodes_config_snapshot();
+        let nodes_config = self.metadata.nodes_config_snapshot();
+        let cluster_state = self.cluster_state.clone();
         stream_builder.spawn(async move {
-            for_each_state(schema, tx, nodes_config).await;
+            for_each_state(schema, tx, nodes_config, cluster_state).await;
             Ok(())
         });
         stream_builder.build()
@@ -61,16 +75,19 @@ async fn for_each_state(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     nodes_config: Arc<NodesConfiguration>,
+    cluster_state: ClusterState,
 ) {
     let mut builder = NodeBuilder::new(schema.clone());
     let mut output = String::new();
     for (id, node_config) in nodes_config.iter() {
+        let node_state = cluster_state.get_node_state(node_config.current_generation.into());
         append_node_row(
             &mut builder,
             &mut output,
             nodes_config.version(),
             id,
             node_config,
+            node_state,
         );
 
         if builder.full() {

@@ -39,7 +39,7 @@ pub fn register_self(
 }
 
 #[derive(Clone, derive_more::Debug)]
-#[debug("DeploymentMetadataScanner")]
+#[debug("PartitionStateScanner")]
 struct PartitionStateScanner {
     watch: watch::Receiver<Arc<ClusterState>>,
 }

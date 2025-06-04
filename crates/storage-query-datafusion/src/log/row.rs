@@ -20,7 +20,6 @@ use restate_types::{
     replicated_loglet::ReplicatedLogletParams,
 };
 
-#[inline]
 pub(crate) fn append_segment_row(
     builder: &mut LogBuilder,
     output: &mut String,
@@ -31,7 +30,7 @@ pub(crate) fn append_segment_row(
 ) {
     let mut row = builder.row();
 
-    row.metadata_ver(ver.into());
+    row.logs_metadata_version(ver.into());
 
     row.log_id(id.into());
     row.segment_index(segment.config.index().into());

@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#![allow(dead_code)]
-
 use datafusion::arrow::datatypes::DataType;
 
 use crate::table_macro::*;
@@ -43,6 +41,6 @@ define_table!(
         nodeset: DataType::Utf8,
 
         /// Current known metadata version
-        metadata_ver: DataType::UInt32,
+        logs_metadata_version: DataType::UInt32,
     )
 );

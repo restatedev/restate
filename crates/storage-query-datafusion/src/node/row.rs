@@ -8,28 +8,32 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::schema::NodeBuilder;
-use crate::table_util::format_using;
 use enumset::EnumSet;
+
+use restate_core::cluster_state::NodeState;
 use restate_types::{
     PlainNodeId, Version,
     nodes_config::{NodeConfig, Role},
 };
 
-#[inline]
+use super::schema::NodeBuilder;
+use crate::table_util::format_using;
+
 pub(crate) fn append_node_row(
     builder: &mut NodeBuilder,
     output: &mut String,
     ver: Version,
     node_id: PlainNodeId,
     node_config: &NodeConfig,
+    node_state: NodeState,
 ) {
     let mut row = builder.row();
 
-    row.metadata_ver(ver.into());
+    row.nodes_configuration_version(ver.into());
 
     row.plain_node_id(format_using(output, &node_id));
     row.gen_node_id(format_using(output, &node_config.current_generation));
+    row.state(format_using(output, &node_state));
     row.name(format_using(output, &node_config.name));
     row.address(format_using(output, &node_config.address));
     row.location(format_using(output, &node_config.location));
@@ -42,6 +46,12 @@ pub(crate) fn append_node_row(
             }
             Role::Worker => {
                 row.has_worker_role(node_config.has_role(role));
+                if node_config.has_role(role) {
+                    row.worker_state(format_using(
+                        output,
+                        &node_config.worker_config.worker_state,
+                    ));
+                }
             }
             Role::LogServer => {
                 row.has_log_server_role(node_config.has_role(role));
