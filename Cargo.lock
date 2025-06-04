@@ -6448,6 +6448,7 @@ version = "1.3.3-dev"
 dependencies = [
  "ahash 0.8.11",
  "anyhow",
+ "assert2",
  "axum",
  "bytes",
  "bytestring",

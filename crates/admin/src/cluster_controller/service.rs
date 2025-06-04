@@ -8,7 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod state;
+mod cluster_controller_state;
+mod scheduler;
+mod scheduler_task;
+mod trim_logs_task;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,9 +26,6 @@ use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
-use self::state::ClusterControllerState;
-use super::cluster_state_refresher::ClusterStateRefresher;
-use super::grpc_svc_handler::ClusterCtrlSvcHandler;
 use restate_bifrost::{Bifrost, SealedSegment};
 use restate_core::cancellation_token;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
@@ -57,6 +57,10 @@ use restate_types::protobuf::common::AdminStatus;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{GenerationalNodeId, NodeId, Version};
+
+use crate::cluster_controller::cluster_state_refresher::ClusterStateRefresher;
+use crate::cluster_controller::grpc_svc_handler::ClusterCtrlSvcHandler;
+use crate::cluster_controller::service::cluster_controller_state::ClusterControllerState;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -326,16 +330,15 @@ impl<T: TransportConnect> Service<T> {
 
     async fn run_inner(mut self) -> Never {
         let mut config_watcher = Configuration::watcher();
-        let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
 
-        let mut state: ClusterControllerState<T> = ClusterControllerState::Follower;
+        let mut state = ClusterControllerState::Follower;
 
         let cs = TaskCenter::with_current(|tc| tc.cluster_state().clone());
         let mut cs_changed = std::pin::pin!(cs.changed());
         let mut nodes_config = Metadata::with_current(|m| m.updateable_nodes_config());
 
         // initialize the state based on the initial cluster state
-        state.update(&self, nodes_config.live_load(), &cs);
+        state.update(&self, nodes_config.live_load(), &cs).await;
 
         loop {
             tokio::select! {
@@ -348,19 +351,8 @@ impl<T: TransportConnect> Service<T> {
                     cs_changed.set(cs.changed());
 
                     let nodes_config = nodes_config.live_load();
-                    state.update(&self, nodes_config, &cs);
-
-                    if let Err(err) = state.on_cluster_state_change(&cluster_state_watcher.current(), nodes_config).await {
-                        warn!(%err, "Failed to handle observed cluster state. This can impair the overall cluster operations");
-                    }
+                    state.update(&self, nodes_config, &cs).await;
                 },
-                Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
-                    let nodes_config = nodes_config.live_load();
-
-                    if let Err(err) = state.on_cluster_state_change(&cluster_state, nodes_config).await {
-                        warn!(%err, "Failed to handle observed cluster state. This can impair the overall cluster operations");
-                    }
-                }
                 Some(cmd) = self.command_rx.recv() => {
                     // it is still safe to handle cluster commands as a follower
                     self.on_cluster_cmd(cmd).await;
@@ -369,15 +361,6 @@ impl<T: TransportConnect> Service<T> {
                     debug!("Updating the cluster controller settings.");
                     let configuration = self.configuration.live_load();
                     self.heartbeat_interval = Self::create_heartbeat_interval(&configuration.admin);
-                    state.reconfigure(configuration);
-                }
-                leader_event = state.run() => {
-                    if let Err(err) = state.on_leader_event(leader_event).await {
-                        warn!(
-                            %err,
-                            "Failed to handle leader event. This can impair the overall cluster operations"
-                        );
-                    }
                 }
             }
         }

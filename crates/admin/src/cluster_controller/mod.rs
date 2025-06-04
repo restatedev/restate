@@ -10,7 +10,6 @@
 
 pub mod cluster_state_refresher;
 pub mod grpc_svc_handler;
-pub mod scheduler;
 pub mod service;
 
 pub use service::{ClusterControllerHandle, Error, Service};

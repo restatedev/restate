@@ -15,13 +15,13 @@ use std::collections::hash_map::Entry;
 use ahash::HashMap;
 use tracing::{debug, info, trace};
 
-use restate_core::cluster_state::ClusterState;
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_metadata_store::{
     MetadataStoreClient, ReadError, ReadModifyWriteError, ReadWriteError, WriteError,
 };
 use restate_types::cluster::cluster_state::ClusterState as OldClusterState;
+use restate_types::cluster_state::ClusterState;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -143,6 +143,7 @@ pub struct Scheduler<T> {
     networking: Networking<T>,
     partitions: HashMap<PartitionId, PartitionState>,
     replica_set_states: PartitionReplicaSetStates,
+    cluster_state: ClusterState,
 }
 
 /// The scheduler is responsible for assigning partition processors to nodes and to electing
@@ -160,6 +161,7 @@ impl<T: TransportConnect> Scheduler<T> {
             networking,
             partitions: HashMap::default(),
             replica_set_states,
+            cluster_state: TaskCenter::with_current(|h| h.cluster_state().clone()),
         }
     }
 
@@ -210,11 +212,18 @@ impl<T: TransportConnect> Scheduler<T> {
 
     pub async fn on_cluster_state_change(
         &mut self,
+        cluster_state: &ClusterState,
         old_cluster_state: &OldClusterState,
         nodes_config: &NodesConfiguration,
+        partition_table: &PartitionTable,
     ) -> Result<(), Error> {
-        self.ensure_valid_partition_configuration(old_cluster_state, nodes_config)
-            .await?;
+        self.ensure_valid_partition_configuration(
+            cluster_state,
+            old_cluster_state,
+            nodes_config,
+            partition_table,
+        )
+        .await?;
 
         // todo move draining workers to disabled if they no longer run any partition processors;
         //  since the worker state is stored in the NodesConfiguration and the replica sets are
@@ -230,11 +239,11 @@ impl<T: TransportConnect> Scheduler<T> {
 
     async fn ensure_valid_partition_configuration(
         &mut self,
+        cluster_state: &ClusterState,
         old_cluster_state: &OldClusterState,
         nodes_config: &NodesConfiguration,
+        partition_table: &PartitionTable,
     ) -> Result<(), Error> {
-        let partition_table = Metadata::with_current(|m| m.partition_table_ref());
-
         // todo a bulk get of all EpochMetadata if self.partitions.is_empty()
 
         for partition_id in partition_table.iter_ids().copied() {
@@ -245,13 +254,14 @@ impl<T: TransportConnect> Scheduler<T> {
                 Entry::Occupied(mut entry) if entry.get().current.is_valid() => {
                     let partition_replication = Self::partition_replication_to_replication_property(
                         nodes_config,
-                        &partition_table,
+                        partition_table,
                     );
                     if Self::requires_reconfiguration(
                         partition_id,
                         entry.get(),
                         &partition_replication,
                         nodes_config,
+                        &self.cluster_state,
                     ) {
                         trace!("Partition {} requires reconfiguration", partition_id);
 
@@ -260,6 +270,7 @@ impl<T: TransportConnect> Scheduler<T> {
                             nodes_config,
                             partition_replication,
                             NodeSet::new(),
+                            &self.cluster_state,
                         ) {
                             *entry.get_mut() = Self::reconfigure_partition_configuration(
                                 self.metadata_writer.raw_metadata_store_client(),
@@ -286,7 +297,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 entry => {
                     let partition_replication = Self::partition_replication_to_replication_property(
                         nodes_config,
-                        &partition_table,
+                        partition_table,
                     );
 
                     // no or no valid current configuration, pick a valid configuration
@@ -295,6 +306,7 @@ impl<T: TransportConnect> Scheduler<T> {
                         nodes_config,
                         partition_replication.clone(),
                         NodeSet::default(),
+                        &self.cluster_state,
                     ) {
                         let occupied_entry = entry.insert_entry(
                             Self::store_initial_partition_configuration(
@@ -345,7 +357,7 @@ impl<T: TransportConnect> Scheduler<T> {
             }
 
             // select the leader based on the observed cluster state
-            self.select_leader(&partition_id, old_cluster_state);
+            self.select_leader(&partition_id, cluster_state, old_cluster_state);
         }
 
         Ok(())
@@ -523,6 +535,7 @@ impl<T: TransportConnect> Scheduler<T> {
         partition_state: &PartitionState,
         default_replication: &ReplicationProperty,
         nodes_config: &NodesConfiguration,
+        cluster_state: &ClusterState,
     ) -> bool {
         let next_requires_reconfiguration = partition_state.next.as_ref().map(|next| {
             next.replication() != default_replication ||
@@ -532,6 +545,7 @@ impl<T: TransportConnect> Scheduler<T> {
                     nodes_config,
                     default_replication.clone(),
                     NodeSet::default(),
+                    cluster_state,
                 )
                 .map(|new_config|
                     !new_config.replica_set().is_equivalent(next.replica_set()))
@@ -548,6 +562,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 nodes_config,
                 default_replication.clone(),
                 NodeSet::default(),
+                cluster_state,
             )
             .map(|new_config| {
                 !new_config
@@ -562,10 +577,10 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_replication: ReplicationProperty,
         preferred_nodes: NodeSet,
+        cluster_state: &ClusterState,
     ) -> Option<PartitionConfiguration> {
         let options =
             SelectorOptions::new(u64::from(partition_id)).with_preferred_nodes(preferred_nodes);
-        let cluster_state = TaskCenter::with_current(|tc| tc.cluster_state().clone());
         let filter = |node_id: PlainNodeId, node_config: &NodeConfig| {
             cluster_state.is_alive(node_id.into()) && worker_candidate_filter(node_id, node_config)
         };
@@ -587,28 +602,28 @@ impl<T: TransportConnect> Scheduler<T> {
     ///
     /// 1. Prefer worker nodes that are caught up
     /// 2. Pick worker nodes that are alive
-    fn select_leader(&mut self, partition_id: &PartitionId, old_cluster_state: &OldClusterState) {
+    fn select_leader(
+        &mut self,
+        partition_id: &PartitionId,
+        cluster_state: &ClusterState,
+        old_cluster_state: &OldClusterState,
+    ) {
         let Some(partition) = self.partitions.get_mut(partition_id) else {
             return;
         };
 
-        TaskCenter::with_current(|tc| {
-            let cluster_state = tc.cluster_state();
-            if let Some(leader) =
-                Self::select_leader_by_priority(partition, cluster_state, |node_id| {
-                    old_cluster_state.is_partition_processor_active(partition_id, &node_id)
-                })
-            {
-                partition.target_leader = Some(leader);
-                return;
-            }
+        if let Some(leader) = Self::select_leader_by_priority(partition, cluster_state, |node_id| {
+            old_cluster_state.is_partition_processor_active(partition_id, &node_id)
+        }) {
+            partition.target_leader = Some(leader);
+            return;
+        }
 
-            if let Some(leader) =
-                Self::select_leader_by_priority(partition, cluster_state, |_node_id| true)
-            {
-                partition.target_leader = Some(leader);
-            }
-        });
+        if let Some(leader) =
+            Self::select_leader_by_priority(partition, cluster_state, |_node_id| true)
+        {
+            partition.target_leader = Some(leader);
+        }
 
         // keep the current target leader as we couldn't find any suitable substitute
     }

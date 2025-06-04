@@ -33,6 +33,7 @@ restate-web-ui = { git = "https://github.com/restatedev/restate-web-ui-crate", o
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
+assert2 = { workspace = true }
 axum = { workspace = true, features = ["json"] }
 bytes = { workspace = true }
 bytestring = { workspace = true }
