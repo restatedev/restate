@@ -212,6 +212,19 @@ impl ClusterState {
         }
     }
 
+    /// Returns the current state of the node along with its generation
+    pub fn get_node_state_and_generation(
+        &self,
+        node_id: PlainNodeId,
+    ) -> Option<(GenerationalNodeId, NodeState)> {
+        let current = self.inner.nodes.read().get(&node_id).map(|n| *n.borrow())?;
+        if current.generation == 0 {
+            return None;
+        }
+
+        Some((node_id.with_generation(current.generation), current.state))
+    }
+
     /// Consumes the input iterator and returns the node state for each node in the same order
     ///
     ///

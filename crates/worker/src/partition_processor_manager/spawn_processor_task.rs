@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind};
+use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind, my_node_id};
 use restate_invoker_impl::Service as InvokerService;
 use restate_partition_store::snapshots::LocalPartitionSnapshot;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
@@ -154,13 +154,22 @@ impl SpawnPartitionProcessorTask {
 
                     let partition_store = open_partition_store(
                         partition_id,
-                        partition_store_manager,
+                        &partition_store_manager,
                         snapshot_repository,
                         fast_forward_lsn,
                         &options,
                         key_range,
                     )
                     .await?;
+
+                    if let Some(durable_lsn) = partition_store_manager.get_durable_lsn(partition_id)
+                    {
+                        replica_set_states.note_durable_lsn(
+                            partition_id,
+                            my_node_id().as_plain(),
+                            durable_lsn,
+                        );
+                    }
 
                     // invoker needs to outlive the partition processor when shutdown signal is
                     // received. This is why it's not spawned as a "child".
@@ -196,7 +205,7 @@ impl SpawnPartitionProcessorTask {
 
 async fn open_partition_store(
     partition_id: PartitionId,
-    partition_store_manager: PartitionStoreManager,
+    partition_store_manager: &PartitionStoreManager,
     snapshot_repository: Option<SnapshotRepository>,
     fast_forward_lsn: Option<Lsn>,
     options: &WorkerOptions,
@@ -238,7 +247,7 @@ async fn open_partition_store(
 /// LSN greater than the fast-forward target.
 async fn create_or_recreate_store(
     partition_id: PartitionId,
-    partition_store_manager: PartitionStoreManager,
+    partition_store_manager: &PartitionStoreManager,
     snapshot_repository: Option<SnapshotRepository>,
     fast_forward_lsn: Option<Lsn>,
     options: &&WorkerOptions,
@@ -360,7 +369,7 @@ async fn import_snapshot(
     partition_id: PartitionId,
     key_range: RangeInclusive<PartitionKey>,
     snapshot: LocalPartitionSnapshot,
-    partition_store_manager: PartitionStoreManager,
+    partition_store_manager: &PartitionStoreManager,
     options: &WorkerOptions,
 ) -> anyhow::Result<PartitionStore> {
     let snapshot_path = snapshot.base_dir.clone();
