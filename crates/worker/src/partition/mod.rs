@@ -176,6 +176,17 @@ where
                 esn.leader_epoch
             });
 
+        if let Some(last_leader_epoch) = last_seen_leader_epoch {
+            replica_set_states.note_observed_leader(
+                partition_id,
+                restate_types::partitions::state::LeadershipState {
+                    current_leader_epoch: last_leader_epoch,
+                    // we don't know the old leader node-id, another node might update it
+                    current_leader: GenerationalNodeId::INVALID,
+                },
+            );
+        }
+
         let leadership_state = LeadershipState::new(
             PartitionProcessorMetadata::new(partition_id, partition_key_range.clone()),
             num_timers_in_memory_limit,

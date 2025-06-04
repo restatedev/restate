@@ -23,6 +23,7 @@ mod keyed_service_status;
 mod log;
 mod node;
 mod partition;
+mod partition_replica_set;
 mod partition_state;
 mod partition_store_scanner;
 mod physical_optimizer;

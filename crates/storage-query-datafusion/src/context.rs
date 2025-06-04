@@ -239,6 +239,12 @@ impl RegisterTable for ClusterTables {
         let metadata = Metadata::current();
         crate::node::register_self(ctx, metadata.clone(), self.cluster_state.clone())?;
         crate::partition::register_self(ctx, metadata.clone(), self.replica_set_states.clone())?;
+        crate::partition_replica_set::register_self(
+            ctx,
+            metadata.clone(),
+            self.cluster_state.clone(),
+            self.replica_set_states.clone(),
+        )?;
         crate::log::register_self(ctx, metadata)?;
         crate::partition_state::register_self(ctx, self.cluster_state_watch.clone())?;
 
