@@ -23,6 +23,9 @@ use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
+use self::state::ClusterControllerState;
+use super::cluster_state_refresher::ClusterStateRefresher;
+use super::grpc_svc_handler::ClusterCtrlSvcHandler;
 use restate_bifrost::{Bifrost, SealedSegment};
 use restate_core::cancellation_token;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
@@ -43,8 +46,9 @@ use restate_types::logs::metadata::{
     ReplicatedLogletConfig, SegmentIndex,
 };
 use restate_types::logs::{LogId, LogletId, Lsn};
+use restate_types::net::node::NodeState;
 use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration, StorageState};
+use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
@@ -52,12 +56,7 @@ use restate_types::partitions::state::{MembershipState, PartitionReplicaSetState
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version};
-
-use self::state::ClusterControllerState;
-use super::cluster_state_refresher::ClusterStateRefresher;
-use super::grpc_svc_handler::ClusterCtrlSvcHandler;
-use crate::cluster_controller::observed_cluster_state::ObservedClusterState;
+use restate_types::{GenerationalNodeId, NodeId, Version};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -79,7 +78,6 @@ pub struct Service<T> {
     command_rx: mpsc::Receiver<ClusterControllerCommand>,
     health_status: HealthStatus<AdminStatus>,
     heartbeat_interval: Interval,
-    observed_cluster_state: ObservedClusterState,
 }
 
 impl<T> Service<T>
@@ -144,7 +142,6 @@ where
             command_tx,
             command_rx,
             heartbeat_interval,
-            observed_cluster_state: ObservedClusterState::default(),
         })
     }
 
@@ -533,7 +530,6 @@ impl<T: TransportConnect> Service<T> {
                 .unwrap_or_default();
 
                 let bifrost = self.bifrost.clone();
-                let observed_cluster_state = self.observed_cluster_state.clone();
 
                 // receiver will get error if response_tx is dropped
                 _ = TaskCenter::spawn(TaskKind::Disposable, "seal-and-extend", async move {
@@ -543,7 +539,6 @@ impl<T: TransportConnect> Service<T> {
                         min_version,
                         bifrost,
                         membership_state,
-                        observed_cluster_state,
                     }
                     .run()
                     .await;
@@ -697,7 +692,6 @@ struct SealAndExtendTask {
     extension: Option<ChainExtension>,
     bifrost: Bifrost,
     membership_state: MembershipState,
-    observed_cluster_state: ObservedClusterState,
 }
 
 impl SealAndExtendTask {
@@ -807,7 +801,6 @@ impl SealAndExtendTask {
                     config,
                     next_loglet_id,
                     &Metadata::with_current(|m| m.nodes_config_ref()),
-                    &self.observed_cluster_state,
                     preferred_nodes,
                     preferred_sequencer,
                 )
@@ -831,7 +824,6 @@ pub fn build_new_replicated_loglet_configuration(
     replicated_loglet_config: &ReplicatedLogletConfig,
     loglet_id: LogletId,
     nodes_config: &NodesConfiguration,
-    observed_cluster_state: &ObservedClusterState,
     preferred_nodes: Option<&NodeSet>,
     preferred_sequencer: Option<NodeId>,
 ) -> Option<ReplicatedLogletParams> {
@@ -843,14 +835,25 @@ pub fn build_new_replicated_loglet_configuration(
     let replication = replicated_loglet_config.replication_property.clone();
 
     let sequencer = preferred_sequencer
-        .and_then(|node_id| observed_cluster_state.alive_generation(node_id))
-        .or_else(|| {
-            // we can place the sequencer on any alive node
-            observed_cluster_state
-                .alive_nodes()
+        .and_then(|node_id| {
+            TaskCenter::with_current(|h| {
+                h.cluster_state()
+                    .get_node_state_and_generation(node_id.id())
+                    .and_then(|(node_id, node_state)| {
+                        (node_state == NodeState::Alive).then_some(node_id)
+                    })
+            })
+        })
+        .or_else(||
+        // choose any alive node if no preferred sequencer was specified
+        TaskCenter::with_current(|h| {
+            h.cluster_state()
+                .all()
+                .into_iter()
+                .filter(|(_, node_state)| *node_state == NodeState::Alive)
+                .map(|(node_id, _)| node_id)
                 .choose(&mut rng)
-                .cloned()
-        })?;
+        }))?;
 
     let opts = NodeSetSelectorOptions::new(u32::from(log_id) as u64)
         .with_target_size(replicated_loglet_config.target_nodeset_size)
@@ -861,7 +864,12 @@ pub fn build_new_replicated_loglet_configuration(
         nodes_config,
         &replication,
         restate_types::replicated_loglet::logserver_candidate_filter,
-        logserver_writeable_node_filter(observed_cluster_state),
+        |_, config| {
+            matches!(
+                config.log_server_config.storage_state,
+                StorageState::ReadWrite
+            )
+        },
         opts,
     );
 
@@ -891,17 +899,6 @@ pub fn build_new_replicated_loglet_configuration(
             warn!(?log_id, "Cannot select node-set for log: {err}");
             None
         }
-    }
-}
-
-fn logserver_writeable_node_filter(
-    observed_cluster_state: &ObservedClusterState,
-) -> impl Fn(PlainNodeId, &NodeConfig) -> bool + '_ {
-    |node_id: PlainNodeId, config: &NodeConfig| {
-        matches!(
-            config.log_server_config.storage_state,
-            StorageState::ReadWrite
-        ) && observed_cluster_state.alive_generation(node_id).is_some()
     }
 }
 
