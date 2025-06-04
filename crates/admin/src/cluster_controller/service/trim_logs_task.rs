@@ -22,7 +22,7 @@ use restate_bifrost::Bifrost;
 use restate_core::cancellation_token;
 use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::{
-    AliveNode, ClusterState as OldClusterState, PartitionProcessorStatus,
+    AliveNode, LegacyClusterState, PartitionProcessorStatus,
 };
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::identifiers::PartitionId;
@@ -144,7 +144,7 @@ impl TrimMode {
     /// single-nodes with no snapshots configured.
     fn from(
         snapshots_repository_configured: bool,
-        cluster_state: &Arc<OldClusterState>,
+        cluster_state: &Arc<LegacyClusterState>,
     ) -> TrimMode {
         let mut partition_status: BTreeMap<
             PartitionId,
@@ -260,7 +260,7 @@ mod tests {
     use crate::cluster_controller::service::trim_logs_task::TrimMode;
     use RunMode::{Follower, Leader};
     use restate_types::cluster::cluster_state::{
-        AliveNode, ClusterState, DeadNode, NodeState, PartitionProcessorStatus, RunMode,
+        AliveNode, DeadNode, LegacyClusterState, NodeState, PartitionProcessorStatus, RunMode,
     };
     use restate_types::identifiers::PartitionId;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -300,7 +300,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let cluster_state = Arc::new(ClusterState {
+        let cluster_state = Arc::new(LegacyClusterState {
             last_refreshed: None,
             nodes_config_version: Version::MIN,
             partition_table_version: Version::MIN,
@@ -358,7 +358,7 @@ mod tests {
         .collect();
 
         let n2 = GenerationalNodeId::new(2, 0);
-        let cluster_state = Arc::new(ClusterState {
+        let cluster_state = Arc::new(LegacyClusterState {
             last_refreshed: None,
             nodes_config_version: Version::MIN,
             partition_table_version: Version::MIN,
@@ -426,7 +426,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let cluster_state = Arc::new(ClusterState {
+        let cluster_state = Arc::new(LegacyClusterState {
             last_refreshed: None,
             nodes_config_version: Version::MIN,
             partition_table_version: Version::MIN,
@@ -507,7 +507,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let cluster_state = Arc::new(ClusterState {
+        let cluster_state = Arc::new(LegacyClusterState {
             last_refreshed: None,
             nodes_config_version: Version::MIN,
             partition_table_version: Version::MIN,
@@ -566,7 +566,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let cluster_state = Arc::new(ClusterState {
+        let cluster_state = Arc::new(LegacyClusterState {
             last_refreshed: None,
             nodes_config_version: Version::MIN,
             partition_table_version: Version::MIN,
@@ -648,7 +648,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let cluster_state = Arc::new(ClusterState {
+        let cluster_state = Arc::new(LegacyClusterState {
             last_refreshed: None,
             nodes_config_version: Version::MIN,
             partition_table_version: Version::MIN,

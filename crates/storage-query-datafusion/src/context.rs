@@ -29,7 +29,7 @@ use codederror::CodedError;
 use restate_core::{Metadata, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
-use restate_types::cluster::cluster_state::ClusterState;
+use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
@@ -217,13 +217,13 @@ where
 pub struct ClusterTables {
     cluster_state: restate_types::cluster_state::ClusterState,
     replica_set_states: PartitionReplicaSetStates,
-    cluster_state_watch: watch::Receiver<Arc<ClusterState>>,
+    cluster_state_watch: watch::Receiver<Arc<LegacyClusterState>>,
 }
 
 impl ClusterTables {
     pub fn new(
         replica_set_states: PartitionReplicaSetStates,
-        cluster_state_watch: watch::Receiver<Arc<ClusterState>>,
+        cluster_state_watch: watch::Receiver<Arc<LegacyClusterState>>,
     ) -> Self {
         let cluster_state = TaskCenter::with_current(|tc| tc.cluster_state().clone());
         Self {

@@ -36,7 +36,7 @@ use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind
 use restate_metadata_store::ReadModifyWriteError;
 use restate_storage_query_datafusion::BuildError;
 use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
-use restate_types::cluster::cluster_state::ClusterState;
+use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::PartitionId;
@@ -172,7 +172,7 @@ pub struct ChainExtension {
 
 #[derive(Debug)]
 enum ClusterControllerCommand {
-    GetClusterState(oneshot::Sender<Arc<ClusterState>>),
+    GetClusterState(oneshot::Sender<Arc<LegacyClusterState>>),
     TrimLog {
         log_id: LogId,
         trim_point: Lsn,
@@ -202,7 +202,7 @@ pub struct ClusterControllerHandle {
 }
 
 impl ClusterControllerHandle {
-    pub async fn get_cluster_state(&self) -> Result<Arc<ClusterState>, ShutdownError> {
+    pub async fn get_cluster_state(&self) -> Result<Arc<LegacyClusterState>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
         // ignore the error, we own both tx and rx at this point.
         let _ = self

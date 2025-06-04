@@ -20,7 +20,7 @@ use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind,
 };
 use restate_types::Version;
-use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState};
+use restate_types::cluster::cluster_state::{AliveNode, DeadNode, LegacyClusterState, NodeState};
 use restate_types::config::Configuration;
 use restate_types::net::connect_opts::CommonClientConnectionOptions;
 use restate_types::net::node::GetNodeState;
@@ -29,13 +29,13 @@ use restate_types::time::MillisSinceEpoch;
 pub struct ClusterStateRefresher<T> {
     network_sender: Networking<T>,
     in_flight_refresh: Option<TaskHandle<anyhow::Result<()>>>,
-    cluster_state_update_rx: watch::Receiver<Arc<ClusterState>>,
-    cluster_state_update_tx: Arc<watch::Sender<Arc<ClusterState>>>,
+    cluster_state_update_rx: watch::Receiver<Arc<LegacyClusterState>>,
+    cluster_state_update_tx: Arc<watch::Sender<Arc<LegacyClusterState>>>,
 }
 
 impl<T: TransportConnect> ClusterStateRefresher<T> {
     pub fn new(network_sender: Networking<T>) -> Self {
-        let initial_state = ClusterState {
+        let initial_state = LegacyClusterState {
             last_refreshed: None,
             nodes_config_version: Version::INVALID,
             partition_table_version: Version::INVALID,
@@ -53,7 +53,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
         }
     }
 
-    pub fn get_cluster_state(&self) -> Arc<ClusterState> {
+    pub fn get_cluster_state(&self) -> Arc<LegacyClusterState> {
         Arc::clone(&self.cluster_state_update_rx.borrow())
     }
 
@@ -63,7 +63,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
         }
     }
 
-    pub async fn next_cluster_state_update(&mut self) -> Arc<ClusterState> {
+    pub async fn next_cluster_state_update(&mut self) -> Arc<LegacyClusterState> {
         self.cluster_state_update_rx
             .changed()
             .await
@@ -92,7 +92,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
 
     fn start_refresh_task(
         network_sender: Networking<T>,
-        cluster_state_tx: Arc<watch::Sender<Arc<ClusterState>>>,
+        cluster_state_tx: Arc<watch::Sender<Arc<LegacyClusterState>>>,
     ) -> Result<Option<TaskHandle<anyhow::Result<()>>>, ShutdownError> {
         let refresh = async move {
             trace!("Refreshing cluster state");
@@ -176,7 +176,7 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
                 };
             }
 
-            let state = ClusterState {
+            let state = LegacyClusterState {
                 last_refreshed: Some(Instant::now()),
                 nodes_config_version: nodes_config.version(),
                 partition_table_version,
@@ -204,11 +204,11 @@ impl<T: TransportConnect> ClusterStateRefresher<T> {
 
 #[derive(Debug, Clone)]
 pub struct ClusterStateWatcher {
-    cluster_state_watcher: watch::Receiver<Arc<ClusterState>>,
+    cluster_state_watcher: watch::Receiver<Arc<LegacyClusterState>>,
 }
 
 impl ClusterStateWatcher {
-    pub async fn next_cluster_state(&mut self) -> Result<Arc<ClusterState>, ShutdownError> {
+    pub async fn next_cluster_state(&mut self) -> Result<Arc<LegacyClusterState>, ShutdownError> {
         self.cluster_state_watcher
             .changed()
             .await
@@ -216,11 +216,11 @@ impl ClusterStateWatcher {
         Ok(Arc::clone(&self.cluster_state_watcher.borrow_and_update()))
     }
 
-    pub fn current(&self) -> Arc<ClusterState> {
+    pub fn current(&self) -> Arc<LegacyClusterState> {
         Arc::clone(&self.cluster_state_watcher.borrow())
     }
 
-    pub fn watch(&self) -> watch::Receiver<Arc<ClusterState>> {
+    pub fn watch(&self) -> watch::Receiver<Arc<LegacyClusterState>> {
         self.cluster_state_watcher.clone()
     }
 }

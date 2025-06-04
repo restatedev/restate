@@ -25,7 +25,7 @@ use crate::{GenerationalNodeId, PlainNodeId, Version};
 /// cluster.
 #[derive(Debug, Clone, IntoProst)]
 #[prost(target = "crate::protobuf::cluster::ClusterState")]
-pub struct ClusterState {
+pub struct LegacyClusterState {
     #[into_prost(map = "instant_to_proto")]
     pub last_refreshed: Option<Instant>,
     #[prost(required)]
@@ -37,7 +37,7 @@ pub struct ClusterState {
     pub nodes: BTreeMap<PlainNodeId, NodeState>,
 }
 
-impl ClusterState {
+impl LegacyClusterState {
     pub fn is_reliable(&self) -> bool {
         // todo: make this configurable
         // If the cluster state is older than 10 seconds, then it is not reliable.
@@ -55,7 +55,7 @@ impl ClusterState {
 
     #[cfg(feature = "test-util")]
     pub fn empty() -> Self {
-        ClusterState {
+        LegacyClusterState {
             last_refreshed: None,
             nodes_config_version: Version::INVALID,
             partition_table_version: Version::INVALID,
@@ -112,7 +112,7 @@ fn instant_to_proto(t: Instant) -> prost_types::Duration {
 #[strum(serialize_all = "snake_case")]
 pub enum NodeState {
     Alive(AliveNode),
-    // #[deprecated(since ="1.3.3", note = "Use restate_core::cluster_state::ClusterState instead for detecting dead nodes")]
+    // #[deprecated(since ="1.3.3", note = "Use restate_types::cluster_state::ClusterState instead for detecting dead nodes")]
     Dead(DeadNode),
 }
 

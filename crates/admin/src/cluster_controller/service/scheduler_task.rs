@@ -19,7 +19,7 @@ use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher,
 };
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::cluster::cluster_state::ClusterState as OldClusterState;
+use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
@@ -99,10 +99,10 @@ where
                     // leader or reconfigure the partition.
                     self.on_cluster_state_change(&cs, &self.cluster_state_watcher.current(), nodes_config.live_load(), partition_table.live_load()).await
                 },
-                Ok(old_cluster_state) = self.cluster_state_watcher.next_cluster_state() => {
+                Ok(legacy_cluster_state) = self.cluster_state_watcher.next_cluster_state() => {
                     // A changed old cluster state might mean that a partition processor has caught
                     // up to the tail of the log and can now become a leader.
-                    self.on_cluster_state_change(&cs, &old_cluster_state, nodes_config.live_load(), partition_table.live_load()).await
+                    self.on_cluster_state_change(&cs, &legacy_cluster_state, nodes_config.live_load(), partition_table.live_load()).await
                 }
                 Some(epoch_metadata) = OptionFuture::from(fetch_epoch_metadata_task.as_mut()) => {
                     match epoch_metadata {
@@ -154,7 +154,7 @@ where
     async fn on_cluster_state_change(
         &mut self,
         cluster_state: &ClusterState,
-        old_cluster_state: &OldClusterState,
+        legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) {
@@ -162,7 +162,7 @@ where
             .scheduler
             .on_cluster_state_change(
                 cluster_state,
-                old_cluster_state,
+                legacy_cluster_state,
                 nodes_config,
                 partition_table,
             )

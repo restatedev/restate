@@ -20,7 +20,7 @@ use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCente
 use restate_metadata_store::{
     MetadataStoreClient, ReadError, ReadModifyWriteError, ReadWriteError, WriteError,
 };
-use restate_types::cluster::cluster_state::ClusterState as OldClusterState;
+use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
@@ -213,13 +213,13 @@ impl<T: TransportConnect> Scheduler<T> {
     pub async fn on_cluster_state_change(
         &mut self,
         cluster_state: &ClusterState,
-        old_cluster_state: &OldClusterState,
+        legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
         self.ensure_valid_partition_configuration(
             cluster_state,
-            old_cluster_state,
+            legacy_cluster_state,
             nodes_config,
             partition_table,
         )
@@ -240,7 +240,7 @@ impl<T: TransportConnect> Scheduler<T> {
     async fn ensure_valid_partition_configuration(
         &mut self,
         cluster_state: &ClusterState,
-        old_cluster_state: &OldClusterState,
+        legacy_cluster_state: &LegacyClusterState,
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
@@ -334,7 +334,7 @@ impl<T: TransportConnect> Scheduler<T> {
             // next configuration has become active
             if let Some(next) = &occupied_entry.get().next {
                 if next.replica_set().iter().any(|node_id| {
-                    old_cluster_state.is_partition_processor_active(&partition_id, node_id)
+                    legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
                 }) {
                     let partition_configuration_update = Self::complete_reconfiguration(
                         self.metadata_writer.raw_metadata_store_client(),
@@ -357,7 +357,7 @@ impl<T: TransportConnect> Scheduler<T> {
             }
 
             // select the leader based on the observed cluster state
-            self.select_leader(&partition_id, cluster_state, old_cluster_state);
+            self.select_leader(&partition_id, cluster_state, legacy_cluster_state);
         }
 
         Ok(())
@@ -606,14 +606,14 @@ impl<T: TransportConnect> Scheduler<T> {
         &mut self,
         partition_id: &PartitionId,
         cluster_state: &ClusterState,
-        old_cluster_state: &OldClusterState,
+        legacy_cluster_state: &LegacyClusterState,
     ) {
         let Some(partition) = self.partitions.get_mut(partition_id) else {
             return;
         };
 
         if let Some(leader) = Self::select_leader_by_priority(partition, cluster_state, |node_id| {
-            old_cluster_state.is_partition_processor_active(partition_id, &node_id)
+            legacy_cluster_state.is_partition_processor_active(partition_id, &node_id)
         }) {
             partition.target_leader = Some(leader);
             return;

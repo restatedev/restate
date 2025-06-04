@@ -15,7 +15,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use restate_types::cluster::cluster_state::ClusterState;
+use restate_types::cluster::cluster_state::LegacyClusterState;
 use tokio::sync::mpsc::Sender;
 
 use tokio::sync::watch;
@@ -29,7 +29,7 @@ use super::schema::PartitionStateBuilder;
 
 pub fn register_self(
     ctx: &QueryContext,
-    watch: watch::Receiver<Arc<ClusterState>>,
+    watch: watch::Receiver<Arc<LegacyClusterState>>,
 ) -> datafusion::common::Result<()> {
     let table = GenericTableProvider::new(
         PartitionStateBuilder::schema(),
@@ -41,7 +41,7 @@ pub fn register_self(
 #[derive(Clone, derive_more::Debug)]
 #[debug("PartitionStateScanner")]
 struct PartitionStateScanner {
-    watch: watch::Receiver<Arc<ClusterState>>,
+    watch: watch::Receiver<Arc<LegacyClusterState>>,
 }
 
 impl Scan for PartitionStateScanner {
@@ -67,7 +67,7 @@ impl Scan for PartitionStateScanner {
 async fn for_each_partition(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
-    state: &ClusterState,
+    state: &LegacyClusterState,
 ) {
     let mut builder = PartitionStateBuilder::new(schema.clone());
     let mut output = String::new();
