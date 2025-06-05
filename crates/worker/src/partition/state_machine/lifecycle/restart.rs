@@ -374,7 +374,8 @@ mod tests {
     use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::TestEnv;
     use crate::partition::state_machine::tests::fixtures::{
-        invoker_end_effect, invoker_entry_effect, pinned_deployment,
+        invoker_end_effect, invoker_end_effect_for_epoch, invoker_entry_effect,
+        invoker_entry_effect_for_epoch, pinned_deployment, pinned_deployment_for_epoch,
     };
     use crate::partition::state_machine::tests::matchers::storage::{
         has_commands, has_journal_length, is_epoch, is_variant,
@@ -956,6 +957,31 @@ mod tests {
             test_env
                 .storage()
                 .get_invocation_status_for_epoch(&invocation_id, 0)
+                .await,
+            ok(eq(InvocationStatus::Free))
+        );
+
+        // Complete the restarted invocation too
+        let _ = test_env
+            .apply_multiple([
+                pinned_deployment_for_epoch(invocation_id, 1, ServiceProtocolVersion::V5),
+                invoker_entry_effect_for_epoch(
+                    invocation_id,
+                    1,
+                    OutputCommand {
+                        result: OutputResult::Success(Bytes::from_static(b"456")),
+                        name: Default::default(),
+                    },
+                ),
+                invoker_end_effect_for_epoch(invocation_id, 1),
+            ])
+            .await;
+
+        // Nothing left for this invocation
+        assert_that!(
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
                 .await,
             ok(eq(InvocationStatus::Free))
         );
