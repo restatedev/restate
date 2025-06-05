@@ -9,7 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use futures::Stream;
-use restate_storage_api::journal_table_v2::ReadOnlyJournalTable as ReadOnlyJournalTableV2;
+use restate_storage_api::journal_table_v2::{
+    JournalEntryId, ReadOnlyJournalTable as ReadOnlyJournalTableV2,
+};
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -25,7 +27,7 @@ use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
-use restate_types::identifiers::{JournalEntryId, PartitionKey};
+use restate_types::identifiers::PartitionKey;
 use restate_types::journal_v2::raw::RawEntry;
 
 const NAME: &str = "sys_journal";

@@ -28,6 +28,7 @@ pub(crate) fn append_invocation_status_row(
     let mut row = builder.row();
 
     row.partition_key(invocation_id.partition_key());
+    row.epoch(invocation_status.get_epoch());
     if let Some(invocation_target) = invocation_status.invocation_target() {
         row.target_service_name(invocation_target.service_name());
         if let Some(key) = invocation_target.key() {

@@ -14,7 +14,8 @@ use crate::table_util::format_using;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
-use restate_types::identifiers::{JournalEntryId, WithInvocationId, WithPartitionKey};
+use restate_storage_api::journal_table_v2::JournalEntryId;
+use restate_types::identifiers::{WithInvocationId, WithPartitionKey};
 use restate_types::journal::Entry;
 use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal::{CompletePromiseEntry, GetPromiseEntry, PeekPromiseEntry};
@@ -37,6 +38,7 @@ pub(crate) fn append_journal_row(
     if row.is_id_defined() {
         row.id(format_using(output, &journal_entry_id.invocation_id()));
     }
+    row.epoch(journal_entry_id.invocation_epoch());
 
     row.index(journal_entry_id.journal_index());
 
@@ -153,6 +155,7 @@ pub(crate) fn append_journal_row_v2(
     if row.is_id_defined() {
         row.id(format_using(output, &journal_entry_id.invocation_id()));
     }
+    row.epoch(journal_entry_id.invocation_epoch());
 
     row.index(journal_entry_id.journal_index());
     if row.is_entry_type_defined() {
