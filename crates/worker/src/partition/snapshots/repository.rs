@@ -484,7 +484,7 @@ impl SnapshotRepository {
         );
         Ok(Some(LocalPartitionSnapshot {
             base_dir: snapshot_dir.into_path(),
-            log_id: snapshot_metadata.get_log_id(),
+            log_id: snapshot_metadata.log_id,
             min_applied_lsn: snapshot_metadata.min_applied_lsn,
             db_comparator_name: snapshot_metadata.db_comparator_name,
             files: snapshot_metadata.files,
@@ -919,7 +919,7 @@ mod tests {
             created_at: humantime::Timestamp::from(SystemTime::now()),
             snapshot_id: SnapshotId::new(),
             key_range: PartitionKey::MIN..=PartitionKey::MAX,
-            log_id: Some(LogId::from(PartitionId::MIN)),
+            log_id: LogId::MIN,
             min_applied_lsn: Lsn::new(1),
             db_comparator_name: "leveldb.BytewiseComparator".to_string(),
             // this is totally bogus, but it doesn't matter since we won't be importing it into RocksDB
