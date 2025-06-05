@@ -230,7 +230,7 @@ impl From<PurgeInvocationResponse> for PurgeInvocationRpcResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RestartInvocationRpcResponse {
-    Ok,
+    Ok { new_epoch: InvocationEpoch },
     NotFound,
     StillRunning,
     Unsupported,
@@ -241,7 +241,9 @@ pub enum RestartInvocationRpcResponse {
 impl From<RestartInvocationRpcResponse> for RestartInvocationResponse {
     fn from(value: RestartInvocationRpcResponse) -> Self {
         match value {
-            RestartInvocationRpcResponse::Ok => RestartInvocationResponse::Ok,
+            RestartInvocationRpcResponse::Ok { new_epoch } => {
+                RestartInvocationResponse::Ok { new_epoch }
+            }
             RestartInvocationRpcResponse::NotFound => RestartInvocationResponse::NotFound,
             RestartInvocationRpcResponse::StillRunning => RestartInvocationResponse::StillRunning,
             RestartInvocationRpcResponse::Unsupported => RestartInvocationResponse::Unsupported,
@@ -254,7 +256,9 @@ impl From<RestartInvocationRpcResponse> for RestartInvocationResponse {
 impl From<RestartInvocationResponse> for RestartInvocationRpcResponse {
     fn from(value: RestartInvocationResponse) -> Self {
         match value {
-            RestartInvocationResponse::Ok => RestartInvocationRpcResponse::Ok,
+            RestartInvocationResponse::Ok { new_epoch } => {
+                RestartInvocationRpcResponse::Ok { new_epoch }
+            }
             RestartInvocationResponse::NotFound => RestartInvocationRpcResponse::NotFound,
             RestartInvocationResponse::StillRunning => RestartInvocationRpcResponse::StillRunning,
             RestartInvocationResponse::Unsupported => RestartInvocationRpcResponse::Unsupported,

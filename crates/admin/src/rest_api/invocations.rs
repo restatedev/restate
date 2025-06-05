@@ -12,19 +12,20 @@ use super::error::*;
 use crate::generate_meta_api_error;
 use crate::rest_api::create_envelope_header;
 use crate::state::AdminServiceState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::client::{
-    CancelInvocationResponse, InvocationClient, KillInvocationResponse, PurgeInvocationResponse,
-    RestartInvocationResponse,
+    self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
+    PurgeInvocationResponse,
 };
 use restate_types::invocation::{
     InvocationEpoch, InvocationTermination, PurgeInvocationRequest, TerminationFlavor, restart,
 };
 use restate_wal_protocol::{Command, Envelope};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
@@ -347,6 +348,12 @@ where
     Ok(())
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RestartInvocationResponse {
+    /// The new invocation epoch of the invocation.
+    pub new_invocation_epoch: InvocationEpoch,
+}
+
 /// What to do if the invocation is still running. By default, the running invocation will be killed.
 #[derive(Default, Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -466,7 +473,7 @@ pub async fn restart_invocation<V, IC>(
         previous_attempt_retention,
         apply_to_workflow_run,
     }): Query<RestartInvocationParams>,
-) -> Result<(), RestartInvocationError>
+) -> Result<Json<RestartInvocationResponse>, RestartInvocationError>
 where
     IC: InvocationClient,
 {
@@ -486,23 +493,24 @@ where
         .await
         .map_err(InvocationClientError)?
     {
-        RestartInvocationResponse::Ok => {}
-        RestartInvocationResponse::NotFound => {
+        client::RestartInvocationResponse::Ok { new_epoch } => Ok(RestartInvocationResponse {
+            new_invocation_epoch: new_epoch,
+        }
+        .into()),
+        client::RestartInvocationResponse::NotFound => {
             Err(InvocationNotFoundError(invocation_id.to_string()))?
         }
-        RestartInvocationResponse::StillRunning => Err(RestartInvocationStillRunningError(
-            invocation_id.to_string(),
-        ))?,
-        RestartInvocationResponse::Unsupported => {
+        client::RestartInvocationResponse::StillRunning => Err(
+            RestartInvocationStillRunningError(invocation_id.to_string()),
+        )?,
+        client::RestartInvocationResponse::Unsupported => {
             Err(RestartInvocationUnsupportedError(invocation_id.to_string()))?
         }
-        RestartInvocationResponse::MissingInput => Err(RestartInvocationMissingInputError(
-            invocation_id.to_string(),
-        ))?,
-        RestartInvocationResponse::NotStarted => {
+        client::RestartInvocationResponse::MissingInput => Err(
+            RestartInvocationMissingInputError(invocation_id.to_string()),
+        )?,
+        client::RestartInvocationResponse::NotStarted => {
             Err(RestartInvocationNotStartedError(invocation_id.to_string()))?
         }
-    };
-
-    Ok(())
+    }
 }

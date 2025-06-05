@@ -111,7 +111,7 @@ pub enum PurgeInvocationResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestartInvocationResponse {
-    Ok,
+    Ok { new_epoch: InvocationEpoch },
     NotFound,
     StillRunning,
     Unsupported,

@@ -315,7 +315,7 @@ where
         .await?;
 
         // Reply to the listener, restart went well
-        ctx.reply_to_restart_invocation(response_sink, RestartInvocationResponse::Ok);
+        ctx.reply_to_restart_invocation(response_sink, RestartInvocationResponse::Ok { new_epoch });
 
         Ok(())
     }
@@ -478,7 +478,7 @@ mod tests {
             all!(
                 contains(pat!(Action::ForwardRestartInvocationResponse {
                     request_id: eq(restart_request_id),
-                    response: eq(RestartInvocationResponse::Ok)
+                    response: eq(RestartInvocationResponse::Ok { new_epoch: 1 })
                 })),
                 contains(pat!(Action::Invoke {
                     invocation_id: eq(invocation_id),
@@ -603,7 +603,7 @@ mod tests {
                 // Verify the restart response is sent
                 contains(pat!(Action::ForwardRestartInvocationResponse {
                     request_id: eq(restart_request_id),
-                    response: eq(RestartInvocationResponse::Ok)
+                    response: eq(RestartInvocationResponse::Ok { new_epoch: 1 })
                 })),
                 // Verify the invocation is restarted
                 contains(pat!(Action::Invoke {
@@ -787,7 +787,7 @@ mod tests {
             actions,
             contains(pat!(Action::ForwardRestartInvocationResponse {
                 request_id: eq(restart_request_id),
-                response: eq(RestartInvocationResponse::Ok)
+                response: eq(RestartInvocationResponse::Ok { new_epoch: 1 })
             }))
         );
 
@@ -927,7 +927,7 @@ mod tests {
                 // Verify the restart response is sent
                 contains(pat!(Action::ForwardRestartInvocationResponse {
                     request_id: eq(restart_request_id),
-                    response: eq(RestartInvocationResponse::Ok)
+                    response: eq(RestartInvocationResponse::Ok { new_epoch: 1 })
                 })),
                 // Verify the invocation is restarted
                 contains(pat!(Action::Invoke {
