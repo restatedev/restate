@@ -10,9 +10,9 @@
 
 use std::time::Duration;
 
+use jiff::fmt::friendly::{Designator, SpanPrinter};
 use jiff::{Span, SpanRelativeTo};
 use serde::de::{Error, IntoDeserializer};
-use serde::ser;
 use serde::{Deserialize, Deserializer, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
 
@@ -26,8 +26,37 @@ use serde_with::{DeserializeAs, SerializeAs};
 pub struct DurationString;
 
 impl DurationString {
+    /// Parse a duration from a string using the [`jiff::fmt::friendly`] format, allowing units of
+    /// up to days to be used.
     pub fn parse_duration(s: &str) -> Result<Duration, serde::de::value::Error> {
         serde_with::As::<DurationString>::deserialize(s.into_deserializer())
+    }
+
+    /// Prints a duration as a string using the [`jiff::fmt::friendly`] format, using units up to
+    /// days.
+    pub fn display(duration: Duration) -> String {
+        // jiff's SignedDuration pretty-print will add up units up to hours but not to days,
+        // so we use a Span to get finer control over the display output and use calendar units
+        // up to days (which we consider to be 24 hours in duration)
+        let mut span = Span::try_from(duration).expect("fits i64");
+        if span.get_seconds() >= 60 {
+            let minutes = span.get_seconds() / 60;
+            let seconds = span.get_seconds() % 60;
+            span = span.minutes(minutes).seconds(seconds);
+        }
+        if span.get_minutes() >= 60 {
+            let hours = span.get_minutes() / 60;
+            let minutes = span.get_minutes() % 60;
+            span = span.hours(hours).minutes(minutes);
+        }
+        if span.get_hours() >= 24 {
+            let days = span.get_hours() / 24;
+            let hours = span.get_hours() % 24;
+            span = span.days(days).hours(hours);
+        };
+
+        let printer = SpanPrinter::new().designator(Designator::Compact);
+        printer.span_to_string(&span)
     }
 }
 
@@ -39,6 +68,9 @@ impl<'de> DeserializeAs<'de, std::time::Duration> for DurationString {
         let span: Span = String::deserialize(deserializer)?
             .parse()
             .map_err(Error::custom)?;
+        if span.get_years() > 0 || span.get_months() > 0 {
+            return Err(Error::custom("Please use units of days or smaller"));
+        }
         let signed_duration = span
             .to_duration(SpanRelativeTo::days_are_24_hours())
             .map_err(Error::custom)?;
@@ -51,11 +83,7 @@ impl SerializeAs<std::time::Duration> for DurationString {
     where
         S: Serializer,
     {
-        let span = Span::try_from(*source).map_err(ser::Error::custom)?;
-        let signed_duration = span
-            .to_duration(SpanRelativeTo::days_are_24_hours())
-            .map_err(ser::Error::custom)?;
-        serializer.collect_str(&format!("{signed_duration:#}"))
+        serializer.collect_str(&DurationString::display(*source))
     }
 }
 
@@ -63,6 +91,7 @@ impl SerializeAs<std::time::Duration> for DurationString {
 mod tests {
     use super::*;
 
+    use jiff::{SignedDuration, ToSpan};
     use serde::{Deserialize, Serialize};
 
     use serde_with::serde_as;
@@ -81,10 +110,7 @@ mod tests {
         let duration = DurationString::parse_duration("P1M");
         assert_eq!(
             Err(serde::de::Error::custom(
-                "could not compute normalized relative span from P1M when all days are assumed to \
-                be 24 hours: using unit 'month' in span or configuration requires that a relative \
-                reference time be given (`SpanRelativeTo::days_are_24_hours()` was given but this \
-                only permits using days and weeks without a relative reference time)"
+                "Please use units of days or smaller"
             )),
             duration
         );
@@ -92,6 +118,18 @@ mod tests {
         // we can, however, use "30 days" instead - we fix those to 24 hours
         let duration = DurationString::parse_duration("P30D");
         assert_eq!(Ok(Duration::from_secs(30 * 24 * 3600)), duration);
+
+        // we should not render larger units which are unsupported as inputs
+        let duration = DurationString::parse_duration("30 days 48 hours").unwrap();
+        assert_eq!(
+            30.days()
+                .hours(48)
+                .to_duration(SpanRelativeTo::days_are_24_hours())
+                .unwrap(),
+            SignedDuration::try_from(duration).unwrap()
+        );
+        let duration_str = DurationString::display(duration);
+        assert_eq!("32d", duration_str);
 
         // more complex inputs are also supported - but will be serialized as a more humane output
         let duration = DurationString::parse_duration("P30DT10H30M15S");
@@ -106,7 +144,7 @@ mod tests {
                 &serde_json::to_string(&MyDuration(duration.unwrap())).unwrap()
             )
             .unwrap(),
-            "730h 30m 15s"
+            "30d 10h 30m 15s"
         );
     }
 
@@ -142,7 +180,7 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<String>(&serde_json::to_string(&MyDuration(duration)).unwrap())
                 .unwrap(),
-            "720h"
+            "30d"
         );
     }
 }
