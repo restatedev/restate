@@ -241,8 +241,10 @@ async fn complete_already_completed_invocation() {
             response_result: ResponseResult::Success(response_bytes.clone()),
             completion_retention_duration: Default::default(),
             journal_retention_duration: Default::default(),
+            invocation_epoch: 0,
             journal_metadata: JournalMetadata::empty(),
             pinned_deployment: None,
+            completion_range_epoch_map: Default::default(),
         }),
     )
     .await
@@ -770,6 +772,7 @@ async fn purge_completed_idempotent_invocation() {
         .apply(Command::PurgeInvocation(PurgeInvocationRequest {
             invocation_id,
             response_sink: None,
+            invocation_epoch: 0,
         }))
         .await;
     assert_that!(

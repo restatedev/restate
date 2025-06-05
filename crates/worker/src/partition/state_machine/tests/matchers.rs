@@ -28,7 +28,7 @@ pub mod storage {
     };
     use restate_storage_api::journal_table::JournalEntry;
     use restate_types::identifiers::InvocationId;
-    use restate_types::invocation::InvocationTarget;
+    use restate_types::invocation::{InvocationEpoch, InvocationTarget};
     use restate_types::journal::Entry;
 
     pub fn has_journal_length(
@@ -52,6 +52,14 @@ pub mod storage {
         .with_description(
             format!("has commands {}", commands),
             format!("hasn't commands {}", commands),
+        )
+    }
+
+    pub fn is_epoch(epoch: InvocationEpoch) -> impl Matcher<ActualT = InvocationStatus> {
+        property_matcher::internal::property_matcher(
+            |o: &InvocationStatus| o.get_epoch(),
+            "get_epoch()",
+            eq(epoch),
         )
     }
 

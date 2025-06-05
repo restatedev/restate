@@ -14,6 +14,7 @@ use crate::partition::state_machine::tests::matchers::actions::forward_purge_inv
 use restate_storage_api::invocation_status_table::CompletedInvocation;
 use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
+use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationQuery, InvocationTarget,
     PurgeInvocationRequest,
@@ -344,6 +345,7 @@ async fn purge_completed_workflow() {
             response_sink: Some(InvocationMutationResponseSink::Ingress(
                 IngressInvocationResponseSink { request_id },
             )),
+            invocation_epoch: 0,
         }))
         .await;
     assert_that!(

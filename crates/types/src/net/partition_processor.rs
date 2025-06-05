@@ -13,13 +13,15 @@ use crate::identifiers::{
 };
 use crate::invocation::client::{
     CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PurgeInvocationResponse,
-    SubmittedInvocationNotification,
+    RestartInvocationResponse, SubmittedInvocationNotification,
 };
-use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
+use crate::invocation::restart::{ApplyToWorkflowRun, IfRunning};
+use crate::invocation::{InvocationEpoch, InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
 use crate::net::ServiceTag;
 use crate::net::{default_wire_codec, define_rpc, define_service};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 pub struct PartitionLeaderService;
 
@@ -68,10 +70,26 @@ pub enum PartitionProcessorRpcRequestInner {
     GetInvocationOutput(InvocationQuery, GetInvocationOutputResponseMode),
     AppendInvocationResponse(InvocationResponse),
     AppendSignal(InvocationId, Signal),
-    CancelInvocation { invocation_id: InvocationId },
-    KillInvocation { invocation_id: InvocationId },
-    PurgeInvocation { invocation_id: InvocationId },
-    PurgeJournal { invocation_id: InvocationId },
+    CancelInvocation {
+        invocation_id: InvocationId,
+    },
+    KillInvocation {
+        invocation_id: InvocationId,
+    },
+    PurgeInvocation {
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    },
+    PurgeJournal {
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    },
+    RestartInvocation {
+        invocation_id: InvocationId,
+        if_running: IfRunning,
+        previous_attempt_retention: Option<Duration>,
+        apply_to_workflow_run: ApplyToWorkflowRun,
+    },
 }
 
 impl WithPartitionKey for PartitionProcessorRpcRequestInner {
@@ -87,10 +105,13 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
             PartitionProcessorRpcRequestInner::KillInvocation { invocation_id } => {
                 invocation_id.partition_key()
             }
-            PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id } => {
+            PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id, .. } => {
                 invocation_id.partition_key()
             }
-            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
+            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id, .. } => {
+                invocation_id.partition_key()
+            }
+            PartitionProcessorRpcRequestInner::RestartInvocation { invocation_id, .. } => {
                 invocation_id.partition_key()
             }
         }
@@ -208,6 +229,42 @@ impl From<PurgeInvocationResponse> for PurgeInvocationRpcResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RestartInvocationRpcResponse {
+    Ok,
+    NotFound,
+    StillRunning,
+    Unsupported,
+    MissingInput,
+    NotStarted,
+}
+
+impl From<RestartInvocationRpcResponse> for RestartInvocationResponse {
+    fn from(value: RestartInvocationRpcResponse) -> Self {
+        match value {
+            RestartInvocationRpcResponse::Ok => RestartInvocationResponse::Ok,
+            RestartInvocationRpcResponse::NotFound => RestartInvocationResponse::NotFound,
+            RestartInvocationRpcResponse::StillRunning => RestartInvocationResponse::StillRunning,
+            RestartInvocationRpcResponse::Unsupported => RestartInvocationResponse::Unsupported,
+            RestartInvocationRpcResponse::MissingInput => RestartInvocationResponse::MissingInput,
+            RestartInvocationRpcResponse::NotStarted => RestartInvocationResponse::NotStarted,
+        }
+    }
+}
+
+impl From<RestartInvocationResponse> for RestartInvocationRpcResponse {
+    fn from(value: RestartInvocationResponse) -> Self {
+        match value {
+            RestartInvocationResponse::Ok => RestartInvocationRpcResponse::Ok,
+            RestartInvocationResponse::NotFound => RestartInvocationRpcResponse::NotFound,
+            RestartInvocationResponse::StillRunning => RestartInvocationRpcResponse::StillRunning,
+            RestartInvocationResponse::Unsupported => RestartInvocationRpcResponse::Unsupported,
+            RestartInvocationResponse::MissingInput => RestartInvocationRpcResponse::MissingInput,
+            RestartInvocationResponse::NotStarted => RestartInvocationRpcResponse::NotStarted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
     Appended,
     NotFound,
@@ -219,4 +276,5 @@ pub enum PartitionProcessorRpcResponse {
     KillInvocation(KillInvocationRpcResponse),
     PurgeInvocation(PurgeInvocationRpcResponse),
     PurgeJournal(PurgeInvocationRpcResponse),
+    RestartInvocation(RestartInvocationRpcResponse),
 }
