@@ -100,6 +100,44 @@ impl PartitionReplicaSetStates {
         }
     }
 
+    pub fn note_durable_lsn(
+        &self,
+        partition_id: PartitionId,
+        node_id: PlainNodeId,
+        durable_lsn: Lsn,
+    ) {
+        let Some(mut state) = self.inner.partitions.get_mut(&partition_id) else {
+            return;
+        };
+        let mut modified = false;
+
+        // update durable lsn in members of current and/or next
+        for member in state
+            .value_mut()
+            .observed_current_membership
+            .members
+            .iter_mut()
+        {
+            if member.node_id == node_id && durable_lsn > member.durable_lsn {
+                member.durable_lsn = durable_lsn;
+                modified |= true;
+            }
+        }
+
+        if let Some(next_membership) = state.value_mut().observed_next_membership.as_mut() {
+            for member in next_membership.members.iter_mut() {
+                if member.node_id == node_id && durable_lsn > member.durable_lsn {
+                    member.durable_lsn = durable_lsn;
+                    modified |= true;
+                }
+            }
+        }
+
+        if modified {
+            self.inner.global_notify.notify_waiters();
+        }
+    }
+
     pub fn watch_leadership_state(
         &self,
         partition_id: PartitionId,
@@ -208,6 +246,7 @@ impl MembershipState {
         {
             // we have a new current membership
             std::cmp::Ordering::Greater => {
+                // todo: try to use previous durable lsns if the two replica-sets intersect
                 self.observed_current_membership = incoming_current_membership.clone();
                 modified = true;
                 if self
