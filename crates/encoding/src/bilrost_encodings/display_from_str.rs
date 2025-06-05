@@ -37,10 +37,6 @@ macro_rules! bilrost_as_display_from_str {
         {
             type Proxy = ::std::string::String;
 
-            fn new_proxy() -> ::std::string::String {
-                ::std::string::String::new()
-            }
-
             fn encode_proxy(&self) -> ::std::string::String {
                 self.to_string()
             }
