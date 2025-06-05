@@ -25,7 +25,6 @@ use prost::Message;
 use raft_proto::eraftpb::Snapshot;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::Status;
-use tracing::{debug, info};
 use ulid::Ulid;
 
 use restate_core::network::NetworkServerBuilder;
@@ -35,13 +34,11 @@ use restate_metadata_server_grpc::{MetadataServerConfiguration, grpc as protobuf
 pub use restate_metadata_store::{
     MetadataStoreClient, ReadError, ReadModifyWriteError, WriteError,
 };
-use restate_types::config::{
-    Configuration, MetadataClientKind, MetadataServerKind, MetadataServerOptions,
-};
+use restate_types::config::{Configuration, MetadataClientKind};
 use restate_types::errors::{ConversionError, GenericError, MaybeRetryableError};
 use restate_types::health::HealthStatus;
+use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
-use restate_types::live::{Live, LiveLoad};
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::nodes_config::{
     MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
@@ -50,7 +47,6 @@ use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
-use crate::local::LocalMetadataServer;
 use crate::raft::RaftMetadataServer;
 
 pub type BoxedMetadataServer = Box<dyn MetadataServer>;
@@ -209,54 +205,8 @@ pub async fn create_metadata_server_and_client(
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<(BoxedMetadataServer, MetadataStoreClient)> {
     metric_definitions::describe_metrics();
-    let mut metadata_server_options = config.clone().map(|config| &config.metadata_server);
+    let metadata_server_options = config.clone().map(|config| &config.metadata_server);
     let config = config.live_load();
-    match metadata_server_options.live_load().kind() {
-        MetadataServerKind::Local => {
-            match LocalMetadataServer::create(
-                metadata_server_options.clone(),
-                health_status.clone(),
-            )
-            .await
-            {
-                Ok(server) => {
-                    let client = server.client();
-                    Ok((server.boxed(), client))
-                }
-                Err(local::BuildError::Sealed) => {
-                    info!(
-                        "The local metadata server was migrated. Automatically switching to use \
-                        the replicated metadata server."
-                    );
-                    create_raft_metadata_server_and_client(
-                        health_status,
-                        server_builder,
-                        metadata_server_options,
-                        config,
-                    )
-                    .await
-                }
-                Err(err) => Err(err)?,
-            }
-        }
-        MetadataServerKind::Raft => {
-            create_raft_metadata_server_and_client(
-                health_status,
-                server_builder,
-                metadata_server_options,
-                config,
-            )
-            .await
-        }
-    }
-}
-
-async fn create_raft_metadata_server_and_client(
-    health_status: HealthStatus<MetadataServerStatus>,
-    server_builder: &mut NetworkServerBuilder,
-    metadata_server_options: impl LiveLoad<Live = MetadataServerOptions> + 'static,
-    config: &Configuration,
-) -> anyhow::Result<(BoxedMetadataServer, MetadataStoreClient)> {
     RaftMetadataServer::create(metadata_server_options, health_status, server_builder)
         .await
         .map_err(anyhow::Error::from)
