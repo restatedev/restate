@@ -297,11 +297,12 @@ where
             completion_range_epoch_map: invocation.completion_range_epoch_map,
             journal_metadata: invocation.journal_metadata,
             hotfix_apply_cancellation_after_deployment_is_pinned: false,
+            created_using_restate_version: invocation.created_using_restate_version,
 
             // Reset the pinned deployment
             pinned_deployment: None,
             // Reset timestamps
-            timestamps: StatusTimestamps::now(),
+            timestamps: StatusTimestamps::init(),
             // Reset response sinks
             response_sinks: Default::default(),
         };

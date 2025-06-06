@@ -978,7 +978,6 @@ pub struct PurgeInvocationRequest {
     pub response_sink: Option<InvocationMutationResponseSink>,
     /// When epoch is the current/latest epoch, all the other epochs will be cleaned up as well.
     #[serde(default, skip_serializing_if = "num_traits::Zero::is_zero")]
-    #[bilrost(6)]
     pub invocation_epoch: InvocationEpoch,
 }
 
@@ -1165,12 +1164,14 @@ pub mod restart {
         ///
         /// To retain the previous attempt, the new attempt will take the invocation id of the previous attempt, the one used to trigger this reset,
         /// and old invocation id will take a new randomly generated invocation id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub previous_attempt_retention: Option<Duration>,
 
         /// What to do in case the invocation was a Workflow run (workflow service and workflow handler type)
         pub apply_to_workflow_run: ApplyToWorkflowRun,
 
         /// Where to send the response for this command
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub response_sink: Option<InvocationMutationResponseSink>,
     }
 
