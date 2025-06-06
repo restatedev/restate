@@ -11,6 +11,23 @@
 //! Defines messages between replicated loglet instances
 
 mod arc_encodings;
+mod nonzero;
+mod range;
+
 pub mod display_from_str;
 
 pub use arc_encodings::{Arced, ArcedSlice};
+
+/// The encoding used for all 3rd party types in the `bilrost_encoding` crate.
+///
+/// example:
+/// ```ignore
+/// #[derive(bilrost::Message)]
+/// struct MyMessage {
+///     #[bilrost(tag(1), encoding(RestateEncoding))]
+///     range: RangeInclusive<u64>,
+/// }
+pub struct RestateEncoding;
+
+bilrost::encoding_implemented_via_value_encoding!(RestateEncoding);
+bilrost::implement_core_empty_state_rules!(RestateEncoding);
