@@ -48,9 +48,10 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
-    NotifySignalRequest, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
-    SubmitNotificationSink, WorkflowHandlerType,
+    AttachInvocationRequest, IngressInvocationResponseSink, InvocationMutationResponseSink,
+    InvocationQuery, InvocationTarget, InvocationTargetType, InvocationTermination,
+    NotifySignalRequest, PurgeInvocationRequest, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, SubmitNotificationSink, TerminationFlavor, WorkflowHandlerType,
 };
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
@@ -748,6 +749,68 @@ where
                         response_tx,
                     )
                     .await;
+            }
+            PartitionProcessorRpcRequestInner::CancelInvocation { invocation_id } => {
+                self.leadership_state
+                    .handle_rpc_proposal_command(
+                        request_id,
+                        response_tx,
+                        invocation_id.partition_key(),
+                        Command::TerminateInvocation(InvocationTermination {
+                            invocation_id,
+                            flavor: TerminationFlavor::Cancel,
+                            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                IngressInvocationResponseSink { request_id },
+                            )),
+                        }),
+                    )
+                    .await
+            }
+            PartitionProcessorRpcRequestInner::KillInvocation { invocation_id } => {
+                self.leadership_state
+                    .handle_rpc_proposal_command(
+                        request_id,
+                        response_tx,
+                        invocation_id.partition_key(),
+                        Command::TerminateInvocation(InvocationTermination {
+                            invocation_id,
+                            flavor: TerminationFlavor::Kill,
+                            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                IngressInvocationResponseSink { request_id },
+                            )),
+                        }),
+                    )
+                    .await
+            }
+            PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id } => {
+                self.leadership_state
+                    .handle_rpc_proposal_command(
+                        request_id,
+                        response_tx,
+                        invocation_id.partition_key(),
+                        Command::PurgeInvocation(PurgeInvocationRequest {
+                            invocation_id,
+                            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                IngressInvocationResponseSink { request_id },
+                            )),
+                        }),
+                    )
+                    .await
+            }
+            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
+                self.leadership_state
+                    .handle_rpc_proposal_command(
+                        request_id,
+                        response_tx,
+                        invocation_id.partition_key(),
+                        Command::PurgeJournal(PurgeInvocationRequest {
+                            invocation_id,
+                            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                                IngressInvocationResponseSink { request_id },
+                            )),
+                        }),
+                    )
+                    .await
             }
         };
     }

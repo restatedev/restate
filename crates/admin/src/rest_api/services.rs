@@ -37,8 +37,8 @@ use tracing::{debug, warn};
     operation_id = "list_services",
     tags = "service"
 )]
-pub async fn list_services<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn list_services<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Extension(version): Extension<AdminApiVersion>,
 ) -> Result<Json<ListServicesResponse>, MetaApiError> {
     let services = state.schema_registry.list_services();
@@ -64,8 +64,8 @@ pub async fn list_services<V>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn get_service<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Extension(version): Extension<AdminApiVersion>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ServiceMetadata>, MetaApiError> {
@@ -98,8 +98,8 @@ pub async fn get_service<V>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn get_service_openapi<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn get_service_openapi<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<serde_json::Value>, MetaApiError> {
     // TODO return correct vnd type
@@ -123,8 +123,8 @@ pub async fn get_service_openapi<V>(
         schema = "std::string::String"
     ))
 )]
-pub async fn modify_service<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn modify_service<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Extension(version): Extension<AdminApiVersion>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceRequest {
@@ -191,8 +191,8 @@ pub async fn modify_service<V>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn modify_service_state<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn modify_service_state<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceStateRequest {
         version,

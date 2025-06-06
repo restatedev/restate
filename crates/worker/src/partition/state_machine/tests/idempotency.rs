@@ -769,6 +769,7 @@ async fn purge_completed_idempotent_invocation() {
     let _ = test_env
         .apply(Command::PurgeInvocation(PurgeInvocationRequest {
             invocation_id,
+            response_sink: None,
         }))
         .await;
     assert_that!(

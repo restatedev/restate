@@ -175,7 +175,10 @@ pub mod v1 {
         use restate_types::identifiers::{
             PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
         };
-        use restate_types::invocation::{InvocationTermination, TerminationFlavor};
+        use restate_types::invocation::{
+            IngressInvocationResponseSink, InvocationMutationResponseSink, InvocationTermination,
+            TerminationFlavor,
+        };
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::journal::raw::RawEntry;
         use restate_types::journal_v2::{EntryMetadata, NotificationId, NotificationType};
@@ -3536,24 +3539,28 @@ pub mod v1 {
                     ),
                     outbox_message::OutboxMessage::Kill(outbox_kill) => {
                         restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
-                            InvocationTermination::kill(
-                                restate_types::identifiers::InvocationId::try_from(
+                            InvocationTermination {
+                                invocation_id: restate_types::identifiers::InvocationId::try_from(
                                     outbox_kill
                                         .invocation_id
                                         .ok_or(ConversionError::missing_field("invocation_id"))?,
                                 )?,
-                            ),
+                                flavor: TerminationFlavor::Kill,
+                                response_sink: None,
+                            },
                         )
                     }
                     outbox_message::OutboxMessage::Cancel(outbox_cancel) => {
                         restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
-                            InvocationTermination::cancel(
-                                restate_types::identifiers::InvocationId::try_from(
+                            InvocationTermination {
+                                invocation_id: restate_types::identifiers::InvocationId::try_from(
                                     outbox_cancel
                                         .invocation_id
                                         .ok_or(ConversionError::missing_field("invocation_id"))?,
                                 )?,
-                            ),
+                                flavor: TerminationFlavor::Cancel,
+                                response_sink: None,
+                            },
                         )
                     }
                     outbox_message::OutboxMessage::AttachInvocationRequest(
@@ -3598,22 +3605,28 @@ pub mod v1 {
                     ),
                     restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
                         invocation_termination,
-                    ) => match invocation_termination.flavor {
-                        TerminationFlavor::Kill => {
-                            outbox_message::OutboxMessage::Kill(OutboxKill {
-                                invocation_id: Some(InvocationId::from(
-                                    invocation_termination.invocation_id,
-                                )),
-                            })
+                    ) => {
+                        debug_assert!(
+                            invocation_termination.response_sink.is_none(),
+                            "Response sink is unsupported for outbox messages"
+                        );
+                        match invocation_termination.flavor {
+                            TerminationFlavor::Kill => {
+                                outbox_message::OutboxMessage::Kill(OutboxKill {
+                                    invocation_id: Some(InvocationId::from(
+                                        invocation_termination.invocation_id,
+                                    )),
+                                })
+                            }
+                            TerminationFlavor::Cancel => {
+                                outbox_message::OutboxMessage::Cancel(OutboxCancel {
+                                    invocation_id: Some(InvocationId::from(
+                                        invocation_termination.invocation_id,
+                                    )),
+                                })
+                            }
                         }
-                        TerminationFlavor::Cancel => {
-                            outbox_message::OutboxMessage::Cancel(OutboxCancel {
-                                invocation_id: Some(InvocationId::from(
-                                    invocation_termination.invocation_id,
-                                )),
-                            })
-                        }
-                    },
+                    }
                     restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(
                         attach_invocation_request,
                     ) => outbox_message::OutboxMessage::AttachInvocationRequest(

@@ -11,13 +11,17 @@
 use super::error::*;
 use std::sync::Arc;
 
+use crate::generate_meta_api_error;
 use crate::rest_api::create_envelope_header;
 use crate::state::AdminServiceState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest};
+use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
+use restate_types::invocation::client::{
+    CancelInvocationResponse, InvocationClient, KillInvocationResponse, PurgeInvocationResponse,
+};
+use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
 use restate_wal_protocol::{Command, Envelope};
 use serde::Deserialize;
 use tracing::warn;
@@ -40,10 +44,8 @@ pub struct DeleteInvocationParams {
 /// Terminate an invocation
 #[openapi(
     summary = "Delete an invocation",
-    description = "Delete the given invocation. By default, an invocation is terminated by gracefully \
-    cancelling it. This ensures virtual object state consistency. Alternatively, an invocation can be killed which \
-    does not guarantee consistency for virtual object instance state, in-flight invocations to other services, etc. \
-    A stored completed invocation can also be purged",
+    deprecated = true,
+    description = "Use kill_invocation/cancel_invocation/purge_invocation instead.",
     operation_id = "delete_invocation",
     tags = "invocation",
     parameters(
@@ -73,8 +75,8 @@ pub struct DeleteInvocationParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_invocation<V>(
-    State(state): State<AdminServiceState<V>>,
+pub async fn delete_invocation<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
     Path(invocation_id): Path<String>,
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
 ) -> Result<StatusCode, MetaApiError> {
@@ -83,13 +85,20 @@ pub async fn delete_invocation<V>(
         .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
 
     let cmd = match mode.unwrap_or_default() {
-        DeletionMode::Cancel => {
-            Command::TerminateInvocation(InvocationTermination::cancel(invocation_id))
-        }
-        DeletionMode::Kill => {
-            Command::TerminateInvocation(InvocationTermination::kill(invocation_id))
-        }
-        DeletionMode::Purge => Command::PurgeInvocation(PurgeInvocationRequest { invocation_id }),
+        DeletionMode::Cancel => Command::TerminateInvocation(InvocationTermination {
+            invocation_id,
+            flavor: TerminationFlavor::Cancel,
+            response_sink: None,
+        }),
+        DeletionMode::Kill => Command::TerminateInvocation(InvocationTermination {
+            invocation_id,
+            flavor: TerminationFlavor::Kill,
+            response_sink: None,
+        }),
+        DeletionMode::Purge => Command::PurgeInvocation(PurgeInvocationRequest {
+            invocation_id,
+            response_sink: None,
+        }),
     };
 
     let partition_key = invocation_id.partition_key();
@@ -108,4 +117,193 @@ pub async fn delete_invocation<V>(
     } else {
         Ok(StatusCode::ACCEPTED)
     }
+}
+
+generate_meta_api_error!(KillInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, InvocationWasAlreadyCompletedError]);
+
+/// Kill an invocation
+#[openapi(
+    summary = "Kill an invocation",
+    description = "Kill the given invocation. \
+    This does not guarantee consistency for virtual object instance state, in-flight invocations to other services, etc.",
+    operation_id = "kill_invocation",
+    tags = "invocation",
+    parameters(path(
+        name = "invocation_id",
+        description = "Invocation identifier.",
+        schema = "std::string::String"
+    ))
+)]
+pub async fn kill_invocation<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
+    Path(invocation_id): Path<String>,
+) -> Result<(), KillInvocationError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .kill_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .await
+        .map_err(InvocationClientError)?
+    {
+        KillInvocationResponse::Ok => {}
+        KillInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        KillInvocationResponse::AlreadyCompleted => Err(InvocationWasAlreadyCompletedError(
+            invocation_id.to_string(),
+        ))?,
+    };
+
+    Ok(())
+}
+
+generate_meta_api_error!(CancelInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, InvocationWasAlreadyCompletedError]);
+
+/// Cancel an invocation
+#[openapi(
+    summary = "Cancel an invocation",
+    description = "Cancel the given invocation. \
+    Canceling an invocation allows it to free any resources it is holding and roll back any changes it has made so far, running compensation code. \
+    For more details, checkout https://docs.restate.dev/guides/sagas",
+    operation_id = "cancel_invocation",
+    tags = "invocation",
+    external_docs(url = "https://docs.restate.dev/guides/sagas"),
+    parameters(path(
+        name = "invocation_id",
+        description = "Invocation identifier.",
+        schema = "std::string::String"
+    )),
+    responses(
+        ignore_return_type = true,
+        response(
+            status = "200",
+            description = "The invocation has been cancelled.",
+            content = "okapi_operation::Empty",
+        ),
+        response(
+            status = "202",
+            description = "The cancellation signal was appended to the journal and will be processed by the SDK.",
+            content = "okapi_operation::Empty",
+        ),
+        from_type = "CancelInvocationError",
+    )
+)]
+pub async fn cancel_invocation<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
+    Path(invocation_id): Path<String>,
+) -> Result<StatusCode, CancelInvocationError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .cancel_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .await
+        .map_err(InvocationClientError)?
+    {
+        CancelInvocationResponse::Done => Ok(StatusCode::OK),
+        CancelInvocationResponse::Appended => Ok(StatusCode::ACCEPTED),
+        CancelInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        CancelInvocationResponse::AlreadyCompleted => Err(InvocationWasAlreadyCompletedError(
+            invocation_id.to_string(),
+        ))?,
+    }
+}
+
+generate_meta_api_error!(PurgeInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, PurgeInvocationNotCompletedError]);
+
+/// Purge an invocation
+#[openapi(
+    summary = "Purge an invocation",
+    description = "Purge the given invocation. This cleanups all the state for the given invocation. This command applies only to completed invocations.",
+    operation_id = "purge_invocation",
+    tags = "invocation",
+    parameters(path(
+        name = "invocation_id",
+        description = "Invocation identifier.",
+        schema = "std::string::String"
+    ))
+)]
+pub async fn purge_invocation<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
+    Path(invocation_id): Path<String>,
+) -> Result<(), PurgeInvocationError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .purge_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .await
+        .map_err(InvocationClientError)?
+    {
+        PurgeInvocationResponse::Ok => {}
+        PurgeInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        PurgeInvocationResponse::NotCompleted => {
+            Err(PurgeInvocationNotCompletedError(invocation_id.to_string()))?
+        }
+    };
+
+    Ok(())
+}
+
+generate_meta_api_error!(PurgeJournalError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, PurgeInvocationNotCompletedError]);
+
+/// Purge an invocation
+#[openapi(
+    summary = "Purge an invocation journal",
+    description = "Purge the given invocation journal. This cleanups only the journal for the given invocation, retaining the metadata. This command applies only to completed invocations.",
+    operation_id = "purge_journal",
+    tags = "invocation",
+    parameters(path(
+        name = "invocation_id",
+        description = "Invocation identifier.",
+        schema = "std::string::String"
+    ))
+)]
+pub async fn purge_journal<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
+    Path(invocation_id): Path<String>,
+) -> Result<(), PurgeJournalError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .purge_journal(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .await
+        .map_err(InvocationClientError)?
+    {
+        PurgeInvocationResponse::Ok => {}
+        PurgeInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        PurgeInvocationResponse::NotCompleted => {
+            Err(PurgeInvocationNotCompletedError(invocation_id.to_string()))?
+        }
+    };
+
+    Ok(())
 }

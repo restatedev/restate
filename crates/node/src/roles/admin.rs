@@ -18,6 +18,7 @@ use restate_core::network::NetworkServerBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
+use restate_core::worker_api::PartitionProcessorInvocationClient;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
@@ -32,6 +33,7 @@ use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
+use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::retries::RetryPolicy;
@@ -55,7 +57,7 @@ pub enum AdminRoleBuildError {
 pub struct AdminRole<T> {
     updateable_config: Live<Configuration>,
     controller: Option<cluster_controller::Service<T>>,
-    admin: AdminService<IngressOptions>,
+    admin: AdminService<IngressOptions, PartitionProcessorInvocationClient<T>>,
 }
 
 impl<T: TransportConnect> AdminRole<T> {
@@ -65,6 +67,7 @@ impl<T: TransportConnect> AdminRole<T> {
         bifrost: Bifrost,
         updateable_config: Live<Configuration>,
         partition_routing: PartitionRouting,
+        partition_table: Live<PartitionTable>,
         replica_set_states: PartitionReplicaSetStates,
         networking: Networking<T>,
         metadata: Metadata,
@@ -86,7 +89,7 @@ impl<T: TransportConnect> AdminRole<T> {
         } else {
             let remote_scanner_manager = RemoteScannerManager::new(
                 create_remote_scanner_service(networking.clone()),
-                create_partition_locator(partition_routing, metadata.clone()),
+                create_partition_locator(partition_routing.clone(), metadata.clone()),
             );
 
             // need to create a remote query context since we are not co-located with a worker role
@@ -104,6 +107,11 @@ impl<T: TransportConnect> AdminRole<T> {
         let admin = AdminService::new(
             metadata_writer.clone(),
             bifrost.clone(),
+            PartitionProcessorInvocationClient::new(
+                networking.clone(),
+                partition_table,
+                partition_routing,
+            ),
             config.ingress.clone(),
             service_discovery,
         )

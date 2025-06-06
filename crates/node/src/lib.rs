@@ -308,6 +308,7 @@ impl Node {
                     bifrost.clone(),
                     updateable_config.clone(),
                     PartitionRouting::new(replica_set_states.clone()),
+                    metadata.updateable_partition_table(),
                     replica_set_states.clone(),
                     networking.clone(),
                     metadata,

@@ -89,7 +89,10 @@ pub mod actions {
 
     use crate::partition::state_machine::Action;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-    use restate_types::identifiers::InvocationId;
+    use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+    use restate_types::invocation::client::{
+        CancelInvocationResponse, KillInvocationResponse, PurgeInvocationResponse,
+    };
     use restate_types::invocation::{InvocationTarget, ResponseResult};
     use restate_types::journal_v2::{Notification, Signal};
 
@@ -139,6 +142,36 @@ pub mod actions {
     pub fn forward_canceled_completion(entry_index: EntryIndex) -> impl Matcher<ActualT = Action> {
         pat!(Action::ForwardCompletion {
             completion: canceled_completion(entry_index),
+        })
+    }
+
+    pub fn forward_cancel_invocation_response(
+        request_id: PartitionProcessorRpcRequestId,
+        cancel_invocation_response: CancelInvocationResponse,
+    ) -> impl Matcher<ActualT = Action> {
+        pat!(Action::ForwardCancelResponse {
+            request_id: eq(request_id),
+            response: eq(cancel_invocation_response)
+        })
+    }
+
+    pub fn forward_kill_invocation_response(
+        request_id: PartitionProcessorRpcRequestId,
+        kill_invocation_response: KillInvocationResponse,
+    ) -> impl Matcher<ActualT = Action> {
+        pat!(Action::ForwardKillResponse {
+            request_id: eq(request_id),
+            response: eq(kill_invocation_response)
+        })
+    }
+
+    pub fn forward_purge_invocation_response(
+        request_id: PartitionProcessorRpcRequestId,
+        purge_invocation_response: PurgeInvocationResponse,
+    ) -> impl Matcher<ActualT = Action> {
+        pat!(Action::ForwardPurgeInvocationResponse {
+            request_id: eq(request_id),
+            response: eq(purge_invocation_response)
         })
     }
 

@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::io::Write;
-use std::time::Duration;
-use std::{env, io};
-
 use anyhow::bail;
 use reqwest::header::ACCEPT;
 use schemars::r#gen::SchemaSettings;
+use std::future::pending;
+use std::io::Write;
+use std::time::Duration;
+use std::{env, io};
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
@@ -24,8 +24,16 @@ use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::table_docs;
 use restate_types::config::Configuration;
-use restate_types::identifiers::SubscriptionId;
-use restate_types::invocation::InvocationTermination;
+use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, SubscriptionId};
+use restate_types::invocation::client::{
+    AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
+    InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
+    PurgeInvocationResponse, SubmittedInvocationNotification,
+};
+use restate_types::invocation::{
+    InvocationQuery, InvocationRequest, InvocationResponse, InvocationTermination,
+};
+use restate_types::journal_v2::Signal;
 use restate_types::live::Constant;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::subscriptions::Subscription;
@@ -94,6 +102,91 @@ impl SubscriptionValidator for Mock {
     }
 }
 
+impl InvocationClient for Mock {
+    fn append_invocation_and_wait_submit_notification(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationRequest,
+    ) -> impl Future<Output = Result<SubmittedInvocationNotification, InvocationClientError>> + Send
+    {
+        pending()
+    }
+
+    fn append_invocation_and_wait_output(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationRequest,
+    ) -> impl Future<Output = Result<InvocationOutput, InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn attach_invocation(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationQuery,
+    ) -> impl Future<Output = Result<AttachInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn get_invocation_output(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationQuery,
+    ) -> impl Future<Output = Result<GetInvocationOutputResponse, InvocationClientError>> + Send
+    {
+        pending()
+    }
+
+    fn append_invocation_response(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationResponse,
+    ) -> impl Future<Output = Result<(), InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn append_signal(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+        _: Signal,
+    ) -> impl Future<Output = Result<(), InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn cancel_invocation(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+    ) -> impl Future<Output = Result<CancelInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn kill_invocation(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+    ) -> impl Future<Output = Result<KillInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn purge_invocation(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+    ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn purge_journal(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+    ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
+}
+
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let config = Configuration::default();
     let openapi_address = format!(
@@ -108,6 +201,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let admin_service = AdminService::new(
         node_env.metadata_writer.clone(),
         bifrost,
+        Mock,
         Mock,
         ServiceDiscovery::new(
             RetryPolicy::default(),

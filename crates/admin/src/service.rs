@@ -16,36 +16,39 @@ use restate_types::config::AdminOptions;
 use restate_types::live::LiveLoad;
 use tower::ServiceBuilder;
 
+use crate::schema_registry::SchemaRegistry;
+use crate::{rest_api, state};
 use restate_core::MetadataWriter;
 use restate_core::network::net_util;
 use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_types::invocation::client::InvocationClient;
 use restate_types::net::BindAddress;
 use restate_types::schema::subscriptions::SubscriptionValidator;
 use tracing::info;
-
-use crate::schema_registry::SchemaRegistry;
-use crate::{rest_api, state};
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not create the service client: {0}")]
 pub struct BuildError(#[from] restate_service_client::BuildError);
 
-pub struct AdminService<V> {
+pub struct AdminService<V, IC> {
     bifrost: Bifrost,
     schema_registry: SchemaRegistry<V>,
+    invocation_client: IC,
     #[cfg(feature = "storage-query")]
     query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
     #[cfg(feature = "metadata-api")]
     metadata_writer: MetadataWriter,
 }
 
-impl<V> AdminService<V>
+impl<V, IC> AdminService<V, IC>
 where
     V: SubscriptionValidator + Send + Sync + Clone + 'static,
+    IC: InvocationClient + Send + Sync + Clone + 'static,
 {
     pub fn new(
         metadata_writer: MetadataWriter,
         bifrost: Bifrost,
+        invocation_client: IC,
         subscription_validator: V,
         service_discovery: ServiceDiscovery,
     ) -> Self {
@@ -58,6 +61,7 @@ where
                 service_discovery,
                 subscription_validator,
             ),
+            invocation_client,
             #[cfg(feature = "storage-query")]
             query_context: None,
         }
@@ -80,7 +84,11 @@ where
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
 
-        let rest_state = state::AdminServiceState::new(self.schema_registry, self.bifrost);
+        let rest_state = state::AdminServiceState::new(
+            self.schema_registry,
+            self.invocation_client,
+            self.bifrost,
+        );
 
         let router = axum::Router::new();
 

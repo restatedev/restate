@@ -11,7 +11,10 @@
 use crate::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
-use crate::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
+use crate::invocation::client::{
+    CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PurgeInvocationResponse,
+    SubmittedInvocationNotification,
+};
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
 use crate::net::ServiceTag;
@@ -65,6 +68,10 @@ pub enum PartitionProcessorRpcRequestInner {
     GetInvocationOutput(InvocationQuery, GetInvocationOutputResponseMode),
     AppendInvocationResponse(InvocationResponse),
     AppendSignal(InvocationId, Signal),
+    CancelInvocation { invocation_id: InvocationId },
+    KillInvocation { invocation_id: InvocationId },
+    PurgeInvocation { invocation_id: InvocationId },
+    PurgeJournal { invocation_id: InvocationId },
 }
 
 impl WithPartitionKey for PartitionProcessorRpcRequestInner {
@@ -74,6 +81,18 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
             PartitionProcessorRpcRequestInner::GetInvocationOutput(iq, _) => iq.partition_key(),
             PartitionProcessorRpcRequestInner::AppendInvocationResponse(ir) => ir.partition_key(),
             PartitionProcessorRpcRequestInner::AppendSignal(si, _) => si.partition_key(),
+            PartitionProcessorRpcRequestInner::CancelInvocation { invocation_id } => {
+                invocation_id.partition_key()
+            }
+            PartitionProcessorRpcRequestInner::KillInvocation { invocation_id } => {
+                invocation_id.partition_key()
+            }
+            PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id } => {
+                invocation_id.partition_key()
+            }
+            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
+                invocation_id.partition_key()
+            }
         }
     }
 }
@@ -104,7 +123,91 @@ impl PartitionProcessorRpcError {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CancelInvocationRpcResponse {
+    Done,
+    Appended,
+    NotFound,
+    AlreadyCompleted,
+}
+
+impl From<CancelInvocationRpcResponse> for CancelInvocationResponse {
+    fn from(value: CancelInvocationRpcResponse) -> Self {
+        match value {
+            CancelInvocationRpcResponse::Done => Self::Done,
+            CancelInvocationRpcResponse::Appended => Self::Appended,
+            CancelInvocationRpcResponse::NotFound => Self::NotFound,
+            CancelInvocationRpcResponse::AlreadyCompleted => Self::AlreadyCompleted,
+        }
+    }
+}
+
+impl From<CancelInvocationResponse> for CancelInvocationRpcResponse {
+    fn from(value: CancelInvocationResponse) -> Self {
+        match value {
+            CancelInvocationResponse::Done => Self::Done,
+            CancelInvocationResponse::Appended => Self::Appended,
+            CancelInvocationResponse::NotFound => Self::NotFound,
+            CancelInvocationResponse::AlreadyCompleted => Self::AlreadyCompleted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KillInvocationRpcResponse {
+    Ok,
+    NotFound,
+    AlreadyCompleted,
+}
+
+impl From<KillInvocationRpcResponse> for KillInvocationResponse {
+    fn from(value: KillInvocationRpcResponse) -> Self {
+        match value {
+            KillInvocationRpcResponse::Ok => Self::Ok,
+            KillInvocationRpcResponse::NotFound => Self::NotFound,
+            KillInvocationRpcResponse::AlreadyCompleted => Self::AlreadyCompleted,
+        }
+    }
+}
+
+impl From<KillInvocationResponse> for KillInvocationRpcResponse {
+    fn from(value: KillInvocationResponse) -> Self {
+        match value {
+            KillInvocationResponse::Ok => Self::Ok,
+            KillInvocationResponse::NotFound => Self::NotFound,
+            KillInvocationResponse::AlreadyCompleted => Self::AlreadyCompleted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PurgeInvocationRpcResponse {
+    Ok,
+    NotFound,
+    NotCompleted,
+}
+
+impl From<PurgeInvocationRpcResponse> for PurgeInvocationResponse {
+    fn from(value: PurgeInvocationRpcResponse) -> Self {
+        match value {
+            PurgeInvocationRpcResponse::Ok => Self::Ok,
+            PurgeInvocationRpcResponse::NotFound => Self::NotFound,
+            PurgeInvocationRpcResponse::NotCompleted => Self::NotCompleted,
+        }
+    }
+}
+
+impl From<PurgeInvocationResponse> for PurgeInvocationRpcResponse {
+    fn from(value: PurgeInvocationResponse) -> Self {
+        match value {
+            PurgeInvocationResponse::Ok => Self::Ok,
+            PurgeInvocationResponse::NotFound => Self::NotFound,
+            PurgeInvocationResponse::NotCompleted => Self::NotCompleted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
     Appended,
     NotFound,
@@ -112,4 +215,8 @@ pub enum PartitionProcessorRpcResponse {
     NotSupported,
     Submitted(SubmittedInvocationNotification),
     Output(InvocationOutput),
+    CancelInvocation(CancelInvocationRpcResponse),
+    KillInvocation(KillInvocationRpcResponse),
+    PurgeInvocation(PurgeInvocationRpcResponse),
+    PurgeJournal(PurgeInvocationRpcResponse),
 }

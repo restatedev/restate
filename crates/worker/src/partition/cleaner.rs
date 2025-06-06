@@ -149,7 +149,10 @@ where
                                 dedup: None,
                             },
                         },
-                        command: Command::PurgeInvocation(PurgeInvocationRequest { invocation_id }),
+                        command: Command::PurgeInvocation(PurgeInvocationRequest {
+                            invocation_id,
+                            response_sink: None,
+                        }),
                     }),
                 )
                 .await
@@ -181,6 +184,7 @@ where
                             },
                             command: Command::PurgeJournal(PurgeInvocationRequest {
                                 invocation_id,
+                                response_sink: None,
                             }),
                         }),
                     )

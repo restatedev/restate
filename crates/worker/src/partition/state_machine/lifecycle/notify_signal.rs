@@ -58,7 +58,7 @@ where
             //     invocation_id,
             //     invocation_status,
             // }.apply(ctx).await
-            ctx.on_cancel_invocation(invocation_id).await
+            ctx.on_cancel_invocation(invocation_id, None).await
         } else {
             // Normal handling, append to the journal.
             OnJournalEntryCommand::from_entry(invocation_id, invocation_status, signal.into())

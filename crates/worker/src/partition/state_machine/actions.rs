@@ -12,7 +12,10 @@ use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
-use restate_types::invocation::client::InvocationOutputResponse;
+use restate_types::invocation::client::{
+    CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
+    PurgeInvocationResponse,
+};
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal::Completion;
 use restate_types::journal_v2::CommandIndex;
@@ -76,6 +79,22 @@ pub enum Action {
     ScheduleInvocationStatusCleanup {
         invocation_id: InvocationId,
         retention: Duration,
+    },
+    ForwardKillResponse {
+        request_id: PartitionProcessorRpcRequestId,
+        response: KillInvocationResponse,
+    },
+    ForwardCancelResponse {
+        request_id: PartitionProcessorRpcRequestId,
+        response: CancelInvocationResponse,
+    },
+    ForwardPurgeInvocationResponse {
+        request_id: PartitionProcessorRpcRequestId,
+        response: PurgeInvocationResponse,
+    },
+    ForwardPurgeJournalResponse {
+        request_id: PartitionProcessorRpcRequestId,
+        response: PurgeInvocationResponse,
     },
 }
 

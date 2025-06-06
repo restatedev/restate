@@ -303,8 +303,8 @@ mod envelope {
         Unknown = 0,
         AnnounceLeader = 1,                     // flexbuffers
         PatchState = 2,                         // protobuf
-        TerminateInvocation = 3,                // bilrost
-        PurgeInvocation = 4,                    // bilrost
+        TerminateInvocation = 3,                // flexbuffers
+        PurgeInvocation = 4,                    // flexbuffers
         Invoke = 5,                             // protobuf
         TruncateOutbox = 6,                     // flexbuffers
         ProxyThrough = 7,                       // protobuf
@@ -315,7 +315,7 @@ mod envelope {
         InvocationResponse = 12,                // protobuf
         NotifyGetInvocationOutputResponse = 13, // bilrost
         NotifySignal = 14,                      // protobuf
-        PurgeJournal = 15,                      // bilrost
+        PurgeJournal = 15,                      // flexbuffers
     }
 
     #[derive(bilrost::Message)]
@@ -431,14 +431,16 @@ mod envelope {
             }
             Command::TerminateInvocation(value) => (
                 CommandKind::TerminateInvocation,
-                Field::encode_bilrost(value),
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
             ),
-            Command::PurgeInvocation(value) => {
-                (CommandKind::PurgeInvocation, Field::encode_bilrost(value))
-            }
-            Command::PurgeJournal(value) => {
-                (CommandKind::PurgeJournal, Field::encode_bilrost(value))
-            }
+            Command::PurgeInvocation(value) => (
+                CommandKind::PurgeInvocation,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
+            Command::PurgeJournal(value) => (
+                CommandKind::PurgeJournal,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
             Command::Invoke(value) => {
                 let value = protobuf::ServiceInvocation::from(value.clone());
                 (CommandKind::Invoke, Field::encode_protobuf(&value))
@@ -517,16 +519,16 @@ mod envelope {
                 Command::PatchState(value.try_into()?)
             }
             CommandKind::TerminateInvocation => {
-                codec_or_error!(envelope.command, StorageCodecKind::Bilrost);
-                Command::TerminateInvocation(envelope.command.decode_bilrost()?)
+                codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
+                Command::TerminateInvocation(envelope.command.decode_serde()?)
             }
             CommandKind::PurgeInvocation => {
-                codec_or_error!(envelope.command, StorageCodecKind::Bilrost);
-                Command::PurgeInvocation(envelope.command.decode_bilrost()?)
+                codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
+                Command::PurgeInvocation(envelope.command.decode_serde()?)
             }
             CommandKind::PurgeJournal => {
-                codec_or_error!(envelope.command, StorageCodecKind::Bilrost);
-                Command::PurgeJournal(envelope.command.decode_bilrost()?)
+                codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
+                Command::PurgeJournal(envelope.command.decode_serde()?)
             }
             CommandKind::Invoke => {
                 codec_or_error!(envelope.command, StorageCodecKind::Protobuf);
