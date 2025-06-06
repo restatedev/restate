@@ -44,6 +44,7 @@ use crate::{analyzer, physical_optimizer};
 
 const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.id,
+            ss.epoch,
             ss.target,
             ss.target_service_name,
             ss.target_service_key,

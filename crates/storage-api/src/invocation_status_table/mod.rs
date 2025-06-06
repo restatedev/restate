@@ -197,6 +197,18 @@ pub enum InvocationStatus {
 
 impl InvocationStatus {
     #[inline]
+    pub fn discriminant(&self) -> Option<InvocationStatusDiscriminants> {
+        match self {
+            InvocationStatus::Scheduled(_) => Some(InvocationStatusDiscriminants::Scheduled),
+            InvocationStatus::Inboxed(_) => Some(InvocationStatusDiscriminants::Inboxed),
+            InvocationStatus::Invoked(_) => Some(InvocationStatusDiscriminants::Invoked),
+            InvocationStatus::Suspended { .. } => Some(InvocationStatusDiscriminants::Suspended),
+            InvocationStatus::Completed(_) => Some(InvocationStatusDiscriminants::Completed),
+            InvocationStatus::Free => None,
+        }
+    }
+
+    #[inline]
     pub fn invocation_target(&self) -> Option<&InvocationTarget> {
         match self {
             InvocationStatus::Scheduled(metadata) => Some(&metadata.metadata.invocation_target),
@@ -365,6 +377,31 @@ impl InvocationStatus {
     }
 
     #[inline]
+    pub fn get_epoch(&self) -> InvocationEpoch {
+        match self {
+            InvocationStatus::Scheduled(_) | InvocationStatus::Inboxed(_) => 0,
+            InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. } => {
+                metadata.current_invocation_epoch
+            }
+            InvocationStatus::Completed(completed) => completed.invocation_epoch,
+            InvocationStatus::Free => 0,
+        }
+    }
+
+    #[inline]
+    pub fn get_pinned_deployment(&self) -> Option<&PinnedDeployment> {
+        match self {
+            InvocationStatus::Scheduled(_)
+            | InvocationStatus::Inboxed(_)
+            | InvocationStatus::Free => None,
+            InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. } => {
+                metadata.pinned_deployment.as_ref()
+            }
+            InvocationStatus::Completed(completed) => completed.pinned_deployment.as_ref(),
+        }
+    }
+
+    #[inline]
     pub fn get_timestamps_mut(&mut self) -> Option<&mut StatusTimestamps> {
         match self {
             InvocationStatus::Scheduled(metadata) => Some(&mut metadata.metadata.timestamps),
@@ -373,18 +410,6 @@ impl InvocationStatus {
             InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.timestamps),
             InvocationStatus::Completed(completed) => Some(&mut completed.timestamps),
             _ => None,
-        }
-    }
-
-    #[inline]
-    pub fn discriminant(&self) -> Option<InvocationStatusDiscriminants> {
-        match self {
-            InvocationStatus::Scheduled(_) => Some(InvocationStatusDiscriminants::Scheduled),
-            InvocationStatus::Inboxed(_) => Some(InvocationStatusDiscriminants::Inboxed),
-            InvocationStatus::Invoked(_) => Some(InvocationStatusDiscriminants::Invoked),
-            InvocationStatus::Suspended { .. } => Some(InvocationStatusDiscriminants::Suspended),
-            InvocationStatus::Completed(_) => Some(InvocationStatusDiscriminants::Completed),
-            InvocationStatus::Free => None,
         }
     }
 }
@@ -526,7 +551,7 @@ impl InboxedInvocation {
     }
 }
 
-/// This map is used to record trim points and determine whether a completion from an old epoch should be accepted or rejected.
+/// This map is used to record truncation points and determine whether a completion from an old epoch should be accepted or rejected.
 ///
 /// For more details, see the unit tests below and InvocationStatusExt in the restate-worker module.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -542,8 +567,8 @@ impl Default for CompletionRangeEpochMap {
 }
 
 impl CompletionRangeEpochMap {
-    /// This must use the vec returned by [Self::into_trim_points_iter].
-    pub fn from_trim_points(
+    /// This must use the vec returned by [Self::into_truncation_points_iter].
+    pub fn from_truncation_points(
         serialized_completion_range_epoch_map: impl IntoIterator<Item = (CompletionId, InvocationEpoch)>,
     ) -> Self {
         let mut this = Self::default();
@@ -551,14 +576,16 @@ impl CompletionRangeEpochMap {
         for (first_inclusive_completion_id_of_new_epoch, new_epoch) in
             serialized_completion_range_epoch_map
         {
-            this.add_trim_point(first_inclusive_completion_id_of_new_epoch, new_epoch);
+            this.add_truncation_point(first_inclusive_completion_id_of_new_epoch, new_epoch);
         }
 
         this
     }
 
     /// Returns a serializable representation of the map
-    pub fn into_trim_points_iter(self) -> impl Iterator<Item = (CompletionId, InvocationEpoch)> {
+    pub fn into_truncation_points_iter(
+        self,
+    ) -> impl Iterator<Item = (CompletionId, InvocationEpoch)> {
         debug_assert!(
             !self.0.is_empty(),
             "CompletionRangeEpochMap constraint not respected, it must contain at least one range 0..=MAX"
@@ -572,11 +599,15 @@ impl CompletionRangeEpochMap {
             .map(|(range, epoch)| (*range.start(), epoch))
     }
 
-    pub fn add_trim_point(
+    pub fn add_truncation_point(
         &mut self,
         first_inclusive_completion_id_of_new_epoch: CompletionId,
         new_epoch: InvocationEpoch,
     ) {
+        if first_inclusive_completion_id_of_new_epoch == CompletionId::MAX {
+            // Nothing to do here
+            return;
+        }
         self.0.insert(
             first_inclusive_completion_id_of_new_epoch..=CompletionId::MAX,
             new_epoch,
@@ -693,20 +724,16 @@ pub struct CompletedInvocation {
     pub completion_retention_duration: Duration,
     pub journal_retention_duration: Duration,
 
+    pub invocation_epoch: InvocationEpoch,
+
     pub journal_metadata: JournalMetadata,
     pub pinned_deployment: Option<PinnedDeployment>,
-}
-
-#[derive(PartialEq, Eq)]
-pub enum JournalRetentionPolicy {
-    Retain,
-    Drop,
+    pub completion_range_epoch_map: CompletionRangeEpochMap,
 }
 
 impl CompletedInvocation {
     pub fn from_in_flight_invocation_metadata(
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
-        journal_retention_policy: JournalRetentionPolicy,
         response_result: ResponseResult,
     ) -> Self {
         in_flight_invocation_metadata
@@ -725,12 +752,17 @@ impl CompletedInvocation {
             completion_retention_duration: in_flight_invocation_metadata
                 .completion_retention_duration,
             journal_retention_duration: in_flight_invocation_metadata.journal_retention_duration,
-            journal_metadata: if journal_retention_policy == JournalRetentionPolicy::Retain {
-                in_flight_invocation_metadata.journal_metadata
-            } else {
+            invocation_epoch: in_flight_invocation_metadata.current_invocation_epoch,
+            journal_metadata: if in_flight_invocation_metadata
+                .journal_retention_duration
+                .is_zero()
+            {
                 JournalMetadata::empty()
+            } else {
+                in_flight_invocation_metadata.journal_metadata
             },
             pinned_deployment: in_flight_invocation_metadata.pinned_deployment,
+            completion_range_epoch_map: in_flight_invocation_metadata.completion_range_epoch_map,
         }
     }
 
@@ -753,21 +785,40 @@ pub struct InvokedInvocationStatusLite {
 }
 
 pub trait ReadOnlyInvocationStatusTable {
+    /// Gets the latest invocation status
     fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
+    ) -> impl Future<Output = Result<InvocationStatus>> + Send;
+
+    /// Gets the latest epoch for the given invocation id
+    fn get_latest_epoch_for_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> impl Future<Output = Result<Option<InvocationEpoch>>> + Send;
+
+    /// Epoch can be the latest as well.
+    fn get_invocation_status_for_epoch(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
     ) -> impl Future<Output = Result<InvocationStatus>> + Send;
 
     fn all_invoked_invocations(
         &mut self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
 
+    /// Returns all the invocation statuses, including the archived ones.
     fn all_invocation_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
 }
 
+/// ## Latest and archived invocations
+///
+/// Current invocations and archived invocations are stored in separate key ranges.
+/// Archived invocations are immutable and cannot outlive the "latest" invocation.
 pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
     fn put_invocation_status(
         &mut self,
@@ -775,9 +826,21 @@ pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
         status: &InvocationStatus,
     ) -> impl Future<Output = Result<()>> + Send;
 
+    /// Archive the invocation status for the given invocation epoch.
+    ///
+    /// This won't affect the latest/current status.
+    fn archive_invocation_status_to_epoch(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+        status: &InvocationStatus,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Delete the invocation status. If no epoch is provided, remove the latest/current.
     fn delete_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
+        invocation_epoch: Option<InvocationEpoch>,
     ) -> impl Future<Output = Result<()>> + Send;
 }
 
@@ -841,8 +904,10 @@ mod test_util {
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_retention_duration: Duration::ZERO,
+                invocation_epoch: 0,
                 journal_metadata: JournalMetadata::empty(),
                 pinned_deployment: None,
+                completion_range_epoch_map: Default::default(),
             }
         }
 
@@ -864,6 +929,8 @@ mod test_util {
                 journal_metadata: JournalMetadata::empty(),
                 journal_retention_duration: Duration::ZERO,
                 pinned_deployment: None,
+                invocation_epoch: 0,
+                completion_range_epoch_map: Default::default(),
             }
         }
     }
@@ -887,11 +954,13 @@ mod tests {
 
             let expected_trim_points = vec![];
             assert_eq!(
-                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
+                map.clone()
+                    .into_truncation_points_iter()
+                    .collect::<Vec<_>>(),
                 expected_trim_points
             );
             assert_eq!(
-                CompletionRangeEpochMap::from_trim_points(expected_trim_points),
+                CompletionRangeEpochMap::from_truncation_points(expected_trim_points),
                 map
             );
         }
@@ -900,7 +969,7 @@ mod tests {
         fn trim_at_1() {
             let mut map = CompletionRangeEpochMap::default();
 
-            map.add_trim_point(1, 1);
+            map.add_truncation_point(1, 1);
 
             // Before 1 is epoch 0, After including 1 is epoch 1
             assert_eq!(map.maximum_epoch_for(0), 0);
@@ -909,11 +978,13 @@ mod tests {
 
             let expected_trim_points = vec![(1, 1)];
             assert_eq!(
-                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
+                map.clone()
+                    .into_truncation_points_iter()
+                    .collect::<Vec<_>>(),
                 expected_trim_points
             );
             assert_eq!(
-                CompletionRangeEpochMap::from_trim_points(expected_trim_points),
+                CompletionRangeEpochMap::from_truncation_points(expected_trim_points),
                 map
             );
         }
@@ -922,7 +993,7 @@ mod tests {
         fn multiple_trims() {
             let mut map = CompletionRangeEpochMap::default();
 
-            map.add_trim_point(5, 1);
+            map.add_truncation_point(5, 1);
 
             // 0..=4 -> 0
             // 5..=MAX -> 1
@@ -931,7 +1002,7 @@ mod tests {
             assert_eq!(map.maximum_epoch_for(5), 1);
             assert_eq!(map.maximum_epoch_for(CompletionId::MAX), 1);
 
-            map.add_trim_point(2, 2);
+            map.add_truncation_point(2, 2);
 
             // 0..=1 -> 0
             // 2..=MAX -> 2
@@ -941,7 +1012,7 @@ mod tests {
             assert_eq!(map.maximum_epoch_for(3), 2);
             assert_eq!(map.maximum_epoch_for(CompletionId::MAX), 2);
 
-            map.add_trim_point(5, 3);
+            map.add_truncation_point(5, 3);
 
             // 0..=1 -> 0
             // 2..=4 -> 2
@@ -956,11 +1027,13 @@ mod tests {
 
             let expected_trim_points = vec![(2, 2), (5, 3)];
             assert_eq!(
-                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
+                map.clone()
+                    .into_truncation_points_iter()
+                    .collect::<Vec<_>>(),
                 expected_trim_points
             );
             assert_eq!(
-                CompletionRangeEpochMap::from_trim_points(expected_trim_points),
+                CompletionRangeEpochMap::from_truncation_points(expected_trim_points),
                 map
             );
         }
@@ -969,7 +1042,7 @@ mod tests {
         fn trim_same_point_twice() {
             let mut map = CompletionRangeEpochMap::default();
 
-            map.add_trim_point(2, 1);
+            map.add_truncation_point(2, 1);
 
             // 0..=2 -> 0
             // 2..=MAX -> 1
@@ -978,7 +1051,7 @@ mod tests {
             assert_eq!(map.maximum_epoch_for(2), 1);
             assert_eq!(map.maximum_epoch_for(CompletionId::MAX), 1);
 
-            map.add_trim_point(2, 2);
+            map.add_truncation_point(2, 2);
 
             // 0..=2 -> 0
             // 2..=MAX -> 2
@@ -989,11 +1062,13 @@ mod tests {
 
             let expected_trim_points = vec![(2, 2)];
             assert_eq!(
-                map.clone().into_trim_points_iter().collect::<Vec<_>>(),
+                map.clone()
+                    .into_truncation_points_iter()
+                    .collect::<Vec<_>>(),
                 expected_trim_points
             );
             assert_eq!(
-                CompletionRangeEpochMap::from_trim_points(expected_trim_points),
+                CompletionRangeEpochMap::from_truncation_points(expected_trim_points),
                 map
             );
         }

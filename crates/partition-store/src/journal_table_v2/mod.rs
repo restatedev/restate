@@ -19,12 +19,14 @@ use crate::{TableScan, TableScanIterationDecision};
 use anyhow::anyhow;
 use futures::Stream;
 use futures_util::stream;
+use itertools::Itertools;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
+use restate_storage_api::journal_table_v2::{JournalEntryId, JournalTable, ReadOnlyJournalTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
+    EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithInvocationId, WithPartitionKey,
 };
+use restate_types::invocation::InvocationEpoch;
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryInner};
 use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
 use std::collections::HashMap;
@@ -37,6 +39,16 @@ define_table_key!(
     JournalKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,
+        journal_index: u32
+    )
+);
+define_table_key!(
+    Journal,
+    KeyKind::ArchivedJournalV2,
+    ArchivedJournalKey(
+        partition_key: PartitionKey,
+        invocation_uuid: InvocationUuid,
+        invocation_epoch: InvocationEpoch,
         journal_index: u32
     )
 );
@@ -68,8 +80,23 @@ fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> 
         .journal_index(journal_index)
 }
 
+fn write_archived_journal_entry_key(
+    invocation_id: &InvocationId,
+    invocation_epoch: InvocationEpoch,
+    journal_index: u32,
+) -> ArchivedJournalKey {
+    ArchivedJournalKey::default()
+        .partition_key(invocation_id.partition_key())
+        .invocation_uuid(invocation_id.invocation_uuid())
+        .invocation_epoch(invocation_epoch)
+        .journal_index(journal_index)
+}
+
 #[derive(Debug, Clone)]
-pub struct StoredEntry(pub RawEntry);
+pub struct StoredEntry {
+    pub entry: RawEntry,
+    pub epoch: InvocationEpoch,
+}
 impl PartitionStoreProtobufValue for StoredEntry {
     type ProtobufType = crate::protobuf_types::v1::Entry;
 }
@@ -83,6 +110,7 @@ impl PartitionStoreProtobufValue for JournalEntryIndex {
 fn put_journal_entry<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
+    invocation_epoch: InvocationEpoch,
     journal_index: u32,
     journal_entry: &RawEntry,
     related_completion_ids: &[CompletionId],
@@ -109,7 +137,10 @@ fn put_journal_entry<S: StorageAccess>(
 
     storage.put_kv(
         write_journal_entry_key(invocation_id, journal_index),
-        &StoredEntry(journal_entry.clone()),
+        &StoredEntry {
+            entry: journal_entry.clone(),
+            epoch: invocation_epoch,
+        },
     )
 }
 
@@ -118,9 +149,39 @@ fn get_journal_entry<S: StorageAccess>(
     invocation_id: &InvocationId,
     journal_index: u32,
 ) -> Result<Option<RawEntry>> {
+    let _x = RocksDbPerfGuard::new("get-journal-entry");
     let key = write_journal_entry_key(invocation_id, journal_index);
     let opt: Option<StoredEntry> = storage.get_value(key)?;
-    Ok(opt.map(|e| e.0))
+    Ok(opt.map(|e| e.entry))
+}
+
+fn get_journal_entry_for_epoch<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    invocation_epoch: InvocationEpoch,
+    journal_index: u32,
+) -> Result<Option<RawEntry>> {
+    let _x = RocksDbPerfGuard::new("get-journal-entry-for-epoch");
+    // Try archived first
+    if let Some(s) = storage.get_value::<_, StoredEntry>(write_archived_journal_entry_key(
+        invocation_id,
+        invocation_epoch,
+        journal_index,
+    ))? {
+        return Ok(Some(s.entry));
+    }
+
+    // Nope, try to get the latest and check if the epoch is the same
+    if let Some(s) = storage
+        .get_value::<_, StoredEntry>(write_journal_entry_key(invocation_id, invocation_epoch))?
+    {
+        if s.epoch == invocation_epoch {
+            return Ok(Some(s.entry));
+        }
+    }
+
+    // Not found
+    Ok(None)
 }
 
 fn get_journal<S: StorageAccess>(
@@ -145,7 +206,7 @@ fn get_journal<S: StorageAccess>(
             let entry =
                 StoredEntry::decode(&mut v).map_err(|error| StorageError::Generic(error.into()));
 
-            let result = key.and_then(|key| entry.map(|entry| (key, entry.0)));
+            let result = key.and_then(|key| entry.map(|entry| (key, entry.entry)));
 
             n += 1;
             if n < journal_length {
@@ -161,22 +222,64 @@ fn all_journals<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
 ) -> Result<impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send + use<'_, S>> {
-    let iter = storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range))?;
-    Ok(stream::iter(OwnedIterator::new(iter).map(
-        |(mut key, mut value)| {
-            let journal_key = JournalKey::deserialize_from(&mut key)?;
-            let journal_entry = StoredEntry::decode(&mut value)
-                .map_err(|err| StorageError::Conversion(err.into()))?;
+    let latest_iterator = OwnedIterator::new(
+        storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range.clone()))?,
+    )
+    .map(|(mut key, mut value)| {
+        let journal_key = JournalKey::deserialize_from(&mut key)?;
+        let journal_entry =
+            StoredEntry::decode(&mut value).map_err(|err| StorageError::Conversion(err.into()))?;
 
-            let (partition_key, invocation_uuid, entry_index) = journal_key.into_inner_ok_or()?;
+        let (partition_key, invocation_uuid, entry_index) = journal_key.into_inner_ok_or()?;
 
-            Ok((
-                JournalEntryId::from_parts(
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    entry_index,
-                ),
-                journal_entry.0,
-            ))
+        Ok((
+            JournalEntryId::from_parts(
+                InvocationId::from_parts(partition_key, invocation_uuid),
+                journal_entry.epoch,
+                entry_index,
+            ),
+            journal_entry.entry,
+        ))
+    });
+
+    let archived_iterator = OwnedIterator::new(
+        storage.iterator_from(FullScanPartitionKeyRange::<ArchivedJournalKey>(range))?,
+    )
+    .map(|(mut key, mut value)| {
+        let journal_key = ArchivedJournalKey::deserialize_from(&mut key)?;
+        let journal_entry =
+            StoredEntry::decode(&mut value).map_err(|err| StorageError::Conversion(err.into()))?;
+
+        let (partition_key, invocation_uuid, epoch, entry_index) =
+            journal_key.into_inner_ok_or()?;
+
+        Ok((
+            JournalEntryId::from_parts(
+                InvocationId::from_parts(partition_key, invocation_uuid),
+                epoch,
+                entry_index,
+            ),
+            journal_entry.entry,
+        ))
+    });
+
+    Ok(stream::iter(archived_iterator.merge_by(
+        latest_iterator,
+        |is1, is2| {
+            match (is1, is2) {
+                (Ok((id1, _)), Ok((id2, _)))
+                    if id1.invocation_id() == id2.invocation_id()
+                        && id1.invocation_epoch() == id2.invocation_epoch() =>
+                {
+                    id1.journal_index() <= id2.journal_index()
+                }
+                (Ok((id1, _)), Ok((id2, _))) if id1.invocation_id() == id2.invocation_id() => {
+                    id1.invocation_epoch() <= id2.invocation_epoch()
+                }
+                (Ok((id1, _)), Ok((id2, _))) => id1.invocation_id() <= id2.invocation_id(),
+                // Doesn't matter if there's an error in between
+                (_, _) => true,
+            }
         },
     )))
 }
@@ -184,10 +287,35 @@ fn all_journals<S: StorageAccess>(
 fn delete_journal<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
+    invocation_epoch: Option<InvocationEpoch>,
     journal_length: EntryIndex,
 ) -> Result<()> {
     let _x = RocksDbPerfGuard::new("delete-journal");
 
+    let Some(invocation_epoch) = invocation_epoch else {
+        delete_latest_journal(storage, invocation_id, journal_length)?;
+        return Ok(());
+    };
+
+    // Check if latest journal has the same epoch of the provided one.
+    let is_latest = storage
+        .get_value::<_, StoredEntry>(write_journal_entry_key(invocation_id, invocation_epoch))?
+        .is_some_and(|s| s.epoch == invocation_epoch);
+
+    if is_latest {
+        delete_latest_journal(storage, invocation_id, journal_length)?;
+    } else {
+        delete_archived_journal(storage, invocation_id, invocation_epoch, journal_length)?;
+    }
+
+    Ok(())
+}
+
+fn delete_latest_journal<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    journal_length: EntryIndex,
+) -> Result<()> {
     let mut key = write_journal_entry_key(invocation_id, 0);
     let k = &mut key;
     for journal_index in 0..journal_length {
@@ -245,6 +373,114 @@ fn delete_journal<S: StorageAccess>(
     Ok(())
 }
 
+fn delete_archived_journal<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    invocation_epoch: InvocationEpoch,
+    journal_length: EntryIndex,
+) -> Result<()> {
+    let mut key = write_archived_journal_entry_key(invocation_id, invocation_epoch, 0);
+    let k = &mut key;
+    for journal_index in 0..journal_length {
+        k.journal_index = Some(journal_index);
+        storage.delete_key(k)?;
+    }
+
+    Ok(())
+}
+
+fn delete_journal_range<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    from_included: EntryIndex,
+    to_excluded: EntryIndex,
+    notification_ids_to_cleanup: &[NotificationId],
+) -> Result<()> {
+    let _x = RocksDbPerfGuard::new("delete-journal-range");
+
+    // Delete entries
+    let mut key = write_journal_entry_key(invocation_id, 0);
+    let k = &mut key;
+    for journal_index in from_included..to_excluded {
+        k.journal_index = Some(journal_index);
+        storage.delete_key(k)?;
+    }
+
+    // Clean indexes
+    if !notification_ids_to_cleanup.is_empty() {
+        let mut notification_id_to_notification_index =
+            JournalNotificationIdToNotificationIndexKey::default()
+                .partition_key(invocation_id.partition_key())
+                .invocation_uuid(invocation_id.invocation_uuid());
+        let mut completion_id_to_command_index = JournalCompletionIdToCommandIndexKey::default()
+            .partition_key(invocation_id.partition_key())
+            .invocation_uuid(invocation_id.invocation_uuid());
+        for notification_id_to_cleanup in notification_ids_to_cleanup {
+            notification_id_to_notification_index.notification_id =
+                Some(notification_id_to_cleanup.clone());
+            storage.delete_key(&notification_id_to_notification_index)?;
+
+            if let NotificationId::CompletionId(completion_id) = notification_id_to_cleanup {
+                completion_id_to_command_index.completion_id = Some(*completion_id);
+                storage.delete_key(&completion_id_to_command_index)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn archive_journal_to_epoch<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    invocation_epoch: InvocationEpoch,
+    journal_length: EntryIndex,
+) -> Result<()> {
+    let _x = RocksDbPerfGuard::new("archive-journal-to-epoch");
+
+    let mut latest_key = write_journal_entry_key(invocation_id, 0);
+    let mut archived_key = write_archived_journal_entry_key(invocation_id, invocation_epoch, 0);
+    for journal_index in 0..journal_length {
+        latest_key.journal_index = Some(journal_index);
+        archived_key.journal_index = Some(journal_index);
+
+        let Some(mut entry) = storage.get_value::<_, StoredEntry>(latest_key.clone())? else {
+            return Err(StorageError::Generic(anyhow!(
+                "Expected entry to be not empty"
+            )));
+        };
+
+        entry.epoch = invocation_epoch;
+        storage.put_kv(archived_key.clone(), &entry)?;
+    }
+
+    Ok(())
+}
+
+fn update_current_journal_epoch<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    new_epoch: InvocationEpoch,
+    length: EntryIndex,
+) -> Result<()> {
+    let _x = RocksDbPerfGuard::new("update-current-journal-epoch");
+
+    let mut key = write_journal_entry_key(invocation_id, 0);
+    for journal_index in 0..length {
+        key.journal_index = Some(journal_index);
+        let Some(mut entry) = storage.get_value::<_, StoredEntry>(key.clone())? else {
+            return Err(StorageError::Generic(anyhow!(
+                "Expected entry to be not empty"
+            )));
+        };
+
+        entry.epoch = new_epoch;
+        storage.put_kv(key.clone(), &entry)?;
+    }
+
+    Ok(())
+}
+
 fn get_notifications_index<S: StorageAccess>(
     storage: &mut S,
     invocation_id: InvocationId,
@@ -295,7 +531,7 @@ fn get_command_by_completion_id<S: StorageAccess>(
         return Ok(None);
     }
 
-    let entry = opt.unwrap().0;
+    let entry = opt.unwrap().entry;
     let entry_ty = entry.ty();
     Ok(Some(entry.inner.try_as_command().ok_or_else(|| {
         StorageError::Conversion(anyhow!(
@@ -308,24 +544,34 @@ impl ReadOnlyJournalTable for PartitionStore {
     async fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
-        journal_index: u32,
+        entry_index: EntryIndex,
     ) -> Result<Option<RawEntry>> {
         self.assert_partition_key(&invocation_id)?;
-        let _x = RocksDbPerfGuard::new("get-journal-entry");
-        get_journal_entry(self, &invocation_id, journal_index)
+        get_journal_entry(self, &invocation_id, entry_index)
+    }
+
+    async fn get_journal_entry_for_epoch(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+        entry_index: EntryIndex,
+    ) -> Result<Option<RawEntry>> {
+        self.assert_partition_key(&invocation_id)?;
+        get_journal_entry_for_epoch(self, &invocation_id, invocation_epoch, entry_index)
     }
 
     fn get_journal(
         &mut self,
         invocation_id: InvocationId,
-        journal_length: EntryIndex,
+        length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send> {
         self.assert_partition_key(&invocation_id)?;
-        Ok(stream::iter(get_journal(
-            self,
-            &invocation_id,
-            journal_length,
-        )?))
+        Ok(stream::iter(get_journal(self, &invocation_id, length)?))
+    }
+
+    async fn has_journal(&mut self, invocation_id: &InvocationId) -> Result<bool> {
+        self.assert_partition_key(invocation_id)?;
+        Ok(get_journal_entry(self, invocation_id, 0)?.is_some())
     }
 
     fn all_journals(
@@ -355,24 +601,35 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
     async fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
-        journal_index: u32,
+        entry_index: EntryIndex,
     ) -> Result<Option<RawEntry>> {
         self.assert_partition_key(&invocation_id)?;
         let _x = RocksDbPerfGuard::new("get-journal-entry");
-        get_journal_entry(self, &invocation_id, journal_index)
+        get_journal_entry(self, &invocation_id, entry_index)
+    }
+
+    async fn get_journal_entry_for_epoch(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+        entry_index: EntryIndex,
+    ) -> Result<Option<RawEntry>> {
+        self.assert_partition_key(&invocation_id)?;
+        get_journal_entry_for_epoch(self, &invocation_id, invocation_epoch, entry_index)
     }
 
     fn get_journal(
         &mut self,
         invocation_id: InvocationId,
-        journal_length: EntryIndex,
+        length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send> {
         self.assert_partition_key(&invocation_id)?;
-        Ok(stream::iter(get_journal(
-            self,
-            &invocation_id,
-            journal_length,
-        )?))
+        Ok(stream::iter(get_journal(self, &invocation_id, length)?))
+    }
+
+    async fn has_journal(&mut self, invocation_id: &InvocationId) -> Result<bool> {
+        self.assert_partition_key(invocation_id)?;
+        Ok(get_journal_entry(self, invocation_id, 0)?.is_some())
     }
 
     fn all_journals(
@@ -402,22 +659,67 @@ impl JournalTable for PartitionStoreTransaction<'_> {
     async fn put_journal_entry(
         &mut self,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
         index: u32,
         entry: &RawEntry,
         related_completion_ids: &[CompletionId],
     ) -> Result<()> {
         self.assert_partition_key(&invocation_id)?;
-        put_journal_entry(self, &invocation_id, index, entry, related_completion_ids)
+        put_journal_entry(
+            self,
+            &invocation_id,
+            invocation_epoch,
+            index,
+            entry,
+            related_completion_ids,
+        )
+    }
+
+    async fn archive_journal_to_epoch(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+        journal_length: EntryIndex,
+    ) -> Result<()> {
+        self.assert_partition_key(invocation_id)?;
+        archive_journal_to_epoch(self, invocation_id, invocation_epoch, journal_length)
+    }
+
+    async fn update_current_journal_epoch(
+        &mut self,
+        invocation_id: &InvocationId,
+        new_epoch: InvocationEpoch,
+        length: EntryIndex,
+    ) -> Result<()> {
+        self.assert_partition_key(invocation_id)?;
+        update_current_journal_epoch(self, invocation_id, new_epoch, length)
     }
 
     async fn delete_journal(
         &mut self,
         invocation_id: InvocationId,
+        invocation_epoch: Option<InvocationEpoch>,
         journal_length: EntryIndex,
     ) -> Result<()> {
         self.assert_partition_key(&invocation_id)?;
-        let _x = RocksDbPerfGuard::new("delete-journal");
-        delete_journal(self, &invocation_id, journal_length)
+        delete_journal(self, &invocation_id, invocation_epoch, journal_length)
+    }
+
+    async fn delete_journal_range(
+        &mut self,
+        invocation_id: InvocationId,
+        from_included: EntryIndex,
+        to_excluded: EntryIndex,
+        notification_ids_to_cleanup: &[NotificationId],
+    ) -> Result<()> {
+        self.assert_partition_key(&invocation_id)?;
+        delete_journal_range(
+            self,
+            &invocation_id,
+            from_included,
+            to_excluded,
+            notification_ids_to_cleanup,
+        )
     }
 }
 

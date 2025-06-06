@@ -175,6 +175,8 @@ pub mod codes {
         PROTOCOL_VIOLATION 571 "Protocol violation",
         CONFLICT 409 "Conflict",
         NOT_READY 470 "Not ready",
+        RESTARTED 471 "Restarted",
+        RESET 472 "Reset",
     );
 }
 
@@ -294,6 +296,14 @@ impl From<anyhow::Error> for InvocationError {
 
 pub const KILLED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::ABORTED, "killed");
+
+pub const RESTARTED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
+    codes::RESTARTED,
+    "The invocation was restarted. You can re-attach to it to retrieve the new result.",
+);
+
+pub const RESET_INVOCATION_ERROR: InvocationError =
+    InvocationError::new_static(codes::RESET, "reset");
 
 // TODO: Once we want to distinguish server side cancellations from user code returning the
 //  UserErrorCode::Cancelled, we need to add a new RestateErrorCode.

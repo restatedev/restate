@@ -970,12 +970,15 @@ pub enum TerminationFlavor {
     Cancel = 1,
 }
 
-/// Message to purge an invocation.
+/// Request to purge an invocation.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PurgeInvocationRequest {
     pub invocation_id: InvocationId,
     #[serde(default)]
     pub response_sink: Option<InvocationMutationResponseSink>,
+    /// When epoch is the current/latest epoch, all the other epochs will be cleaned up as well.
+    #[serde(default, skip_serializing_if = "num_traits::Zero::is_zero")]
+    pub invocation_epoch: InvocationEpoch,
 }
 
 // A hack to allow spancontext to be serialized.
@@ -1141,6 +1144,129 @@ impl WithInvocationId for NotifySignalRequest {
 
 /// The invocation epoch represents the restarts count of the invocation, as seen from the Partition processor.
 pub type InvocationEpoch = u32;
+
+/// Restart invocation command. See [restart::Request]
+pub mod restart {
+    use super::*;
+
+    /// Restart an invocation.
+    ///
+    /// This will restart the invocation, given its input is available.
+    #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct Request {
+        pub invocation_id: InvocationId,
+
+        /// What to do if the invocation is still running.
+        pub if_running: IfRunning,
+
+        /// If set, it will override the configured completion_retention/journal_retention when the invocation was executed the first time.
+        /// If none of the completion_retention/journal_retention are configured, and neither this previous_attempt_retention, then the previous attempt won't be retained at all.
+        ///
+        /// To retain the previous attempt, the new attempt will take the invocation id of the previous attempt, the one used to trigger this reset,
+        /// and old invocation id will take a new randomly generated invocation id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub previous_attempt_retention: Option<Duration>,
+
+        /// What to do in case the invocation was a Workflow run (workflow service and workflow handler type)
+        pub apply_to_workflow_run: ApplyToWorkflowRun,
+
+        /// Where to send the response for this command
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub response_sink: Option<InvocationMutationResponseSink>,
+    }
+
+    impl WithInvocationId for Request {
+        fn invocation_id(&self) -> InvocationId {
+            self.invocation_id
+        }
+    }
+
+    #[derive(Default, Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub enum IfRunning {
+        /// Kill the invocation, then restart it.
+        #[default]
+        Kill,
+        /// Fail the Restart command if the invocation is still running
+        Fail,
+    }
+
+    #[derive(Default, Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub enum ApplyToWorkflowRun {
+        Nothing,
+        ClearOnlyPromises,
+        ClearOnlyState,
+        #[default]
+        ClearAllPromisesAndState,
+    }
+}
+
+/// Reset invocation command. See [reset::Request]
+pub mod reset {
+    use super::*;
+
+    /// Reset an invocation.
+    ///
+    /// This will truncate the journal from the given starting point, and will resume the execution on a new invocation attempt.
+    #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct Request {
+        pub invocation_id: InvocationId,
+
+        // Where to truncate the journal from
+        pub truncate_from: TruncateFrom,
+
+        /// If set, it will override the configured completion_retention/journal_retention when the invocation was executed the first time.
+        /// If none of the completion_retention/journal_retention are configured, and neither this previous_attempt_retention, then the previous attempt won't be retained at all.
+        ///
+        /// To retain the previous attempt, the new attempt will take the invocation id of the previous attempt (the one used to trigger this reset),
+        /// and the old invocation id will take a new randomly generated invocation id.
+        pub previous_attempt_retention: Option<Duration>,
+
+        /// What to do with child calls. This doesn't apply to sends.
+        pub apply_to_child_calls: ApplyToChildInvocations,
+
+        /// What to do with pinned deployment
+        pub apply_to_pinned_deployment: ApplyToPinnedDeployment,
+
+        /// Where to send the response for this command
+        pub response_sink: Option<InvocationMutationResponseSink>,
+    }
+
+    impl WithInvocationId for Request {
+        fn invocation_id(&self) -> InvocationId {
+            self.invocation_id
+        }
+    }
+
+    /// Flavor of the [`Request`].
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub enum TruncateFrom {
+        EntryIndex {
+            /// Entry index **inclusive**.
+            ///
+            /// Note: the index MUST correspond to a [`journal_v2::Command`] or a [`journal_v2::Signal`],
+            /// otherwise the command will be ignored.
+            entry_index: EntryIndex,
+        },
+    }
+
+    #[derive(Default, Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub enum ApplyToChildInvocations {
+        Nothing,
+        #[default]
+        Kill,
+        Cancel,
+    }
+
+    #[derive(Default, Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub enum ApplyToPinnedDeployment {
+        #[default]
+        Keep,
+        /// Clear the pinned deployment.
+        ///
+        /// NOTE: If the new picked up deployment doesn't support the current service protocol version, the invocation will remain stuck in a retry loop.
+        Clear,
+    }
+}
 
 mod serde_hacks {
     //! Module where we hide all the hacks to make back-compat working!

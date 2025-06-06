@@ -171,6 +171,44 @@ impl_meta_api_error!(InvocationWasAlreadyCompletedError: CONFLICT "The invocatio
 pub(crate) struct PurgeInvocationNotCompletedError(pub(crate) String);
 impl_meta_api_error!(PurgeInvocationNotCompletedError: CONFLICT "The invocation is not yet completed. An invocation can be purged only when completed.");
 
+#[derive(Debug, thiserror::Error)]
+#[error("The invocation '{0}' is still running.")]
+pub(crate) struct RestartInvocationStillRunningError(pub(crate) String);
+impl_meta_api_error!(RestartInvocationStillRunningError: CONFLICT "The invocation is still running. An invocation can be restarted only when completed, or if the query parameter if_running=kill is provided.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Restarting the invocation '{0}' is not supported, because it was started using the old service protocol."
+)]
+pub(crate) struct RestartInvocationUnsupportedError(pub(crate) String);
+impl_meta_api_error!(RestartInvocationUnsupportedError: UNPROCESSABLE_ENTITY "Restarting the invocation is not supported, because it was started using the old service protocol.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "The invocation '{0}' cannot be restarted because the input is not available. This indicates that the journal was already purged, or not retained at all."
+)]
+pub(crate) struct RestartInvocationMissingInputError(pub(crate) String);
+impl_meta_api_error!(RestartInvocationMissingInputError: GONE "The invocation cannot be restarted because the input is not available. In order to restart an invocation, the journal must be available in order to read the input again. Journal can be retained after completion by enabling journal retention.");
+
+#[derive(Debug, thiserror::Error)]
+#[error("The invocation '{0}' cannot be restarted because it's not running yet.")]
+pub(crate) struct RestartInvocationNotStartedError(pub(crate) String);
+impl_meta_api_error!(RestartInvocationNotStartedError: TOO_EARLY "The invocation cannot be restarted because it's not running yet, meaning it might have been scheduled or inboxed.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Resetting the invocation '{0}' is not supported, because it was started using the old service protocol."
+)]
+pub(crate) struct ResetInvocationUnsupportedError(pub(crate) String);
+impl_meta_api_error!(ResetInvocationUnsupportedError: UNPROCESSABLE_ENTITY "Resetting the invocation is not supported, because it was started using the old service protocol.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "The invocation '{0}' cannot be reset because it's not running. For completed invocations, use restart instead."
+)]
+pub(crate) struct ResetInvocationNotRunningError(pub(crate) String);
+impl_meta_api_error!(ResetInvocationNotRunningError: TOO_EARLY "The invocation cannot be reset because it's not running. For completed invocations, use restart instead.");
+
 // --- Old Meta API errors. Please don't use these anymore.
 
 /// This error is used by handlers to propagate API errors,

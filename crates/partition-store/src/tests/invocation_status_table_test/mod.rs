@@ -99,7 +99,7 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         idempotency_key: None,
         hotfix_apply_cancellation_after_deployment_is_pinned: false,
         current_invocation_epoch: 1,
-        completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points([(5, 1)]),
+        completion_range_epoch_map: CompletionRangeEpochMap::from_truncation_points([(5, 1)]),
     })
 }
 
@@ -126,7 +126,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             idempotency_key: None,
             hotfix_apply_cancellation_after_deployment_is_pinned: false,
             current_invocation_epoch: 1,
-            completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points([(5, 1)]),
+            completion_range_epoch_map: CompletionRangeEpochMap::from_truncation_points([(5, 1)]),
         },
         waiting_for_notifications: HashSet::default(),
     }

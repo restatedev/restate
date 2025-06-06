@@ -13,7 +13,8 @@ use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, GetInvocationOutputResponse, InvocationResponse,
-    InvocationTermination, NotifySignalRequest, PurgeInvocationRequest, ServiceInvocation,
+    InvocationTermination, NotifySignalRequest, PurgeInvocationRequest, ServiceInvocation, reset,
+    restart,
 };
 use restate_types::logs::{HasRecordKeys, Keys, MatchKeyQuery};
 use restate_types::message::MessageIndex;
@@ -148,6 +149,10 @@ pub enum Command {
     ProxyThrough(ServiceInvocation),
     /// Attach to an existing invocation
     AttachInvocation(AttachInvocationRequest),
+    /// Restart an invocation
+    RestartInvocation(restart::Request),
+    /// Reset an ongoing invocation
+    ResetInvocation(reset::Request),
 
     // -- Partition processor events for PP
     /// Invoker is reporting effect(s) from an ongoing invocation.
@@ -203,6 +208,7 @@ impl HasRecordKeys for Envelope {
             }
             Command::PurgeInvocation(purge) => Keys::Single(purge.invocation_id.partition_key()),
             Command::PurgeJournal(purge) => Keys::Single(purge.invocation_id.partition_key()),
+            Command::RestartInvocation(restart) => Keys::Single(restart.partition_key()),
             Command::Invoke(invoke) => Keys::Single(invoke.partition_key()),
             // todo: Remove this, or pass the partition key range but filter based on partition-id
             // on read if needed.
@@ -216,6 +222,9 @@ impl HasRecordKeys for Envelope {
             Command::InvocationResponse(response) => Keys::Single(response.partition_key()),
             Command::NotifySignal(sig) => Keys::Single(sig.partition_key()),
             Command::NotifyGetInvocationOutputResponse(res) => Keys::Single(res.partition_key()),
+            Command::ResetInvocation(trim_invocation) => {
+                Keys::Single(trim_invocation.partition_key())
+            }
         }
     }
 }
@@ -316,6 +325,8 @@ mod envelope {
         NotifyGetInvocationOutputResponse = 13, // bilrost
         NotifySignal = 14,                      // protobuf
         PurgeJournal = 15,                      // flexbuffers
+        RestartInvocation = 16,                 // flexbuffers
+        ResetInvocation = 17,                   // flexbuffers
     }
 
     #[derive(bilrost::Message)]
@@ -441,6 +452,14 @@ mod envelope {
                 CommandKind::PurgeJournal,
                 Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
             ),
+            Command::RestartInvocation(value) => (
+                CommandKind::RestartInvocation,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
+            Command::ResetInvocation(value) => (
+                CommandKind::ResetInvocation,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
             Command::Invoke(value) => {
                 let value = protobuf::ServiceInvocation::from(value.clone());
                 (CommandKind::Invoke, Field::encode_protobuf(&value))
@@ -529,6 +548,14 @@ mod envelope {
             CommandKind::PurgeJournal => {
                 codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
                 Command::PurgeJournal(envelope.command.decode_serde()?)
+            }
+            CommandKind::RestartInvocation => {
+                codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
+                Command::RestartInvocation(envelope.command.decode_serde()?)
+            }
+            CommandKind::ResetInvocation => {
+                codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
+                Command::ResetInvocation(envelope.command.decode_serde()?)
             }
             CommandKind::Invoke => {
                 codec_or_error!(envelope.command, StorageCodecKind::Protobuf);
