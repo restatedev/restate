@@ -670,37 +670,6 @@ fn encode_invocation_id(
     buf
 }
 
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug)]
-pub struct JournalEntryId {
-    invocation_id: InvocationId,
-    journal_index: EntryIndex,
-}
-
-impl JournalEntryId {
-    pub const fn from_parts(invocation_id: InvocationId, journal_index: EntryIndex) -> Self {
-        Self {
-            invocation_id,
-            journal_index,
-        }
-    }
-
-    pub fn journal_index(&self) -> EntryIndex {
-        self.journal_index
-    }
-}
-
-impl From<(InvocationId, EntryIndex)> for JournalEntryId {
-    fn from(value: (InvocationId, EntryIndex)) -> Self {
-        Self::from_parts(value.0, value.1)
-    }
-}
-
-impl WithInvocationId for JournalEntryId {
-    fn invocation_id(&self) -> InvocationId {
-        self.invocation_id
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, serde_with::SerializeDisplay, serde_with::DeserializeFromStr)]
 pub struct LambdaARN {
     partition: ByteString,

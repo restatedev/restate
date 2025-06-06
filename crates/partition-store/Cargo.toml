@@ -25,6 +25,7 @@ enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 humantime = { workspace = true }
+itertools = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }

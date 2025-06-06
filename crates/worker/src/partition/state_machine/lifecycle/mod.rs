@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod archive;
 mod cancel;
 mod migrate_journal_table;
 mod notify_get_invocation_output_response;
@@ -17,9 +18,12 @@ mod notify_sleep_completion;
 mod pinned_deployment;
 mod purge;
 mod purge_journal;
+mod restart;
 mod resume;
 mod suspend;
 
+#[allow(unused_imports)]
+pub(super) use archive::ArchiveInvocationCommand;
 pub(super) use cancel::OnCancelCommand;
 pub(super) use migrate_journal_table::VerifyOrMigrateJournalTableToV2Command;
 pub(super) use notify_get_invocation_output_response::OnNotifyGetInvocationOutputResponse;
@@ -29,5 +33,6 @@ pub(super) use notify_sleep_completion::OnNotifySleepCompletionCommand;
 pub(super) use pinned_deployment::OnPinnedDeploymentCommand;
 pub(super) use purge::OnPurgeCommand;
 pub(super) use purge_journal::OnPurgeJournalCommand;
+pub(super) use restart::OnRestartInvocationCommand;
 pub(super) use resume::ResumeInvocationCommand;
 pub(super) use suspend::OnSuspendCommand;

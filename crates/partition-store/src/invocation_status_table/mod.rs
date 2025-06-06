@@ -16,6 +16,7 @@ use crate::{PartitionStore, TableKind, TableScanIterationDecision};
 use crate::{PartitionStoreTransaction, StorageAccess};
 use futures::Stream;
 use futures_util::stream;
+use itertools::Itertools;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
@@ -61,10 +62,30 @@ define_table_key!(
     )
 );
 
+define_table_key!(
+    TableKind::InvocationStatus,
+    KeyKind::ArchivedInvocationStatus,
+    ArchivedInvocationStatusKey(
+        partition_key: PartitionKey,
+        invocation_uuid: InvocationUuid,
+        invocation_epoch: InvocationEpoch
+    )
+);
+
 fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatusKey {
     InvocationStatusKey::default()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid())
+}
+
+fn create_archived_invocation_status_key(
+    invocation_id: &InvocationId,
+    invocation_epoch: InvocationEpoch,
+) -> ArchivedInvocationStatusKey {
+    ArchivedInvocationStatusKey::default()
+        .partition_key(invocation_id.partition_key())
+        .invocation_uuid(invocation_id.invocation_uuid())
+        .invocation_epoch(invocation_epoch)
 }
 
 impl PartitionStoreProtobufValue for InvocationStatus {
@@ -181,13 +202,96 @@ fn try_migrate_and_get_invocation_status<S: StorageAccess>(
         })
 }
 
+/// Ready only the epoch of the invocation status.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct InvocationStatusV2OnlyEpoch {
+    pub current_invocation_epoch: InvocationEpoch,
+}
+
+impl PartitionStoreProtobufValue for InvocationStatusV2OnlyEpoch {
+    type ProtobufType = crate::protobuf_types::v1::InvocationStatusV2OnlyEpoch;
+}
+
+fn get_latest_epoch_for_invocation_status<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+) -> Result<Option<InvocationEpoch>> {
+    let _x = RocksDbPerfGuard::new("get-latest-epoch-for-invocation-status");
+    Ok(storage
+        .get_value::<_, InvocationStatusV2OnlyEpoch>(create_invocation_status_key(invocation_id))?
+        .map(|is| is.current_invocation_epoch))
+}
+
+fn get_invocation_status_for_epoch<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    invocation_epoch: InvocationEpoch,
+) -> Result<InvocationStatus> {
+    let _x = RocksDbPerfGuard::new("get-invocation-status-for-epoch");
+
+    // Try archived first
+    if let Some(s) = storage.get_value::<_, InvocationStatus>(
+        create_archived_invocation_status_key(invocation_id, invocation_epoch),
+    )? {
+        return Ok(s);
+    }
+
+    // Nope, try to get the latest and check if the epoch is the same
+    if let Some(s) =
+        storage.get_value::<_, InvocationStatus>(create_invocation_status_key(invocation_id))?
+    {
+        if s.get_epoch() == invocation_epoch {
+            return Ok(s);
+        }
+    }
+
+    Ok(InvocationStatus::Free)
+}
+
 fn delete_invocation_status<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
+    invocation_epoch: Option<InvocationEpoch>,
 ) -> Result<()> {
+    if let Some(invocation_epoch_to_delete) = invocation_epoch {
+        // Check if the epoch to delete is latest
+        let current_epoch = storage
+            .get_value::<_, InvocationStatusV2OnlyEpoch>(create_invocation_status_key(
+                invocation_id,
+            ))?
+            .map(|is| is.current_invocation_epoch)
+            .unwrap_or(InvocationEpoch::MAX);
+
+        if current_epoch != invocation_epoch_to_delete {
+            // Remove the archived status
+            storage.delete_key(&create_archived_invocation_status_key(
+                invocation_id,
+                invocation_epoch_to_delete,
+            ))?;
+            return Ok(());
+        }
+    }
+
+    // Just delete the latest
     // TODO remove this once we remove the old InvocationStatus
     storage.delete_key(&create_invocation_status_key_v1(invocation_id))?;
-    storage.delete_key(&create_invocation_status_key(invocation_id))
+    storage.delete_key(&create_invocation_status_key(invocation_id))?;
+
+    Ok(())
+}
+
+fn archive_invocation_status_to_epoch<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    invocation_epoch: InvocationEpoch,
+    status: &InvocationStatus,
+) -> Result<()> {
+    let key = create_archived_invocation_status_key(invocation_id, invocation_epoch);
+    match status {
+        InvocationStatus::Free => storage.delete_key(&key)?,
+        _ => storage.put_kv(key, status)?,
+    }
+    Ok(())
 }
 
 fn invoked_invocations<S: StorageAccess>(
@@ -225,7 +329,8 @@ fn all_invocation_status<S: StorageAccess>(
     storage: &S,
     range: RangeInclusive<PartitionKey>,
 ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send + use<'_, S>> {
-    Ok(stream::iter(
+    // TODO remove when we remove invocation status v1
+    let invocation_status_v1_iterator =
         OwnedIterator::new(storage.iterator_from(FullScanPartitionKeyRange::<
             InvocationStatusKeyV1,
         >(range.clone()))?)
@@ -238,23 +343,50 @@ fn all_invocation_status<S: StorageAccess>(
                 InvocationId::from_parts(partition_key, invocation_uuid),
                 state_value.0,
             ))
-        })
-        .chain(
-            OwnedIterator::new(storage.iterator_from(FullScanPartitionKeyRange::<
-                InvocationStatusKey,
-            >(range.clone()))?)
-            .map(|(mut key, mut value)| {
-                let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
-                let state_value = InvocationStatus::decode(&mut value)?;
+        });
 
-                let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
-                Ok((
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    state_value,
-                ))
-            }),
-        ),
-    ))
+    let invocation_status_iterator =
+        OwnedIterator::new(storage.iterator_from(FullScanPartitionKeyRange::<
+            InvocationStatusKey,
+        >(range.clone()))?)
+        .map(|(mut key, mut value)| {
+            let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
+            let state_value = InvocationStatus::decode(&mut value)?;
+
+            let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
+            Ok((
+                InvocationId::from_parts(partition_key, invocation_uuid),
+                state_value,
+            ))
+        });
+
+    let archived_status_iterator =
+        OwnedIterator::new(storage.iterator_from(FullScanPartitionKeyRange::<
+            ArchivedInvocationStatusKey,
+        >(range))?)
+        .map(|(mut key, mut value)| {
+            let state_key = ArchivedInvocationStatusKey::deserialize_from(&mut key)?;
+            let state_value = InvocationStatus::decode(&mut value)?;
+
+            let (partition_key, invocation_uuid, _) = state_key.into_inner_ok_or()?;
+            Ok((
+                InvocationId::from_parts(partition_key, invocation_uuid),
+                state_value,
+            ))
+        });
+
+    Ok(stream::iter(invocation_status_v1_iterator.chain(
+        archived_status_iterator.merge_by(invocation_status_iterator, |is1, is2| {
+            match (is1, is2) {
+                (Ok((id1, status1)), Ok((id2, status2))) if id1 == id2 => {
+                    status1.get_epoch() <= status2.get_epoch()
+                }
+                (Ok((id1, _)), Ok((id2, _))) => id1 <= id2,
+                // Doesn't matter if there's an error in between
+                (_, _) => true,
+            }
+        }),
+    )))
 }
 
 // TODO remove this once we remove the old InvocationStatus
@@ -301,6 +433,23 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
         get_invocation_status(self, invocation_id)
     }
 
+    async fn get_latest_epoch_for_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> Result<Option<InvocationEpoch>> {
+        self.assert_partition_key(invocation_id)?;
+        get_latest_epoch_for_invocation_status(self, invocation_id)
+    }
+
+    async fn get_invocation_status_for_epoch(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> Result<InvocationStatus> {
+        self.assert_partition_key(invocation_id)?;
+        get_invocation_status_for_epoch(self, invocation_id, invocation_epoch)
+    }
+
     fn all_invoked_invocations(
         &mut self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
@@ -325,6 +474,23 @@ impl ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'_> {
     ) -> Result<InvocationStatus> {
         self.assert_partition_key(invocation_id)?;
         try_migrate_and_get_invocation_status(self, invocation_id)
+    }
+
+    async fn get_latest_epoch_for_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> Result<Option<InvocationEpoch>> {
+        self.assert_partition_key(invocation_id)?;
+        get_latest_epoch_for_invocation_status(self, invocation_id)
+    }
+
+    async fn get_invocation_status_for_epoch(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> Result<InvocationStatus> {
+        self.assert_partition_key(invocation_id)?;
+        get_invocation_status_for_epoch(self, invocation_id, invocation_epoch)
     }
 
     fn all_invoked_invocations(
@@ -354,9 +520,23 @@ impl InvocationStatusTable for PartitionStoreTransaction<'_> {
         put_invocation_status(self, invocation_id, status)
     }
 
-    async fn delete_invocation_status(&mut self, invocation_id: &InvocationId) -> Result<()> {
+    async fn archive_invocation_status_to_epoch(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+        status: &InvocationStatus,
+    ) -> Result<()> {
         self.assert_partition_key(invocation_id)?;
-        delete_invocation_status(self, invocation_id)
+        archive_invocation_status_to_epoch(self, invocation_id, invocation_epoch, status)
+    }
+
+    async fn delete_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_epoch: Option<InvocationEpoch>,
+    ) -> Result<()> {
+        self.assert_partition_key(invocation_id)?;
+        delete_invocation_status(self, invocation_id, invocation_epoch)
     }
 }
 

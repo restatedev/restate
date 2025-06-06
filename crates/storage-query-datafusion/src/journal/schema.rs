@@ -21,6 +21,9 @@ define_table!(sys_journal (
     /// [Invocation ID](/operate/invocation#invocation-identifier).
     id: DataType::LargeUtf8,
 
+    /// Invocation epoch
+    epoch: DataType::UInt32,
+
     /// The index of this journal entry.
     index: DataType::UInt32,
 

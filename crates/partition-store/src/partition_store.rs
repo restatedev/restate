@@ -142,7 +142,11 @@ impl TableKind {
     pub const fn key_kinds(self) -> &'static [KeyKind] {
         match self {
             Self::State => &[KeyKind::State],
-            Self::InvocationStatus => &[KeyKind::InvocationStatusV1, KeyKind::InvocationStatus],
+            Self::InvocationStatus => &[
+                KeyKind::InvocationStatusV1,
+                KeyKind::InvocationStatus,
+                KeyKind::ArchivedInvocationStatus,
+            ],
             Self::ServiceStatus => &[KeyKind::ServiceStatus],
             Self::Idempotency => &[KeyKind::Idempotency],
             Self::Inbox => &[KeyKind::Inbox],
@@ -154,6 +158,7 @@ impl TableKind {
                 KeyKind::Journal,
                 KeyKind::InvocationStatus,
                 KeyKind::JournalV2,
+                KeyKind::ArchivedJournalV2,
                 KeyKind::JournalV2CompletionIdToCommandIndex,
                 KeyKind::JournalV2NotificationIdToNotificationIndex,
             ],

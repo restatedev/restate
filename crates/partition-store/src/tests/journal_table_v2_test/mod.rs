@@ -93,6 +93,7 @@ async fn populate_sleep_journal<T: JournalTable>(txn: &mut T) {
     for i in 0..5 {
         txn.put_journal_entry(
             MOCK_INVOCATION_ID_1,
+            0,
             i,
             &mock_sleep_command(i).encode::<ServiceProtocolV4Codec>(),
             &[i],
@@ -103,6 +104,7 @@ async fn populate_sleep_journal<T: JournalTable>(txn: &mut T) {
     for i in 5..10 {
         txn.put_journal_entry(
             MOCK_INVOCATION_ID_1,
+            0,
             i,
             &mock_sleep_completion(i - 5).encode::<ServiceProtocolV4Codec>(),
             &[],
@@ -184,7 +186,7 @@ async fn sleep_point_lookups<T: JournalTable>(txn: &mut T) {
 }
 
 async fn delete_journal<T: JournalTable>(txn: &mut T, length: usize) {
-    txn.delete_journal(MOCK_INVOCATION_ID_1, length as u32)
+    txn.delete_journal(MOCK_INVOCATION_ID_1, None, length as u32)
         .await
         .unwrap();
 }
@@ -245,6 +247,7 @@ async fn test_call_journal() {
     txn.put_journal_entry(
         MOCK_INVOCATION_ID_1,
         0,
+        0,
         &mock_call_command(0, 1).encode::<ServiceProtocolV4Codec>(),
         &[0, 1],
     )
@@ -252,6 +255,7 @@ async fn test_call_journal() {
     .unwrap();
     txn.put_journal_entry(
         MOCK_INVOCATION_ID_1,
+        0,
         1,
         &mock_one_way_call_command(2).encode::<ServiceProtocolV4Codec>(),
         &[2],
@@ -315,6 +319,7 @@ async fn test_event() {
     // Populate
     txn.put_journal_entry(
         MOCK_INVOCATION_ID_1,
+        0,
         0,
         &Entry::Event(event.clone()).encode::<ServiceProtocolV4Codec>(),
         &[],
