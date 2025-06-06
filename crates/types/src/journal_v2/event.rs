@@ -12,6 +12,7 @@ use crate::errors::InvocationErrorCode;
 use crate::journal_v2::raw::{RawEntry, RawEvent, TryFromEntry, TryFromEntryError};
 use crate::journal_v2::{CommandIndex, CommandType, Encoder, Entry, EntryMetadata, EntryType};
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU32;
 use strum::EnumString;
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumString, strum::Display)]
@@ -41,7 +42,7 @@ pub struct TransientErrorEvent {
     pub related_command_type: Option<CommandType>,
 
     // Count of the same transient error
-    pub count: u32,
+    pub count: NonZeroU32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

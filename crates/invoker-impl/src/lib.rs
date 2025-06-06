@@ -42,6 +42,7 @@ use restate_types::schema::deployment::DeploymentResolver;
 use status_store::InvocationStatusStore;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -1244,7 +1245,7 @@ where
                         related_command_index: invocation_error_report.related_entry_index,
                         related_command_name: invocation_error_report.related_entry_name.clone(),
                         related_command_type: journal_v2_related_command_type,
-                        count: 1,
+                        count: NonZeroU32::new(1).unwrap(),
                     });
                     let _ = self
                         .invocation_state_machine_manager

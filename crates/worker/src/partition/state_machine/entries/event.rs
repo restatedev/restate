@@ -74,7 +74,8 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: JournalTable>
                     == new_transient_error_event.related_command_index =>
             {
                 // Override count and error_stacktrace
-                stored_transient_error_event.count += 1;
+                stored_transient_error_event.count =
+                    stored_transient_error_event.count.saturating_add(1);
                 stored_transient_error_event.error_stacktrace =
                     new_transient_error_event.error_stacktrace;
 
@@ -100,6 +101,7 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: JournalTable>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroU32;
 
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
@@ -120,7 +122,7 @@ mod tests {
             related_command_index: None,
             related_command_name: Some("my command".to_string()),
             related_command_type: None,
-            count: 0,
+            count: NonZeroU32::new(1).unwrap(),
         };
 
         let _ = test_env
@@ -144,7 +146,7 @@ mod tests {
             ))
             .await;
 
-        transient_error_event.count += 1;
+        transient_error_event.count = transient_error_event.count.saturating_add(1);
 
         assert_that!(
             test_env.storage.get_invocation_status(&invocation_id).await,
@@ -165,7 +167,7 @@ mod tests {
             related_command_index: None,
             related_command_name: Some("my command 2".to_string()),
             related_command_type: None,
-            count: 0,
+            count: NonZeroU32::new(1).unwrap(),
         };
 
         let _ = test_env
