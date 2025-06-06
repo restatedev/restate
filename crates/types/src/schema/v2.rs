@@ -149,6 +149,13 @@ pub struct ServiceRevision {
     )]
     pub abort_timeout: Option<Duration>,
 
+    /// # Enable lazy state
+    ///
+    /// If true, lazy state will be enabled for all invocations to this service.
+    /// This is relevant only for Workflows and Virtual Objects.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enable_lazy_state: Option<bool>,
+
     /// This is a cache for the computed value of ServiceOpenAPI
     #[serde(skip)]
     pub service_openapi_cache: Arc<ArcSwapOption<ServiceOpenAPI>>,
@@ -184,6 +191,8 @@ pub struct Handler {
     pub abort_timeout: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enable_lazy_state: Option<bool>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
 }
@@ -258,6 +267,7 @@ pub mod conversions {
                             inactivity_timeout: handler.inactivity_timeout,
                             abort_timeout: handler.abort_timeout,
                             documentation: handler.documentation,
+                            enable_lazy_state: handler.enable_lazy_state,
                             metadata: handler.metadata,
                         };
                         v2_handlers.insert(handler_name, handler);
@@ -276,6 +286,7 @@ pub mod conversions {
                         journal_retention: service.journal_retention,
                         inactivity_timeout: service.inactivity_timeout,
                         abort_timeout: service.abort_timeout,
+                        enable_lazy_state: service.enable_lazy_state,
                         service_openapi_cache: Arc::new(Default::default()),
                     };
 
@@ -365,6 +376,7 @@ pub mod conversions {
                                 journal_retention: handler.journal_retention,
                                 inactivity_timeout: handler.inactivity_timeout,
                                 abort_timeout: handler.abort_timeout,
+                                enable_lazy_state: handler.enable_lazy_state,
                                 input_description: handler.input_rules.to_string(),
                                 output_description: handler.output_rules.to_string(),
                                 input_json_schema: handler.input_rules.json_schema(),
@@ -389,6 +401,7 @@ pub mod conversions {
                             journal_retention: service.journal_retention,
                             inactivity_timeout: service.inactivity_timeout,
                             abort_timeout: service.abort_timeout,
+                            enable_lazy_state: service.enable_lazy_state,
                         },
                     );
                     service_revision_to_deployment
@@ -470,6 +483,7 @@ pub mod conversions {
                                 journal_retention: handler.journal_retention,
                                 inactivity_timeout: handler.inactivity_timeout,
                                 abort_timeout: handler.abort_timeout,
+                                enable_lazy_state: handler.enable_lazy_state,
                                 documentation: handler.documentation.clone(),
                                 metadata: handler.metadata.clone(),
                             },
@@ -491,6 +505,7 @@ pub mod conversions {
                             journal_retention: service.journal_retention,
                             inactivity_timeout: service.inactivity_timeout,
                             abort_timeout: service.abort_timeout,
+                            enable_lazy_state: service.enable_lazy_state,
                             documentation: service.documentation.clone(),
                             metadata: service.metadata.clone(),
                             service_openapi_cache: Arc::new(Default::default()),
@@ -522,7 +537,7 @@ pub mod conversions {
         use googletest::prelude::*;
 
         #[test]
-        fn v1_to_v1() {
+        fn v2_to_v1() {
             let dp_1 = DeploymentId::new();
             let dp_2 = DeploymentId::new();
 
@@ -556,6 +571,7 @@ pub mod conversions {
                                         journal_retention: None,
                                         inactivity_timeout: None,
                                         abort_timeout: None,
+                                        enable_lazy_state: None,
                                         service_openapi_cache: Arc::new(Default::default()),
                                         handlers: HashMap::from([(
                                             "greet".to_owned(),
@@ -571,6 +587,7 @@ pub mod conversions {
                                                 inactivity_timeout: None,
                                                 abort_timeout: None,
                                                 documentation: None,
+                                                enable_lazy_state: None,
                                                 metadata: Default::default(),
                                             },
                                         )]),
@@ -590,6 +607,7 @@ pub mod conversions {
                                         journal_retention: None,
                                         inactivity_timeout: None,
                                         abort_timeout: None,
+                                        enable_lazy_state: None,
                                         service_openapi_cache: Arc::new(Default::default()),
                                         handlers: HashMap::from([
                                             (
@@ -608,6 +626,7 @@ pub mod conversions {
                                                     inactivity_timeout: None,
                                                     abort_timeout: None,
                                                     documentation: None,
+                                                    enable_lazy_state: None,
                                                     metadata: Default::default(),
                                                 },
                                             ),
@@ -629,6 +648,7 @@ pub mod conversions {
                                                     inactivity_timeout: None,
                                                     abort_timeout: None,
                                                     documentation: None,
+                                                    enable_lazy_state: None,
                                                     metadata: Default::default(),
                                                 },
                                             ),
@@ -665,6 +685,7 @@ pub mod conversions {
                                     journal_retention: None,
                                     inactivity_timeout: None,
                                     abort_timeout: None,
+                                    enable_lazy_state: None,
                                     service_openapi_cache: Arc::new(Default::default()),
                                     handlers: HashMap::from([(
                                         "greet".to_owned(),
@@ -680,6 +701,7 @@ pub mod conversions {
                                             inactivity_timeout: None,
                                             abort_timeout: None,
                                             documentation: None,
+                                            enable_lazy_state: None,
                                             metadata: Default::default(),
                                         },
                                     )]),
