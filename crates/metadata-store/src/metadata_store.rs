@@ -29,8 +29,7 @@ use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, Storage
 use restate_types::{Version, Versioned};
 
 use crate::metric_definitions::{
-    METADATA_CLIENT_DELETE_DURATION, METADATA_CLIENT_DELETE_TOTAL, METADATA_CLIENT_GET_DURATION,
-    METADATA_CLIENT_GET_TOTAL, METADATA_CLIENT_GET_VERSION_DURATION,
+    METADATA_CLIENT_GET_DURATION, METADATA_CLIENT_GET_TOTAL, METADATA_CLIENT_GET_VERSION_DURATION,
     METADATA_CLIENT_GET_VERSION_TOTAL, METADATA_CLIENT_PUT_DURATION, METADATA_CLIENT_PUT_TOTAL,
     STATUS_COMPLETED, STATUS_FAILED, describe_metrics,
 };
@@ -393,8 +392,9 @@ impl MetadataStoreClient {
             STATUS_FAILED
         };
 
-        histogram!(METADATA_CLIENT_DELETE_DURATION).record(start_time.elapsed());
-        counter!(METADATA_CLIENT_DELETE_TOTAL,"key" => key_str,  "status" => status).increment(1);
+        histogram!(crate::metric_definitions::METADATA_CLIENT_DELETE_DURATION)
+            .record(start_time.elapsed());
+        counter!(crate::metric_definitions::METADATA_CLIENT_DELETE_TOTAL,"key" => key_str,  "status" => status).increment(1);
 
         result
     }
