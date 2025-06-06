@@ -52,8 +52,7 @@ pub enum Role {
     MetadataServer,
     /// Serves a log-server for replicated loglets
     LogServer,
-    /// [EXPERIMENTAL FEATURE] Serves HTTP ingress requests (requires
-    /// `experimental-feature-enable-separate-ingress-role` to be enabled)
+    /// Serves HTTP ingress requests
     HttpIngress,
 }
 
