@@ -212,6 +212,12 @@ impl From<AdminOptionsShadow> for AdminOptions {
         });
 
         #[allow(deprecated)]
+        if value.query_engine.pgsql_bind_address.is_some() {
+            print_warning_deprecated_config_option("admin.query-enging.pgsql-bind-address", None);
+            eprintln!("Please make SQL queries using the CLI or with the :9070/query API.")
+        }
+
+        #[allow(deprecated)]
         Self {
             bind_address: value.bind_address,
             advertised_admin_endpoint: None,
