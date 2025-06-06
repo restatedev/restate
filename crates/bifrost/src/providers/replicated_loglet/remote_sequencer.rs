@@ -163,7 +163,7 @@ where
                 loglet_id,
                 segment_index: self.segment_index,
             },
-            payloads,
+            payloads: payloads.into(),
         };
 
         trace!(

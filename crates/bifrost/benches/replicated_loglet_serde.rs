@@ -204,7 +204,7 @@ fn serialize_append_message(payloads: Arc<[Record]>) -> anyhow::Result<Message> 
             segment_index: 2.into(),
             loglet_id: LogletId::new(12u16.into(), 4.into()),
         },
-        payloads,
+        payloads: payloads.into(),
     };
 
     let body = Body::Datagram(Datagram {
