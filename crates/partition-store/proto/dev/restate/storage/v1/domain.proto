@@ -144,6 +144,7 @@ message InvocationStatusV2 {
   repeated ServiceInvocationResponseSink response_sinks = 7;
   Duration completion_retention_duration = 11;
   Duration journal_retention_duration = 29;
+  string created_using_restate_version = 30;
 
   // Timestamps
   uint64 creation_time = 5;
@@ -333,6 +334,7 @@ message ServiceInvocation {
   optional string idempotency_key = 10;
   SubmitNotificationSink submit_notification_sink = 11;
   Duration journal_retention_duration = 12;
+  string restate_version = 13;
 }
 
 message StateMutation {

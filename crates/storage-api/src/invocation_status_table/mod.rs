@@ -16,8 +16,8 @@ use rangemap::RangeInclusiveMap;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::invocation::{
-    Header, InvocationEpoch, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    Header, InvocationEpoch, InvocationInput, InvocationTarget, ResponseResult, RestateVersion,
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal_v2::{CompletionId, EntryIndex, NotificationId};
 use restate_types::time::MillisSinceEpoch;
@@ -39,7 +39,13 @@ pub struct StatusTimestamps {
 }
 
 impl StatusTimestamps {
-    pub fn init(creation_time: MillisSinceEpoch) -> Self {
+    /// Create a new StatusTimestamps data structure using the system time.
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub fn init() -> Self {
+        let creation_time = MillisSinceEpoch::now();
         Self {
             creation_time,
             modification_time: creation_time,
@@ -50,6 +56,7 @@ impl StatusTimestamps {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         creation_time: MillisSinceEpoch,
         modification_time: MillisSinceEpoch,
@@ -74,16 +81,7 @@ impl StatusTimestamps {
     /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
     pub fn update(&mut self) {
-        self.modification_time = MillisSinceEpoch::now()
-    }
-
-    /// Create a new StatusTimestamps data structure using the system time.
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub fn now() -> Self {
-        StatusTimestamps::init(MillisSinceEpoch::now())
+        self.modification_time = MillisSinceEpoch::now();
     }
 
     /// Update the statistics with an updated [`Self::inboxed_transition_time()`].
@@ -440,6 +438,12 @@ pub struct PreFlightInvocationMetadata {
 
     // --- From ServiceInvocation
     pub invocation_target: InvocationTarget,
+    /// Restate version the invocation was created with.
+    ///
+    /// This is agreed among replicas, but be aware **it might come from the future**.
+    /// No, this ain't a Marty McFly adventure, the problem is that the PP leader proposing the request to Bifrost
+    /// might be on a newer version than the replicas, or the subsequent leader in the next leader epoch.
+    pub created_using_restate_version: RestateVersion,
 
     // Could be split out of ServiceInvocation, e.g. InvocationContent or similar.
     pub argument: Bytes,
@@ -475,7 +479,7 @@ impl PreFlightInvocationMetadata {
     pub fn from_service_invocation(service_invocation: ServiceInvocation) -> Self {
         Self {
             response_sinks: service_invocation.response_sink.into_iter().collect(),
-            timestamps: StatusTimestamps::now(),
+            timestamps: StatusTimestamps::init(),
             invocation_target: service_invocation.invocation_target,
             argument: service_invocation.argument,
             source: service_invocation.source,
@@ -485,6 +489,7 @@ impl PreFlightInvocationMetadata {
             completion_retention_duration: service_invocation.completion_retention_duration,
             journal_retention_duration: service_invocation.journal_retention_duration,
             idempotency_key: service_invocation.idempotency_key,
+            created_using_restate_version: service_invocation.restate_version,
         }
     }
 }
@@ -589,6 +594,12 @@ impl CompletionRangeEpochMap {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InFlightInvocationMetadata {
     pub invocation_target: InvocationTarget,
+    /// Restate version the invocation was created with.
+    ///
+    /// This is agreed among replicas, but be aware **it might come from the future**.
+    /// No, this ain't a Marty McFly adventure, the problem is that the PP leader proposing the request to Bifrost
+    /// might be on a newer version than the replicas, or the subsequent leader in the next leader epoch.
+    pub created_using_restate_version: RestateVersion,
     pub journal_metadata: JournalMetadata,
     pub pinned_deployment: Option<PinnedDeployment>,
     pub response_sinks: HashSet<ServiceInvocationResponseSink>,
@@ -621,6 +632,8 @@ impl InFlightInvocationMetadata {
         (
             Self {
                 invocation_target: pre_flight_invocation_metadata.invocation_target,
+                created_using_restate_version: pre_flight_invocation_metadata
+                    .created_using_restate_version,
                 journal_metadata: JournalMetadata::initialize(
                     pre_flight_invocation_metadata.span_context,
                 ),
@@ -664,6 +677,12 @@ impl InFlightInvocationMetadata {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletedInvocation {
     pub invocation_target: InvocationTarget,
+    /// Restate version the invocation was created with.
+    ///
+    /// This is agreed among replicas, but be aware **it might come from the future**.
+    /// No, this ain't a Marty McFly adventure, the problem is that the PP leader proposing the request to Bifrost
+    /// might be on a newer version than the replicas, or the subsequent leader in the next leader epoch.
+    pub created_using_restate_version: RestateVersion,
     pub source: Source,
     /// For invocations that were originally scheduled, retains the time when the request was originally scheduled to execute
     pub execution_time: Option<MillisSinceEpoch>,
@@ -696,6 +715,8 @@ impl CompletedInvocation {
 
         Self {
             invocation_target: in_flight_invocation_metadata.invocation_target,
+            created_using_restate_version: in_flight_invocation_metadata
+                .created_using_restate_version,
             source: in_flight_invocation_metadata.source,
             execution_time: in_flight_invocation_metadata.execution_time,
             idempotency_key: in_flight_invocation_metadata.idempotency_key,
@@ -767,6 +788,12 @@ mod test_util {
 
     use restate_types::invocation::VirtualObjectHandlerType;
 
+    impl StatusTimestamps {
+        pub fn mock() -> Self {
+            Self::init()
+        }
+    }
+
     impl InFlightInvocationMetadata {
         pub fn mock() -> Self {
             InFlightInvocationMetadata {
@@ -776,10 +803,11 @@ mod test_util {
                     "mock",
                     VirtualObjectHandlerType::Exclusive,
                 ),
+                created_using_restate_version: RestateVersion::current(),
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 pinned_deployment: None,
                 response_sinks: HashSet::new(),
-                timestamps: StatusTimestamps::now(),
+                timestamps: StatusTimestamps::mock(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 execution_time: None,
                 completion_retention_duration: Duration::ZERO,
@@ -794,7 +822,7 @@ mod test_util {
 
     impl CompletedInvocation {
         pub fn mock_neo() -> Self {
-            let mut timestamps = StatusTimestamps::now();
+            let mut timestamps = StatusTimestamps::mock();
             timestamps.record_running_transition_time();
             timestamps.record_completed_transition_time();
 
@@ -805,6 +833,7 @@ mod test_util {
                     "mock",
                     VirtualObjectHandlerType::Exclusive,
                 ),
+                created_using_restate_version: RestateVersion::current(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 execution_time: None,
                 idempotency_key: None,
@@ -825,10 +854,11 @@ mod test_util {
                     "mock",
                     VirtualObjectHandlerType::Exclusive,
                 ),
+                created_using_restate_version: RestateVersion::current(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
                 execution_time: None,
                 idempotency_key: None,
-                timestamps: StatusTimestamps::now(),
+                timestamps: StatusTimestamps::mock(),
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_metadata: JournalMetadata::empty(),
