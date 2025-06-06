@@ -52,7 +52,9 @@ pub type SignalName = ByteString;
 
 // -- Entry metadata
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumIs, derive_more::From)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumIs, strum::EnumTryAs, derive_more::From,
+)]
 pub enum EntryType {
     Command(CommandType),
     Notification(NotificationType),
@@ -85,7 +87,14 @@ pub trait EntryMetadata {
 
 /// Root enum representing a decoded entry.
 #[enum_dispatch(EntryMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    /* The deserialize trait is used only by CLI */ Deserialize,
+)]
 pub enum Entry {
     Command(Command),
     Notification(Notification),

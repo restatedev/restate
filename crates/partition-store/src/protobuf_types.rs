@@ -3184,17 +3184,13 @@ pub mod v1 {
                                 .map_err(|e| ConversionError::InvalidData(e.into()))?;
                             journal_v2::raw::RawEntry::new(
                                 header,
-                                journal_v2::Event {
-                                    ty: event_entry
+                                journal_v2::raw::RawEvent::new(
+                                    event_entry
                                         .ty
                                         .parse::<journal_v2::EventType>()
                                         .map_err(|e| ConversionError::InvalidData(e.into()))?,
-                                    metadata: event_entry
-                                        .metadata
-                                        .into_iter()
-                                        .map(|(k, v)| (k, v.into()))
-                                        .collect(),
-                                },
+                                    event_entry.metadata,
+                                ),
                             )
                         }
                         journal_v2::EntryType::Notification(notification_ty) => {
@@ -3288,16 +3284,19 @@ pub mod v1 {
 
                         notification.serialized_content()
                     }
-                    journal_v2::raw::RawEntryInner::Event(event) => EventEntry {
-                        ty: event.ty.to_string(),
-                        metadata: event
-                            .metadata
-                            .into_iter()
-                            .map(|(k, v)| (k, v.to_string()))
-                            .collect(),
+                    journal_v2::raw::RawEntryInner::Event(event) => {
+                        let (ty, metadata) = event.into_inner();
+
+                        EventEntry {
+                            ty,
+                            metadata: metadata
+                                .into_iter()
+                                .map(|(k, v)| (k, v.to_string()))
+                                .collect(),
+                        }
+                        .encode_to_vec()
+                        .into()
                     }
-                    .encode_to_vec()
-                    .into(),
                 };
 
                 Entry {
