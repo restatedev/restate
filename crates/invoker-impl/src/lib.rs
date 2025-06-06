@@ -1244,7 +1244,7 @@ where
                         related_command_index: invocation_error_report.related_entry_index,
                         related_command_name: invocation_error_report.related_entry_name.clone(),
                         related_command_type: journal_v2_related_command_type,
-                        count: 0,
+                        count: 1,
                     });
                     let _ = self
                         .invocation_state_machine_manager

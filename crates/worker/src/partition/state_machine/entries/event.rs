@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#![allow(dead_code)]
-
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::InvocationStatus;
@@ -35,11 +33,6 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: JournalTable>
             return Ok(());
         };
         let last_entry_index = journal_metadata.length - 1;
-        let new_event = self
-            .entry
-            .as_ref()
-            .unwrap()
-            .decode::<ServiceProtocolV4Codec, Event>()?;
         let Some(last_entry) = ctx
             .storage
             .get_journal_entry(self.invocation_id, last_entry_index)
@@ -50,6 +43,17 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: JournalTable>
         if last_entry.ty() != EntryType::Event {
             return Ok(());
         }
+
+        let new_entry = self.entry.as_ref().unwrap();
+
+        // If entry types don't match, there's nothing to deduplicate
+        if last_entry.inner.try_as_event_ref().map(|e| e.event_type())
+            != new_entry.inner.try_as_event_ref().map(|e| e.event_type())
+        {
+            return Ok(());
+        }
+
+        let new_event = new_entry.decode::<ServiceProtocolV4Codec, Event>()?;
         let last_stored_event = last_entry.decode::<ServiceProtocolV4Codec, Event>()?;
 
         match (last_stored_event, new_event) {

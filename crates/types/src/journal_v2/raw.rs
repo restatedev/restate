@@ -254,6 +254,10 @@ impl RawEvent {
         }
     }
 
+    pub fn event_type(&self) -> &str {
+        &self.ty
+    }
+
     pub fn into_inner(self) -> (String, HashMap<String, serde_json::Value>) {
         (self.ty, self.metadata)
     }
