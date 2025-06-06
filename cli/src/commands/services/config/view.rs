@@ -16,6 +16,7 @@ use comfy_table::Table;
 use indoc::indoc;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_tip};
+use restate_serde_util::DurationString;
 use restate_types::invocation::ServiceType;
 
 // TODO we could infer this text from the OpenAPI docs!
@@ -87,7 +88,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         let mut table = Table::new_styled();
         table.add_kv_row(
             "Idempotent requests retention:",
-            humantime::Duration::from(idempotency_retention),
+            DurationString::display(idempotency_retention),
         );
         c_println!("{table}");
         c_tip!("{}", IDEMPOTENCY_RETENTION);
@@ -98,7 +99,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         let mut table = Table::new_styled();
         table.add_kv_row(
             "Workflow retention time:",
-            humantime::format_duration(
+            DurationString::display(
                 service
                     .workflow_completion_retention
                     .expect("Workflows must have a well defined retention"),
@@ -114,7 +115,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         "Inactivity timeout:",
         service
             .inactivity_timeout
-            .map(|d| humantime::format_duration(d).to_string())
+            .map(DurationString::display)
             .unwrap_or("<DEFAULT>".to_string()),
     );
     c_println!("{table}");
@@ -126,7 +127,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         "Abort timeout:",
         service
             .abort_timeout
-            .map(|d| humantime::format_duration(d).to_string())
+            .map(DurationString::display)
             .unwrap_or("<DEFAULT>".to_string()),
     );
     c_println!("{table}");
