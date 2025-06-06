@@ -285,6 +285,13 @@ where
             ),
         };
 
+        if self.invocation_epoch != journal_metadata.invocation_epoch {
+            shortcircuit!(Err(InvokerError::StaleJournalRead {
+                actual: journal_metadata.invocation_epoch,
+                expected: self.invocation_epoch
+            }));
+        }
+
         // Resolve the deployment metadata
         let schemas = self.schemas.live_load();
         let (deployment, chosen_service_protocol_version, deployment_changed) =
