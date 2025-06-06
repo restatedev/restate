@@ -106,7 +106,7 @@ impl<T: TransportConnect> SequencerDataRpcHandler<T> {
 
         let global_tail = loglet.known_global_tail();
 
-        let loglet_commit = match loglet.enqueue_batch(append.payloads).await {
+        let loglet_commit = match loglet.enqueue_batch(append.payloads.into()).await {
             Ok(loglet_commit) => loglet_commit,
             Err(err) => {
                 return_error_status!(reciprocal, SequencerStatus::from(err), global_tail);

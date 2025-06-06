@@ -10,15 +10,14 @@
 
 //! Defines messages between replicated loglet instances
 
-use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
-
+use restate_encoding::BilrostAs;
 use serde::{Deserialize, Serialize};
+use std::ops::{Deref, DerefMut};
 
 use super::ServiceTag;
 use crate::logs::metadata::SegmentIndex;
-use crate::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber, TailState};
-use crate::net::{default_wire_codec, define_rpc, define_service};
+use crate::logs::{LogId, LogletId, LogletOffset, SequenceNumber, TailState};
+use crate::net::{bilrost_wire_codec_with_v1_fallback, define_rpc, define_service};
 
 pub struct SequencerDataService;
 define_service! {
@@ -38,22 +37,24 @@ define_rpc! {
     @response = Appended,
     @service = SequencerDataService,
 }
-default_wire_codec!(Append);
-default_wire_codec!(Appended);
+bilrost_wire_codec_with_v1_fallback!(Append);
+bilrost_wire_codec_with_v1_fallback!(Appended);
 
 define_rpc! {
     @request = GetSequencerState,
     @response = SequencerState,
     @service = SequencerMetaService,
 }
-default_wire_codec!(GetSequencerState);
-default_wire_codec!(SequencerState);
+bilrost_wire_codec_with_v1_fallback!(GetSequencerState);
+bilrost_wire_codec_with_v1_fallback!(SequencerState);
 
 /// Status of sequencer response.
-#[derive(Debug, Clone, Serialize, Deserialize, derive_more::IsVariant)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::IsVariant, BilrostAs, Default)]
+#[bilrost_as(dto::SequencerStatus)]
 pub enum SequencerStatus {
     /// Ok is returned when request is accepted and processes
     /// successfully. Hence response body is valid
+    #[default]
     Ok,
     /// Sealed is returned when the sequencer cannot accept more
     /// [`Append`] requests because it's sealed
@@ -74,20 +75,26 @@ pub enum SequencerStatus {
     Error { retryable: bool, message: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct CommonRequestHeader {
     /// This is used only to locate the loglet params if this operation activates
     /// the remote loglet
+    #[bilrost(1)]
     pub log_id: LogId,
+    #[bilrost(2)]
     pub segment_index: SegmentIndex,
     /// The loglet_id id globally unique
+    #[bilrost(3)]
     pub loglet_id: LogletId,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct CommonResponseHeader {
+    #[bilrost(1)]
     pub known_global_tail: Option<LogletOffset>,
+    #[bilrost(2)]
     pub sealed: Option<bool>,
+    #[bilrost(3)]
     pub status: SequencerStatus,
 }
 
@@ -110,10 +117,12 @@ impl CommonResponseHeader {
 }
 
 // ** APPEND
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct Append {
+    #[bilrost(1)]
     pub header: CommonRequestHeader,
-    pub payloads: Arc<[Record]>,
+    #[bilrost(2)]
+    pub payloads: crate::net::log_server::Payloads,
 }
 
 impl Append {
@@ -125,10 +134,12 @@ impl Append {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct Appended {
+    #[bilrost(1)]
     pub header: CommonResponseHeader,
     // INVALID if Status indicates that the append failed
+    #[bilrost(2)]
     pub last_offset: LogletOffset,
 }
 
@@ -168,13 +179,87 @@ impl Appended {
 }
 
 // ** GET_TAIL_INFO
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct GetSequencerState {
+    #[bilrost(1)]
     pub header: CommonRequestHeader,
+    #[bilrost(2)]
     pub force_seal_check: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct SequencerState {
+    #[bilrost(1)]
     pub header: CommonResponseHeader,
+}
+
+mod dto {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
+    pub enum SequencerStatus {
+        Unknown,
+        #[bilrost(1)]
+        Ok(()),
+        #[bilrost(2)]
+        Sealed(()),
+        #[bilrost(3)]
+        Gone(()),
+        #[bilrost(4)]
+        LogletIdMismatch(()),
+        #[bilrost(5)]
+        UnknownLogId(()),
+        #[bilrost(6)]
+        UnknownSegmentIndex(()),
+        #[bilrost(7)]
+        NotSequencer(()),
+        #[bilrost(8)]
+        Shutdown(()),
+        #[bilrost(9)]
+        Error((bool, String)),
+    }
+
+    impl From<&super::SequencerStatus> for SequencerStatus {
+        fn from(status: &super::SequencerStatus) -> Self {
+            match status {
+                super::SequencerStatus::Ok => SequencerStatus::Ok(()),
+                &super::SequencerStatus::Sealed => SequencerStatus::Sealed(()),
+                &super::SequencerStatus::Gone => SequencerStatus::Gone(()),
+                &super::SequencerStatus::LogletIdMismatch => SequencerStatus::LogletIdMismatch(()),
+                &super::SequencerStatus::UnknownLogId => SequencerStatus::UnknownLogId(()),
+                &super::SequencerStatus::UnknownSegmentIndex => {
+                    SequencerStatus::UnknownSegmentIndex(())
+                }
+                &super::SequencerStatus::NotSequencer => SequencerStatus::NotSequencer(()),
+                &super::SequencerStatus::Shutdown => SequencerStatus::Shutdown(()),
+                super::SequencerStatus::Error { retryable, message } => {
+                    SequencerStatus::Error((*retryable, message.clone()))
+                }
+            }
+        }
+    }
+
+    impl From<SequencerStatus> for super::SequencerStatus {
+        fn from(status: SequencerStatus) -> Self {
+            match status {
+                SequencerStatus::Unknown => super::SequencerStatus::Error {
+                    retryable: false,
+                    message: "Unknown sequencer response status code".to_string(),
+                },
+                SequencerStatus::Ok(()) => super::SequencerStatus::Ok,
+                SequencerStatus::Sealed(()) => super::SequencerStatus::Sealed,
+                SequencerStatus::Gone(()) => super::SequencerStatus::Gone,
+                SequencerStatus::LogletIdMismatch(()) => super::SequencerStatus::LogletIdMismatch,
+                SequencerStatus::UnknownLogId(()) => super::SequencerStatus::UnknownLogId,
+                SequencerStatus::UnknownSegmentIndex(()) => {
+                    super::SequencerStatus::UnknownSegmentIndex
+                }
+                SequencerStatus::NotSequencer(()) => super::SequencerStatus::NotSequencer,
+                SequencerStatus::Shutdown(()) => super::SequencerStatus::Shutdown,
+                SequencerStatus::Error((retryable, message)) => {
+                    super::SequencerStatus::Error { retryable, message }
+                }
+            }
+        }
+    }
 }

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use bytestring::ByteString;
 use enum_map::Enum;
+use restate_encoding::BilrostNewType;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use smallvec::SmallVec;
@@ -46,6 +47,7 @@ use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
     derive_more::Into,
     derive_more::Display,
     derive_more::Debug,
+    BilrostNewType,
 )]
 #[repr(transparent)]
 #[serde(transparent)]
