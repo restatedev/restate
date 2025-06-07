@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod context;
+pub mod lambda;
 mod opts;
 mod os_env;
 pub mod ui;
