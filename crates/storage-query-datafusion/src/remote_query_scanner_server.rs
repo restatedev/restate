@@ -28,8 +28,8 @@ use restate_core::{cancellation_watcher, my_node_id};
 use restate_types::net::RpcRequest;
 use restate_types::net::remote_query_scanner::{
     RemoteDataFusionService, RemoteQueryScannerClose, RemoteQueryScannerClosed,
-    RemoteQueryScannerNext, RemoteQueryScannerNextResult, RemoteQueryScannerOpen,
-    RemoteQueryScannerOpened, ScannerId,
+    RemoteQueryScannerNext, RemoteQueryScannerNextResult, RemoteQueryScannerNextResultShadow,
+    RemoteQueryScannerOpen, RemoteQueryScannerOpened, ScannerId,
 };
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -51,7 +51,7 @@ impl Scanner {
         let schema = decode_schema(&request.projection_schema_bytes).context("bad schema bytes")?;
         let stream = scanner.scan_partition(
             request.partition_id,
-            request.range.clone(),
+            request.range.0.clone(),
             Arc::new(schema),
         )?;
         Ok(Self {
@@ -178,25 +178,31 @@ impl RemoteQueryScannerServer {
                 "No such scanner {}. This could be an expired scanner due to a slow scan with no activity.",
                 scanner_id
             );
-            return RemoteQueryScannerNextResult::NoSuchScanner(scanner_id);
+            return RemoteQueryScannerNextResult(
+                RemoteQueryScannerNextResultShadow::NoSuchScanner(scanner_id),
+            );
         };
         match scanner.next_batch().await {
-            Ok(Some(record_batch)) => RemoteQueryScannerNextResult::NextBatch {
-                scanner_id,
-                record_batch,
-            },
+            Ok(Some(record_batch)) => {
+                RemoteQueryScannerNextResult(RemoteQueryScannerNextResultShadow::NextBatch {
+                    scanner_id,
+                    record_batch,
+                })
+            }
             Ok(None) => {
                 scanners.remove(&scanner_id);
-                RemoteQueryScannerNextResult::NoMoreRecords(scanner_id)
+                RemoteQueryScannerNextResult(RemoteQueryScannerNextResultShadow::NoMoreRecords(
+                    scanner_id,
+                ))
             }
             Err(e) => {
                 scanners.remove(&scanner_id);
                 warn!("Error while scanning {}: {}", scanner_id, e);
 
-                RemoteQueryScannerNextResult::Failure {
+                RemoteQueryScannerNextResult(RemoteQueryScannerNextResultShadow::Failure {
                     scanner_id,
                     message: format!("{e}"),
-                }
+                })
             }
         }
     }
