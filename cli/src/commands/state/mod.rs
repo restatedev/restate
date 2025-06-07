@@ -11,6 +11,7 @@
 mod clear;
 mod edit;
 mod get;
+mod patch;
 mod util;
 
 use cling::prelude::*;
@@ -21,6 +22,8 @@ pub enum ServiceState {
     Get(get::Get),
     /// Edit the persisted state stored for a service key
     Edit(edit::Edit),
+    /// Patch persisted key-value state for a service key
+    Patch(patch::Patch),
     /// Clear of the state of a given service
     Clear(clear::Clear),
 }
