@@ -42,7 +42,16 @@ use crate::connection::ConnectionInfo;
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "query")]
 pub struct SqlOpts {
+    /// The SQL query to run
     query: String,
+
+    /// Print result as line delimited json instead of using the tabular format
+    #[arg(long, alias = "ldjson")]
+    pub jsonl: bool,
+
+    /// Print result as json array instead of using the tabular format
+    #[arg(long)]
+    pub json: bool,
 }
 
 async fn query(connection: &ConnectionInfo, args: &SqlOpts) -> anyhow::Result<()> {
@@ -66,42 +75,61 @@ async fn query(connection: &ConnectionInfo, args: &SqlOpts) -> anyhow::Result<()
 
     let mut table = Table::new_styled();
 
-    let format_options = FormatOptions::default().with_display_error(true);
-    while let Some(batch) = stream.next().await {
-        let batch = batch?;
-        if table.header().is_none() {
-            // add headers.
-            let mut headers = vec![];
-            for col in batch.schema().fields() {
-                headers.push(col.name().clone().to_uppercase());
+    let mut row_count: usize = 0;
+    if args.json {
+        let mut writer = arrow::json::ArrayWriter::new(std::io::stdout());
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            row_count += batch.num_rows();
+            writer.write_batches(&[&batch])?;
+        }
+        writer.finish()?;
+    } else if args.jsonl {
+        let mut writer = arrow::json::LineDelimitedWriter::new(std::io::stdout());
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            row_count += batch.num_rows();
+            writer.write_batches(&[&batch])?;
+        }
+        writer.finish()?;
+    } else {
+        let format_options = FormatOptions::default().with_display_error(true);
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            if table.header().is_none() {
+                // add headers.
+                let mut headers = vec![];
+                for col in batch.schema().fields() {
+                    headers.push(col.name().clone().to_uppercase());
+                }
+                table.set_styled_header(headers);
             }
-            table.set_styled_header(headers);
+
+            let formatters = batch
+                .columns()
+                .iter()
+                .map(|c| ArrayFormatter::try_new(c.as_ref(), &format_options))
+                .collect::<Result<Vec<_>, ArrowError>>()?;
+
+            for row in 0..batch.num_rows() {
+                let mut cells = Vec::new();
+                for formatter in &formatters {
+                    cells.push(Cell::new(formatter.value(row)));
+                }
+                table.add_row(cells);
+            }
         }
 
-        let formatters = batch
-            .columns()
-            .iter()
-            .map(|c| ArrayFormatter::try_new(c.as_ref(), &format_options))
-            .collect::<Result<Vec<_>, ArrowError>>()?;
-
-        for row in 0..batch.num_rows() {
-            let mut cells = Vec::new();
-            for formatter in &formatters {
-                cells.push(Cell::new(formatter.value(row)));
-            }
-            table.add_row(cells);
+        // Only print if there are actual results.
+        if table.row_count() > 0 {
+            c_println!("{}", table);
+            c_println!();
         }
-    }
-
-    // Only print if there are actual results.
-    if table.row_count() > 0 {
-        c_println!("{}", table);
-        c_println!();
     }
 
     c_eprintln!(
         "{} rows. Query took {:?}",
-        table.row_count(),
+        row_count,
         Styled(Style::Notice, start_time.elapsed())
     );
 
