@@ -137,7 +137,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                 )
                 .await
             {
-                if seq_state.header.status.is_ok() {
+                if seq_state.header.error.is_none() {
                     let global_tail = seq_state
                         .header
                         .known_global_tail
