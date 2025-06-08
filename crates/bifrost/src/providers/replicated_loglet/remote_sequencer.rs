@@ -29,9 +29,7 @@ use restate_types::{
     config::Configuration,
     errors::MaybeRetryableError,
     logs::{LogId, Record, TailOffsetWatch, metadata::SegmentIndex},
-    net::replicated_loglet::{
-        Append, Appended, CommonRequestHeader, SequencerError, SequencerStatus,
-    },
+    net::replicated_loglet::{Append, Appended, CommonRequestHeader, SequencerError},
     replicated_loglet::ReplicatedLogletParams,
 };
 use tracing::{instrument, trace};
@@ -459,9 +457,9 @@ impl MaybeRetryableError for RemoteSequencerError {
     }
 }
 
-impl TryFrom<SequencerStatus> for RemoteSequencerError {
+impl TryFrom<Option<SequencerError>> for RemoteSequencerError {
     type Error = &'static str;
-    fn try_from(value: SequencerStatus) -> Result<Self, &'static str> {
+    fn try_from(value: Option<SequencerError>) -> Result<Self, &'static str> {
         let value = match value {
             Some(SequencerError::UnknownLogId) => RemoteSequencerError::UnknownLogId,
             Some(SequencerError::UnknownSegmentIndex) => RemoteSequencerError::UnknownSegmentIndex,
@@ -504,7 +502,6 @@ mod test {
             RpcRequest,
             replicated_loglet::{
                 Append, Appended, CommonResponseHeader, SequencerDataService, SequencerError,
-                SequencerStatus,
             },
         },
         replicated_loglet::ReplicatedLogletParams,
@@ -516,11 +513,11 @@ mod test {
 
     struct SequencerMockHandler {
         offset: AtomicU32,
-        reply_status: SequencerStatus,
+        reply_status: Option<SequencerError>,
     }
 
     impl SequencerMockHandler {
-        fn with_reply_status(reply_status: SequencerStatus) -> Self {
+        fn with_reply_status(reply_status: Option<SequencerError>) -> Self {
             Self {
                 reply_status,
                 ..Default::default()

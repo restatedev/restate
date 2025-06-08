@@ -74,8 +74,6 @@ pub enum SequencerError {
     Unknown,
 }
 
-pub type SequencerStatus = Option<SequencerError>;
-
 #[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 pub struct CommonRequestHeader {
     /// This is used only to locate the loglet params if this operation activates
@@ -173,7 +171,7 @@ impl Appended {
         }
     }
 
-    pub fn with_status(mut self, status: SequencerStatus) -> Self {
+    pub fn with_status(mut self, status: Option<SequencerError>) -> Self {
         self.header.error = status;
         self
     }
@@ -232,7 +230,7 @@ mod dto {
                 &super::SequencerError::Shutdown => SequencerError::Shutdown(()),
                 super::SequencerError::Error { retryable, message } => {
                     SequencerError::Error((*retryable, message.clone()))
-                },
+                }
                 &super::SequencerError::Unknown => SequencerError::Unknown,
             }
         }
