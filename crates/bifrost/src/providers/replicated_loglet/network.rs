@@ -22,7 +22,7 @@ use restate_types::logs::{LogletOffset, SequenceNumber, TailOffsetWatch};
 use restate_types::net::RpcRequest;
 use restate_types::net::replicated_loglet::{
     Append, Appended, CommonRequestHeader, CommonResponseHeader, GetSequencerState,
-    SequencerDataService, SequencerError, SequencerMetaService, SequencerState,
+    SequencerDataService, SequencerMetaService, SequencerState, SequencerStatus,
 };
 
 use super::error::ReplicatedLogletError;
@@ -37,7 +37,7 @@ macro_rules! return_error_status {
             header: CommonResponseHeader {
                 known_global_tail: Some($tail.latest_offset()),
                 sealed: Some($tail.is_sealed()),
-                error: Some($status),
+                status: Some($status),
             },
         };
 
@@ -50,7 +50,7 @@ macro_rules! return_error_status {
             header: CommonResponseHeader {
                 known_global_tail: None,
                 sealed: None,
-                error: Some($status),
+                status: Some($status),
             },
         };
 
@@ -101,7 +101,7 @@ impl<T: TransportConnect> SequencerDataRpcHandler<T> {
         };
 
         if !loglet.is_sequencer_local() {
-            return_error_status!(reciprocal, SequencerError::NotSequencer);
+            return_error_status!(reciprocal, SequencerStatus::NotSequencer);
         }
 
         let global_tail = loglet.known_global_tail();
@@ -109,7 +109,7 @@ impl<T: TransportConnect> SequencerDataRpcHandler<T> {
         let loglet_commit = match loglet.enqueue_batch(append.payloads.into()).await {
             Ok(loglet_commit) => loglet_commit,
             Err(err) => {
-                return_error_status!(reciprocal, SequencerError::from(err), global_tail);
+                return_error_status!(reciprocal, SequencerStatus::from(err), global_tail);
             }
         };
 
@@ -157,7 +157,7 @@ impl<T: TransportConnect> SequencerInfoRpcHandler<T> {
                     header: CommonResponseHeader {
                         known_global_tail: None,
                         sealed: None,
-                        error: Some(err),
+                        status: Some(err),
                     },
                 };
                 reciprocal.send(response);
@@ -170,7 +170,7 @@ impl<T: TransportConnect> SequencerInfoRpcHandler<T> {
                 header: CommonResponseHeader {
                     known_global_tail: None,
                     sealed: None,
-                    error: Some(SequencerError::NotSequencer),
+                    status: Some(SequencerStatus::NotSequencer),
                 },
             };
             reciprocal.send(response);
@@ -185,7 +185,7 @@ impl<T: TransportConnect> SequencerInfoRpcHandler<T> {
                             header: CommonResponseHeader {
                                 known_global_tail: Some(tail.offset()),
                                 sealed: Some(tail.is_sealed()),
-                                error: None,
+                                status: None,
                             },
                         };
                         reciprocal.send(sequencer_state);
@@ -195,7 +195,7 @@ impl<T: TransportConnect> SequencerInfoRpcHandler<T> {
                             header: CommonResponseHeader {
                                 known_global_tail: None,
                                 sealed: None,
-                                error: Some(SequencerError::Error {
+                                status: Some(SequencerStatus::Error {
                                     retryable: true,
                                     message: err.to_string(),
                                 }),
@@ -214,7 +214,7 @@ impl<T: TransportConnect> SequencerInfoRpcHandler<T> {
                 header: CommonResponseHeader {
                     known_global_tail: Some(tail.offset()),
                     sealed: Some(tail.is_sealed()),
-                    error: None,
+                    status: None,
                 },
             };
             reciprocal.send(sequencer_state);
@@ -225,29 +225,29 @@ impl<T: TransportConnect> SequencerInfoRpcHandler<T> {
 fn create_loglet<T: TransportConnect>(
     provider: &ReplicatedLogletProvider<T>,
     header: &CommonRequestHeader,
-) -> Result<Arc<ReplicatedLoglet<T>>, SequencerError> {
+) -> Result<Arc<ReplicatedLoglet<T>>, SequencerStatus> {
     // search the chain
     let logs = Metadata::with_current(|m| m.logs_ref());
     let chain = logs
         .chain(&header.log_id)
-        .ok_or(SequencerError::UnknownLogId)?;
+        .ok_or(SequencerStatus::UnknownLogId)?;
 
     let segment = chain
         .iter()
         .rev()
         .find(|segment| segment.index() == header.segment_index)
-        .ok_or(SequencerError::UnknownSegmentIndex)?;
+        .ok_or(SequencerStatus::UnknownSegmentIndex)?;
 
     provider
         .get_or_create_loglet(header.log_id, header.segment_index, &segment.config.params)
-        .map_err(SequencerError::from)
+        .map_err(SequencerStatus::from)
 }
 
 async fn get_loglet<T: TransportConnect>(
     provider: &ReplicatedLogletProvider<T>,
     request_logs_version: Version,
     header: &CommonRequestHeader,
-) -> Result<Arc<ReplicatedLoglet<T>>, SequencerError> {
+) -> Result<Arc<ReplicatedLoglet<T>>, SequencerStatus> {
     let metadata = Metadata::current();
     let mut current_logs_version = metadata.logs_version();
 
@@ -257,12 +257,12 @@ async fn get_loglet<T: TransportConnect>(
                 return Ok(loglet);
             }
 
-            return Err(SequencerError::LogletIdMismatch);
+            return Err(SequencerStatus::LogletIdMismatch);
         }
 
         match create_loglet(provider, header) {
             Ok(loglet) => return Ok(loglet),
-            Err(SequencerError::UnknownLogId | SequencerError::UnknownSegmentIndex) => {
+            Err(SequencerStatus::UnknownLogId | SequencerStatus::UnknownSegmentIndex) => {
                 // possible outdated metadata
             }
             Err(err) => return Err(err),
@@ -274,22 +274,22 @@ async fn get_loglet<T: TransportConnect>(
                 .wait_for_version(MetadataKind::Logs, request_logs_version)
                 .await
             {
-                Err(_) => return Err(SequencerError::Shutdown),
+                Err(_) => return Err(SequencerStatus::Shutdown),
                 Ok(version) => {
                     current_logs_version = version;
                 }
             }
         } else {
-            return Err(SequencerError::UnknownLogId);
+            return Err(SequencerStatus::UnknownLogId);
         }
     }
 }
 
-impl From<OperationError> for SequencerError {
+impl From<OperationError> for SequencerStatus {
     fn from(value: OperationError) -> Self {
         match value {
-            OperationError::Shutdown(_) => SequencerError::Shutdown,
-            OperationError::Other(err) => SequencerError::Error {
+            OperationError::Shutdown(_) => SequencerStatus::Shutdown,
+            OperationError::Other(err) => SequencerStatus::Error {
                 retryable: err.retryable(),
                 message: err.to_string(),
             },
@@ -297,7 +297,7 @@ impl From<OperationError> for SequencerError {
     }
 }
 
-impl From<ReplicatedLogletError> for SequencerError {
+impl From<ReplicatedLogletError> for SequencerStatus {
     fn from(value: ReplicatedLogletError) -> Self {
         Self::Error {
             retryable: value.retryable(),
@@ -319,7 +319,7 @@ impl WaitForCommitTask {
                 header: CommonResponseHeader {
                     known_global_tail: Some(self.global_tail.latest_offset()),
                     sealed: Some(self.global_tail.is_sealed()),
-                    error: None,
+                    status: None,
                 },
                 last_offset: offset,
             },
@@ -327,7 +327,7 @@ impl WaitForCommitTask {
                 header: CommonResponseHeader {
                     known_global_tail: Some(self.global_tail.latest_offset()),
                     sealed: Some(self.global_tail.is_sealed()), // this must be true
-                    error: Some(SequencerError::Sealed),
+                    status: Some(SequencerStatus::Sealed),
                 },
                 last_offset: LogletOffset::INVALID,
             },
@@ -335,7 +335,7 @@ impl WaitForCommitTask {
                 header: CommonResponseHeader {
                     known_global_tail: Some(self.global_tail.latest_offset()),
                     sealed: Some(self.global_tail.is_sealed()), // this must be true
-                    error: Some(SequencerError::Gone),
+                    status: Some(SequencerStatus::Gone),
                 },
                 last_offset: LogletOffset::INVALID,
             },
@@ -343,7 +343,7 @@ impl WaitForCommitTask {
                 header: CommonResponseHeader {
                     known_global_tail: Some(self.global_tail.latest_offset()),
                     sealed: Some(self.global_tail.is_sealed()),
-                    error: Some(SequencerError::Shutdown),
+                    status: Some(SequencerStatus::Shutdown),
                 },
                 last_offset: LogletOffset::INVALID,
             },
@@ -351,7 +351,7 @@ impl WaitForCommitTask {
                 header: CommonResponseHeader {
                     known_global_tail: Some(self.global_tail.latest_offset()),
                     sealed: Some(self.global_tail.is_sealed()),
-                    error: Some(SequencerError::Error {
+                    status: Some(SequencerStatus::Error {
                         retryable: err.retryable(),
                         message: err.to_string(),
                     }),

@@ -50,8 +50,8 @@ bilrost_wire_codec_with_v1_fallback!(SequencerState);
 
 /// Non-success status of sequencer response.
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::IsVariant, BilrostAs, Default)]
-#[bilrost_as(dto::SequencerError)]
-pub enum SequencerError {
+#[bilrost_as(dto::SequencerStatus)]
+pub enum SequencerStatus {
     /// Sealed is returned when the sequencer cannot accept more
     /// [`Append`] requests because it's sealed
     Sealed,
@@ -94,7 +94,7 @@ pub struct CommonResponseHeader {
     #[bilrost(2)]
     pub sealed: Option<bool>,
     #[bilrost(3)]
-    pub error: Option<SequencerError>,
+    pub status: Option<SequencerStatus>,
 }
 
 impl CommonResponseHeader {
@@ -102,7 +102,7 @@ impl CommonResponseHeader {
         Self {
             known_global_tail: tail_state.map(|t| t.offset()),
             sealed: tail_state.map(|t| t.is_sealed()),
-            error: None,
+            status: None,
         }
     }
 
@@ -110,7 +110,7 @@ impl CommonResponseHeader {
         Self {
             known_global_tail: None,
             sealed: None,
-            error: None,
+            status: None,
         }
     }
 }
@@ -171,8 +171,8 @@ impl Appended {
         }
     }
 
-    pub fn with_status(mut self, status: Option<SequencerError>) -> Self {
-        self.header.error = status;
+    pub fn with_status(mut self, status: Option<SequencerStatus>) -> Self {
+        self.header.status = status;
         self
     }
 }
@@ -196,7 +196,7 @@ mod dto {
     use super::*;
 
     #[derive(Debug, Clone, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
-    pub enum SequencerError {
+    pub enum SequencerStatus {
         #[bilrost(2)]
         Sealed(()),
         #[bilrost(3)]
@@ -216,42 +216,42 @@ mod dto {
         Unknown,
     }
 
-    impl From<&super::SequencerError> for SequencerError {
-        fn from(status: &super::SequencerError) -> Self {
+    impl From<&super::SequencerStatus> for SequencerStatus {
+        fn from(status: &super::SequencerStatus) -> Self {
             match status {
-                &super::SequencerError::Sealed => SequencerError::Sealed(()),
-                &super::SequencerError::Gone => SequencerError::Gone(()),
-                &super::SequencerError::LogletIdMismatch => SequencerError::LogletIdMismatch(()),
-                &super::SequencerError::UnknownLogId => SequencerError::UnknownLogId(()),
-                &super::SequencerError::UnknownSegmentIndex => {
-                    SequencerError::UnknownSegmentIndex(())
+                &super::SequencerStatus::Sealed => SequencerStatus::Sealed(()),
+                &super::SequencerStatus::Gone => SequencerStatus::Gone(()),
+                &super::SequencerStatus::LogletIdMismatch => SequencerStatus::LogletIdMismatch(()),
+                &super::SequencerStatus::UnknownLogId => SequencerStatus::UnknownLogId(()),
+                &super::SequencerStatus::UnknownSegmentIndex => {
+                    SequencerStatus::UnknownSegmentIndex(())
                 }
-                &super::SequencerError::NotSequencer => SequencerError::NotSequencer(()),
-                &super::SequencerError::Shutdown => SequencerError::Shutdown(()),
-                super::SequencerError::Error { retryable, message } => {
-                    SequencerError::Error((*retryable, message.clone()))
+                &super::SequencerStatus::NotSequencer => SequencerStatus::NotSequencer(()),
+                &super::SequencerStatus::Shutdown => SequencerStatus::Shutdown(()),
+                super::SequencerStatus::Error { retryable, message } => {
+                    SequencerStatus::Error((*retryable, message.clone()))
                 }
-                &super::SequencerError::Unknown => SequencerError::Unknown,
+                &super::SequencerStatus::Unknown => SequencerStatus::Unknown,
             }
         }
     }
 
-    impl From<SequencerError> for super::SequencerError {
-        fn from(status: SequencerError) -> Self {
+    impl From<SequencerStatus> for super::SequencerStatus {
+        fn from(status: SequencerStatus) -> Self {
             match status {
-                SequencerError::Sealed(()) => super::SequencerError::Sealed,
-                SequencerError::Gone(()) => super::SequencerError::Gone,
-                SequencerError::LogletIdMismatch(()) => super::SequencerError::LogletIdMismatch,
-                SequencerError::UnknownLogId(()) => super::SequencerError::UnknownLogId,
-                SequencerError::UnknownSegmentIndex(()) => {
-                    super::SequencerError::UnknownSegmentIndex
+                SequencerStatus::Sealed(()) => super::SequencerStatus::Sealed,
+                SequencerStatus::Gone(()) => super::SequencerStatus::Gone,
+                SequencerStatus::LogletIdMismatch(()) => super::SequencerStatus::LogletIdMismatch,
+                SequencerStatus::UnknownLogId(()) => super::SequencerStatus::UnknownLogId,
+                SequencerStatus::UnknownSegmentIndex(()) => {
+                    super::SequencerStatus::UnknownSegmentIndex
                 }
-                SequencerError::NotSequencer(()) => super::SequencerError::NotSequencer,
-                SequencerError::Shutdown(()) => super::SequencerError::Shutdown,
-                SequencerError::Error((retryable, message)) => {
-                    super::SequencerError::Error { retryable, message }
+                SequencerStatus::NotSequencer(()) => super::SequencerStatus::NotSequencer,
+                SequencerStatus::Shutdown(()) => super::SequencerStatus::Shutdown,
+                SequencerStatus::Error((retryable, message)) => {
+                    super::SequencerStatus::Error { retryable, message }
                 }
-                SequencerError::Unknown => super::SequencerError::Unknown,
+                SequencerStatus::Unknown => super::SequencerStatus::Unknown,
             }
         }
     }
