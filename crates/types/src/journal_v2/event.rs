@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
-use crate::journal_v2::{Entry, EntryMetadata, EntryType};
+use std::collections::HashMap;
+
 use bytestring::ByteString;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use strum::EnumString;
+
+use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
+use crate::journal_v2::{Entry, EntryMetadata, EntryType};
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumString, strum::Display, Serialize, Deserialize)]
 pub enum EventType {

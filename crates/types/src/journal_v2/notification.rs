@@ -8,15 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt;
+
+use bytes::Bytes;
+use enum_dispatch::enum_dispatch;
+use serde::{Deserialize, Serialize};
+
 use crate::identifiers::InvocationId;
 use crate::journal_v2::raw::{RawEntry, TryFromEntry, TryFromEntryError};
 use crate::journal_v2::{
     CompletionId, Encoder, Entry, EntryMetadata, EntryType, Failure, SignalIndex, SignalName,
 };
-use bytes::Bytes;
-use enum_dispatch::enum_dispatch;
-use serde::{Deserialize, Serialize};
-use std::fmt;
 
 /// See [`Notification`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -96,8 +98,8 @@ impl Notification {
         Self::Signal(signal)
     }
 
-    pub fn encode<E: Encoder>(&self) -> RawEntry {
-        E::encode_entry(&Entry::Notification(self.clone()))
+    pub fn encode<E: Encoder>(self) -> RawEntry {
+        E::encode_entry(Entry::Notification(self))
     }
 }
 

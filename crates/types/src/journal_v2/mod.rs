@@ -23,10 +23,11 @@
 //! 2. [`RawEntry`] -> [`Entry`]. This is used in Datafusion and other observability APIs. As above, this conversion requires a [`Decoder`].
 //! 3. [`RawEntry`] only. This is used in the Invoker when preparing service protocol messages.
 
+use std::fmt;
+
 use bytestring::ByteString;
 use enum_dispatch::enum_dispatch;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 pub mod command;
 pub mod encoding;
@@ -93,7 +94,7 @@ pub enum Entry {
 }
 
 impl Entry {
-    pub fn encode<E: Encoder>(&self) -> RawEntry {
+    pub fn encode<E: Encoder>(self) -> RawEntry {
         E::encode_entry(self)
     }
 }

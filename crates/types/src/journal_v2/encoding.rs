@@ -30,5 +30,5 @@ pub trait Decoder {
 ///
 /// This is typically depending on the concrete service protocol implementation/format/version.
 pub trait Encoder {
-    fn encode_entry(entry: &Entry) -> RawEntry;
+    fn encode_entry(entry: Entry) -> RawEntry;
 }
