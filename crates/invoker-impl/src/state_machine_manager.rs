@@ -31,7 +31,7 @@ impl<SR> Default for InvocationStateMachineManager<SR> {
 
 #[derive(Debug)]
 struct PartitionInvocationStateMachineCoordinator<IR> {
-    output_tx: mpsc::Sender<Effect>,
+    output_tx: mpsc::Sender<Box<Effect>>,
     invocation_state_machines: HashMap<InvocationId, InvocationStateMachine>,
     partition_key_range: RangeInclusive<PartitionKey>,
     storage_reader: IR,
@@ -55,7 +55,7 @@ where
     pub(super) fn resolve_partition_sender(
         &self,
         partition: PartitionLeaderEpoch,
-    ) -> Option<&mpsc::Sender<Effect>> {
+    ) -> Option<&mpsc::Sender<Box<Effect>>> {
         self.partitions.get(&partition).map(|p| &p.output_tx)
     }
 
@@ -64,7 +64,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
-    ) -> Option<(&mpsc::Sender<Effect>, &mut InvocationStateMachine)> {
+    ) -> Option<(&mpsc::Sender<Box<Effect>>, &mut InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
                 .get_mut(invocation_id)
@@ -78,7 +78,7 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
         invocation_epoch: InvocationEpoch,
-        f: impl FnOnce(&mpsc::Sender<Effect>, &mut InvocationStateMachine) -> R,
+        f: impl FnOnce(&mpsc::Sender<Box<Effect>>, &mut InvocationStateMachine) -> R,
     ) -> Option<R> {
         if let Some((tx, ism)) =
             self.resolve_invocation_with_epoch(partition, invocation_id, invocation_epoch)
@@ -97,7 +97,7 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
         invocation_epoch: InvocationEpoch,
-    ) -> Option<(&mpsc::Sender<Effect>, &mut InvocationStateMachine)> {
+    ) -> Option<(&mpsc::Sender<Box<Effect>>, &mut InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
                 .get_mut(invocation_id)
@@ -112,7 +112,7 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
         invocation_epoch: InvocationEpoch,
-    ) -> Option<(&mpsc::Sender<Effect>, &IR, InvocationStateMachine)> {
+    ) -> Option<(&mpsc::Sender<Box<Effect>>, &IR, InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             if let Some(ism) = p.invocation_state_machines.get(invocation_id) {
                 if ism.invocation_epoch == invocation_epoch {
@@ -143,7 +143,7 @@ where
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: IR,
-        sender: mpsc::Sender<Effect>,
+        sender: mpsc::Sender<Box<Effect>>,
     ) {
         self.partitions.insert(
             partition,

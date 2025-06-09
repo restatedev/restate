@@ -316,14 +316,14 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
                 invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
             })),
-            Command::InvokerEffect(InvokerEffect {
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: Default::default(),
                     service_protocol_version: ServiceProtocolVersion::V3,
                 }),
-            }),
+            })),
         ])
         .await;
 
@@ -442,14 +442,14 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
                 invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
             })),
-            Command::InvokerEffect(InvokerEffect {
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: Default::default(),
                     service_protocol_version: ServiceProtocolVersion::V3,
                 }),
-            }),
+            })),
         ])
         .await;
 
@@ -613,7 +613,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
     // Now create cancel invocation entry
     let actions = test_env
         .apply_multiple(vec![
-            Command::InvokerEffect(InvokerEffect {
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -622,8 +622,8 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
                         CancelInvocationTarget::InvocationId(callee_1.to_string().into()),
                     )),
                 },
-            }),
-            Command::InvokerEffect(InvokerEffect {
+            })),
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -632,7 +632,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
                         CancelInvocationTarget::CallEntryIndex(2),
                     )),
                 },
-            }),
+            })),
         ])
         .await;
 
