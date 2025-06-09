@@ -913,7 +913,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let request_id_3 = PartitionProcessorRpcRequestId::default();
 
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),
@@ -922,7 +922,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
                 invocation_target.clone(),
                 Source::Ingress(request_id_1),
             )
-        }))
+        })))
         .await;
     assert_that!(
         actions,
@@ -1071,11 +1071,11 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     // Let's start the first invocation
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id: first_invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
     assert_that!(
         actions,
@@ -1091,11 +1091,11 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     // Let's start the second invocation
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id: second_invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
 
     // This should have not been invoked, but it should rather be in the inbox
@@ -1188,7 +1188,7 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
         si.response_sink = Some(ServiceInvocationResponseSink::Ingress { request_id });
         si.submit_notification_sink = Some(SubmitNotificationSink::Ingress { request_id });
         si.source = Source::Ingress(request_id);
-        si
+        Box::new(si)
     };
     let actions = test_env
         .apply(Command::Invoke(service_invocation.clone()))

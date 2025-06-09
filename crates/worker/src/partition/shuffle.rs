@@ -499,6 +499,7 @@ mod tests {
                             .get(index)
                             .expect("subslice entry should exist")
                             .clone()
+                            .map(Box::new)
                             .expect("message should exist"),
                     ),
                 )
@@ -550,7 +551,9 @@ mod tests {
             Ok(self.records.get(next_some_index).map(|record| {
                 (
                     u64::try_from(next_some_index).expect("usize fits in u64"),
-                    OutboxMessage::ServiceInvocation(record.clone().expect("record must exist")),
+                    OutboxMessage::ServiceInvocation(
+                        record.clone().map(Box::new).expect("record must exist"),
+                    ),
                 )
             }))
         }
@@ -569,7 +572,7 @@ mod tests {
             if let Some(envelope) = record.try_decode::<Envelope>().transpose()? {
                 let_assert!(Command::Invoke(service_invocation) = envelope.command);
                 let invocation_id = service_invocation.invocation_id;
-                messages.push(service_invocation);
+                messages.push(*service_invocation);
 
                 if last_invocation_id == invocation_id {
                     break;
