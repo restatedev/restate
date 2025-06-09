@@ -457,11 +457,11 @@ mod tests {
     struct MockOutboxReader {
         base_offset: MessageIndex,
         // there can be holes in our records
-        records: Vec<Option<ServiceInvocation>>,
+        records: Vec<Option<Box<ServiceInvocation>>>,
     }
 
     impl MockOutboxReader {
-        fn new(base_offset: MessageIndex, records: Vec<Option<ServiceInvocation>>) -> Self {
+        fn new(base_offset: MessageIndex, records: Vec<Option<Box<ServiceInvocation>>>) -> Self {
             Self {
                 base_offset,
                 records,
@@ -471,9 +471,9 @@ mod tests {
         fn subslice_from_index(
             &self,
             starting_index: MessageIndex,
-        ) -> &[Option<ServiceInvocation>] {
+        ) -> &[Option<Box<ServiceInvocation>>] {
             if starting_index < self.base_offset {
-                <&[Option<ServiceInvocation>]>::default()
+                <&[Option<Box<ServiceInvocation>>]>::default()
             } else {
                 self.records
                     .get((starting_index - self.base_offset) as usize..)
@@ -509,12 +509,12 @@ mod tests {
     /// Outbox reader which is used to let the shuffler fail in a controlled manner so that we
     /// can simulate restarts.
     struct FailingOutboxReader {
-        records: Vec<Option<ServiceInvocation>>,
+        records: Vec<Option<Box<ServiceInvocation>>>,
         fail_index: MessageIndex,
     }
 
     impl FailingOutboxReader {
-        fn new(records: Vec<Option<ServiceInvocation>>, fail_index: MessageIndex) -> Self {
+        fn new(records: Vec<Option<Box<ServiceInvocation>>>, fail_index: MessageIndex) -> Self {
             Self {
                 records,
                 fail_index,
@@ -559,7 +559,7 @@ mod tests {
     async fn collect_invoke_commands_until(
         stream: impl Stream<Item = restate_bifrost::Result<LogEntry>>,
         last_invocation_id: InvocationId,
-    ) -> anyhow::Result<Vec<ServiceInvocation>> {
+    ) -> anyhow::Result<Vec<Box<ServiceInvocation>>> {
         let mut messages = Vec::new();
         let mut stream = std::pin::pin!(stream);
 
@@ -581,8 +581,8 @@ mod tests {
     }
 
     fn assert_received_invoke_commands(
-        received_invokes: Vec<ServiceInvocation>,
-        expected_invokes: Vec<Option<ServiceInvocation>>,
+        received_invokes: Vec<Box<ServiceInvocation>>,
+        expected_invokes: Vec<Option<Box<ServiceInvocation>>>,
     ) {
         // remove Nones
         let expected_messages = expected_invokes.iter().flatten();
@@ -640,7 +640,7 @@ mod tests {
 
     #[test(restate_core::test)]
     async fn shuffle_consecutive_outbox() -> anyhow::Result<()> {
-        let expected_messages = iter::repeat_with(|| Some(ServiceInvocation::mock()))
+        let expected_messages = iter::repeat_with(|| Some(Box::new(ServiceInvocation::mock())))
             .take(10)
             .collect::<Vec<_>>();
 
@@ -674,11 +674,11 @@ mod tests {
     #[test(restate_core::test)]
     async fn shuffle_holey_outbox() -> anyhow::Result<()> {
         let expected_messages = vec![
-            Some(ServiceInvocation::mock()),
+            Some(Box::new(ServiceInvocation::mock())),
             None,
             None,
-            Some(ServiceInvocation::mock()),
-            Some(ServiceInvocation::mock()),
+            Some(Box::new(ServiceInvocation::mock())),
+            Some(Box::new(ServiceInvocation::mock())),
         ];
 
         let last_invocation_id = expected_messages
@@ -710,9 +710,10 @@ mod tests {
 
     #[test(restate_core::test)]
     async fn shuffle_with_restarts() -> anyhow::Result<()> {
-        let expected_messages: Vec<_> = iter::repeat_with(|| Some(ServiceInvocation::mock()))
-            .take(100)
-            .collect();
+        let expected_messages: Vec<_> =
+            iter::repeat_with(|| Some(Box::new(ServiceInvocation::mock())))
+                .take(100)
+                .collect();
 
         let last_invocation_id = expected_messages
             .last()

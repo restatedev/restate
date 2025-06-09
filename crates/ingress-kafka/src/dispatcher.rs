@@ -36,7 +36,7 @@ use tracing::debug;
 
 #[derive(Debug)]
 pub struct KafkaIngressEvent {
-    service_invocation: ServiceInvocation,
+    service_invocation: Box<ServiceInvocation>,
     deduplication_id: KafkaDeduplicationId,
     deduplication_index: MessageIndex,
     proxying_partition_key: Option<PartitionKey>,
@@ -153,11 +153,11 @@ impl KafkaIngressEvent {
         );
 
         // Finally generate service invocation
-        let mut service_invocation = ServiceInvocation::initialize(
+        let mut service_invocation = Box::new(ServiceInvocation::initialize(
             invocation_id,
             invocation_target,
             restate_types::invocation::Source::Subscription(subscription.id()),
-        );
+        ));
         service_invocation.with_related_span(SpanRelation::Parent(ingress_span_context));
         service_invocation.argument = payload;
         service_invocation.headers = headers;
@@ -234,7 +234,7 @@ impl DispatchKafkaEvent for KafkaIngressDispatcher {
 
 fn wrap_service_invocation_in_envelope(
     partition_key: PartitionKey,
-    service_invocation: ServiceInvocation,
+    service_invocation: Box<ServiceInvocation>,
     from_node_id: GenerationalNodeId,
     deduplication_source: String,
     deduplication_index: MessageIndex,
