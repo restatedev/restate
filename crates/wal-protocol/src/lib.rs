@@ -450,7 +450,7 @@ mod envelope {
                 Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
             ),
             Command::ProxyThrough(value) => {
-                let value = protobuf::ServiceInvocation::from(value.clone());
+                let value = protobuf::ServiceInvocation::from(value.as_ref());
                 (CommandKind::ProxyThrough, Field::encode_protobuf(&value))
             }
             Command::AttachInvocation(value) => {
