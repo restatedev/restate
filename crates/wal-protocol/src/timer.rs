@@ -44,7 +44,10 @@ impl TimerKeyValue {
         Self { timer_key, value }
     }
 
-    pub fn invoke(wake_up_time: MillisSinceEpoch, service_invocation: ServiceInvocation) -> Self {
+    pub fn invoke(
+        wake_up_time: MillisSinceEpoch,
+        service_invocation: Box<ServiceInvocation>,
+    ) -> Self {
         let (timer_key, value) = Timer::invoke(wake_up_time.as_u64(), service_invocation);
 
         Self { timer_key, value }

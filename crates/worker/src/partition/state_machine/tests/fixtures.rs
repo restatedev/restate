@@ -155,11 +155,11 @@ pub async fn mock_start_invocation_with_invocation_target(
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let actions = state_machine
-        .apply(Command::Invoke(ServiceInvocation::initialize(
+        .apply(Command::Invoke(Box::new(ServiceInvocation::initialize(
             invocation_id,
             invocation_target.clone(),
             Source::Ingress(PartitionProcessorRpcRequestId::new()),
-        )))
+        ))))
         .await;
 
     assert_that!(

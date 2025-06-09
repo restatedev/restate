@@ -129,8 +129,10 @@ where
             )
         };
 
-        ctx.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
-            .await?;
+        ctx.handle_outgoing_message(OutboxMessage::ServiceInvocation(Box::new(
+            service_invocation,
+        )))
+        .await?;
 
         // Notify the invocation id back
         self.completions_to_process.push_back(

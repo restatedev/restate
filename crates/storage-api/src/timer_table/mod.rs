@@ -178,7 +178,7 @@ impl restate_types::timer::TimerKey for TimerKey {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Timer {
     // TODO remove this variant when removing the old invocation status table
-    Invoke(ServiceInvocation),
+    Invoke(Box<ServiceInvocation>),
     CompleteJournalEntry(
         InvocationId,
         u32,
@@ -206,7 +206,7 @@ impl Timer {
         )
     }
 
-    pub fn invoke(timestamp: u64, service_invocation: ServiceInvocation) -> (TimerKey, Self) {
+    pub fn invoke(timestamp: u64, service_invocation: Box<ServiceInvocation>) -> (TimerKey, Self) {
         (
             TimerKey::invoke(
                 timestamp,

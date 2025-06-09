@@ -123,7 +123,7 @@ mod tests {
         // Create and complete a fresh invocation
         let actions = test_env
             .apply_multiple([
-                Command::Invoke(ServiceInvocation {
+                Command::Invoke(Box::new(ServiceInvocation {
                     invocation_id,
                     invocation_target: invocation_target.clone(),
                     response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
@@ -131,7 +131,7 @@ mod tests {
                     completion_retention_duration: completion_retention,
                     journal_retention_duration: journal_retention,
                     ..ServiceInvocation::mock()
-                }),
+                })),
                 pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
                 invoker_entry_effect(
                     invocation_id,
@@ -189,13 +189,13 @@ mod tests {
         // At this point we should still be able to de-duplicate the invocation
         let request_id = PartitionProcessorRpcRequestId::default();
         let actions = test_env
-            .apply(Command::Invoke(ServiceInvocation {
+            .apply(Command::Invoke(Box::new(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
                 idempotency_key: Some(idempotency_key),
                 ..ServiceInvocation::mock()
-            }))
+            })))
             .await;
         assert_that!(
             actions,
