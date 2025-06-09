@@ -81,6 +81,6 @@ pub trait InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
-        sender: mpsc::Sender<Effect>,
+        sender: mpsc::Sender<Box<Effect>>,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 }

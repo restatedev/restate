@@ -69,7 +69,7 @@ pub(crate) enum InputCommand<SR> {
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
-        sender: mpsc::Sender<Effect>,
+        sender: mpsc::Sender<Box<Effect>>,
     },
 }
 
@@ -178,7 +178,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
-        sender: mpsc::Sender<Effect>,
+        sender: mpsc::Sender<Box<Effect>>,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::RegisterPartition {

@@ -151,7 +151,7 @@ pub enum Command {
 
     // -- Partition processor events for PP
     /// Invoker is reporting effect(s) from an ongoing invocation.
-    InvokerEffect(restate_invoker_api::Effect),
+    InvokerEffect(Box<restate_invoker_api::Effect>),
     /// Timer has fired
     Timer(TimerKeyValue),
     /// Schedule timer
