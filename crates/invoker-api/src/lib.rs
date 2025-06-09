@@ -160,7 +160,7 @@ pub mod test_util {
             _partition: PartitionLeaderEpoch,
             _partition_key_range: RangeInclusive<PartitionKey>,
             _storage_reader: SR,
-            _sender: Sender<Effect>,
+            _sender: Sender<Box<Effect>>,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }

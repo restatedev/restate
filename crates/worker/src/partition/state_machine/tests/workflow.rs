@@ -92,7 +92,7 @@ async fn start_workflow_method() {
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
         .apply_multiple([
-            Command::InvokerEffect(InvokerEffect {
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -101,12 +101,12 @@ async fn start_workflow_method() {
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
-            }),
-            Command::InvokerEffect(InvokerEffect {
+            })),
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
-            }),
+            })),
         ])
         .await;
 
@@ -229,7 +229,7 @@ async fn attach_by_workflow_key() {
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
         .apply_multiple([
-            Command::InvokerEffect(InvokerEffect {
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -238,12 +238,12 @@ async fn attach_by_workflow_key() {
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
-            }),
-            Command::InvokerEffect(InvokerEffect {
+            })),
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
-            }),
+            })),
         ])
         .await;
 
