@@ -55,7 +55,6 @@ http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["server", "http2"] }
 hyper-rustls = { workspace = true, default-features = false, features = ["http1", "http2", "aws-lc-rs", "native-tokio", "tls12", "logging"]  }
 hyper-util = { workspace = true, features = ["client-legacy", "http2", "server", "client", "tokio"] }
-humantime = { workspace = true }
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
 itertools = { workspace = true }
