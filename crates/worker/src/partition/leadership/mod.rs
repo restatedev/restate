@@ -108,7 +108,7 @@ pub(crate) enum TaskTermination {
 
 #[derive(Debug)]
 pub(crate) enum ActionEffect {
-    Invoker(restate_invoker_api::Effect),
+    Invoker(Box<restate_invoker_api::Effect>),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
     ScheduleCleanupTimer(InvocationId, Duration),
