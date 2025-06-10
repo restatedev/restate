@@ -337,7 +337,7 @@ where
     async fn step<F>(
         &mut self,
         options: &InvokerOptions,
-        segmented_input_queue: &mut SegmentQueue<InvokeCommand>,
+        segmented_input_queue: &mut SegmentQueue<Box<InvokeCommand>>,
         mut shutdown: Pin<&mut F>,
     ) -> bool
     where
@@ -1670,22 +1670,22 @@ mod tests {
 
         // Enqueue sid_1 and sid_2
         segment_queue
-            .enqueue(InvokeCommand {
+            .enqueue(Box::new(InvokeCommand {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_1,
                 invocation_epoch: 0,
                 invocation_target: InvocationTarget::mock_virtual_object(),
                 journal: InvokeInputJournal::NoCachedJournal,
-            })
+            }))
             .await;
         segment_queue
-            .enqueue(InvokeCommand {
+            .enqueue(Box::new(InvokeCommand {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_2,
                 invocation_epoch: 0,
                 invocation_target: InvocationTarget::mock_virtual_object(),
                 journal: InvokeInputJournal::NoCachedJournal,
-            })
+            }))
             .await;
 
         // Now step the state machine to start the invocation

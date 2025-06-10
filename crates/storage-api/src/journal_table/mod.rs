@@ -18,6 +18,8 @@ use std::ops::RangeInclusive;
 
 /// Different types of journal entries persisted by the runtime
 #[derive(Debug, Clone, PartialEq, Eq)]
+// todo: fix this and box the large variant (EnrichedRawEntry is 304 bytes)
+#[allow(clippy::large_enum_variant)]
 pub enum JournalEntry {
     Entry(EnrichedRawEntry),
     Completion(CompletionResult),

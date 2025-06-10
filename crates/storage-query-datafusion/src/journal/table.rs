@@ -52,6 +52,8 @@ pub(crate) fn register_self(
     ctx.register_partitioned_table(NAME, Arc::new(journal_table))
 }
 
+// todo: fix this and box the large variant (JournalEntry is 304 bytes)
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ScannedEntry {
     V1(JournalEntry),
     V2(RawEntry),

@@ -473,7 +473,9 @@ impl ResponseStreamState {
             ResponseStreamState::WaitingHeaders(join_handle) => {
                 let http_response = match ready!(join_handle.poll_unpin(cx)) {
                     Ok(Ok(res)) => res,
-                    Ok(Err(hyper_err)) => return Poll::Ready(Err(InvokerError::Client(hyper_err))),
+                    Ok(Err(hyper_err)) => {
+                        return Poll::Ready(Err(InvokerError::Client(Box::new(hyper_err))));
+                    }
                     Err(join_err) => {
                         return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)));
                     }
@@ -505,7 +507,7 @@ impl ResponseStreamState {
                     let http_response = match ready!(join_handle.poll_unpin(cx)) {
                         Ok(Ok(res)) => res,
                         Ok(Err(hyper_err)) => {
-                            return Poll::Ready(Err(InvokerError::Client(hyper_err)));
+                            return Poll::Ready(Err(InvokerError::Client(Box::new(hyper_err))));
                         }
                         Err(join_err) => {
                             return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)));

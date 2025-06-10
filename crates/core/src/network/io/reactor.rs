@@ -727,36 +727,31 @@ fn spawn_v1_rpc_responder(
     tokio::spawn(async move {
         tokio::select! {
             reply = reply_rx => {
-                match reply {
-                    Ok(envelope) => {
-                        // the assumption here is that the payload is already encoded in the
-                        // right v1 envelope.
-                        let payload = match envelope.body {
-                                // what do we do with status?
-                                // Options:
-                                // 1. ignore v2-only errors [chosen]
-                                // 2. convert it to v1 message in known cases (PP rpc responses)
-                                rpc_reply::Body::Status(_status) => return,
-                                rpc_reply::Body::Payload(bytes) => bytes,
-                        };
-                        let datagram = Body::Encoded(BinaryMessage {payload, target: v1_response_target.into() });
-                        let header = Header {
-                            // for compatibility with V1 protocol
-                            in_response_to: id,
-                            ..Default::default()
-                        };
+                if let Ok(envelope) = reply {
+                    // the assumption here is that the payload is already encoded in the
+                    // right v1 envelope.
+                    let payload = match envelope.body {
+                            // what do we do with status?
+                            // Options:
+                            // 1. ignore v2-only errors [chosen]
+                            // 2. convert it to v1 message in known cases (PP rpc responses)
+                            rpc_reply::Body::Status(_status) => return,
+                            rpc_reply::Body::Payload(bytes) => bytes,
+                    };
+                    let datagram = Body::Encoded(BinaryMessage {payload, target: v1_response_target.into() });
+                    let header = Header {
+                        // for compatibility with V1 protocol
+                        in_response_to: id,
+                        ..Default::default()
+                    };
 
-                        let _ = tx.unbounded_send(EgressMessage::Message(
-                            header,
-                            datagram,
-                            Some(envelope.span),
-                        ));
-                        // todo(asoli): here is a good place to measure total rpc
-                        // processing time.
-                    }
-                    // reply_port was closed, we'll not respond.
-                    // V1 doesn't support dropped notifications
-                    Err(_) => {}
+                    let _ = tx.unbounded_send(EgressMessage::Message(
+                        header,
+                        datagram,
+                        Some(envelope.span),
+                    ));
+                    // todo(asoli): here is a good place to measure total rpc
+                    // processing time.
                 }
             }
             () = tx.closed() => {
