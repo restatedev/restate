@@ -41,8 +41,9 @@ pub struct ControlProcessors {
 pub struct ControlProcessor {
     pub partition_id: PartitionId,
     pub command: ProcessorCommand,
-    // version of the current partition configuration used for creating the command for selecting
-    // the leader.
+    // Version of the current partition configuration used for creating the command for selecting
+    // the leader. Restate <= 1.3.2 does not set the current version attribute.
+    #[serde(default = "Version::invalid")]
     pub current_version: Version,
 }
 
