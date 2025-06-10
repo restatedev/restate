@@ -82,16 +82,16 @@ async fn test_read_write() {
     snapshots_test::run_tests(manager.clone(), store.clone()).await;
 }
 
-pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
+pub(crate) fn mock_service_invocation(service_id: ServiceId) -> Box<ServiceInvocation> {
     let invocation_target = InvocationTarget::mock_from_service_id(service_id);
-    ServiceInvocation::initialize(
+    Box::new(ServiceInvocation::initialize(
         InvocationId::mock_generate(&invocation_target),
         invocation_target,
         Source::Ingress(PartitionProcessorRpcRequestId::new()),
-    )
+    ))
 }
 
-pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {
+pub(crate) fn mock_random_service_invocation() -> Box<ServiceInvocation> {
     mock_service_invocation(ServiceId::mock_random())
 }
 
