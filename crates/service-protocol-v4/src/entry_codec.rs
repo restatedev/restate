@@ -8,15 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::proto;
-use crate::proto::{
-    complete_awakeable_command_message, notification_template, output_command_message,
-    send_signal_command_message,
-};
+use std::fmt::Debug;
+use std::str::FromStr;
+
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
+
 use restate_types::errors::{GenericError, IdDecodeError, InvocationError};
 use restate_types::identifiers::{
     AwakeableIdentifier, ExternalSignalIdentifier, IdempotencyId, InvocationId, ServiceId,
@@ -38,8 +37,12 @@ use restate_types::journal_v2::raw::{
     RawEntryInner, RawNotification,
 };
 use restate_types::journal_v2::*;
-use std::fmt::Debug;
-use std::str::FromStr;
+
+use crate::proto;
+use crate::proto::{
+    complete_awakeable_command_message, notification_template, output_command_message,
+    send_signal_command_message,
+};
 
 #[derive(Debug, thiserror::Error)]
 #[error("missing required field {0}")]
@@ -56,7 +59,7 @@ struct BadFieldError(&'static str, GenericError);
 pub struct ServiceProtocolV4Codec;
 
 impl Encoder for ServiceProtocolV4Codec {
-    fn encode_entry(entry: &Entry) -> RawEntry {
+    fn encode_entry(entry: Entry) -> RawEntry {
         let entry_inner: RawEntryInner = match entry {
             Entry::Command(Command::Input(InputCommand {
                 headers,
@@ -65,10 +68,8 @@ impl Encoder for ServiceProtocolV4Codec {
             })) => RawCommand::new(
                 CommandType::Input,
                 proto::InputCommandMessage {
-                    headers: headers.clone().into_iter().map(Into::into).collect(),
-                    value: Some(proto::Value {
-                        content: payload.clone(),
-                    }),
+                    headers: headers.into_iter().map(Into::into).collect(),
+                    value: Some(proto::Value { content: payload }),
                     name: name.to_string(),
                 }
                 .encode_to_vec(),
@@ -78,7 +79,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 CommandType::Output,
                 proto::OutputCommandMessage {
                     name: name.to_string(),
-                    result: Some(result.clone().into()),
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -90,7 +91,7 @@ impl Encoder for ServiceProtocolV4Codec {
             })) => RawCommand::new(
                 CommandType::Run,
                 proto::RunCommandMessage {
-                    result_completion_id: *completion_id,
+                    result_completion_id: completion_id,
                     name: name.to_string(),
                 }
                 .encode_to_vec(),
@@ -105,7 +106,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 CommandType::Sleep,
                 proto::SleepCommandMessage {
                     wake_up_time: wake_up_time.as_u64(),
-                    result_completion_id: *completion_id,
+                    result_completion_id: completion_id,
                     name: name.to_string(),
                 }
                 .encode_to_vec(),
@@ -132,26 +133,26 @@ impl Encoder for ServiceProtocolV4Codec {
                 proto::CallCommandMessage {
                     service_name: invocation_target.service_name().to_string(),
                     handler_name: invocation_target.handler_name().to_string(),
-                    parameter: parameter.clone(),
-                    headers: headers.clone().into_iter().map(Into::into).collect(),
+                    parameter,
+                    headers: headers.into_iter().map(Into::into).collect(),
                     key: invocation_target
                         .key()
                         .unwrap_or(&ByteString::new())
                         .to_string(),
-                    idempotency_key: idempotency_key.clone().map(|s| s.to_string()),
+                    idempotency_key: idempotency_key.map(|s| s.to_string()),
                     name: name.to_string(),
-                    invocation_id_notification_idx: *invocation_id_completion_id,
-                    result_completion_id: *result_completion_id,
+                    invocation_id_notification_idx: invocation_id_completion_id,
+                    result_completion_id,
                 }
                 .encode_to_vec(),
             )
             .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(
                 CallOrSendMetadata {
-                    invocation_id: *invocation_id,
-                    invocation_target: invocation_target.clone(),
-                    span_context: span_context.clone(),
-                    completion_retention_duration: *completion_retention_duration,
-                    journal_retention_duration: *journal_retention_duration,
+                    invocation_id,
+                    invocation_target,
+                    span_context,
+                    completion_retention_duration,
+                    journal_retention_duration,
                 },
             ))
             .into(),
@@ -176,26 +177,26 @@ impl Encoder for ServiceProtocolV4Codec {
                 proto::OneWayCallCommandMessage {
                     service_name: invocation_target.service_name().to_string(),
                     handler_name: invocation_target.handler_name().to_string(),
-                    parameter: parameter.clone(),
+                    parameter,
                     invoke_time: invoke_time.as_u64(),
-                    headers: headers.clone().into_iter().map(Into::into).collect(),
+                    headers: headers.into_iter().map(Into::into).collect(),
                     key: invocation_target
                         .key()
                         .unwrap_or(&ByteString::new())
                         .to_string(),
-                    idempotency_key: idempotency_key.clone().map(|s| s.to_string()),
+                    idempotency_key: idempotency_key.map(|s| s.to_string()),
                     name: name.to_string(),
-                    invocation_id_notification_idx: *invocation_id_completion_id,
+                    invocation_id_notification_idx: invocation_id_completion_id,
                 }
                 .encode_to_vec(),
             )
             .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(
                 CallOrSendMetadata {
-                    invocation_id: *invocation_id,
-                    invocation_target: invocation_target.clone(),
-                    span_context: span_context.clone(),
-                    completion_retention_duration: *completion_retention_duration,
-                    journal_retention_duration: *journal_retention_duration,
+                    invocation_id,
+                    invocation_target,
+                    span_context,
+                    completion_retention_duration,
+                    journal_retention_duration,
                 },
             ))
             .into(),
@@ -207,9 +208,9 @@ impl Encoder for ServiceProtocolV4Codec {
             })) => RawCommand::new(
                 CommandType::GetLazyState,
                 proto::GetLazyStateCommandMessage {
-                    key: key.as_bytes().clone(),
+                    key: key.into_bytes(),
                     name: name.to_string(),
-                    result_completion_id: *completion_id,
+                    result_completion_id: completion_id,
                 }
                 .encode_to_vec(),
             )
@@ -218,10 +219,8 @@ impl Encoder for ServiceProtocolV4Codec {
                 RawCommand::new(
                     CommandType::SetState,
                     proto::SetStateCommandMessage {
-                        key: key.as_bytes().clone(),
-                        value: Some(proto::Value {
-                            content: value.clone(),
-                        }),
+                        key: key.into_bytes(),
+                        value: Some(proto::Value { content: value }),
                         name: name.to_string(),
                     }
                     .encode_to_vec(),
@@ -232,7 +231,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 RawCommand::new(
                     CommandType::ClearState,
                     proto::ClearStateCommandMessage {
-                        key: key.as_bytes().clone(),
+                        key: key.into_bytes(),
                         name: name.to_string(),
                     }
                     .encode_to_vec(),
@@ -256,7 +255,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 CommandType::GetLazyStateKeys,
                 proto::GetLazyStateKeysCommandMessage {
                     name: name.to_string(),
-                    result_completion_id: *completion_id,
+                    result_completion_id: completion_id,
                 }
                 .encode_to_vec(),
             )
@@ -265,9 +264,9 @@ impl Encoder for ServiceProtocolV4Codec {
                 RawCommand::new(
                     CommandType::GetEagerState,
                     proto::GetEagerStateCommandMessage {
-                        key: key.as_bytes().clone(),
+                        key: key.into_bytes(),
                         name: name.to_string(),
-                        result: Some(result.clone().into()),
+                        result: Some(result.into()),
                     }
                     .encode_to_vec(),
                 )
@@ -281,10 +280,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 proto::GetEagerStateKeysCommandMessage {
                     name: name.to_string(),
                     value: Some(proto::StateKeys {
-                        keys: state_keys
-                            .iter()
-                            .map(|s| Bytes::copy_from_slice(s.as_bytes()))
-                            .collect(),
+                        keys: state_keys.into_iter().map(Bytes::from).collect(),
                     }),
                 }
                 .encode_to_vec(),
@@ -298,9 +294,9 @@ impl Encoder for ServiceProtocolV4Codec {
             })) => RawCommand::new(
                 CommandType::GetPromise,
                 proto::GetPromiseCommandMessage {
-                    key: key.clone().into(),
-                    name: name.to_string(),
-                    result_completion_id: *completion_id,
+                    key: key.into(),
+                    name: name.into(),
+                    result_completion_id: completion_id,
                 }
                 .encode_to_vec(),
             )
@@ -312,9 +308,9 @@ impl Encoder for ServiceProtocolV4Codec {
             })) => RawCommand::new(
                 CommandType::PeekPromise,
                 proto::PeekPromiseCommandMessage {
-                    key: key.clone().into(),
-                    name: name.to_string(),
-                    result_completion_id: *completion_id,
+                    key: key.into(),
+                    name: name.into(),
+                    result_completion_id: completion_id,
                 }
                 .encode_to_vec(),
             )
@@ -327,10 +323,10 @@ impl Encoder for ServiceProtocolV4Codec {
             })) => RawCommand::new(
                 CommandType::CompletePromise,
                 proto::CompletePromiseCommandMessage {
-                    key: key.clone().into(),
-                    name: name.to_string(),
-                    result_completion_id: *completion_id,
-                    completion: Some(value.clone().into()),
+                    key: key.into(),
+                    name: name.into(),
+                    result_completion_id: completion_id,
+                    completion: Some(value.into()),
                 }
                 .encode_to_vec(),
             )
@@ -346,8 +342,8 @@ impl Encoder for ServiceProtocolV4Codec {
                 proto::SendSignalCommandMessage {
                     target_invocation_id: target_invocation_id.to_string(),
                     entry_name: name.to_string(),
-                    signal_id: Some(signal_id.clone().into()),
-                    result: Some(result.clone().into()),
+                    signal_id: Some(signal_id.into()),
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -360,8 +356,8 @@ impl Encoder for ServiceProtocolV4Codec {
                 CommandType::AttachInvocation,
                 proto::AttachInvocationCommandMessage {
                     name: name.to_string(),
-                    result_completion_id: *completion_id,
-                    target: Some(target.clone().into()),
+                    result_completion_id: completion_id,
+                    target: Some(target.into()),
                 }
                 .encode_to_vec(),
             )
@@ -374,8 +370,8 @@ impl Encoder for ServiceProtocolV4Codec {
                 CommandType::GetInvocationOutput,
                 proto::GetInvocationOutputCommandMessage {
                     name: name.to_string(),
-                    result_completion_id: *completion_id,
-                    target: Some(target.clone().into()),
+                    result_completion_id: completion_id,
+                    target: Some(target.into()),
                 }
                 .encode_to_vec(),
             )
@@ -390,7 +386,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 proto::CompleteAwakeableCommandMessage {
                     awakeable_id: id.to_string(),
                     name: name.to_string(),
-                    result: Some(result.clone().into()),
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -403,10 +399,10 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::GetLazyState,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::GetLazyStateCompletionNotificationMessage {
-                    completion_id: *completion_id,
-                    result: Some(result.clone().into()),
+                    completion_id,
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -418,14 +414,11 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::GetLazyStateKeys,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::GetLazyStateKeysCompletionNotificationMessage {
-                    completion_id: *completion_id,
+                    completion_id,
                     state_keys: Some(proto::StateKeys {
-                        keys: state_keys
-                            .iter()
-                            .map(|s| Bytes::copy_from_slice(s.as_bytes()))
-                            .collect(),
+                        keys: state_keys.into_iter().map(Bytes::from).collect(),
                     }),
                 }
                 .encode_to_vec(),
@@ -439,10 +432,10 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::GetPromise,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::GetPromiseCompletionNotificationMessage {
-                    completion_id: *completion_id,
-                    result: Some(result.clone().into()),
+                    completion_id,
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -454,10 +447,10 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::PeekPromise,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::PeekPromiseCompletionNotificationMessage {
-                    completion_id: *completion_id,
-                    result: Some(result.clone().into()),
+                    completion_id,
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -469,10 +462,10 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::CompletePromise,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::CompletePromiseCompletionNotificationMessage {
-                    completion_id: *completion_id,
-                    result: Some(result.clone().into()),
+                    completion_id,
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -482,9 +475,9 @@ impl Encoder for ServiceProtocolV4Codec {
                 completion_id,
             }))) => RawNotification::new(
                 CompletionType::Sleep,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::SleepCompletionNotificationMessage {
-                    completion_id: *completion_id,
+                    completion_id,
                     void: Some(proto::Void::default()),
                 }
                 .encode_to_vec(),
@@ -498,9 +491,9 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::CallInvocationId,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::CallInvocationIdCompletionNotificationMessage {
-                    completion_id: *completion_id,
+                    completion_id,
                     invocation_id: invocation_id.to_string(),
                 }
                 .encode_to_vec(),
@@ -511,10 +504,10 @@ impl Encoder for ServiceProtocolV4Codec {
                 result,
             }))) => RawNotification::new(
                 CompletionType::Call,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::CallCompletionNotificationMessage {
-                    completion_id: *completion_id,
-                    result: Some(result.clone().into()),
+                    completion_id,
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -525,10 +518,10 @@ impl Encoder for ServiceProtocolV4Codec {
                 result,
             }))) => RawNotification::new(
                 CompletionType::Run,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::RunCompletionNotificationMessage {
-                    completion_id: *completion_id,
-                    result: Some(result.clone().into()),
+                    completion_id,
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -541,10 +534,10 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::AttachInvocation,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::AttachInvocationCompletionNotificationMessage {
-                    completion_id: *completion_id,
-                    result: Some(result.clone().into()),
+                    completion_id,
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -556,10 +549,10 @@ impl Encoder for ServiceProtocolV4Codec {
                 },
             ))) => RawNotification::new(
                 CompletionType::GetInvocationOutput,
-                NotificationId::CompletionId(*completion_id),
+                NotificationId::CompletionId(completion_id),
                 proto::GetInvocationOutputCompletionNotificationMessage {
-                    completion_id: *completion_id,
-                    result: Some(result.clone().into()),
+                    completion_id,
+                    result: Some(result.into()),
                 }
                 .encode_to_vec(),
             )
@@ -572,20 +565,20 @@ impl Encoder for ServiceProtocolV4Codec {
                     proto::SignalNotificationMessage {
                         signal_id: Some(match id {
                             SignalId::Index(idx) => {
-                                proto::signal_notification_message::SignalId::Idx(*idx)
+                                proto::signal_notification_message::SignalId::Idx(idx)
                             }
                             SignalId::Name(n) => {
-                                proto::signal_notification_message::SignalId::Name(n.clone().into())
+                                proto::signal_notification_message::SignalId::Name(n.into())
                             }
                         }),
-                        result: Some(result.clone().into()),
+                        result: Some(result.into()),
                     }
                     .encode_to_vec(),
                 )
                 .into()
             }
 
-            Entry::Event(e) => e.clone().into(),
+            Entry::Event(e) => e.into(),
         };
         RawEntry::new(RawEntryHeader::new(), entry_inner)
     }
@@ -639,7 +632,7 @@ impl Decoder for ServiceProtocolV4Codec {
                     } = decode_or_bail!(cmd.serialized_content(), InputCommandMessage);
                     InputCommand {
                         headers: headers.into_iter().map(Into::into).collect(),
-                        payload: get_or_bail!(value).content.clone(),
+                        payload: get_or_bail!(value).content,
                         name: name.into(),
                     }
                     .into()
