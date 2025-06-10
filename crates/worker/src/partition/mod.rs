@@ -10,6 +10,7 @@
 
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -632,7 +633,7 @@ where
                 AppendInvocationReplyOn::Appended,
             ) => {
                 let service_invocation = ServiceInvocation::from_request(
-                    invocation_request,
+                    Arc::unwrap_or_clone(invocation_request),
                     invocation::Source::ingress(request_id),
                 );
 
@@ -649,7 +650,7 @@ where
                 AppendInvocationReplyOn::Submitted,
             ) => {
                 let mut service_invocation = ServiceInvocation::from_request(
-                    invocation_request,
+                    Arc::unwrap_or_clone(invocation_request),
                     invocation::Source::ingress(request_id),
                 );
                 service_invocation.submit_notification_sink =
@@ -669,7 +670,7 @@ where
                 AppendInvocationReplyOn::Output,
             ) => {
                 let mut service_invocation = ServiceInvocation::from_request(
-                    invocation_request,
+                    Arc::unwrap_or_clone(invocation_request),
                     invocation::Source::ingress(request_id),
                 );
                 service_invocation.response_sink =

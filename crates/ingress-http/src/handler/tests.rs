@@ -129,7 +129,7 @@ async fn call_service_with_get() {
                 invocation_id: Some(InvocationId::mock_random()),
                 completion_expiry_time: None,
                 response: InvocationOutputResponse::Success(
-                    invocation_request.header.target,
+                    invocation_request.header.target.clone(),
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
                     })
@@ -199,7 +199,7 @@ async fn call_virtual_object() {
                 invocation_id: Some(InvocationId::mock_random()),
                 completion_expiry_time: None,
                 response: InvocationOutputResponse::Success(
-                    invocation_request.header.target,
+                    invocation_request.header.target.clone(),
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
                     })
@@ -404,7 +404,7 @@ async fn idempotency_key_parsing() {
                 invocation_id: Some(InvocationId::mock_random()),
                 completion_expiry_time: None,
                 response: InvocationOutputResponse::Success(
-                    invocation_request.header.target,
+                    invocation_request.header.target.clone(),
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
                     })
@@ -1097,7 +1097,7 @@ fn expect_invocation_and_reply_with_empty() -> MockRequestDispatcher {
                 completion_expiry_time: None,
                 invocation_id: Some(invocation_request.invocation_id()),
                 response: InvocationOutputResponse::Success(
-                    invocation_request.header.target,
+                    invocation_request.header.target.clone(),
                     Bytes::new(),
                 ),
             }))
@@ -1117,7 +1117,7 @@ fn expect_invocation_and_reply_with_non_empty() -> MockRequestDispatcher {
                 invocation_id: Some(invocation_request.invocation_id()),
                 completion_expiry_time: None,
                 response: InvocationOutputResponse::Success(
-                    invocation_request.header.target,
+                    invocation_request.header.target.clone(),
                     Bytes::from_static(b"123"),
                 ),
             }))
