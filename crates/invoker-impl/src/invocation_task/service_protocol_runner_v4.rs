@@ -8,15 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Notification;
-use crate::error::{
-    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
-};
-use crate::invocation_task::{
-    InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
-    ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
-    invocation_id_to_header_value, service_protocol_version_to_header_value,
-};
+use std::collections::HashSet;
+use std::future::poll_fn;
+use std::ops::Deref;
+use std::time::Duration;
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::FusedFuture;
@@ -25,6 +21,10 @@ use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::{debug, trace, warn};
+
 use restate_errors::warn_it;
 use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{EagerState, JournalEntry};
@@ -53,13 +53,16 @@ use restate_types::schema::deployment::{
 };
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use std::collections::HashSet;
-use std::future::poll_fn;
-use std::ops::Deref;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, trace, warn};
+
+use crate::Notification;
+use crate::error::{
+    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
+};
+use crate::invocation_task::{
+    InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
+    ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
+    invocation_id_to_header_value, service_protocol_version_to_header_value,
+};
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
