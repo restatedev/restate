@@ -6692,6 +6692,7 @@ dependencies = [
  "indicatif",
  "indoc",
  "itertools 0.14.0",
+ "json-patch",
  "jsonwebtoken",
  "octocrab",
  "open",
