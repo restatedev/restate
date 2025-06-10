@@ -146,22 +146,29 @@ impl Watchdog {
                 // Concurrently look up the trim points of all the requests
                 let trim_point_futures: FuturesUnordered<_> = trim_requests
                     .drain()
-                    .map(async |(log_id, requested_trim_point)| {
-                        match bifrost.get_trim_point(log_id).await {
-                            // an invalid lsn means that the log has never been trimmed
-                            Ok(actual_trim_point) if actual_trim_point == Lsn::INVALID => None,
-                            Ok(actual_trim_point) => Some(TrimPoint {
-                                log_id,
-                                requested_trim_point,
-                                actual_trim_point,
-                            }),
-                            Err(err) => {
-                                warn!(
-                                    "Bifrost watchdog failed to find a trim point for {log_id}; will \
-                                    not be able to process the request to trim chain to {requested_trim_point}: {err}"
-                                );
-                                None
-                            },
+                    .map(|(log_id, requested_trim_point)| {
+                        let bifrost = bifrost.clone();
+                        // NOTE: this is a workaround until rustc's bug https://github.com/rust-lang/rust/issues/141466 is shipped in stable rust.
+                        // This is expected to be fixed in 1.89.
+                        //
+                        // After the fix, the map can go back to use async closure instead.
+                        async move {
+                            match bifrost.get_trim_point(log_id).await {
+                                // an invalid lsn means that the log has never been trimmed
+                                Ok(actual_trim_point) if actual_trim_point == Lsn::INVALID => None,
+                                Ok(actual_trim_point) => Some(TrimPoint {
+                                    log_id,
+                                    requested_trim_point,
+                                    actual_trim_point,
+                                }),
+                                Err(err) => {
+                                    warn!(
+                                        "Bifrost watchdog failed to find a trim point for {log_id}; will \
+                                        not be able to process the request to trim chain to {requested_trim_point}: {err}"
+                                    );
+                                    None
+                                },
+                            }
                         }
                     })
                     .collect();

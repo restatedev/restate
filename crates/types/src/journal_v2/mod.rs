@@ -87,6 +87,8 @@ pub trait EntryMetadata {
 /// Root enum representing a decoded entry.
 #[enum_dispatch(EntryMetadata)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// todo: fix this and box the large variant (Command is 416 bytes)
+#[allow(clippy::large_enum_variant)]
 pub enum Entry {
     Command(Command),
     Notification(Notification),

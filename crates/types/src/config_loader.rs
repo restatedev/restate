@@ -25,9 +25,16 @@ use crate::config::{Configuration, InvalidConfigurationError};
 #[code(restate_errors::RT0002)]
 pub enum ConfigLoadError {
     #[error("configuration loading error: {0}")]
-    Figment(#[from] figment::Error),
+    Figment(Box<figment::Error>),
     #[error("invalid configuration: {0}")]
     InvalidConfiguration(#[from] InvalidConfigurationError),
+}
+
+// Because thiserror doesn't support auto-boxing or auto implements From with boxing.
+impl From<figment::Error> for ConfigLoadError {
+    fn from(value: figment::Error) -> Self {
+        Self::Figment(Box::new(value))
+    }
 }
 
 #[derive(Debug, Default, derive_builder::Builder)]
