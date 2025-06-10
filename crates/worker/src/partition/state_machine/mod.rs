@@ -507,7 +507,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn on_service_invocation(
         &mut self,
-        service_invocation: ServiceInvocation,
+        service_invocation: Box<ServiceInvocation>,
     ) -> Result<(), Error>
     where
         S: IdempotencyTable
@@ -548,7 +548,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
         let pre_flight_invocation_metadata =
-            PreFlightInvocationMetadata::from_service_invocation(service_invocation);
+            PreFlightInvocationMetadata::from_service_invocation(*service_invocation);
 
         // 2. Check if we need to schedule it
         let execution_time = pre_flight_invocation_metadata.execution_time;
@@ -609,8 +609,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     /// Returns the invocation in case the invocation is not a duplicate
     async fn handle_duplicated_requests(
         &mut self,
-        mut service_invocation: ServiceInvocation,
-    ) -> Result<Option<ServiceInvocation>, Error>
+        mut service_invocation: Box<ServiceInvocation>,
+    ) -> Result<Option<Box<ServiceInvocation>>, Error>
     where
         S: IdempotencyTable
             + InvocationStatusTable
@@ -2580,7 +2580,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
-                    let service_invocation = ServiceInvocation {
+                    let service_invocation = Box::new(ServiceInvocation {
                         invocation_id: *callee_invocation_id,
                         invocation_target: callee_invocation_target.clone(),
                         argument: request.parameter,
@@ -2603,7 +2603,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         idempotency_key: request.idempotency_key,
                         submit_notification_sink: None,
                         restate_version: RestateVersion::current(),
-                    };
+                    });
 
                     self.handle_outgoing_message(OutboxMessage::ServiceInvocation(
                         service_invocation,
@@ -2653,7 +2653,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     span.add_link(ctx, Vec::default());
                 }
 
-                let service_invocation = ServiceInvocation {
+                let service_invocation = Box::new(ServiceInvocation {
                     invocation_id: *callee_invocation_id,
                     invocation_target: callee_invocation_target.clone(),
                     argument: request.parameter,
@@ -2670,7 +2670,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     idempotency_key: request.idempotency_key,
                     submit_notification_sink: None,
                     restate_version: RestateVersion::current(),
-                };
+                });
 
                 self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
                     .await?;
