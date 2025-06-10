@@ -349,7 +349,7 @@ impl SchemaUpdater {
             // This makes little sense now that we have these settings in the manifest, but it preserves the old behavior.
             // At some point we should "break" this behavior, and on service updates simply apply defaults when nothing is configured in the manifest,
             // in order to favour people using annotations, rather than the clunky Admin REST API.
-            let public = service.private.map(bool::not).unwrap_or(
+            let public = service.ingress_private.map(bool::not).unwrap_or(
                 if service_level_settings_behavior.preserve() {
                     existing_service.location.public
                 } else {
@@ -401,6 +401,7 @@ impl SchemaUpdater {
                         DiscoveredHandlerMetadata::from_schema(
                             service_name.as_ref(),
                             service_type,
+                            public,
                             h,
                         )
                     })
@@ -475,7 +476,7 @@ impl SchemaUpdater {
             service_schemas.abort_timeout = abort_timeout;
             service_schemas
         } else {
-            let public = service.private.map(bool::not).unwrap_or(true);
+            let public = service.ingress_private.map(bool::not).unwrap_or(true);
             let idempotency_retention = service
                 .idempotency_retention_duration()
                 // TODO(slinydeveloper) Remove this in Restate 1.5, no need for this defaulting anymore!
@@ -499,6 +500,7 @@ impl SchemaUpdater {
                             DiscoveredHandlerMetadata::from_schema(
                                 service_name.as_ref(),
                                 service_type,
+                                public,
                                 h,
                             )
                         })
@@ -751,6 +753,7 @@ struct DiscoveredHandlerMetadata {
     inactivity_timeout: Option<Duration>,
     abort_timeout: Option<Duration>,
     enable_lazy_state: Option<bool>,
+    ingress_private: Option<bool>,
     input: InputRules,
     output: OutputRules,
 }
@@ -759,6 +762,7 @@ impl DiscoveredHandlerMetadata {
     fn from_schema(
         service_name: &str,
         service_type: ServiceType,
+        is_service_public: bool,
         handler: endpoint_manifest::Handler,
     ) -> Result<Self, ServiceError> {
         let ty = match (service_type, handler.ty) {
@@ -797,7 +801,7 @@ impl DiscoveredHandlerMetadata {
             && ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
         {
             return Err(ServiceError::UnexpectedIdempotencyRetention(
-                handler.name.as_str().to_owned(),
+                handler.name.to_string(),
             ));
         }
 
@@ -806,6 +810,13 @@ impl DiscoveredHandlerMetadata {
         let workflow_completion_retention = handler.workflow_completion_retention_duration();
         let inactivity_timeout = handler.inactivity_timeout_duration();
         let abort_timeout = handler.abort_timeout_duration();
+
+        if !is_service_public && handler.ingress_private == Some(false) {
+            return Err(ServiceError::BadHandlerVisibility {
+                service: service_name.to_owned(),
+                handler: handler.name.to_string(),
+            });
+        }
 
         Ok(Self {
             name: handler.name.to_string(),
@@ -818,6 +829,7 @@ impl DiscoveredHandlerMetadata {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: handler.enable_lazy_state,
+            ingress_private: handler.ingress_private,
             input: handler
                 .input
                 .map(|input_payload| {
@@ -933,7 +945,7 @@ impl DiscoveredHandlerMetadata {
 
     fn compute_handlers(
         handlers: Vec<DiscoveredHandlerMetadata>,
-        public: bool,
+        service_level_public: bool,
         service_level_idempotency_retention: Option<Duration>,
         service_level_workflow_completion_retention: Option<Duration>,
         service_level_journal_retention: Option<Duration>,
@@ -968,6 +980,12 @@ impl DiscoveredHandlerMetadata {
                     .journal_retention
                     .or(service_level_journal_retention)
                     .unwrap_or(Duration::ZERO);
+
+                let public = if let Some(ingress_private) = handler.ingress_private {
+                    !ingress_private
+                } else {
+                    service_level_public
+                };
 
                 (
                     handler.name,
@@ -1039,6 +1057,7 @@ mod tests {
             journal_retention: None,
             workflow_completion_retention: None,
             enable_lazy_state: None,
+            ingress_private: None,
         }
     }
 
@@ -1046,7 +1065,7 @@ mod tests {
         endpoint_manifest::Service {
             abort_timeout: None,
             documentation: None,
-            private: None,
+            ingress_private: None,
             ty: endpoint_manifest::ServiceType::Service,
             name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![greeter_service_greet_handler()],
@@ -1062,7 +1081,7 @@ mod tests {
         endpoint_manifest::Service {
             abort_timeout: None,
             documentation: None,
-            private: None,
+            ingress_private: None,
             ty: endpoint_manifest::ServiceType::VirtualObject,
             name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![endpoint_manifest::Handler {
@@ -1078,6 +1097,7 @@ mod tests {
                 journal_retention: None,
                 workflow_completion_retention: None,
                 enable_lazy_state: None,
+                ingress_private: None,
             }],
             idempotency_retention: None,
             inactivity_timeout: None,
@@ -1091,7 +1111,7 @@ mod tests {
         endpoint_manifest::Service {
             abort_timeout: None,
             documentation: None,
-            private: None,
+            ingress_private: None,
             ty: endpoint_manifest::ServiceType::Service,
             name: ANOTHER_GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![endpoint_manifest::Handler {
@@ -1107,6 +1127,7 @@ mod tests {
                 journal_retention: None,
                 workflow_completion_retention: None,
                 enable_lazy_state: None,
+                ingress_private: None,
             }],
             idempotency_retention: None,
             inactivity_timeout: None,
@@ -1366,7 +1387,7 @@ mod tests {
             endpoint_manifest::Service {
                 abort_timeout: None,
                 documentation: None,
-                private: None,
+                ingress_private: None,
                 ty: endpoint_manifest::ServiceType::Service,
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![
@@ -1383,6 +1404,7 @@ mod tests {
                         journal_retention: None,
                         workflow_completion_retention: None,
                         enable_lazy_state: None,
+                        ingress_private: None,
                     },
                     endpoint_manifest::Handler {
                         abort_timeout: None,
@@ -1397,6 +1419,7 @@ mod tests {
                         journal_retention: None,
                         workflow_completion_retention: None,
                         enable_lazy_state: None,
+                        ingress_private: None,
                     },
                 ],
                 idempotency_retention: None,
@@ -1411,7 +1434,7 @@ mod tests {
             endpoint_manifest::Service {
                 abort_timeout: None,
                 documentation: None,
-                private: None,
+                ingress_private: None,
                 ty: endpoint_manifest::ServiceType::Service,
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![endpoint_manifest::Handler {
@@ -1427,6 +1450,7 @@ mod tests {
                     journal_retention: None,
                     workflow_completion_retention: None,
                     enable_lazy_state: None,
+                    ingress_private: None,
                 }],
                 idempotency_retention: None,
                 inactivity_timeout: None,
@@ -1730,6 +1754,7 @@ mod tests {
                 journal_retention: None,
                 workflow_completion_retention: None,
                 enable_lazy_state: None,
+                ingress_private: None,
             });
 
         updater
@@ -1802,6 +1827,7 @@ mod tests {
                 journal_retention: None,
                 workflow_completion_retention: None,
                 enable_lazy_state: None,
+                ingress_private: None,
             });
 
         updater
@@ -2020,13 +2046,76 @@ mod tests {
         fn private_service() {
             let target = init_discover_and_resolve_target(
                 endpoint_manifest::Service {
-                    private: Some(true),
+                    ingress_private: Some(true),
                     ..greeter_service()
                 },
                 GREETER_SERVICE_NAME,
                 GREET_HANDLER_NAME,
             );
             assert_that!(target.public, eq(false));
+        }
+
+        #[test]
+        fn public_service_with_private_handler() {
+            let schema_information = Schema::default();
+            let mut updater = SchemaUpdater::new(schema_information);
+            let mut deployment = Deployment::mock();
+            deployment.id = updater
+                .add_deployment(
+                    deployment.metadata.clone(),
+                    vec![endpoint_manifest::Service {
+                        // Mock two handlers, one explicitly private, the other just default settings
+                        handlers: vec![
+                            endpoint_manifest::Handler {
+                                ingress_private: Some(true),
+                                name: "my_private_handler".parse().unwrap(),
+                                ..greeter_service_greet_handler()
+                            },
+                            greeter_service_greet_handler(),
+                        ],
+                        ..greeter_service()
+                    }],
+                    false,
+                )
+                .unwrap();
+
+            let schema = updater.into_inner();
+
+            // The explicitly private handler is private
+            let private_handler_target =
+                schema.assert_service_handler(GREETER_SERVICE_NAME, "my_private_handler");
+            assert_that!(private_handler_target.public, eq(false));
+
+            // The other handler is by default public
+            let public_handler_target =
+                schema.assert_service_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME);
+            assert_that!(public_handler_target.public, eq(true));
+        }
+
+        #[test]
+        fn public_handler_in_private_service() {
+            let schema_information = Schema::default();
+            let mut updater = SchemaUpdater::new(schema_information);
+            let deployment = Deployment::mock();
+
+            assert_that!(
+                updater.add_deployment(
+                    deployment.metadata.clone(),
+                    vec![endpoint_manifest::Service {
+                        ingress_private: Some(true),
+                        handlers: vec![endpoint_manifest::Handler {
+                            ingress_private: Some(false),
+                            name: "my_private_handler".parse().unwrap(),
+                            ..greeter_service_greet_handler()
+                        }],
+                        ..greeter_service()
+                    }],
+                    false
+                ),
+                err(pat!(SchemaError::Service(pat!(
+                    ServiceError::BadHandlerVisibility { .. }
+                ))))
+            );
         }
 
         #[test]

@@ -171,6 +171,10 @@
                   "type": "boolean",
                   "description": "If true, lazy state is enabled."
                 },
+                "ingressPrivate":  {
+                  "type": "boolean",
+                  "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
+                },
                 "metadata": {
                   "type": "object",
                   "description": "Custom metadata of this handler definition. This metadata is shown on the Admin API when querying the service/handler definition.",
@@ -209,7 +213,7 @@
             "type": "boolean",
             "description": "If true, lazy state is enabled."
           },
-          "private":  {
+          "ingressPrivate":  {
             "type": "boolean",
             "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
           },
