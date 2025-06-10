@@ -109,10 +109,11 @@ mod tests {
 
     use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
-    use crate::partition::types::{InvokerEffect, InvokerEffectKind};
+    use crate::partition::types::InvokerEffectKind;
     use assert2::assert;
     use googletest::pat;
     use googletest::prelude::{assert_that, contains, eq, ge, not, some};
+    use restate_invoker_api::Effect;
     use restate_storage_api::invocation_status_table::{
         InvocationStatus, ReadOnlyInvocationStatusTable,
     };
@@ -200,14 +201,14 @@ mod tests {
 
         // Now pin to protocol v4, this should apply the cancel notification
         let actions = test_env
-            .apply(Command::InvokerEffect(InvokerEffect {
+            .apply(Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: DeploymentId::default(),
                     service_protocol_version: ServiceProtocolVersion::V4,
                 }),
-            }))
+            })))
             .await;
         assert_that!(
             actions,
