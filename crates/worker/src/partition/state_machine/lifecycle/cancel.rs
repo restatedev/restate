@@ -228,12 +228,12 @@ mod tests {
         let rpc_id = PartitionProcessorRpcRequestId::new();
 
         let _ = test_env
-            .apply(Command::Invoke(ServiceInvocation {
+            .apply(Command::Invoke(Box::new(ServiceInvocation {
                 invocation_id,
                 execution_time: Some(MillisSinceEpoch::MAX),
                 response_sink: Some(ServiceInvocationResponseSink::ingress(rpc_id)),
                 ..ServiceInvocation::mock()
-            }))
+            })))
             .await;
 
         // assert that scheduled invocation is in invocation_status
@@ -282,22 +282,22 @@ mod tests {
         let caller_id = InvocationId::mock_random();
 
         let _ = test_env
-            .apply(Command::Invoke(ServiceInvocation {
+            .apply(Command::Invoke(Box::new(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
-            }))
+            })))
             .await;
 
         let _ = test_env
-            .apply(Command::Invoke(ServiceInvocation {
+            .apply(Command::Invoke(Box::new(ServiceInvocation {
                 invocation_id: inboxed_id,
                 invocation_target: inboxed_target,
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor(
                     JournalCompletionTarget::from_parts(caller_id, 0, 0),
                 )),
                 ..ServiceInvocation::mock()
-            }))
+            })))
             .await;
 
         let current_invocation_status = test_env

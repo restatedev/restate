@@ -10,7 +10,6 @@
 
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -272,7 +271,7 @@ pub enum ProcessorError {
     Other(#[from] anyhow::Error),
 }
 
-type LsnEnvelope = (Lsn, Arc<Envelope>);
+type LsnEnvelope = (Lsn, Envelope);
 
 impl<InvokerSender> PartitionProcessor<InvokerSender>
 where
@@ -430,7 +429,7 @@ where
                             record_write_to_read_latency.record(record.created_at().elapsed());
                         });
                         entry
-                            .try_decode_arc::<Envelope>()
+                            .try_decode::<Envelope>()
                             .map(|envelope| Ok((lsn, envelope?)))
                             .expect("data record is present")
                     } else {
@@ -556,7 +555,7 @@ where
                                     self.status.last_observed_leader_node.unwrap_or(GenerationalNodeId::INVALID),
                                 });
 
-                            let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_store).await?;
+                            let is_leader = self.leadership_state.on_announce_leader(&announce_leader, &mut partition_store).await?;
 
                             Span::current().record("is_leader", is_leader);
 
@@ -640,7 +639,7 @@ where
                 self.leadership_state
                     .self_propose_and_respond_asynchronously(
                         service_invocation.partition_key(),
-                        Command::Invoke(service_invocation),
+                        Command::Invoke(Box::new(service_invocation)),
                         response_tx,
                     )
                     .await;
@@ -661,7 +660,7 @@ where
                         request_id,
                         response_tx,
                         service_invocation.partition_key(),
-                        Command::Invoke(service_invocation),
+                        Command::Invoke(Box::new(service_invocation)),
                     )
                     .await
             }
@@ -681,7 +680,7 @@ where
                         request_id,
                         response_tx,
                         service_invocation.partition_key(),
-                        Command::Invoke(service_invocation),
+                        Command::Invoke(Box::new(service_invocation)),
                     )
                     .await
             }
@@ -886,10 +885,10 @@ where
     async fn apply_record<'a, 'b: 'a>(
         &mut self,
         lsn: Lsn,
-        envelope: Arc<Envelope>,
+        envelope: Envelope,
         transaction: &mut PartitionStoreTransaction<'b>,
         action_collector: &mut ActionCollector,
-    ) -> Result<Option<(Header, AnnounceLeader)>, state_machine::Error> {
+    ) -> Result<Option<(Header, Box<AnnounceLeader>)>, state_machine::Error> {
         transaction.put_applied_lsn(lsn).await?;
 
         // Update replay status
@@ -927,9 +926,6 @@ where
                     .await
                     .map_err(state_machine::Error::Storage)?;
             }
-
-            // todo: check whether it's worth passing the arc further down
-            let envelope = Arc::unwrap_or_clone(envelope);
 
             if let Command::AnnounceLeader(announce_leader) = envelope.command {
                 // leadership change detected, let's finish our transaction here

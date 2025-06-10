@@ -21,7 +21,7 @@ use std::ops::RangeInclusive;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OutboxMessage {
     /// Service invocation to send to another partition processor
-    ServiceInvocation(ServiceInvocation),
+    ServiceInvocation(Box<ServiceInvocation>),
 
     /// Service response to sent to another partition processor
     ServiceResponse(InvocationResponse),

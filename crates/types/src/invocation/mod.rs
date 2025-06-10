@@ -462,7 +462,7 @@ pub struct ServiceInvocation {
     pub restate_version: RestateVersion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     from = "serde_hacks::SubmitNotificationSink",
     into = "serde_hacks::SubmitNotificationSink"
