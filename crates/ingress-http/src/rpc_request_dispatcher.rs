@@ -19,6 +19,7 @@ use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationRe
 use restate_types::journal_v2::Signal;
 use restate_types::retries::RetryPolicy;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{Instrument, debug_span, trace};
 
@@ -79,7 +80,7 @@ where
 {
     async fn send(
         &self,
-        invocation_request: InvocationRequest,
+        invocation_request: Arc<InvocationRequest>,
     ) -> Result<SubmittedInvocationNotification, RequestDispatcherError> {
         let request_id = PartitionProcessorRpcRequestId::default();
         let is_idempotent = invocation_request.is_idempotent();
@@ -96,7 +97,7 @@ where
 
     async fn call(
         &self,
-        invocation_request: InvocationRequest,
+        invocation_request: Arc<InvocationRequest>,
     ) -> Result<InvocationOutput, RequestDispatcherError> {
         let request_id = PartitionProcessorRpcRequestId::default();
         let is_idempotent = invocation_request.is_idempotent();

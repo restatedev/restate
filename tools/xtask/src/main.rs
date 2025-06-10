@@ -13,6 +13,7 @@ use reqwest::header::ACCEPT;
 use schemars::r#gen::SchemaSettings;
 use std::future::pending;
 use std::io::Write;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{env, io};
 
@@ -106,7 +107,7 @@ impl InvocationClient for Mock {
     fn append_invocation_and_wait_submit_notification(
         &self,
         _: PartitionProcessorRpcRequestId,
-        _: InvocationRequest,
+        _: Arc<InvocationRequest>,
     ) -> impl Future<Output = Result<SubmittedInvocationNotification, InvocationClientError>> + Send
     {
         pending()
@@ -115,7 +116,7 @@ impl InvocationClient for Mock {
     fn append_invocation_and_wait_output(
         &self,
         _: PartitionProcessorRpcRequestId,
-        _: InvocationRequest,
+        _: Arc<InvocationRequest>,
     ) -> impl Future<Output = Result<InvocationOutput, InvocationClientError>> + Send {
         pending()
     }
