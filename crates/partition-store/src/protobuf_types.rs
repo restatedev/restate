@@ -3418,7 +3418,7 @@ pub mod v1 {
                             header,
                             journal_v2::raw::RawCommand::new(ct, value.content)
                                 .with_command_specific_metadata(
-                                journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                                journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(Box::new(
                                     journal_v2::raw::CallOrSendMetadata::try_from(
                                         value.call_or_send_command_metadata.ok_or(
                                             ConversionError::missing_field(
@@ -3426,7 +3426,7 @@ pub mod v1 {
                                             ),
                                         )?,
                                     )?,
-                                ),
+                                )),
                             ),
                         ),
                         journal_v2::EntryType::Command(ct) => journal_v2::raw::RawEntry::new(
@@ -3450,17 +3450,17 @@ pub mod v1 {
                 let mut notification_id: Option<entry::NotificationId> = None;
                 let content = match raw_entry.inner {
                     journal_v2::raw::RawEntryInner::Command(cmd) => {
-                        match cmd.command_specific_metadata() {
+                        match cmd.command_specific_metadata {
                             journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
                                 call_or_send_metadata,
                             ) => {
                                 call_or_send_command_metadata =
-                                    Some(call_or_send_metadata.clone().into())
+                                    Some((*call_or_send_metadata).into())
                             }
                             journal_v2::raw::RawCommandSpecificMetadata::None => {}
                         };
 
-                        cmd.serialized_content()
+                        cmd.serialized_content
                     }
                     journal_v2::raw::RawEntryInner::Notification(notification) => {
                         notification_id = Some(match notification.id() {
