@@ -154,7 +154,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     /// This function returns the size of the mutable segment after insertion.
     ///
     fn enqueue_internal(&mut self, element: T) -> usize {
-        let len = match self.segments.back_mut() {
+        match self.segments.back_mut() {
             Some(segment) if segment.is_mutable() => {
                 segment.enqueue(element);
                 segment.len()
@@ -169,8 +169,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
 
                 1
             }
-        };
-        len
+        }
     }
 
     /// Number of records in queue

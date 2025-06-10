@@ -65,6 +65,8 @@ pub enum InvocationOutputResponse {
     Failure(InvocationError),
 }
 
+// the most used variant is the largest one, so we are muting clippy intentionally.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum AttachInvocationResponse {
     NotFound,
@@ -73,6 +75,8 @@ pub enum AttachInvocationResponse {
     Ready(InvocationOutput),
 }
 
+// the most used variant is the largest one, so we are muting clippy intentionally.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum GetInvocationOutputResponse {
     NotFound,

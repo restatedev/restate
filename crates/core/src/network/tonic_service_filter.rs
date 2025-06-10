@@ -58,7 +58,7 @@ pub trait Predicate {
     /// Checks whether the given request should be processed. Return the given `request` if it
     /// should be processed. Otherwise, return the [`tonic::Status`] with which the request should
     /// fail.
-    fn check(&mut self, request: Request<BoxBody>) -> Result<Request<BoxBody>, tonic::Status>;
+    fn check(&mut self, request: Request<BoxBody>) -> Result<Request<BoxBody>, Box<tonic::Status>>;
 }
 
 impl<T, U> NamedService for TonicServiceFilter<T, U>
@@ -70,9 +70,9 @@ where
 
 impl<F> Predicate for F
 where
-    F: FnMut(Request<BoxBody>) -> Result<Request<BoxBody>, tonic::Status>,
+    F: FnMut(Request<BoxBody>) -> Result<Request<BoxBody>, Box<tonic::Status>>,
 {
-    fn check(&mut self, request: Request<BoxBody>) -> Result<Request<BoxBody>, tonic::Status> {
+    fn check(&mut self, request: Request<BoxBody>) -> Result<Request<BoxBody>, Box<tonic::Status>> {
         self(request)
     }
 }
@@ -97,11 +97,11 @@ impl<T> Predicate for WaitForReady<T>
 where
     T: PartialEq,
 {
-    fn check(&mut self, request: Request<BoxBody>) -> Result<Request<BoxBody>, Status> {
+    fn check(&mut self, request: Request<BoxBody>) -> Result<Request<BoxBody>, Box<Status>> {
         if *self.status.get() == self.ready_status {
             Ok(request)
         } else {
-            Err(Status::unavailable("svc is not ready yet"))
+            Err(Box::new(Status::unavailable("svc is not ready yet")))
         }
     }
 }

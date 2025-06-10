@@ -614,6 +614,7 @@ impl MetadataServer for RaftMetadataServer {
 }
 
 /// States of a provisioned metadata store. The metadata store can be either a member or a stand by.
+#[allow(clippy::large_enum_variant)]
 enum Provisioned {
     /// Being an active member of the metadata store cluster
     Member(Member),
@@ -2127,7 +2128,7 @@ impl Standby {
                 .unwrap_or(Metadata::with_current(|m| m.nodes_config_version()))),
             Err(status) => {
                 let known_leader = KnownLeader::from_status(&status);
-                Err(JoinError::Rpc(status, known_leader))
+                Err(JoinError::Rpc(Box::new(status), known_leader))
             }
         }
     }

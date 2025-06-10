@@ -31,7 +31,7 @@ pub(crate) struct InvokeCommand {
 
 #[derive(Debug)]
 pub(crate) enum InputCommand<SR> {
-    Invoke(InvokeCommand),
+    Invoke(Box<InvokeCommand>),
     // TODO remove this when we remove journal v1
     // Journal V1 doesn't support epochs nor trim and restart
     Completion {
@@ -90,13 +90,13 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         journal: InvokeInputJournal,
     ) -> Result<(), NotRunningError> {
         self.input
-            .send(InputCommand::Invoke(InvokeCommand {
+            .send(InputCommand::Invoke(Box::new(InvokeCommand {
                 partition,
                 invocation_id,
                 invocation_epoch,
                 invocation_target,
                 journal,
-            }))
+            })))
             .map_err(|_| NotRunningError)
     }
 

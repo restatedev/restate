@@ -180,6 +180,8 @@ impl InvocationCompletion {
 }
 
 #[derive(Debug, Clone)]
+// todo: fix this and box the large variant (JournalEntryV2 is 496 bytes)
+#[allow(clippy::large_enum_variant)]
 pub enum JournalEntry {
     V1(JournalEntryV1),
     V2(JournalEntryV2),

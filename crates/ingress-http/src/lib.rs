@@ -254,7 +254,7 @@ mod mocks {
     impl RequestDispatcher for Arc<MockRequestDispatcher> {
         fn send(
             &self,
-            invocation_request: InvocationRequest,
+            invocation_request: Arc<InvocationRequest>,
         ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send
         {
             MockRequestDispatcher::send(self, invocation_request)
@@ -262,7 +262,7 @@ mod mocks {
 
         fn call(
             &self,
-            invocation_request: InvocationRequest,
+            invocation_request: Arc<InvocationRequest>,
         ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send {
             MockRequestDispatcher::call(self, invocation_request)
         }
