@@ -11,11 +11,12 @@
 use std::time::Duration;
 
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
 
 use restate_core::network::{NetworkSender, Networking, RpcError, Swimlane, TransportConnect};
-use restate_core::{Metadata, TaskCenter, TaskCenterFutureExt, my_node_id};
-use restate_types::PlainNodeId;
+use restate_core::{Metadata, TaskCenter, TaskCenterFutureExt};
+use restate_types::cluster_state::ClusterState;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{
@@ -23,8 +24,10 @@ use restate_types::logs::{
 };
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, Status, WaitForTail};
 use restate_types::net::replicated_loglet::{CommonRequestHeader, GetSequencerState};
+use restate_types::nodes_config::{NodesConfigError, NodesConfiguration};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::NodeSetChecker;
+use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
 use crate::providers::replicated_loglet::loglet::FindTailFlags;
@@ -84,36 +87,29 @@ impl<T: TransportConnect> FindTailTask<T> {
         }
     }
 
-    pub fn is_sequencer_alive(&self) -> bool {
-        TaskCenter::with_current(|tc| {
-            let cs = tc.cluster_state();
-            // if our own node is not seen to be alive yet, then we should still try to connect to
-            // the sequencer.
-            cs.is_alive(self.my_params.sequencer.into()) || !cs.is_alive(my_node_id().into())
-        })
-    }
-
     #[instrument(skip_all)]
     pub async fn run(self, opts: FindTailFlags) -> FindTailResult {
         let metadata = Metadata::current();
+        let mut nodes_config = metadata.updateable_nodes_config();
         // Special case:
         // If all nodes in the nodeset is in "provisioning", we can confidently short-circuit
         // the result to LogletOffset::Oldest and the loglet is definitely unsealed.
         if self
             .my_params
             .nodeset
-            .all_provisioning(&metadata.nodes_config_ref())
+            .all_provisioning(nodes_config.live_load())
         {
             return FindTailResult::Open {
                 global_tail: LogletOffset::OLDEST,
             };
         }
 
-        // Is the sequencer a potential candidate?
-        //
+        let my_node = metadata.my_node_id();
+
         // If the sequencer is dead, let's not wait for too long on its response. But if
         // it's alive (or a newer generation is running on this node) then this check fails and
         // we won't spend time here.
+        let cs = TaskCenter::with_current(|tc| tc.cluster_state().clone());
 
         let get_seq_state = GetSequencerState {
             header: CommonRequestHeader {
@@ -124,7 +120,12 @@ impl<T: TransportConnect> FindTailTask<T> {
             force_seal_check: opts == FindTailFlags::ForceSealCheck,
         };
 
-        if self.is_sequencer_alive() {
+        if is_sequencer_alive(&cs, self.my_params.sequencer, my_node) {
+            trace!(
+                loglet_id = %self.my_params.loglet_id,
+                sequencer = %self.my_params.sequencer,
+               "Asking the sequencer about the tail of the loglet"
+            );
             if let Ok(seq_state) = self
                 .networking
                 .call_rpc(
@@ -213,7 +214,7 @@ impl<T: TransportConnect> FindTailTask<T> {
             let effective_nodeset = self
                 .my_params
                 .nodeset
-                .to_effective(&metadata.nodes_config_ref());
+                .to_effective(nodes_config.live_load());
 
             let mut inflight_info_requests = JoinSet::new();
             for node in effective_nodeset.iter() {
@@ -242,7 +243,7 @@ impl<T: TransportConnect> FindTailTask<T> {
             // procedure.
             let mut nodeset_checker = NodeSetChecker::<NodeTailStatus>::new(
                 &effective_nodeset,
-                &metadata.nodes_config_ref(),
+                nodes_config.live_load(),
                 &self.my_params.replication,
             );
 
@@ -428,6 +429,12 @@ impl<T: TransportConnect> FindTailTask<T> {
                         .max()
                         .expect("at least one node is known and sealed");
 
+                    trace!(
+                        loglet_id = %self.my_params.loglet_id,
+                        "Max local tail was determined to be {}", max_local_tail,
+                    );
+                    let mut last_updated = Instant::now();
+
                     // Is there a full write-quorum for the requested tail?
                     if nodeset_checker.check_write_quorum(|attribute| match attribute {
                         // We have all copies of the max-local-tail replicated. It's safe to
@@ -474,6 +481,12 @@ impl<T: TransportConnect> FindTailTask<T> {
                             })
                             .expect("to spawn wait for tail on node task");
                     }
+                    trace!(
+                        loglet_id = %self.my_params.loglet_id,
+                        %max_local_tail,
+                        "Waiting for write-quorum of nodes to move to the max tail determined earlier",
+                    );
+
                     loop {
                         // Re-evaluation conditition is any of:
                         // - todo(asoli): [optimization] Sequencer is reachable and has moved past max_local_tail
@@ -483,17 +496,18 @@ impl<T: TransportConnect> FindTailTask<T> {
                         //   sequencer is alive, we might move the global commit offset before it does.
                         // - More nodes chimed in (inflight-info-requests)
                         // - Timeout?
-                        let updated = tokio::select! {
+                        tokio::select! {
                             Some(Ok((node_id, tail_update))) = inflight_tail_update_watches.join_next() => {
                                 // maybe sealed, maybe global is updated. Who knows.
                                 nodeset_checker.merge_attribute(node_id, tail_update);
-                                true
+                                last_updated = Instant::now();
                             }
                             Some(Ok((node_id, info))) = inflight_info_requests.join_next() => {
                                 nodeset_checker.merge_attribute(node_id, info);
-                                true
+                                last_updated = Instant::now();
                             }
-                            else =>  false,
+                            _ = tokio::time::sleep(Duration::from_secs(1)), if nodeset_checker.check_write_quorum(NodeTailStatus::is_known) => {}
+                            else => {}
                         };
 
                         if nodeset_checker.any(NodeTailStatus::is_known_sealed) {
@@ -532,7 +546,94 @@ impl<T: TransportConnect> FindTailTask<T> {
                             };
                         }
 
-                        if !updated {
+                        // if the sequencer is "gone", we can immediately go ahead and seal the
+                        // loglet.
+                        //
+                        // sequencer is dead AND:
+                        // - We have f-majority responses already
+                        // - We have write-quorum responses (i.e. tail is repairable)
+                        //
+                        // This means that waiting for nodes to move their local tail is:
+                        // A) unlikely to happen (because sequencer is observed dead)
+                        // B) and if we sealed, we'll be able to repair this tail since we can
+                        // reach to write-quorum.
+                        //
+                        // Our goal is to detect when we should just go ahead and seal instead of
+                        // waiting for the tail to move.
+                        //
+                        // This **must** take into account the sequencer status. If the sequencer
+                        // node is believed to be alive, we should not step over it. Instead, we continue
+                        // waiting because it could be struggling to replicate the tail still. However,
+                        // if the sequencer is believed to dead, we should seal and repair the tail and
+                        // restart the find-tail procedure if it has been over 5 seconds since the
+                        // last update from any log-server (quiescent state).
+                        //
+                        // This is an attempt to reduce over-reacting solely based on observing a "dead"
+                        // sequencer. A dead sequencer can be observed in benign situations, such
+                        // as:
+                        // 1. On startup, we might not have a good view of the cluster state. We don't
+                        //    want to prematurely preempt the sequencer unless we are confident that
+                        //    it's gone for good. Gone is a state defined by observing a higher
+                        //    generation of the same plain node id. If the sequencer is _gone_, it's
+                        //    okay to be eager to seal.
+                        // 2. We don't attempt to seal unless we have heard from the union of the write-quorum
+                        //    and the f-majority, this protects us against being partitioned with the
+                        //    minority of log-servers in the nodeset.
+                        // 3. If the sequencer is not gone (but dead), we react after being quiescent for 5 seconds.
+                        if (is_sequencer_gone(
+                            &cs,
+                            self.my_params.sequencer,
+                            nodes_config.live_load(),
+                        ) || is_sequencer_likely_gone(
+                            &cs,
+                            self.my_params.sequencer,
+                            last_updated,
+                        )) && nodeset_checker.check_write_quorum(NodeTailStatus::is_known)
+                        {
+                            // SEAL AND REPAIR
+                            debug!(
+                                loglet_id = %self.my_params.loglet_id,
+                                %max_local_tail,
+                                "Detected gone (or likely gone) sequencer and inconsistent tail. Sealing the loglet to repair the tail; status={}",
+                                nodeset_checker,
+                            );
+                            // run seal task then retry the find-tail check.
+                            // This returns when we have f-majority sealed.
+                            let sealed_tail = match SealTask::run(
+                                &self.my_params,
+                                &self.known_global_tail,
+                                &self.networking,
+                            )
+                            .await
+                            {
+                                Ok(sealed_tail) => sealed_tail,
+                                Err(e) => {
+                                    return FindTailResult::Error(format!(
+                                        "Failed to seal the loglet during find-tail procedure for loglet_id={}: {:?}",
+                                        self.my_params.loglet_id, e
+                                    ));
+                                }
+                            };
+                            // Just to make our intention clear that we want to drain the set and abort
+                            // all tasks. This happens automatically on the next iteration of the loop
+                            // but it's left here for visibility.
+                            drop(inflight_info_requests);
+                            // retry the whole find-tail procedure.
+                            trace!(
+                                %sealed_tail,
+                                %max_local_tail,
+                                "Restarting FindTail task after sealing f-majority for loglet_id={}",
+                                self.my_params.loglet_id
+                            );
+                            continue 'find_tail;
+                        }
+
+                        // nothing left to wait on, the tail didn't reach the expected target and
+                        // we decided not to seal the loglet (either we cannot reach write quorum
+                        // of responses or the sequencer is still alive)
+                        if inflight_info_requests.is_empty()
+                            && inflight_tail_update_watches.is_empty()
+                        {
                             // Nothing left to wait on. The tail didn't reach expected
                             // target and no more nodes are expected to send us responses.
                             return FindTailResult::Error(format!(
@@ -577,6 +678,12 @@ impl<'a> FindTailOnNode<'a> {
             ),
         };
 
+        trace!(
+            loglet_id = %self.loglet_id,
+            peer = %self.node_id,
+            known_global_tail = %self.known_global_tail,
+           "Request tail info from log-server"
+        );
         let maybe_info = networking
             .call_rpc(
                 self.node_id,
@@ -586,6 +693,12 @@ impl<'a> FindTailOnNode<'a> {
                 Some(request_timeout),
             )
             .await;
+        trace!(
+            loglet_id = %self.loglet_id,
+            peer = %self.node_id,
+            known_global_tail = %self.known_global_tail,
+           "Received tail info from log-server: {:?}", maybe_info
+        );
 
         match maybe_info {
             Ok(msg) => {
@@ -733,4 +846,46 @@ impl WaitForTailOnNode {
             }
         }
     }
+}
+
+fn is_sequencer_alive(
+    cs: &ClusterState,
+    sequencer: GenerationalNodeId,
+    my_node_id: GenerationalNodeId,
+) -> bool {
+    // if our own node is not seen to be alive yet, then we should still try to connect to
+    // the sequencer.
+    cs.is_alive(sequencer.into()) || !cs.is_alive(my_node_id.into())
+}
+
+fn is_sequencer_gone(
+    cs: &ClusterState,
+    sequencer: GenerationalNodeId,
+    nodes_config: &NodesConfiguration,
+) -> bool {
+    if cs.is_alive(sequencer.into()) {
+        // it's alive, so we assume it's not gone
+        false
+    } else {
+        // node is dead, but is it gone?
+        match nodes_config.find_node_by_id(sequencer) {
+            // it's just dead, not necessarily gone
+            Ok(_) => false,
+            Err(NodesConfigError::UnknownNodeId(_)) => true,
+            Err(NodesConfigError::Deleted(_)) => true,
+            Err(NodesConfigError::GenerationMismatch { found, .. }) => {
+                found.is_newer_than(sequencer)
+            }
+        }
+    }
+}
+
+fn is_sequencer_likely_gone(
+    cs: &ClusterState,
+    sequencer: GenerationalNodeId,
+    last_updated: Instant,
+) -> bool {
+    // 5 seconds since last tail update/movement **and** sequencer is dead is a good indicator that
+    // we should attempt to seal the loglet to repair the inconsistent tail.
+    !cs.is_alive(sequencer.into()) && last_updated.elapsed() > Duration::from_secs(5)
 }
