@@ -32,40 +32,34 @@ impl From<ServiceType> for crate::invocation::ServiceType {
 
 impl Service {
     pub fn inactivity_timeout_duration(&self) -> Option<Duration> {
-        self.inactivity_timeout
-            .map(|d| Duration::from_millis(d.get()))
+        self.inactivity_timeout.map(Duration::from_millis)
     }
     pub fn abort_timeout_duration(&self) -> Option<Duration> {
-        self.abort_timeout.map(|d| Duration::from_millis(d.get()))
+        self.abort_timeout.map(Duration::from_millis)
     }
     pub fn journal_retention_duration(&self) -> Option<Duration> {
-        self.journal_retention
-            .map(|d| Duration::from_millis(d.get()))
+        self.journal_retention.map(Duration::from_millis)
     }
     pub fn idempotency_retention_duration(&self) -> Option<Duration> {
-        self.idempotency_retention
-            .map(|d| Duration::from_millis(d.get()))
+        self.idempotency_retention.map(Duration::from_millis)
     }
 }
 
 impl Handler {
     pub fn inactivity_timeout_duration(&self) -> Option<Duration> {
-        self.inactivity_timeout
-            .map(|d| Duration::from_millis(d.get()))
+        self.inactivity_timeout.map(Duration::from_millis)
     }
     pub fn abort_timeout_duration(&self) -> Option<Duration> {
-        self.abort_timeout.map(|d| Duration::from_millis(d.get()))
+        self.abort_timeout.map(Duration::from_millis)
     }
     pub fn journal_retention_duration(&self) -> Option<Duration> {
-        self.journal_retention
-            .map(|d| Duration::from_millis(d.get()))
+        self.journal_retention.map(Duration::from_millis)
     }
     pub fn idempotency_retention_duration(&self) -> Option<Duration> {
-        self.idempotency_retention
-            .map(|d| Duration::from_millis(d.get()))
+        self.idempotency_retention.map(Duration::from_millis)
     }
     pub fn workflow_completion_retention_duration(&self) -> Option<Duration> {
         self.workflow_completion_retention
-            .map(|d| Duration::from_millis(d.get()))
+            .map(Duration::from_millis)
     }
 }

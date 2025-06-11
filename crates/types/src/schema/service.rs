@@ -293,6 +293,13 @@ pub struct HandlerMetadata {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub enable_lazy_state: Option<bool>,
 
+    /// # Public
+    ///
+    /// If true, this handler can be invoked through the ingress.
+    /// If false, this handler can be invoked only from another Restate service.
+    #[serde(default = "restate_serde_util::default::bool::<true>")]
+    pub public: bool,
+
     /// # Human readable input description
     ///
     /// If empty, no schema was provided by the user at discovery time.
@@ -386,6 +393,7 @@ impl HandlerSchemas {
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
+            public: self.target_meta.public,
             input_description: self.target_meta.input_rules.to_string(),
             output_description: self.target_meta.output_rules.to_string(),
             input_json_schema: self.target_meta.input_rules.json_schema(),
@@ -614,6 +622,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
+                                public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
                                 input_json_schema: None,
@@ -659,6 +668,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
+                                public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
                                 input_json_schema: None,

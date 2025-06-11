@@ -144,32 +144,36 @@
                 },
                 "inactivityTimeout": {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 0,
                   "description": "Inactivity timeout duration, expressed in milliseconds."
                 },
                 "abortTimeout":  {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 0,
                   "description": "Abort timeout duration, expressed in milliseconds."
                 },
                 "journalRetention":  {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 0,
                   "description": "Journal retention duration, expressed in milliseconds."
                 },
                 "idempotencyRetention":  {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 0,
                   "description": "Idempotency retention duration, expressed in milliseconds. This is NOT VALID when HandlerType == WORKFLOW"
                 },
                 "workflowCompletionRetention":  {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 0,
                   "description": "Workflow completion retention duration, expressed in milliseconds. This is valid ONLY when HandlerType == WORKFLOW"
                 },
                 "enableLazyState":  {
                   "type": "boolean",
                   "description": "If true, lazy state is enabled."
+                },
+                "ingressPrivate":  {
+                  "type": "boolean",
+                  "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
                 },
                 "metadata": {
                   "type": "object",
@@ -187,29 +191,29 @@
           },
           "inactivityTimeout": {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "description": "Inactivity timeout duration, expressed in milliseconds."
           },
           "abortTimeout":  {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "description": "Abort timeout duration, expressed in milliseconds."
           },
           "journalRetention":  {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "description": "Journal retention duration, expressed in milliseconds."
           },
           "idempotencyRetention":  {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "description": "Idempotency retention duration, expressed in milliseconds. When ServiceType == WORKFLOW, this option will be applied only to the shared handlers. See workflowCompletionRetention for more details."
           },
           "enableLazyState":  {
             "type": "boolean",
             "description": "If true, lazy state is enabled."
           },
-          "private":  {
+          "ingressPrivate":  {
             "type": "boolean",
             "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
           },
