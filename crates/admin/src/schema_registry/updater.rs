@@ -474,6 +474,7 @@ impl SchemaUpdater {
             service_schemas.idempotency_retention = idempotency_retention;
             service_schemas.inactivity_timeout = inactivity_timeout;
             service_schemas.abort_timeout = abort_timeout;
+            service_schemas.enable_lazy_state = service.enable_lazy_state;
             service_schemas
         } else {
             let public = service.ingress_private.map(bool::not).unwrap_or(true);
