@@ -189,6 +189,10 @@ message InvocationV2Lite {
   uint32 current_invocation_epoch = 27;
 }
 
+message InvocationStatusV2OnlyEpoch {
+  uint32 current_invocation_epoch = 27;
+}
+
 // TODO remove this after 1.1
 message InvocationStatus {
 
@@ -587,6 +591,8 @@ message Entry {
     uint32 signal_idx = 8;
     string signal_name = 9;
   }
+
+  uint32 invocation_epoch = 10;
 }
 
 message ResponseResult {

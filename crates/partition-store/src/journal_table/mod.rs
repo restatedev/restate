@@ -21,8 +21,9 @@ use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::Result;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
+use restate_storage_api::journal_table_v2::JournalEntryId;
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
+    EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithPartitionKey,
 };
 use std::io::Cursor;
 use std::ops::RangeInclusive;
@@ -116,6 +117,7 @@ fn all_journals<S: StorageAccess>(
             Ok((
                 JournalEntryId::from_parts(
                     InvocationId::from_parts(partition_key, invocation_uuid),
+                    0,
                     entry_index,
                 ),
                 journal_entry,

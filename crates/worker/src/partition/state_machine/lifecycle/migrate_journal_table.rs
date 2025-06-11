@@ -60,6 +60,7 @@ where
                 journal_table_v2::JournalTable::put_journal_entry(
                     ctx.storage,
                     self.invocation_id,
+                    self.metadata.current_invocation_epoch,
                     0,
                     &new_entry.encode::<ServiceProtocolV4Codec>(),
                     &[],

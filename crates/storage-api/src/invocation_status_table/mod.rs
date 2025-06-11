@@ -365,6 +365,31 @@ impl InvocationStatus {
     }
 
     #[inline]
+    pub fn get_epoch(&self) -> InvocationEpoch {
+        match self {
+            InvocationStatus::Scheduled(_) | InvocationStatus::Inboxed(_) => 0,
+            InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. } => {
+                metadata.current_invocation_epoch
+            }
+            InvocationStatus::Completed(completed) => completed.invocation_epoch,
+            InvocationStatus::Free => 0,
+        }
+    }
+
+    #[inline]
+    pub fn get_pinned_deployment(&self) -> Option<&PinnedDeployment> {
+        match self {
+            InvocationStatus::Scheduled(_)
+            | InvocationStatus::Inboxed(_)
+            | InvocationStatus::Free => None,
+            InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. } => {
+                metadata.pinned_deployment.as_ref()
+            }
+            InvocationStatus::Completed(completed) => completed.pinned_deployment.as_ref(),
+        }
+    }
+
+    #[inline]
     pub fn get_timestamps_mut(&mut self) -> Option<&mut StatusTimestamps> {
         match self {
             InvocationStatus::Scheduled(metadata) => Some(&mut metadata.metadata.timestamps),
@@ -693,8 +718,11 @@ pub struct CompletedInvocation {
     pub completion_retention_duration: Duration,
     pub journal_retention_duration: Duration,
 
+    pub invocation_epoch: InvocationEpoch,
+
     pub journal_metadata: JournalMetadata,
     pub pinned_deployment: Option<PinnedDeployment>,
+    pub completion_range_epoch_map: CompletionRangeEpochMap,
 }
 
 #[derive(PartialEq, Eq)]
@@ -725,12 +753,14 @@ impl CompletedInvocation {
             completion_retention_duration: in_flight_invocation_metadata
                 .completion_retention_duration,
             journal_retention_duration: in_flight_invocation_metadata.journal_retention_duration,
+            invocation_epoch: in_flight_invocation_metadata.current_invocation_epoch,
             journal_metadata: if journal_retention_policy == JournalRetentionPolicy::Retain {
                 in_flight_invocation_metadata.journal_metadata
             } else {
                 JournalMetadata::empty()
             },
             pinned_deployment: in_flight_invocation_metadata.pinned_deployment,
+            completion_range_epoch_map: in_flight_invocation_metadata.completion_range_epoch_map,
         }
     }
 
@@ -753,21 +783,40 @@ pub struct InvokedInvocationStatusLite {
 }
 
 pub trait ReadOnlyInvocationStatusTable {
+    /// Gets the latest invocation status
     fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
+    ) -> impl Future<Output = Result<InvocationStatus>> + Send;
+
+    /// Gets the latest epoch for the given invocation id
+    fn get_latest_epoch_for_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> impl Future<Output = Result<Option<InvocationEpoch>>> + Send;
+
+    /// Epoch can be the latest as well.
+    fn get_invocation_status_for_epoch(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
     ) -> impl Future<Output = Result<InvocationStatus>> + Send;
 
     fn all_invoked_invocations(
         &mut self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
 
+    /// Returns all the invocation statuses, including the archived ones.
     fn all_invocation_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
 }
 
+/// ## Latest and archived invocations
+///
+/// Current invocations and archived invocations are stored in separate key ranges.
+/// Archived invocations are immutable and cannot outlive the "latest" invocation.
 pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
     fn put_invocation_status(
         &mut self,
@@ -775,9 +824,21 @@ pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
         status: &InvocationStatus,
     ) -> impl Future<Output = Result<()>> + Send;
 
+    /// Archive the invocation status for the given invocation epoch.
+    ///
+    /// This won't affect the latest/current status.
+    fn archive_invocation_status_to_epoch(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+        status: &InvocationStatus,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Delete the invocation status. If no epoch is provided, remove the latest/current.
     fn delete_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
+        invocation_epoch: Option<InvocationEpoch>,
     ) -> impl Future<Output = Result<()>> + Send;
 }
 
@@ -841,8 +902,10 @@ mod test_util {
                 response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_retention_duration: Duration::ZERO,
+                invocation_epoch: 0,
                 journal_metadata: JournalMetadata::empty(),
                 pinned_deployment: None,
+                completion_range_epoch_map: Default::default(),
             }
         }
 
@@ -864,6 +927,8 @@ mod test_util {
                 journal_metadata: JournalMetadata::empty(),
                 journal_retention_duration: Duration::ZERO,
                 pinned_deployment: None,
+                invocation_epoch: 0,
+                completion_range_epoch_map: Default::default(),
             }
         }
     }

@@ -197,6 +197,35 @@ impl TestEnv {
         .collect()
     }
 
+    pub async fn read_archived_journal_to_vec(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+        journal_length: EntryIndex,
+    ) -> Vec<journal_v2::Entry> {
+        let mut entries = Vec::with_capacity(journal_length as usize);
+        for i in 0..journal_length {
+            entries.push(
+                restate_storage_api::journal_table_v2::ReadOnlyJournalTable::get_journal_entry_for_epoch(
+                    self.storage(),
+                    invocation_id,
+                    invocation_epoch,
+                    i
+                ).await .expect("storage to be working")
+                    .expect("entry should be here")
+            )
+        }
+
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| {
+                e.decode::<ServiceProtocolV4Codec, _>()
+                    .unwrap_or_else(|_| panic!("entry index {i} can be decoded"))
+            })
+            .collect()
+    }
+
     pub async fn modify_invocation_status(
         &mut self,
         invocation_id: InvocationId,
@@ -238,9 +267,57 @@ impl TestEnv {
 
         // Verify we don't go out of bounds
         assert_that!(
+            restate_storage_api::journal_table_v2::ReadOnlyJournalTable::get_journal_entry(
+                self.storage(),
+                invocation_id,
+                expected_entry_types.len() as u32
+            )
+            .await,
+            ok(none())
+        );
+    }
+
+    pub async fn verify_journal_components_for_epoch(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+        entry_types: impl IntoIterator<Item = journal_v2::EntryType>,
+    ) {
+        let expected_entry_types = entry_types.into_iter().collect::<Vec<_>>();
+        let expected_commands = expected_entry_types
+            .iter()
+            .filter(|e| e.is_command())
+            .count();
+        assert_that!(
             self.storage
-                .get_journal_entry(&invocation_id, expected_entry_types.len() as u32)
+                .get_invocation_status_for_epoch(&invocation_id, invocation_epoch)
                 .await,
+            ok(all!(
+                matchers::storage::has_journal_length(expected_entry_types.len() as u32),
+                matchers::storage::has_commands(expected_commands as u32),
+                matchers::storage::is_epoch(invocation_epoch)
+            ))
+        );
+        let actual_entry_types = self
+            .read_archived_journal_to_vec(
+                invocation_id,
+                invocation_epoch,
+                expected_entry_types.len() as EntryIndex,
+            )
+            .await
+            .into_iter()
+            .map(|e| e.ty())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_entry_types, expected_entry_types);
+
+        // Verify we don't go out of bounds
+        assert_that!(
+          restate_storage_api::journal_table_v2::ReadOnlyJournalTable::get_journal_entry_for_epoch(
+                self.storage(),
+                invocation_id,
+                invocation_epoch,
+                expected_entry_types.len() as u32
+            ).await,
             ok(none())
         );
     }

@@ -10,10 +10,14 @@
 
 use crate::errors::InvocationError;
 use crate::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
-use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget};
+use crate::invocation::restart::{ApplyToWorkflowRun, IfRunning};
+use crate::invocation::{
+    InvocationEpoch, InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget,
+};
 use crate::journal_v2::Signal;
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
+use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{inner}")]
@@ -105,6 +109,16 @@ pub enum PurgeInvocationResponse {
     NotCompleted,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestartInvocationResponse {
+    Ok { new_epoch: InvocationEpoch },
+    NotFound,
+    StillRunning,
+    Unsupported,
+    MissingInput,
+    NotStarted,
+}
+
 /// This trait provides the functionalities to interact with Restate invocations.
 pub trait InvocationClient {
     /// Append the invocation to the log, waiting for the PP to emit [`SubmittedInvocationNotification`] when the command is processed.
@@ -164,17 +178,29 @@ pub trait InvocationClient {
         invocation_id: InvocationId,
     ) -> impl Future<Output = Result<KillInvocationResponse, InvocationClientError>> + Send;
 
-    /// Purge the given invocation. This cleanups all the state for the given invocation. This command applies only to completed invocations.
+    /// Purge the given invocation. This cleanups all the state for the given invocation. This command applies only to completed invocations. If the invocation_epoch is the latest, all the previous epochs will be purged as well.
     fn purge_invocation(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
     ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send;
 
-    /// Purge the given invocation journal. This cleanups only the journal for the given invocation, retaining the metadata. This command applies only to completed invocations.
+    /// Purge the given invocation journal. This cleanups only the journal for the given invocation, retaining the metadata. This command applies only to completed invocations. If the invocation_epoch is the latest, all the previous epochs will be purged as well.
     fn purge_journal(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
     ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send;
+
+    /// See [`crate::invocation::restart::Request`].
+    fn restart_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+        if_running: IfRunning,
+        previous_attempt_retention: Option<Duration>,
+        apply_to_workflow_run: ApplyToWorkflowRun,
+    ) -> impl Future<Output = Result<RestartInvocationResponse, InvocationClientError>> + Send;
 }

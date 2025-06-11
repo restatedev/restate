@@ -61,7 +61,6 @@ use restate_types::identifiers::{
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
-    PurgeInvocationResponse,
 };
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationEpoch,
@@ -278,8 +277,27 @@ impl<S> StateMachineApplyContext<'_, S> {
         if let Some(invocation_target) = status.invocation_target() {
             Span::current().record_invocation_target(invocation_target);
         }
-        if let Some(invocation_metadata) = status.get_invocation_metadata() {
-            Span::current().record_invocation_epoch(&invocation_metadata.current_invocation_epoch);
+        Span::current().record_invocation_epoch(&status.get_epoch());
+        Ok(status)
+    }
+
+    async fn get_invocation_status_for_epoch(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> Result<InvocationStatus, Error>
+    where
+        S: ReadOnlyInvocationStatusTable,
+    {
+        Span::current().record_invocation_id(invocation_id);
+        Span::current().record_invocation_epoch(&invocation_epoch);
+        let status = self
+            .storage
+            .get_invocation_status_for_epoch(invocation_id, invocation_epoch)
+            .await?;
+
+        if let Some(invocation_target) = status.invocation_target() {
+            Span::current().record_invocation_target(invocation_target);
         }
         Ok(status)
     }
@@ -461,6 +479,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 lifecycle::OnPurgeCommand {
                     invocation_id: purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
+                    invocation_epoch: purge_invocation_request.invocation_epoch,
                 }
                 .apply(self)
                 .await?;
@@ -470,6 +489,20 @@ impl<S> StateMachineApplyContext<'_, S> {
                 lifecycle::OnPurgeJournalCommand {
                     invocation_id: purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
+                    invocation_epoch: purge_invocation_request.invocation_epoch,
+                }
+                .apply(self)
+                .await?;
+                Ok(())
+            }
+            Command::RestartInvocation(restart_invocation_request) => {
+                lifecycle::OnRestartInvocationCommand {
+                    invocation_id: restart_invocation_request.invocation_id,
+                    if_running: restart_invocation_request.if_running,
+                    previous_attempt_retention: restart_invocation_request
+                        .previous_attempt_retention,
+                    apply_to_workflow_run: restart_invocation_request.apply_to_workflow_run,
+                    response_sink: restart_invocation_request.response_sink,
                 }
                 .apply(self)
                 .await?;
@@ -1658,6 +1691,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 lifecycle::OnPurgeCommand {
                     invocation_id,
                     response_sink: None,
+                    invocation_epoch: 0,
                 }
                 .apply(self)
                 .await?;
@@ -2013,6 +2047,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         if journal_retention.is_zero() {
             self.do_drop_journal(
                 invocation_id,
+                None,
                 journal_length,
                 should_remove_journal_table_v2,
             )
@@ -2291,7 +2326,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
-                    self.do_clear_all_state(service_id, invocation_id).await?;
+                    self.do_clear_all_state(service_id).await?;
                 } else {
                     warn!(
                         "Trying to process entry {} for a target that has no state",
@@ -3392,54 +3427,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         });
     }
 
-    fn reply_to_purge_invocation(
-        &mut self,
-        response_sink: Option<InvocationMutationResponseSink>,
-        response: PurgeInvocationResponse,
-    ) {
-        if response_sink.is_none() {
-            return;
-        }
-        let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
-            response_sink.unwrap();
-        debug_if_leader!(
-            self.is_leader,
-            "Send purge response to request id '{:?}': {:?}",
-            request_id,
-            response
-        );
-
-        self.action_collector
-            .push(Action::ForwardPurgeInvocationResponse {
-                request_id,
-                response,
-            });
-    }
-
-    fn reply_to_purge_journal(
-        &mut self,
-        response_sink: Option<InvocationMutationResponseSink>,
-        response: PurgeInvocationResponse,
-    ) {
-        if response_sink.is_none() {
-            return;
-        }
-        let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
-            response_sink.unwrap();
-        debug_if_leader!(
-            self.is_leader,
-            "Send purge response to request id '{:?}': {:?}",
-            request_id,
-            response
-        );
-
-        self.action_collector
-            .push(Action::ForwardPurgeJournalResponse {
-                request_id,
-                response,
-            });
-    }
-
     fn send_submit_notification_if_needed(
         &mut self,
         invocation_id: InvocationId,
@@ -3776,27 +3763,12 @@ impl<S> StateMachineApplyContext<'_, S> {
             .map_err(Error::Storage)
     }
 
-    #[tracing::instrument(
-        skip_all,
-        level="info",
-        name="clear_all_state",
-        fields(
-            restate.invocation.id = %invocation_id,
-            rpc.service = %service_id.service_name
-        )
-    )]
-    async fn do_clear_all_state(
-        &mut self,
-        service_id: ServiceId,
-        invocation_id: InvocationId,
-    ) -> Result<(), Error>
+    async fn do_clear_all_state(&mut self, service_id: ServiceId) -> Result<(), Error>
     where
         S: StateTable,
     {
-        debug_if_leader!(self.is_leader, "Effect: Clear all state");
-
+        debug_if_leader!(self.is_leader, "Clear all state for service {service_id}");
         self.storage.delete_all_user_state(&service_id).await?;
-
         Ok(())
     }
 
@@ -3872,6 +3844,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     async fn do_drop_journal(
         &mut self,
         invocation_id: InvocationId,
+        invocation_epoch: Option<InvocationEpoch>,
         journal_length: EntryIndex,
         should_remove_journal_table_v2: bool,
     ) -> Result<(), Error>
@@ -3888,6 +3861,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             journal_table_v2::JournalTable::delete_journal(
                 self.storage,
                 invocation_id,
+                invocation_epoch,
                 journal_length,
             )
             .await
@@ -4196,8 +4170,7 @@ enum InvocationStatusProjection {
 
 fn should_use_journal_table_v2(status: &InvocationStatus) -> bool {
     status
-        .get_invocation_metadata()
-        .and_then(|im| im.pinned_deployment.as_ref())
+        .get_pinned_deployment()
         .is_some_and(|pinned_deployment| {
             pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
         })
