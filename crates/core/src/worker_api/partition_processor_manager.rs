@@ -84,7 +84,7 @@ pub struct SnapshotCreated {
 }
 
 #[derive(Debug, derive_more::Display)]
-#[display("{kind} for partition id: {partition_id}")]
+#[display("{kind} for partition {partition_id}")]
 pub struct SnapshotError {
     pub partition_id: PartitionId,
     pub kind: SnapshotErrorKind,
