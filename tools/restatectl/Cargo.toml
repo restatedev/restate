@@ -48,7 +48,7 @@ tempfile = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 assert2 = {workspace = true }
-arrow = { workspace = true, features = ["ipc"] }
+arrow = { workspace = true, features = ["ipc", "json"] }
 bytes = { workspace = true }
 bytesize = { workspace = true }
 bytestring = { workspace = true }

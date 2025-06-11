@@ -111,6 +111,11 @@ pub enum ServiceError {
     )]
     #[code(unknown)]
     UnexpectedIdempotencyRetention(String),
+    #[error(
+        "The service {service} is private, but the {handler} is explicitly set as public. This is not supported. Please make the service public, and hide the individual handlers"
+    )]
+    #[code(unknown)]
+    BadHandlerVisibility { service: String, handler: String },
     #[error("the json schema for {service}/{handler} {position} is invalid: {error}")]
     #[code(unknown)]
     BadJsonSchema {

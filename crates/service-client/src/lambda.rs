@@ -164,7 +164,7 @@ impl LambdaClient {
                 futures::future::join(body, inner).await;
 
             let payload = ApiGatewayProxyRequest {
-                path: Some(path.path().to_string()),
+                path: Some(path.path()),
                 http_method: method,
                 headers,
                 body: body?,
@@ -294,8 +294,8 @@ impl LambdaError {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ApiGatewayProxyRequest {
-    pub path: Option<String>,
+pub struct ApiGatewayProxyRequest<'a> {
+    pub path: Option<&'a str>,
     #[serde(serialize_with = "serialize_method")]
     pub http_method: Method,
     #[serde(serialize_with = "serialize_headers")]
