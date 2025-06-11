@@ -100,15 +100,25 @@ where
                     *invocation_id,
                     journal_metadata.length,
                 )?
-                .map(|entry| {
-                    entry
-                        .map_err(InvokerStorageReaderError::Storage)
-                        .map(|(_, entry)| {
-                            if entry.ty() == EntryType::Event {
-                                events_count += 1;
-                            }
-                            restate_invoker_api::invocation_reader::JournalEntry::JournalV2(entry)
-                        })
+                .filter_map(|entry| {
+                    std::future::ready(
+                        entry
+                            .map_err(InvokerStorageReaderError::Storage)
+                            .map(|(_, entry)| {
+                                if entry.ty() == EntryType::Event {
+                                    // Filter out events!
+                                    events_count += 1;
+                                    None
+                                } else {
+                                    Some(
+                                    restate_invoker_api::invocation_reader::JournalEntry::JournalV2(
+                                        entry,
+                                    ),
+                                )
+                                }
+                            })
+                            .transpose(),
+                    )
                 })
                 // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
                 // collecting the stream because we cannot keep the transaction open

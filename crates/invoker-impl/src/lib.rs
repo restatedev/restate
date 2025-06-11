@@ -1227,12 +1227,16 @@ where
                 if options.experimental_features_propose_events()
                     && ism
                         .selected_service_protocol()
-                        .is_some_and(|sp| *sp >= ServiceProtocolVersion::V4)
+                        .is_some_and(|sp| sp >= ServiceProtocolVersion::V4)
                 {
                     // Only if protocol version >= 4 was selected we can propose the transient error
                     let event = Event::TransientError(TransientErrorEvent {
                         error_code: invocation_error_report.err.code(),
                         error_message: invocation_error_report.err.message().to_owned(),
+                        // Note from the review:
+                        //  The stacktrace might be very long, but trimming it is not a piece of cake.
+                        //  That's because some languages (Python!) have the stacktrace in reverse,
+                        //  so it's hard here to decide whether to just drop the suffix or the prefix.
                         error_stacktrace: invocation_error_report
                             .err
                             .stacktrace()

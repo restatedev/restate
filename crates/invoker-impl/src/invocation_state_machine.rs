@@ -224,8 +224,8 @@ impl InvocationStateMachine {
         self.selected_service_protocol = Some(service_protocol_version);
     }
 
-    pub(super) fn selected_service_protocol(&self) -> Option<&ServiceProtocolVersion> {
-        self.selected_service_protocol.as_ref()
+    pub(super) fn selected_service_protocol(&self) -> Option<ServiceProtocolVersion> {
+        self.selected_service_protocol
     }
 
     pub(super) fn pinned_deployment_to_notify(&mut self) -> Option<PinnedDeployment> {
