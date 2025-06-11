@@ -2018,7 +2018,6 @@ mod tests {
         use restate_types::config::Configuration;
         use restate_types::invocation::InvocationRetention;
         use restate_types::schema::service::InvocationAttemptOptions;
-        use std::num::NonZeroU64;
         use std::time::Duration;
         use test_log::test;
 
@@ -2123,7 +2122,7 @@ mod tests {
         fn service_level_journal_retention() {
             let target = init_discover_and_resolve_target(
                 endpoint_manifest::Service {
-                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    journal_retention: Some(60 * 1000),
                     ..greeter_service()
                 },
                 GREETER_SERVICE_NAME,
@@ -2143,7 +2142,7 @@ mod tests {
             let target = init_discover_and_resolve_target(
                 endpoint_manifest::Service {
                     handlers: vec![endpoint_manifest::Handler {
-                        journal_retention: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        journal_retention: Some(30 * 1000),
                         ..greeter_service_greet_handler()
                     }],
                     ..greeter_service()
@@ -2164,9 +2163,9 @@ mod tests {
         fn handler_level_journal_retention_overrides_the_service_level_journal_retention() {
             let target = init_discover_and_resolve_target(
                 endpoint_manifest::Service {
-                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    journal_retention: Some(60 * 1000),
                     handlers: vec![endpoint_manifest::Handler {
-                        journal_retention: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        journal_retention: Some(30 * 1000),
                         ..greeter_service_greet_handler()
                     }],
                     ..greeter_service()
@@ -2187,8 +2186,8 @@ mod tests {
         fn service_level_journal_retention_with_idempotency_key() {
             let target = init_discover_and_resolve_target(
                 endpoint_manifest::Service {
-                    idempotency_retention: Some(NonZeroU64::new(120 * 1000).unwrap()),
-                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    idempotency_retention: Some(120 * 1000),
+                    journal_retention: Some(60 * 1000),
                     ..greeter_service()
                 },
                 GREETER_SERVICE_NAME,
@@ -2207,10 +2206,10 @@ mod tests {
         fn handler_level_journal_retention_with_idempotency_key() {
             let target = init_discover_and_resolve_target(
                 endpoint_manifest::Service {
-                    idempotency_retention: Some(NonZeroU64::new(120 * 1000).unwrap()),
-                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    idempotency_retention: Some(120 * 1000),
+                    journal_retention: Some(60 * 1000),
                     handlers: vec![endpoint_manifest::Handler {
-                        journal_retention: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        journal_retention: Some(30 * 1000),
                         ..greeter_service_greet_handler()
                     }],
                     ..greeter_service()
@@ -2232,10 +2231,10 @@ mod tests {
          {
             let target = init_discover_and_resolve_target(
                 endpoint_manifest::Service {
-                    journal_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    journal_retention: Some(60 * 1000),
                     handlers: vec![endpoint_manifest::Handler {
-                        idempotency_retention: Some(NonZeroU64::new(120 * 1000).unwrap()),
-                        journal_retention: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        idempotency_retention: Some(120 * 1000),
+                        journal_retention: Some(30 * 1000),
                         ..greeter_service_greet_handler()
                     }],
                     ..greeter_service()
@@ -2256,9 +2255,9 @@ mod tests {
         fn journal_retention_greater_than_completion_retention() {
             let target = init_discover_and_resolve_target(
                 endpoint_manifest::Service {
-                    journal_retention: Some(NonZeroU64::new(120 * 1000).unwrap()),
+                    journal_retention: Some(120 * 1000),
                     handlers: vec![endpoint_manifest::Handler {
-                        idempotency_retention: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                        idempotency_retention: Some(60 * 1000),
                         ..greeter_service_greet_handler()
                     }],
                     ..greeter_service()
@@ -2328,8 +2327,8 @@ mod tests {
         fn service_level_timeouts() {
             let timeouts = init_discover_and_resolve_timeouts(
                 endpoint_manifest::Service {
-                    abort_timeout: Some(NonZeroU64::new(120 * 1000).unwrap()),
-                    inactivity_timeout: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    abort_timeout: Some(120 * 1000),
+                    inactivity_timeout: Some(60 * 1000),
                     ..greeter_service()
                 },
                 GREETER_SERVICE_NAME,
@@ -2349,10 +2348,10 @@ mod tests {
         fn service_level_timeouts_with_handler_overrides() {
             let timeouts = init_discover_and_resolve_timeouts(
                 endpoint_manifest::Service {
-                    abort_timeout: Some(NonZeroU64::new(120 * 1000).unwrap()),
-                    inactivity_timeout: Some(NonZeroU64::new(60 * 1000).unwrap()),
+                    abort_timeout: Some(120 * 1000),
+                    inactivity_timeout: Some(60 * 1000),
                     handlers: vec![endpoint_manifest::Handler {
-                        inactivity_timeout: Some(NonZeroU64::new(30 * 1000).unwrap()),
+                        inactivity_timeout: Some(30 * 1000),
                         ..greeter_service_greet_handler()
                     }],
                     ..greeter_service()

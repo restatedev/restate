@@ -144,27 +144,27 @@
                 },
                 "inactivityTimeout": {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 0,
                   "description": "Inactivity timeout duration, expressed in milliseconds."
                 },
                 "abortTimeout":  {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 0,
                   "description": "Abort timeout duration, expressed in milliseconds."
                 },
                 "journalRetention":  {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 0,
                   "description": "Journal retention duration, expressed in milliseconds."
                 },
                 "idempotencyRetention":  {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 0,
                   "description": "Idempotency retention duration, expressed in milliseconds. This is NOT VALID when HandlerType == WORKFLOW"
                 },
                 "workflowCompletionRetention":  {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 0,
                   "description": "Workflow completion retention duration, expressed in milliseconds. This is valid ONLY when HandlerType == WORKFLOW"
                 },
                 "enableLazyState":  {
@@ -191,22 +191,22 @@
           },
           "inactivityTimeout": {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "description": "Inactivity timeout duration, expressed in milliseconds."
           },
           "abortTimeout":  {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "description": "Abort timeout duration, expressed in milliseconds."
           },
           "journalRetention":  {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "description": "Journal retention duration, expressed in milliseconds."
           },
           "idempotencyRetention":  {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "description": "Idempotency retention duration, expressed in milliseconds. When ServiceType == WORKFLOW, this option will be applied only to the shared handlers. See workflowCompletionRetention for more details."
           },
           "enableLazyState":  {
