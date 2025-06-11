@@ -1355,7 +1355,7 @@ mod tests {
     use restate_types::invocation::ServiceType;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
-    use restate_types::journal_v2::{Command, OutputCommand, OutputResult};
+    use restate_types::journal_v2::{Command, Encoder, Entry, OutputCommand, OutputResult};
     use restate_types::journal_v2::{CompletionType, NotificationType};
     use restate_types::live::Constant;
     use restate_types::retries::RetryPolicy;
@@ -1951,11 +1951,12 @@ mod tests {
                 invocation_id,
                 0,
                 1,
-                Command::Output(OutputCommand {
-                    result: OutputResult::Success(Bytes::default()),
-                    name: Default::default(),
-                })
-                .encode::<ServiceProtocolV4Codec>()
+                ServiceProtocolV4Codec::encode_entry(Entry::Command(Command::Output(
+                    OutputCommand {
+                        result: OutputResult::Success(Bytes::default()),
+                        name: Default::default(),
+                    },
+                )))
                 .inner
                 .try_as_command()
                 .unwrap(),
@@ -1974,11 +1975,12 @@ mod tests {
                 invocation_id,
                 1,
                 1,
-                Command::Output(OutputCommand {
-                    result: OutputResult::Success(Bytes::default()),
-                    name: Default::default(),
-                })
-                .encode::<ServiceProtocolV4Codec>()
+                ServiceProtocolV4Codec::encode_entry(Entry::Command(Command::Output(
+                    OutputCommand {
+                        result: OutputResult::Success(Bytes::default()),
+                        name: Default::default(),
+                    },
+                )))
                 .inner
                 .try_as_command()
                 .unwrap(),
