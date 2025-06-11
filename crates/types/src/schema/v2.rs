@@ -207,7 +207,6 @@ impl MapAsVecItem for Handler {
 
 pub mod conversions {
     use super::{Deployment, Handler, ServiceRevision};
-    use crate::identifiers;
     use crate::identifiers::DeploymentId;
     use crate::invocation::{
         InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
@@ -304,14 +303,8 @@ pub mod conversions {
                 v2_deployments.insert(deployment_id, v2_deployment);
             }
 
-            let mut current_service_revisions = HashMap::with_capacity(services.len());
-            for (service_name, service_schemas) in services {
-                current_service_revisions.insert(service_name, service_schemas.revision);
-            }
-
             V2Schemas {
                 deployments: v2_deployments,
-                current_service_revisions,
             }
         }
     }
@@ -343,18 +336,14 @@ pub mod conversions {
 
     pub struct V2Schemas {
         pub deployments: HashMap<DeploymentId, Deployment>,
-        pub current_service_revisions: HashMap<String, identifiers::ServiceRevision>,
     }
 
     impl V2Schemas {
         pub fn into_v1(self) -> V1Schemas {
-            let V2Schemas {
-                deployments,
-                current_service_revisions,
-            } = self;
+            let V2Schemas { deployments } = self;
 
             let mut v1_deployments = HashMap::with_capacity(deployments.len());
-            let mut service_revision_to_deployment = HashMap::new();
+            let mut current_service_revision_to_deployment = HashMap::new();
 
             for (deployment_id, deployment) in &deployments {
                 let mut v1_services_metadata = HashMap::with_capacity(deployment.services.len());
@@ -405,8 +394,15 @@ pub mod conversions {
                             enable_lazy_state: service.enable_lazy_state,
                         },
                     );
-                    service_revision_to_deployment
-                        .insert((service_name.clone(), service.revision), *deployment_id);
+                    current_service_revision_to_deployment
+                        .entry(service_name.clone())
+                        .and_modify(|(revision, dep_id)| {
+                            if *revision < service.revision {
+                                *revision = service.revision;
+                                *dep_id = *deployment_id;
+                            }
+                        })
+                        .or_insert((service.revision, *deployment_id));
                 }
                 v1_deployments.insert(
                     *deployment_id,
@@ -425,13 +421,13 @@ pub mod conversions {
                 );
             }
 
-            let mut v1_services = HashMap::with_capacity(current_service_revisions.len());
-            for (service_name, current_service_revision) in current_service_revisions {
-                if let Some(deployment_id) = service_revision_to_deployment
-                    .get(&(service_name.clone(), current_service_revision))
-                {
+            let mut v1_services =
+                HashMap::with_capacity(current_service_revision_to_deployment.len());
+            for (service_name, (current_service_revision, deployment_id)) in
+                current_service_revision_to_deployment
+            {
+                if let Some(deployment) = deployments.get(&deployment_id) {
                     // I built this index above, those values must be present!
-                    let deployment = deployments.get(deployment_id).unwrap();
                     let service = deployment.services.get(&service_name).unwrap();
 
                     let mut v1_handler_schemas = HashMap::with_capacity(service.handlers.len());
@@ -498,7 +494,7 @@ pub mod conversions {
                             handlers: v1_handler_schemas,
                             ty: service.ty,
                             location: ServiceLocation {
-                                latest_deployment: *deployment_id,
+                                latest_deployment: deployment_id,
                                 public: service.public,
                             },
                             idempotency_retention: service.idempotency_retention,
@@ -710,10 +706,6 @@ pub mod conversions {
                             )]),
                         },
                     ),
-                ]),
-                current_service_revisions: HashMap::from([
-                    ("Greeter".to_owned(), 2),
-                    ("AnotherGreeter".to_owned(), 1),
                 ]),
             };
 

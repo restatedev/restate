@@ -114,7 +114,6 @@ pub mod storage {
 
 mod serde_hacks {
     use super::*;
-    use crate::identifiers;
 
     /// The schema information
     #[serde_as]
@@ -134,11 +133,6 @@ mod serde_hacks {
         #[serde_as(as = "Option<restate_serde_util::MapAsVec>")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub deployments_v2: Option<HashMap<DeploymentId, v2::Deployment>>,
-        // Currently selected service revisions to use for new invocations.
-        // This is currently always the last revision, but it might change if we want to allow people manually
-        // selecting the service revision to route requests to (or some A/B testing stuff)
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub current_service_revisions: Option<HashMap<String, identifiers::ServiceRevision>>,
 
         // --- Same in old and new schema data structure
         /// This gets bumped on each update.
@@ -162,7 +156,6 @@ mod serde_hacks {
                 services: Some(services),
                 deployments: Some(deployments),
                 deployments_v2: None,
-                current_service_revisions: None,
                 version,
                 subscriptions,
             }
@@ -175,20 +168,16 @@ mod serde_hacks {
                 services,
                 deployments,
                 deployments_v2,
-                current_service_revisions,
                 version,
                 subscriptions,
             }: Schema,
         ) -> Self {
-            if let (Some(deployments_v2), Some(current_service_revisions)) =
-                (deployments_v2, current_service_revisions)
-            {
+            if let Some(deployments_v2) = deployments_v2 {
                 let v2::conversions::V1Schemas {
                     services,
                     deployments,
                 } = v2::conversions::V2Schemas {
                     deployments: deployments_v2,
-                    current_service_revisions,
                 }
                 .into_v1();
                 Self {
