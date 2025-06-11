@@ -377,6 +377,7 @@ pub mod conversions {
                                 inactivity_timeout: handler.inactivity_timeout,
                                 abort_timeout: handler.abort_timeout,
                                 enable_lazy_state: handler.enable_lazy_state,
+                                public: handler.public.unwrap_or(service.public),
                                 input_description: handler.input_rules.to_string(),
                                 output_description: handler.output_rules.to_string(),
                                 input_json_schema: handler.input_rules.json_schema(),
