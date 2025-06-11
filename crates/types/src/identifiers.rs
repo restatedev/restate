@@ -20,6 +20,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
+use std::sync::Arc;
 use ulid::Ulid;
 
 use restate_encoding::{BilrostNewType, NetSerde};
@@ -703,16 +704,13 @@ impl WithInvocationId for JournalEntryId {
 
 #[derive(Debug, Clone, PartialEq, serde_with::SerializeDisplay, serde_with::DeserializeFromStr)]
 pub struct LambdaARN {
-    partition: ByteString,
-    region: ByteString,
-    account_id: ByteString,
-    name: ByteString,
-    version: ByteString,
+    arn: Arc<str>,
+    region: std::ops::Range<u32>,
 }
 
 impl LambdaARN {
     pub fn region(&self) -> &str {
-        &self.region
+        &self.arn[(self.region.start as usize)..(self.region.end as usize)]
     }
 }
 
@@ -734,17 +732,7 @@ impl schemars::JsonSchema for LambdaARN {
 
 impl Display for LambdaARN {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let LambdaARN {
-            partition,
-            region,
-            account_id,
-            name,
-            version,
-        } = self;
-        write!(
-            f,
-            "arn:{partition}:lambda:{region}:{account_id}:function:{name}:{version}"
-        )
+        self.arn.fmt(f)
     }
 }
 
@@ -774,8 +762,6 @@ impl FromStr for LambdaARN {
     type Err = InvalidLambdaARN;
 
     fn from_str(arn: &str) -> Result<Self, Self::Err> {
-        // allocate once
-        let arn = ByteString::from(arn);
         let mut split = arn.splitn(8, ':');
         let invalid_format = || InvalidLambdaARN::InvalidFormat;
         let prefix = split.next().ok_or_else(invalid_format)?;
@@ -804,12 +790,14 @@ impl FromStr for LambdaARN {
             // special case this common mistake
             return Err(InvalidLambdaARN::MissingVersionSuffix);
         }
+
+        // arn:<partition>:lambda:<region>:
+        //                        ^       ^
+        let region_start = 3 + 1 + (partition.len() as u32) + 1 + 6 + 1;
+        let region_end = region_start + (region.len() as u32);
         let lambda = Self {
-            partition: arn.slice_ref(partition),
-            region: arn.slice_ref(region),
-            account_id: arn.slice_ref(account_id),
-            name: arn.slice_ref(name),
-            version: arn.slice_ref(version),
+            arn: Arc::<str>::from(arn),
+            region: region_start..region_end,
         };
 
         Ok(lambda)
@@ -1331,7 +1319,8 @@ mod tests {
         let expected = LambdaARN::from_str(good).unwrap();
         let parsed = expected.to_string();
 
-        assert_eq!(good, parsed)
+        assert_eq!(good, parsed);
+        assert_eq!("eu-central-1", expected.region());
     }
 
     #[test]

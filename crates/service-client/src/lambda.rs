@@ -164,7 +164,7 @@ impl LambdaClient {
                 futures::future::join(body, inner).await;
 
             let payload = ApiGatewayProxyRequest {
-                path: Some(path.path().to_string()),
+                path: Some(path.path()),
                 http_method: method,
                 headers,
                 body: body?,
@@ -180,7 +180,8 @@ impl LambdaClient {
                 .customize()
                 .config_override(aws_sdk_lambda::config::Builder::default().region(region))
                 .send()
-                .await?;
+                .await
+                .map_err(Box::new)?;
 
             if res.function_error().is_some() {
                 return if let Some(payload) = res.payload() {
@@ -262,7 +263,7 @@ pub enum LambdaError {
     #[error("problem reading request body: {0}")]
     Body(#[from] Box<dyn Error + Send + Sync>),
     #[error("lambda service returned error: {}", DisplayErrorContext(&.0))]
-    SdkError(#[from] SdkError<InvokeError>),
+    SdkError(#[from] Box<SdkError<InvokeError>>),
     #[error("function returned an error during execution: {0}")]
     FunctionError(serde_json::Value),
     #[error("function request could not be serialized: {0}")]
@@ -293,8 +294,8 @@ impl LambdaError {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ApiGatewayProxyRequest {
-    pub path: Option<String>,
+pub struct ApiGatewayProxyRequest<'a> {
+    pub path: Option<&'a str>,
     #[serde(serialize_with = "serialize_method")]
     pub http_method: Method,
     #[serde(serialize_with = "serialize_headers")]
