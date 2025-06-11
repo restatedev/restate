@@ -122,6 +122,7 @@ pub mod v1 {
         use crate::protobuf_types::v1::entry::EventEntry;
         use std::collections::{HashMap, HashSet};
         use std::str::FromStr;
+        use std::sync::Arc;
 
         use anyhow::anyhow;
         use bytes::{Buf, Bytes};
@@ -1748,6 +1749,35 @@ pub mod v1 {
             }
         }
 
+        impl From<&restate_types::invocation::Source> for Source {
+            fn from(value: &restate_types::invocation::Source) -> Self {
+                let source = match value {
+                    restate_types::invocation::Source::Ingress(rpc_id) => {
+                        source::Source::Ingress(source::Ingress {
+                            rpc_id: rpc_id.to_bytes().to_vec().into(),
+                        })
+                    }
+                    restate_types::invocation::Source::Subscription(sub_id) => {
+                        source::Source::Subscription(source::Subscription {
+                            subscription_id: sub_id.to_bytes().to_vec().into(),
+                        })
+                    }
+                    restate_types::invocation::Source::Service(
+                        invocation_id,
+                        invocation_target,
+                    ) => source::Source::Service(source::Service {
+                        invocation_id: Some(InvocationId::from(*invocation_id)),
+                        invocation_target: Some(InvocationTarget::from(invocation_target)),
+                    }),
+                    restate_types::invocation::Source::Internal => source::Source::Internal(()),
+                };
+
+                Source {
+                    source: Some(source),
+                }
+            }
+        }
+
         impl TryFrom<InboxEntry> for restate_storage_api::inbox_table::InboxEntry {
             type Error = ConversionError;
 
@@ -1909,6 +1939,59 @@ pub mod v1 {
                     idempotency_key: value.idempotency_key.map(|s| s.to_string()),
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                     restate_version: value.restate_version.into_string(),
+                }
+            }
+        }
+
+        impl From<Box<restate_types::invocation::ServiceInvocation>> for ServiceInvocation {
+            fn from(value: Box<restate_types::invocation::ServiceInvocation>) -> Self {
+                let invocation_target = InvocationTarget::from(value.invocation_target);
+                let span_context = SpanContext::from(value.span_context);
+                let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
+                let source = Source::from(value.source);
+                let headers = value.headers.into_iter().map(Into::into).collect();
+
+                ServiceInvocation {
+                    invocation_id: Some(InvocationId::from(value.invocation_id)),
+                    invocation_target: Some(invocation_target),
+                    span_context: Some(span_context),
+                    response_sink: Some(response_sink),
+                    argument: value.argument,
+                    source: Some(source),
+                    headers,
+                    execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
+                    completion_retention_duration: Some(value.completion_retention_duration.into()),
+                    journal_retention_duration: Some(value.journal_retention_duration.into()),
+                    idempotency_key: value.idempotency_key.map(|s| s.to_string()),
+                    submit_notification_sink: value.submit_notification_sink.map(Into::into),
+                    restate_version: value.restate_version.into_string(),
+                }
+            }
+        }
+
+        impl From<&restate_types::invocation::ServiceInvocation> for ServiceInvocation {
+            fn from(value: &restate_types::invocation::ServiceInvocation) -> Self {
+                let invocation_target = InvocationTarget::from(&value.invocation_target);
+                let span_context = SpanContext::from(&value.span_context);
+                let response_sink =
+                    ServiceInvocationResponseSink::from(value.response_sink.as_ref());
+                let source = Source::from(&value.source);
+                let headers = value.headers.iter().map(|h| h.clone().into()).collect();
+
+                ServiceInvocation {
+                    invocation_id: Some(InvocationId::from(value.invocation_id)),
+                    invocation_target: Some(invocation_target),
+                    span_context: Some(span_context),
+                    response_sink: Some(response_sink),
+                    argument: value.argument.clone(),
+                    source: Some(source),
+                    headers,
+                    execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
+                    completion_retention_duration: Some(value.completion_retention_duration.into()),
+                    journal_retention_duration: Some(value.journal_retention_duration.into()),
+                    idempotency_key: value.idempotency_key.as_ref().map(|s| s.to_string()),
+                    submit_notification_sink: value.submit_notification_sink.map(Into::into),
+                    restate_version: value.restate_version.clone().into_string(),
                 }
             }
         }
@@ -2105,6 +2188,59 @@ pub mod v1 {
             }
         }
 
+        impl From<&restate_types::invocation::InvocationTarget> for InvocationTarget {
+            fn from(value: &restate_types::invocation::InvocationTarget) -> Self {
+                match value {
+                    restate_types::invocation::InvocationTarget::Service { name, handler } => {
+                        InvocationTarget {
+                            name: name.as_bytes().clone(),
+                            handler: handler.as_bytes().clone(),
+                            service_and_handler_ty: invocation_target::Ty::Service.into(),
+                            ..InvocationTarget::default()
+                        }
+                    }
+                    restate_types::invocation::InvocationTarget::VirtualObject {
+                        name,
+                        key,
+                        handler,
+                        handler_ty,
+                    } => InvocationTarget {
+                        name: name.as_bytes().clone(),
+                        handler: handler.as_bytes().clone(),
+                        key: key.as_bytes().clone(),
+                        service_and_handler_ty: match handler_ty {
+                            restate_types::invocation::VirtualObjectHandlerType::Shared => {
+                                invocation_target::Ty::VirtualObjectShared
+                            }
+                            restate_types::invocation::VirtualObjectHandlerType::Exclusive => {
+                                invocation_target::Ty::VirtualObjectExclusive
+                            }
+                        }
+                        .into(),
+                    },
+                    restate_types::invocation::InvocationTarget::Workflow {
+                        name,
+                        key,
+                        handler,
+                        handler_ty,
+                    } => InvocationTarget {
+                        name: name.as_bytes().clone(),
+                        handler: handler.as_bytes().clone(),
+                        key: key.as_bytes().clone(),
+                        service_and_handler_ty: match handler_ty {
+                            restate_types::invocation::WorkflowHandlerType::Shared => {
+                                invocation_target::Ty::WorkflowShared
+                            }
+                            restate_types::invocation::WorkflowHandlerType::Workflow => {
+                                invocation_target::Ty::WorkflowWorkflow
+                            }
+                        }
+                        .into(),
+                    },
+                }
+            }
+        }
+
         impl TryFrom<ServiceId> for restate_types::identifiers::ServiceId {
             type Error = ConversionError;
 
@@ -2178,6 +2314,29 @@ pub mod v1 {
 
         impl From<restate_types::invocation::ServiceInvocationSpanContext> for SpanContext {
             fn from(value: restate_types::invocation::ServiceInvocationSpanContext) -> Self {
+                let span_context = value.span_context();
+                let trace_state = span_context.trace_state().header();
+                let span_id = u64::from_be_bytes(span_context.span_id().to_bytes());
+                let trace_flags = u32::from(span_context.trace_flags().to_u8());
+                let trace_id = Bytes::copy_from_slice(&span_context.trace_id().to_bytes());
+                let is_remote = span_context.is_remote();
+                let span_relation = value
+                    .span_cause()
+                    .map(|span_relation| SpanRelation::from(span_relation.clone()));
+
+                SpanContext {
+                    trace_state,
+                    span_id,
+                    trace_flags,
+                    trace_id,
+                    is_remote,
+                    span_relation,
+                }
+            }
+        }
+
+        impl From<&restate_types::invocation::ServiceInvocationSpanContext> for SpanContext {
+            fn from(value: &restate_types::invocation::ServiceInvocationSpanContext) -> Self {
                 let span_context = value.span_context();
                 let trace_state = span_context.trace_state().header();
                 let span_id = u64::from_be_bytes(span_context.span_id().to_bytes());
@@ -2304,6 +2463,36 @@ pub mod v1 {
                         entry_index: caller_completion_id,
                         caller: caller_id.into(),
                         caller_invocation_epoch
+                    }),
+                    Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress {  request_id }) => {
+                        ResponseSink::Ingress(Ingress {
+                            request_id: Bytes::copy_from_slice(&request_id.to_bytes())
+                        })
+                    },
+                    None => ResponseSink::None(Default::default()),
+                };
+
+                ServiceInvocationResponseSink {
+                    response_sink: Some(response_sink),
+                }
+            }
+        }
+
+        impl From<Option<&restate_types::invocation::ServiceInvocationResponseSink>>
+            for ServiceInvocationResponseSink
+        {
+            fn from(
+                value: Option<&restate_types::invocation::ServiceInvocationResponseSink>,
+            ) -> Self {
+                let response_sink = match value {
+                    Some(
+                        restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor(restate_types::invocation::JournalCompletionTarget {
+                                                                                                         caller_id, caller_completion_id, caller_invocation_epoch
+                                                                                                     }),
+                    ) => ResponseSink::PartitionProcessor(PartitionProcessor {
+                        entry_index: *caller_completion_id,
+                        caller: (*caller_id).into(),
+                        caller_invocation_epoch: *caller_invocation_epoch,
                     }),
                     Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress {  request_id }) => {
                         ResponseSink::Ingress(Ingress {
@@ -3229,7 +3418,7 @@ pub mod v1 {
                             header,
                             journal_v2::raw::RawCommand::new(ct, value.content)
                                 .with_command_specific_metadata(
-                                journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                                journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(Box::new(
                                     journal_v2::raw::CallOrSendMetadata::try_from(
                                         value.call_or_send_command_metadata.ok_or(
                                             ConversionError::missing_field(
@@ -3237,7 +3426,7 @@ pub mod v1 {
                                             ),
                                         )?,
                                     )?,
-                                ),
+                                )),
                             ),
                         ),
                         journal_v2::EntryType::Command(ct) => journal_v2::raw::RawEntry::new(
@@ -3261,17 +3450,17 @@ pub mod v1 {
                 let mut notification_id: Option<entry::NotificationId> = None;
                 let content = match raw_entry.inner {
                     journal_v2::raw::RawEntryInner::Command(cmd) => {
-                        match cmd.command_specific_metadata() {
+                        match cmd.command_specific_metadata {
                             journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
                                 call_or_send_metadata,
                             ) => {
                                 call_or_send_command_metadata =
-                                    Some(call_or_send_metadata.clone().into())
+                                    Some((*call_or_send_metadata).into())
                             }
                             journal_v2::raw::RawCommandSpecificMetadata::None => {}
                         };
 
-                        cmd.serialized_content()
+                        cmd.serialized_content
                     }
                     journal_v2::raw::RawEntryInner::Notification(notification) => {
                         notification_id = Some(match notification.id() {
@@ -3525,11 +3714,11 @@ pub mod v1 {
                 {
                     outbox_message::OutboxMessage::ServiceInvocationCase(service_invocation) => {
                         restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(
-                            restate_types::invocation::ServiceInvocation::try_from(
+                            Box::new(restate_types::invocation::ServiceInvocation::try_from(
                                 service_invocation
                                     .service_invocation
                                     .ok_or(ConversionError::missing_field("service_invocation"))?,
-                            )?,
+                            )?),
                         )
                     }
                     outbox_message::OutboxMessage::ServiceInvocationResponse(
@@ -3708,9 +3897,9 @@ pub mod v1 {
                             )
                         }
                         timer::Value::Invoke(si) => {
-                            restate_storage_api::timer_table::Timer::Invoke(
+                            restate_storage_api::timer_table::Timer::Invoke(Box::new(
                                 restate_types::invocation::ServiceInvocation::try_from(si)?,
-                            )
+                            ))
                         }
                         timer::Value::ScheduledInvoke(id) => {
                             restate_storage_api::timer_table::Timer::NeoInvoke(

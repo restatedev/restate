@@ -396,6 +396,7 @@ impl StartedProcessor {
         &self.status_reader
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn try_send_rpc(
         &self,
         msg: ServiceMessage<PartitionLeaderService>,

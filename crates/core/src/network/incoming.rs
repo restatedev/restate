@@ -286,6 +286,7 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
     /// Moves into a typed message.
     ///
     /// Returns the original message if the type of the message doesn't match the inner body.
+    #[allow(clippy::result_large_err)]
     pub fn try_into_typed<M>(self) -> Result<Incoming<Rpc<M>>, Self>
     where
         M: RpcRequest<Service = S>,
@@ -365,6 +366,7 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
     /// Moves into a typed message.
     ///
     /// Returns the original message if the type of the message doesn't match the inner body.
+    #[allow(clippy::result_large_err)]
     pub fn try_into_typed<M>(self) -> Result<Incoming<Unary<M>>, Self>
     where
         M: UnaryMessage<Service = S>,
@@ -455,6 +457,7 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
     ///
     ///
     /// Returns the original message if the type of the message doesn't match the inner body.
+    #[allow(clippy::result_large_err)]
     pub fn try_into_typed<M>(self) -> Result<Incoming<Watch<M>>, Self>
     where
         M: WatchRequest<Service = S>,

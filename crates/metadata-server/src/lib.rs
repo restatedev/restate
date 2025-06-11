@@ -132,7 +132,7 @@ pub struct InvalidConfiguration(String);
 #[derive(Debug, thiserror::Error)]
 enum JoinError {
     #[error("rpc failed: status: {}, message: {}", _0.code(), _0.message())]
-    Rpc(Status, Option<KnownLeader>),
+    Rpc(Box<Status>, Option<KnownLeader>),
     #[error("other error: {0}")]
     Other(GenericError),
 }

@@ -114,8 +114,8 @@ pub enum RawEntryInner {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawCommand {
     ty: CommandType,
-    command_specific_metadata: RawCommandSpecificMetadata,
-    serialized_content: Bytes,
+    pub command_specific_metadata: RawCommandSpecificMetadata,
+    pub serialized_content: Bytes,
 }
 
 impl RawCommand {
@@ -171,7 +171,7 @@ pub struct CallOrSendMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RawCommandSpecificMetadata {
-    CallOrSend(CallOrSendMetadata),
+    CallOrSend(Box<CallOrSendMetadata>),
     None,
 }
 

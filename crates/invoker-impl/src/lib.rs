@@ -337,7 +337,7 @@ where
     async fn step<F>(
         &mut self,
         options: &InvokerOptions,
-        segmented_input_queue: &mut SegmentQueue<InvokeCommand>,
+        segmented_input_queue: &mut SegmentQueue<Box<InvokeCommand>>,
         mut shutdown: Pin<&mut F>,
     ) -> bool
     where
@@ -498,7 +498,7 @@ where
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: IR,
-        sender: mpsc::Sender<Effect>,
+        sender: mpsc::Sender<Box<Effect>>,
     ) {
         self.invocation_state_machine_manager.register_partition(
             partition,
@@ -747,19 +747,19 @@ where
             );
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
                 let _ = output_tx
-                    .send(Effect {
+                    .send(Box::new(Effect {
                         invocation_id,
                         invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
-                    })
+                    }))
                     .await;
             }
             let _ = output_tx
-                .send(Effect {
+                .send(Box::new(Effect {
                     invocation_id,
                     invocation_epoch: ism.invocation_epoch,
                     kind: EffectKind::JournalEntry { entry_index, entry },
-                })
+                }))
                 .await;
         } else {
             // If no state machine, this might be an entry for an aborted invocation.
@@ -797,22 +797,22 @@ where
             );
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
                 let _ = output_tx
-                    .send(Effect {
+                    .send(Box::new(Effect {
                         invocation_id,
                         invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
-                    })
+                    }))
                     .await;
             }
             let _ = output_tx
-                .send(Effect {
+                .send(Box::new(Effect {
                     invocation_id,
                     invocation_epoch: ism.invocation_epoch,
                     kind: EffectKind::JournalEntryV2 {
                         command_index_to_ack: None,
                         entry: RawEntry::new(RawEntryHeader::new(), notification),
                     },
-                })
+                }))
                 .await;
         } else {
             // If no state machine, this might be an entry for an aborted invocation.
@@ -852,22 +852,22 @@ where
             );
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
                 let _ = output_tx
-                    .send(Effect {
+                    .send(Box::new(Effect {
                         invocation_id,
                         invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
-                    })
+                    }))
                     .await;
             }
             let _ = output_tx
-                .send(Effect {
+                .send(Box::new(Effect {
                     invocation_id,
                     invocation_epoch: ism.invocation_epoch,
                     kind: EffectKind::JournalEntryV2 {
                         command_index_to_ack: Some(command_index),
                         entry: RawEntry::new(RawEntryHeader::new(), command),
                     },
-                })
+                }))
                 .await;
         } else {
             // If no state machine, this might be an entry for an aborted invocation.
@@ -959,11 +959,11 @@ where
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
             let _ = sender
-                .send(Effect {
+                .send(Box::new(Effect {
                     invocation_id,
                     invocation_epoch,
                     kind: EffectKind::End,
-                })
+                }))
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -999,13 +999,13 @@ where
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
             let _ = sender
-                .send(Effect {
+                .send(Box::new(Effect {
                     invocation_id,
                     invocation_epoch,
                     kind: EffectKind::Suspended {
                         waiting_for_completed_entries: entry_indexes,
                     },
-                })
+                }))
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -1042,13 +1042,13 @@ where
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
             let _ = sender
-                .send(Effect {
+                .send(Box::new(Effect {
                     invocation_id,
                     invocation_epoch: ism.invocation_epoch,
                     kind: EffectKind::SuspendedV2 {
                         waiting_for_notifications,
                     },
-                })
+                }))
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -1229,11 +1229,11 @@ where
                     .invocation_state_machine_manager
                     .resolve_partition_sender(partition)
                     .expect("Partition should be registered")
-                    .send(Effect {
+                    .send(Box::new(Effect {
                         invocation_id,
                         invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::Failed(error.into_invocation_error()),
-                    })
+                    }))
                     .await;
             }
         }
@@ -1407,7 +1407,7 @@ mod tests {
             (input_tx, status_tx, service_inner)
         }
 
-        fn register_mock_partition(&mut self, storage_reader: IR) -> mpsc::Receiver<Effect>
+        fn register_mock_partition(&mut self, storage_reader: IR) -> mpsc::Receiver<Box<Effect>>
         where
             ITR: InvocationTaskRunner<IR>,
         {
@@ -1670,22 +1670,22 @@ mod tests {
 
         // Enqueue sid_1 and sid_2
         segment_queue
-            .enqueue(InvokeCommand {
+            .enqueue(Box::new(InvokeCommand {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_1,
                 invocation_epoch: 0,
                 invocation_target: InvocationTarget::mock_virtual_object(),
                 journal: InvokeInputJournal::NoCachedJournal,
-            })
+            }))
             .await;
         segment_queue
-            .enqueue(InvokeCommand {
+            .enqueue(Box::new(InvokeCommand {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_2,
                 invocation_epoch: 0,
                 invocation_target: InvocationTarget::mock_virtual_object(),
                 journal: InvokeInputJournal::NoCachedJournal,
-            })
+            }))
             .await;
 
         // Now step the state machine to start the invocation
@@ -1988,7 +1988,7 @@ mod tests {
             )
             .await;
         assert_that!(
-            effects_rx.try_recv().unwrap(),
+            *effects_rx.try_recv().unwrap(),
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 invocation_epoch: eq(1),

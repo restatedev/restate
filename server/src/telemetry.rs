@@ -22,8 +22,9 @@ use crate::build_info::{RESTATE_SERVER_TARGET_TRIPLE, RESTATE_SERVER_VERSION, is
 static TELEMETRY_URI: &str = "https://restate.gateway.scarf.sh/restate-server/";
 const TELEMETRY_PERIOD: Duration = Duration::from_secs(3600 * 24);
 
+#[allow(clippy::large_enum_variant)]
 pub enum Telemetry {
-    Enabled(TelemetryEnabled),
+    Enabled(Box<TelemetryEnabled>),
     Disabled,
 }
 
@@ -41,11 +42,11 @@ impl Telemetry {
             let client = HttpClient::from_options(&options.service_client.http);
             let session_id = ulid::Ulid::new().to_string();
 
-            Self::Enabled(TelemetryEnabled {
+            Self::Enabled(Box::new(TelemetryEnabled {
                 client,
                 session_id,
                 start_time: Instant::now(),
-            })
+            }))
         }
     }
 

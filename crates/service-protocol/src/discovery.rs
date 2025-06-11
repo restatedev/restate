@@ -141,6 +141,7 @@ pub struct DiscoveredMetadata {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::large_enum_variant)]
 pub enum DiscoveryError {
     // Errors most likely related to SDK bugs
     #[error("received a bad response from the SDK: {0}")]
@@ -282,6 +283,7 @@ impl ServiceDiscovery {
         Ok(discovery_response)
     }
 
+    #[allow(clippy::result_large_err)]
     fn retrieve_service_discovery_protocol_version(
         content_type: Option<HeaderValue>,
     ) -> Result<ServiceDiscoveryProtocolVersion, DiscoveryError> {
@@ -322,6 +324,7 @@ impl ServiceDiscovery {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn create_discovered_metadata_from_endpoint_response(
         endpoint: Endpoint,
         headers: HashMap<HeaderName, HeaderValue>,

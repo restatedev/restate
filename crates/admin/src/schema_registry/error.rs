@@ -24,6 +24,7 @@ use restate_types::schema::invocation_target::BadInputContentType;
 use crate::schema_registry::ServiceName;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
+#[allow(clippy::large_enum_variant)]
 pub enum SchemaRegistryError {
     #[error(transparent)]
     Schema(

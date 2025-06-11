@@ -109,10 +109,11 @@ mod tests {
 
     use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
-    use crate::partition::types::{InvokerEffect, InvokerEffectKind};
+    use crate::partition::types::InvokerEffectKind;
     use assert2::assert;
     use googletest::pat;
     use googletest::prelude::{assert_that, contains, eq, ge, not, some};
+    use restate_invoker_api::Effect;
     use restate_storage_api::invocation_status_table::{
         InvocationStatus, ReadOnlyInvocationStatusTable,
     };
@@ -200,14 +201,14 @@ mod tests {
 
         // Now pin to protocol v4, this should apply the cancel notification
         let actions = test_env
-            .apply(Command::InvokerEffect(InvokerEffect {
+            .apply(Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: DeploymentId::default(),
                     service_protocol_version: ServiceProtocolVersion::V4,
                 }),
-            }))
+            })))
             .await;
         assert_that!(
             actions,
@@ -228,12 +229,12 @@ mod tests {
         let rpc_id = PartitionProcessorRpcRequestId::new();
 
         let _ = test_env
-            .apply(Command::Invoke(ServiceInvocation {
+            .apply(Command::Invoke(Box::new(ServiceInvocation {
                 invocation_id,
                 execution_time: Some(MillisSinceEpoch::MAX),
                 response_sink: Some(ServiceInvocationResponseSink::ingress(rpc_id)),
                 ..ServiceInvocation::mock()
-            }))
+            })))
             .await;
 
         // assert that scheduled invocation is in invocation_status
@@ -282,22 +283,22 @@ mod tests {
         let caller_id = InvocationId::mock_random();
 
         let _ = test_env
-            .apply(Command::Invoke(ServiceInvocation {
+            .apply(Command::Invoke(Box::new(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
-            }))
+            })))
             .await;
 
         let _ = test_env
-            .apply(Command::Invoke(ServiceInvocation {
+            .apply(Command::Invoke(Box::new(ServiceInvocation {
                 invocation_id: inboxed_id,
                 invocation_target: inboxed_target,
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor(
                     JournalCompletionTarget::from_parts(caller_id, 0, 0),
                 )),
                 ..ServiceInvocation::mock()
-            }))
+            })))
             .await;
 
         let current_invocation_status = test_env

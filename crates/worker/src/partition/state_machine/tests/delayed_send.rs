@@ -27,7 +27,7 @@ async fn send_with_delay() {
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
@@ -35,7 +35,7 @@ async fn send_with_delay() {
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(wake_up_time),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
     assert_that!(
         actions,
@@ -87,7 +87,7 @@ async fn send_with_delay_to_locked_virtual_object() {
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
@@ -95,7 +95,7 @@ async fn send_with_delay_to_locked_virtual_object() {
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(wake_up_time),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
     assert_that!(
         actions,
@@ -173,7 +173,7 @@ async fn send_with_delay_and_idempotency_key() {
     ));
 
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
@@ -185,7 +185,7 @@ async fn send_with_delay_and_idempotency_key() {
             execution_time,
             source: Source::Ingress(request_id_1),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
     assert_that!(
         actions,
@@ -203,7 +203,7 @@ async fn send_with_delay_and_idempotency_key() {
     // Send another invocation which reattaches to the original one
     let request_id_2 = PartitionProcessorRpcRequestId::default();
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key),
@@ -215,7 +215,7 @@ async fn send_with_delay_and_idempotency_key() {
             execution_time: execution_time.map(|m| m + Duration::from_secs(10)),
             source: Source::Ingress(request_id_2),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
     assert_that!(
         actions,

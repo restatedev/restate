@@ -146,7 +146,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 }
                 .encode_to_vec(),
             )
-            .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(
+            .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(Box::new(
                 CallOrSendMetadata {
                     invocation_id,
                     invocation_target,
@@ -154,7 +154,7 @@ impl Encoder for ServiceProtocolV4Codec {
                     completion_retention_duration,
                     journal_retention_duration,
                 },
-            ))
+            )))
             .into(),
 
             Entry::Command(Command::OneWayCall(OneWayCallCommand {
@@ -190,7 +190,7 @@ impl Encoder for ServiceProtocolV4Codec {
                 }
                 .encode_to_vec(),
             )
-            .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(
+            .with_command_specific_metadata(RawCommandSpecificMetadata::CallOrSend(Box::new(
                 CallOrSendMetadata {
                     invocation_id,
                     invocation_target,
@@ -198,7 +198,7 @@ impl Encoder for ServiceProtocolV4Codec {
                     completion_retention_duration,
                     journal_retention_duration,
                 },
-            ))
+            )))
             .into(),
 
             Entry::Command(Command::GetLazyState(GetLazyStateCommand {
