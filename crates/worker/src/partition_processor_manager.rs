@@ -502,6 +502,7 @@ impl PartitionProcessorManager {
                                 }) => {
                                     if self.snapshot_repository.is_some() {
                                         info!(
+                                            %partition_id,
                                             trim_gap_to_lsn = ?to_lsn,
                                             ?sequence_number,
                                             "Partition processor stopped due to a log trim gap, will attempt to fast-forward on restart",
@@ -511,6 +512,7 @@ impl PartitionProcessorManager {
                                         None
                                     } else {
                                         warn!(
+                                            %partition_id,
                                             trim_gap_to_lsn = ?to_lsn,
                                             "Partition processor stopped due to a log trim gap, and no snapshot repository is configured",
                                         );
@@ -518,12 +520,12 @@ impl PartitionProcessorManager {
                                     }
                                 }
                                 Err(err) => {
-                                    warn!(%err, "Partition processor exited unexpectedly");
+                                    warn!(%partition_id, %err, "Partition processor exited unexpectedly");
                                     // todo make delay depending on number of restart attempts
                                     Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY)
                                 }
                                 Ok(_) => {
-                                    info!("Partition processor stopped");
+                                    info!(%partition_id, "Partition processor stopped");
                                     // immediately try to restart if we are still part of the partition's membership
                                     None
                                 }
@@ -1074,8 +1076,9 @@ impl PartitionProcessorManager {
                     let archived_lsn = snapshot_repository
                         .get_latest_archived_lsn(partition_id)
                         .await
+                        .inspect(|lsn| debug!(?partition_id, "Latest archived LSN: {}", lsn))
                         .inspect_err(|err| {
-                            info!(?partition_id, "Unable to get latest archived LSN: {}", err)
+                            warn!(?partition_id, "Unable to get latest archived LSN: {}", err)
                         })
                         .ok()
                         .unwrap_or(Lsn::INVALID);
