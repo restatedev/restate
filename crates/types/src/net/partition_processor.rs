@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use crate::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -64,7 +66,7 @@ pub enum GetInvocationOutputResponseMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcRequestInner {
-    AppendInvocation(InvocationRequest, AppendInvocationReplyOn),
+    AppendInvocation(Arc<InvocationRequest>, AppendInvocationReplyOn),
     GetInvocationOutput(InvocationQuery, GetInvocationOutputResponseMode),
     AppendInvocationResponse(InvocationResponse),
     AppendSignal(InvocationId, Signal),

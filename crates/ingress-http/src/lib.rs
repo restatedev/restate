@@ -20,6 +20,7 @@ pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 use bytes::Bytes;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::{
@@ -59,13 +60,13 @@ pub trait RequestDispatcher {
     /// Send: append invocation and wait for the [`SubmittedInvocationNotification`]
     fn send(
         &self,
-        invocation_request: InvocationRequest,
+        invocation_request: Arc<InvocationRequest>,
     ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send;
 
     /// Call: append invocation and wait for its response
     fn call(
         &self,
-        invocation_request: InvocationRequest,
+        invocation_request: Arc<InvocationRequest>,
     ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send;
 
     /// Attach to an invocation using the given query
@@ -254,7 +255,7 @@ mod mocks {
     impl RequestDispatcher for Arc<MockRequestDispatcher> {
         fn send(
             &self,
-            invocation_request: InvocationRequest,
+            invocation_request: Arc<InvocationRequest>,
         ) -> impl Future<Output = Result<SubmittedInvocationNotification, RequestDispatcherError>> + Send
         {
             MockRequestDispatcher::send(self, invocation_request)
@@ -262,7 +263,7 @@ mod mocks {
 
         fn call(
             &self,
-            invocation_request: InvocationRequest,
+            invocation_request: Arc<InvocationRequest>,
         ) -> impl Future<Output = Result<InvocationOutput, RequestDispatcherError>> + Send {
             MockRequestDispatcher::call(self, invocation_request)
         }

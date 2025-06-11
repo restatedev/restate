@@ -507,7 +507,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn on_service_invocation(
         &mut self,
-        service_invocation: ServiceInvocation,
+        service_invocation: Box<ServiceInvocation>,
     ) -> Result<(), Error>
     where
         S: IdempotencyTable
@@ -548,7 +548,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
         let pre_flight_invocation_metadata =
-            PreFlightInvocationMetadata::from_service_invocation(service_invocation);
+            PreFlightInvocationMetadata::from_service_invocation(*service_invocation);
 
         // 2. Check if we need to schedule it
         let execution_time = pre_flight_invocation_metadata.execution_time;
@@ -609,8 +609,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     /// Returns the invocation in case the invocation is not a duplicate
     async fn handle_duplicated_requests(
         &mut self,
-        mut service_invocation: ServiceInvocation,
-    ) -> Result<Option<ServiceInvocation>, Error>
+        mut service_invocation: Box<ServiceInvocation>,
+    ) -> Result<Option<Box<ServiceInvocation>>, Error>
     where
         S: IdempotencyTable
             + InvocationStatusTable
@@ -1743,11 +1743,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn on_invoker_effect(
         &mut self,
-        InvokerEffect {
-            invocation_id,
-            invocation_epoch: effect_invocation_epoch,
-            kind,
-        }: InvokerEffect,
+        effect: InvokerEffect,
         invocation_status: InvocationStatus,
     ) -> Result<(), Error>
     where
@@ -1768,7 +1764,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             trace!(
                 "Received invoker effect for invocation not in invoked status. Ignoring the effect."
             );
-            self.do_send_abort_invocation_to_invoker(invocation_id, effect_invocation_epoch);
+            self.do_send_abort_invocation_to_invoker(effect.invocation_id, effect.invocation_epoch);
             return Ok(());
         }
 
@@ -1776,19 +1772,19 @@ impl<S> StateMachineApplyContext<'_, S> {
             .get_invocation_metadata()
             .expect("Should be present because it's invoked")
             .current_invocation_epoch;
-        if current_invocation_epoch != effect_invocation_epoch {
+        if current_invocation_epoch != effect.invocation_epoch {
             trace!(
                 "Received invoker effect for invocation with different epoch. Current epoch {} != Invoker effect epoch {}. Ignoring the effect.",
-                current_invocation_epoch, effect_invocation_epoch
+                current_invocation_epoch, effect.invocation_epoch
             );
-            self.do_send_abort_invocation_to_invoker(invocation_id, effect_invocation_epoch);
+            self.do_send_abort_invocation_to_invoker(effect.invocation_id, effect.invocation_epoch);
             return Ok(());
         }
 
-        match kind {
+        match effect.kind {
             InvokerEffectKind::PinnedDeployment(pinned_deployment) => {
                 lifecycle::OnPinnedDeploymentCommand {
-                    invocation_id,
+                    invocation_id: effect.invocation_id,
                     invocation_status,
                     pinned_deployment,
                 }
@@ -1797,7 +1793,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             InvokerEffectKind::JournalEntry { entry_index, entry } => {
                 self.handle_journal_entry(
-                    invocation_id,
+                    effect.invocation_id,
                     entry_index,
                     entry,
                     invocation_status
@@ -1811,7 +1807,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 entry,
             } => {
                 entries::OnJournalEntryCommand::from_raw_entry(
-                    invocation_id,
+                    effect.invocation_id,
                     invocation_status,
                     entry,
                 )
@@ -1819,8 +1815,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
                 if let Some(command_index_to_ack) = command_index_to_ack {
                     self.action_collector.push(Action::AckStoredCommand {
-                        invocation_id,
-                        invocation_epoch: effect_invocation_epoch,
+                        invocation_id: effect.invocation_id,
+                        invocation_epoch: effect.invocation_epoch,
                         command_index: command_index_to_ack,
                     });
                 }
@@ -1833,13 +1829,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .expect("Must be present if status is invoked");
                 debug_assert!(
                     !waiting_for_completed_entries.is_empty(),
-                    "Expecting at least one entry on which the invocation {invocation_id} is waiting."
+                    "Expecting at least one entry on which the invocation {} is waiting.",
+                    effect.invocation_id
                 );
                 let mut any_completed = false;
                 for entry_index in &waiting_for_completed_entries {
                     if ReadOnlyJournalTable::get_journal_entry(
                         self.storage,
-                        &invocation_id,
+                        &effect.invocation_id,
                         *entry_index,
                     )
                     .await?
@@ -1848,18 +1845,18 @@ impl<S> StateMachineApplyContext<'_, S> {
                     {
                         trace!(
                             rpc.service = %invocation_metadata.invocation_target.service_name(),
-                            reself.storage.invocation.id = %invocation_id,
+                            restate.invocation.id = %effect.invocation_id,
                             "Resuming instead of suspending service because an awaited entry is completed/acked.");
                         any_completed = true;
                         break;
                     }
                 }
                 if any_completed {
-                    self.do_resume_service(invocation_id, invocation_metadata)
+                    self.do_resume_service(effect.invocation_id, invocation_metadata)
                         .await?;
                 } else {
                     self.do_suspend_service(
-                        invocation_id,
+                        effect.invocation_id,
                         invocation_metadata,
                         waiting_for_completed_entries,
                     )
@@ -1870,7 +1867,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 waiting_for_notifications,
             } => {
                 lifecycle::OnSuspendCommand {
-                    invocation_id,
+                    invocation_id: effect.invocation_id,
                     invocation_status,
                     waiting_for_notifications,
                 }
@@ -1879,7 +1876,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             InvokerEffectKind::End => {
                 self.end_invocation(
-                    invocation_id,
+                    effect.invocation_id,
                     invocation_status
                         .into_invocation_metadata()
                         .expect("Must be present if status is invoked"),
@@ -1889,7 +1886,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             InvokerEffectKind::Failed(e) => {
                 self.end_invocation(
-                    invocation_id,
+                    effect.invocation_id,
                     invocation_status
                         .into_invocation_metadata()
                         .expect("Must be present if status is invoked"),
@@ -2580,7 +2577,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
-                    let service_invocation = ServiceInvocation {
+                    let service_invocation = Box::new(ServiceInvocation {
                         invocation_id: *callee_invocation_id,
                         invocation_target: callee_invocation_target.clone(),
                         argument: request.parameter,
@@ -2603,7 +2600,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         idempotency_key: request.idempotency_key,
                         submit_notification_sink: None,
                         restate_version: RestateVersion::current(),
-                    };
+                    });
 
                     self.handle_outgoing_message(OutboxMessage::ServiceInvocation(
                         service_invocation,
@@ -2653,7 +2650,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     span.add_link(ctx, Vec::default());
                 }
 
-                let service_invocation = ServiceInvocation {
+                let service_invocation = Box::new(ServiceInvocation {
                     invocation_id: *callee_invocation_id,
                     invocation_target: callee_invocation_target.clone(),
                     argument: request.parameter,
@@ -2670,7 +2667,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     idempotency_key: request.idempotency_key,
                     submit_notification_sink: None,
                     restate_version: RestateVersion::current(),
-                };
+                });
 
                 self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
                     .await?;

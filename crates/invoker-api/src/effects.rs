@@ -32,6 +32,8 @@ pub struct Effect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+// todo: fix this and box the large variant (EffectKind is 320 bytes)
+#[allow(clippy::large_enum_variant)]
 pub enum EffectKind {
     /// This is sent before any new entry is created by the invoker.
     /// This won't be sent if the deployment_id is already set.

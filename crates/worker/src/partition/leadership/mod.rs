@@ -108,7 +108,7 @@ pub(crate) enum TaskTermination {
 
 #[derive(Debug)]
 pub(crate) enum ActionEffect {
-    Invoker(restate_invoker_api::Effect),
+    Invoker(Box<restate_invoker_api::Effect>),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
     ScheduleCleanupTimer(InvocationId, Duration),
@@ -224,7 +224,7 @@ where
     }
 
     async fn announce_leadership(&mut self, leader_epoch: LeaderEpoch) -> Result<(), Error> {
-        let announce_leader = Command::AnnounceLeader(AnnounceLeader {
+        let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeader {
             // todo: Still need to write generational id for supporting rolling back, can be removed
             //  with the next release.
             node_id: Some(my_node_id()),
@@ -234,7 +234,7 @@ where
                     .partition_key_range
                     .clone(),
             ),
-        });
+        }));
 
         let mut self_proposer = SelfProposer::new(
             self.partition_processor_metadata.partition_id,
@@ -302,7 +302,7 @@ where
     #[instrument(level = "debug", skip_all, fields(leader_epoch = %announce_leader.leader_epoch))]
     pub async fn on_announce_leader(
         &mut self,
-        announce_leader: AnnounceLeader,
+        announce_leader: &AnnounceLeader,
         partition_store: &mut PartitionStore,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
@@ -722,7 +722,7 @@ mod tests {
 
         let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
         assert_eq!(
-            announce_leader,
+            *announce_leader,
             AnnounceLeader {
                 node_id: Some(NODE_ID),
                 leader_epoch,
@@ -739,7 +739,7 @@ mod tests {
             )
             .await?;
         state
-            .on_announce_leader(announce_leader, &mut partition_store)
+            .on_announce_leader(&announce_leader, &mut partition_store)
             .await?;
 
         assert!(matches!(state.state, State::Leader(_)));

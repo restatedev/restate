@@ -367,7 +367,7 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) -> ReplicationProperty {
-        let partition_replication = match partition_table.replication() {
+        match partition_table.replication() {
             PartitionReplication::Everywhere => {
                 // only kept for backwards compatibility; this can be removed once
                 // we no longer need to support the Everywhere variant
@@ -380,8 +380,7 @@ impl<T: TransportConnect> Scheduler<T> {
                 ReplicationProperty::new_unchecked(candidates.min(usize::from(u8::MAX)) as u8)
             }
             PartitionReplication::Limit(partition_replication) => partition_replication.clone(),
-        };
-        partition_replication
+        }
     }
 
     async fn store_initial_partition_configuration(

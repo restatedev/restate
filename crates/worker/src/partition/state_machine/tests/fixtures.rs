@@ -10,10 +10,10 @@
 
 use crate::partition::state_machine::Action;
 use crate::partition::state_machine::tests::TestEnv;
-use crate::partition::types::{InvokerEffect, InvokerEffectKind};
+use crate::partition::types::InvokerEffectKind;
 use bytes::Bytes;
 use googletest::prelude::*;
-use restate_invoker_api::InvokeInputJournal;
+use restate_invoker_api::{Effect, InvokeInputJournal};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_types::deployment::PinnedDeployment;
@@ -85,14 +85,14 @@ pub fn invoker_entry_effect_for_epoch(
     invocation_epoch: InvocationEpoch,
     entry: impl Into<Entry>,
 ) -> Command {
-    Command::InvokerEffect(InvokerEffect {
+    Command::InvokerEffect(Box::new(Effect {
         invocation_id,
         invocation_epoch,
         kind: InvokerEffectKind::JournalEntryV2 {
             entry: entry.into().encode::<ServiceProtocolV4Codec>(),
             command_index_to_ack: None,
         },
-    })
+    }))
 }
 
 pub fn invoker_end_effect(invocation_id: InvocationId) -> Command {
@@ -103,38 +103,38 @@ pub fn invoker_end_effect_for_epoch(
     invocation_id: InvocationId,
     invocation_epoch: InvocationEpoch,
 ) -> Command {
-    Command::InvokerEffect(InvokerEffect {
+    Command::InvokerEffect(Box::new(Effect {
         invocation_id,
         invocation_epoch,
         kind: InvokerEffectKind::End,
-    })
+    }))
 }
 
 pub fn pinned_deployment(
     invocation_id: InvocationId,
     service_protocol_version: ServiceProtocolVersion,
 ) -> Command {
-    Command::InvokerEffect(InvokerEffect {
+    Command::InvokerEffect(Box::new(Effect {
         invocation_id,
         invocation_epoch: 0,
         kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
             deployment_id: DeploymentId::default(),
             service_protocol_version,
         }),
-    })
+    }))
 }
 
 pub fn invoker_suspended(
     invocation_id: InvocationId,
     waiting_for_notifications: impl Into<HashSet<journal_v2::NotificationId>>,
 ) -> Command {
-    Command::InvokerEffect(InvokerEffect {
+    Command::InvokerEffect(Box::new(Effect {
         invocation_id,
         invocation_epoch: 0,
         kind: InvokerEffectKind::SuspendedV2 {
             waiting_for_notifications: waiting_for_notifications.into(),
         },
-    })
+    }))
 }
 
 pub async fn mock_start_invocation_with_service_id(
@@ -155,11 +155,11 @@ pub async fn mock_start_invocation_with_invocation_target(
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let actions = state_machine
-        .apply(Command::Invoke(ServiceInvocation::initialize(
+        .apply(Command::Invoke(Box::new(ServiceInvocation::initialize(
             invocation_id,
             invocation_target.clone(),
             Source::Ingress(PartitionProcessorRpcRequestId::new()),
-        )))
+        ))))
         .await;
 
     assert_that!(

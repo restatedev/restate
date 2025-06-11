@@ -38,22 +38,22 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
     let caller_id = InvocationId::mock_random();
 
     let _ = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
 
     let _ = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id: inboxed_id,
             invocation_target: inboxed_target,
             response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor(
                 JournalCompletionTarget::from_parts(caller_id, 0, 0),
             )),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
 
     let current_invocation_status = test_env
@@ -131,12 +131,12 @@ async fn terminate_scheduled_invocation(
     let rpc_id = PartitionProcessorRpcRequestId::new();
 
     let _ = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id,
             execution_time: Some(MillisSinceEpoch::MAX),
             response_sink: Some(ServiceInvocationResponseSink::ingress(rpc_id)),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
 
     // assert that inboxed invocation is in invocation_status
@@ -191,20 +191,20 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     let enqueued_invocation_id_on_same_target = InvocationId::mock_generate(&invocation_target);
 
     let _ = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
 
     // Let's enqueue an invocation afterward
     let _ = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id: enqueued_invocation_id_on_same_target,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
 
     // Let's add some journal entries
@@ -311,19 +311,19 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
 
     let _ = test_env
         .apply_multiple([
-            Command::Invoke(ServiceInvocation {
+            Command::Invoke(Box::new(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
-            }),
-            Command::InvokerEffect(InvokerEffect {
+            })),
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: Default::default(),
                     service_protocol_version: ServiceProtocolVersion::V3,
                 }),
-            }),
+            })),
         ])
         .await;
 
@@ -437,19 +437,19 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 
     let _ = test_env
         .apply_multiple([
-            Command::Invoke(ServiceInvocation {
+            Command::Invoke(Box::new(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
-            }),
-            Command::InvokerEffect(InvokerEffect {
+            })),
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: Default::default(),
                     service_protocol_version: ServiceProtocolVersion::V3,
                 }),
-            }),
+            })),
         ])
         .await;
 
@@ -580,11 +580,11 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
     let callee_2 = InvocationId::mock_random();
 
     let _ = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
 
     // Add call and one way call journal entry
@@ -613,7 +613,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
     // Now create cancel invocation entry
     let actions = test_env
         .apply_multiple(vec![
-            Command::InvokerEffect(InvokerEffect {
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -622,8 +622,8 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
                         CancelInvocationTarget::InvocationId(callee_1.to_string().into()),
                     )),
                 },
-            }),
-            Command::InvokerEffect(InvokerEffect {
+            })),
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -632,7 +632,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
                         CancelInvocationTarget::CallEntryIndex(2),
                     )),
                 },
-            }),
+            })),
         ])
         .await;
 

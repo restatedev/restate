@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use crate::ShutdownError;
 use crate::network::ConnectError;
 use crate::network::{NetworkSender, RpcReplyError, Swimlane};
@@ -253,7 +255,7 @@ where
     async fn append_invocation_and_wait_submit_notification(
         &self,
         request_id: PartitionProcessorRpcRequestId,
-        invocation_request: InvocationRequest,
+        invocation_request: Arc<InvocationRequest>,
     ) -> Result<SubmittedInvocationNotification, InvocationClientError> {
         let response = self
             .resolve_partition_id_and_send(
@@ -280,7 +282,7 @@ where
     async fn append_invocation_and_wait_output(
         &self,
         request_id: PartitionProcessorRpcRequestId,
-        invocation_request: InvocationRequest,
+        invocation_request: Arc<InvocationRequest>,
     ) -> Result<InvocationOutput, InvocationClientError> {
         let response = self
             .resolve_partition_id_and_send(

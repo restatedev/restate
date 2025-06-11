@@ -23,14 +23,14 @@ use crate::partition::state_machine::tests::fixtures::{
 };
 use crate::partition::state_machine::tests::matchers::storage::is_entry;
 use crate::partition::state_machine::tests::matchers::success_completion;
-use crate::partition::types::{InvokerEffect, InvokerEffectKind};
+use crate::partition::types::InvokerEffectKind;
 use ::tracing::info;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat, property};
 use restate_core::TaskCenter;
-use restate_invoker_api::{EffectKind, InvokeInputJournal};
+use restate_invoker_api::{Effect, EffectKind, InvokeInputJournal};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -332,14 +332,14 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     //   * If the awakeable entry has not been received yet, when receiving it the completion will be sent through.
 
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::awakeable(None)),
             },
-        }))
+        })))
         .await;
 
     // At this point we expect the completion to be forwarded to the invoker
@@ -389,13 +389,13 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
     );
 
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: InvokerEffectKind::Suspended {
                 waiting_for_completed_entries: HashSet::from([1]),
             },
-        }))
+        })))
         .await;
 
     assert_that!(
@@ -425,14 +425,14 @@ async fn complete_awakeable_with_success() {
     ));
 
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry,
             },
-        }))
+        })))
         .await;
 
     assert_that!(
@@ -471,14 +471,14 @@ async fn complete_awakeable_with_failure() {
     ));
 
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: EffectKind::JournalEntry {
                 entry_index: 1,
                 entry,
             },
-        }))
+        })))
         .await;
 
     assert_that!(
@@ -511,7 +511,7 @@ async fn invoke_with_headers() -> TestResult {
         fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
 
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: InvokerEffectKind::JournalEntry {
@@ -528,7 +528,7 @@ async fn invoke_with_headers() -> TestResult {
                     None,
                 )),
             },
-        }))
+        })))
         .await;
 
     assert_that!(
@@ -599,11 +599,11 @@ async fn mutate_state() -> anyhow::Result<()> {
     // terminating the ongoing invocation should trigger popping from the inbox until the
     // next invocation is found
     test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: InvokerEffectKind::End,
-        }))
+        })))
         .await;
 
     let all_states: HashMap<_, _> = test_env
@@ -636,14 +636,14 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
         fixtures::mock_start_invocation_with_service_id(&mut test_env, service_id.clone()).await;
 
     test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::clear_all_state()),
             },
-        }))
+        })))
         .await;
 
     let states: Vec<restate_storage_api::Result<(Bytes, Bytes)>> = test_env
@@ -672,14 +672,14 @@ async fn get_state_keys() -> TestResult {
     txn.commit().await.unwrap();
 
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: InvokerEffectKind::JournalEntry {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::get_state_keys(None)),
             },
-        }))
+        })))
         .await;
 
     // At this point we expect the completion to be forwarded to the invoker
@@ -726,7 +726,7 @@ async fn get_invocation_id_entry() {
 
     let actions = test_env
         .apply_multiple(vec![
-            Command::InvokerEffect(InvokerEffect {
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -735,8 +735,8 @@ async fn get_invocation_id_entry() {
                         Entry::get_call_invocation_id(1, None),
                     ),
                 },
-            }),
-            Command::InvokerEffect(InvokerEffect {
+            })),
+            Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -745,7 +745,7 @@ async fn get_invocation_id_entry() {
                         Entry::get_call_invocation_id(2, None),
                     ),
                 },
-            }),
+            })),
         ])
         .await;
 
@@ -802,7 +802,7 @@ async fn attach_invocation_entry() {
     let callee_invocation_id = InvocationId::mock_random();
 
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: EffectKind::JournalEntry {
@@ -816,7 +816,7 @@ async fn attach_invocation_entry() {
                     },
                 )),
             },
-        }))
+        })))
         .await;
     assert_that!(
         actions,
@@ -848,7 +848,7 @@ async fn get_invocation_output_entry() {
     let callee_invocation_id = InvocationId::mock_random();
 
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: EffectKind::JournalEntry {
@@ -862,7 +862,7 @@ async fn get_invocation_output_entry() {
                     },
                 )),
             },
-        }))
+        })))
         .await;
 
     assert_that!(
@@ -913,7 +913,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let request_id_3 = PartitionProcessorRpcRequestId::default();
 
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
             }),
@@ -922,7 +922,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
                 invocation_target.clone(),
                 Source::Ingress(request_id_1),
             )
-        }))
+        })))
         .await;
     assert_that!(
         actions,
@@ -952,7 +952,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     // Now let's send the output entry
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: InvokerEffectKind::JournalEntry {
@@ -961,18 +961,18 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
                     EntryResult::Success(response_bytes.clone()),
                 )),
             },
-        }))
+        })))
         .await;
     // No ingress response is expected at this point because the invocation did not end yet
     assert_that!(actions, not(contains(pat!(Action::IngressResponse { .. }))));
 
     // Send the End Effect
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             invocation_epoch: 0,
             kind: InvokerEffectKind::End,
-        }))
+        })))
         .await;
     // At this point we expect the completion to be forwarded to the invoker
     assert_that!(
@@ -1071,11 +1071,11 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     // Let's start the first invocation
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id: first_invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
     assert_that!(
         actions,
@@ -1091,11 +1091,11 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     // Let's start the second invocation
     let actions = test_env
-        .apply(Command::Invoke(ServiceInvocation {
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
             invocation_id: second_invocation_id,
             invocation_target: invocation_target.clone(),
             ..ServiceInvocation::mock()
-        }))
+        })))
         .await;
 
     // This should have not been invoked, but it should rather be in the inbox
@@ -1127,11 +1127,11 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     // Send the End Effect to terminate the first invocation
     let actions = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id: first_invocation_id,
             invocation_epoch: 0,
             kind: InvokerEffectKind::End,
-        }))
+        })))
         .await;
     // At this point we expect the invoke for the second, and also the lock updated
     assert_that!(
@@ -1147,11 +1147,11 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     );
 
     let _ = test_env
-        .apply(Command::InvokerEffect(InvokerEffect {
+        .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id: second_invocation_id,
             invocation_epoch: 0,
             kind: InvokerEffectKind::End,
-        }))
+        })))
         .await;
 
     // After the second was completed too, the inbox is empty and the service is unlocked
@@ -1188,7 +1188,7 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
         si.response_sink = Some(ServiceInvocationResponseSink::Ingress { request_id });
         si.submit_notification_sink = Some(SubmitNotificationSink::Ingress { request_id });
         si.source = Source::Ingress(request_id);
-        si
+        Box::new(si)
     };
     let actions = test_env
         .apply(Command::Invoke(service_invocation.clone()))

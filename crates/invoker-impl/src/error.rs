@@ -117,7 +117,7 @@ pub(crate) enum InvokerError {
 
     #[error(transparent)]
     #[code(restate_errors::RT0010)]
-    Client(ServiceClientError),
+    Client(Box<ServiceClientError>),
     #[error("unexpected error while reading the response body: {0}")]
     #[code(restate_errors::RT0010)]
     ClientBody(Box<dyn std::error::Error + Send + Sync>),

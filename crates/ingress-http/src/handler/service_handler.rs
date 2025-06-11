@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
@@ -200,7 +201,7 @@ where
                         return Err(HandlerError::UnsupportedDelay);
                     }
                     Self::handle_service_call(
-                        InvocationRequest::new(invocation_request_header, body),
+                        Arc::new(InvocationRequest::new(invocation_request_header, body)),
                         invocation_target_meta,
                         self.dispatcher,
                     )
@@ -211,7 +212,7 @@ where
                         delay.map(|d| SystemTime::now() + d).map(Into::into);
 
                     Self::handle_service_send(
-                        InvocationRequest::new(invocation_request_header, body),
+                        Arc::new(InvocationRequest::new(invocation_request_header, body)),
                         self.dispatcher,
                     )
                     .await
@@ -241,7 +242,7 @@ where
     }
 
     async fn handle_service_call(
-        invocation_request: InvocationRequest,
+        invocation_request: Arc<InvocationRequest>,
         invocation_target_metadata: InvocationTargetMetadata,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
@@ -254,7 +255,7 @@ where
     }
 
     async fn handle_service_send(
-        invocation_request: InvocationRequest,
+        invocation_request: Arc<InvocationRequest>,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         let invocation_id = invocation_request.invocation_id();
