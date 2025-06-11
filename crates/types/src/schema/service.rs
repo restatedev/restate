@@ -297,6 +297,7 @@ pub struct HandlerMetadata {
     ///
     /// If true, this handler can be invoked through the ingress.
     /// If false, this handler can be invoked only from another Restate service.
+    #[serde(default = "restate_serde_util::default::bool::<true>")]
     pub public: bool,
 
     /// # Human readable input description
