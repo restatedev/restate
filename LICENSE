@@ -5,17 +5,35 @@ Parameters
 Licensor:             Restate Software, Inc., Restate GmbH
 Licensed Work:        Restate
                       The Licensed Work is (c) 2023 - 2025 Restate Software, Inc., Restate GmbH
-Additional Use Grant: You may make use of the Licensed Work, provided that
-                      you may not use the Licensed Work for an Application
-                      Platform Service.
+Additional Use Grant: You may make use of the Licensed Work, provided that you may not use
+                      the Licensed Work for a Public Restate Platform Service.
 
-                      An “Application Platform Service” is a commercial
-                      offering that allows third parties (other than your
-                      employees and contractors) to access the functionality
-                      of the Licensed Work by registering new services
-                      (directly or indirectly) with the Licensed Work for
-                      the purpose of invoking such services through the
-                      Licensed Work.
+                      A "Public Restate Platform Service" is a managed service that allows
+                      third parties (other than your employees and contractors) to
+                      access Restate's APIs and register their own service deployments
+                      and invoke them through that managed service. Restate's APIs
+                      include all ports and protocols exposed by the Licensed work.
+
+                      For the avoidance of doubt, the following scenarios are explicitly permitted
+                      under this license and do not constitute a "Public Restate Platform Service":
+                       * Any type of production deployment of Restate that is invoking services
+                         or workflows written by the Licensee (or their organization, employees,
+                         or contractors).
+                       * Any internal deployment (including an internal managed platform)
+                         where only the Licensee (or their organization, employees, or
+                         contractors) can access Restate's APIs.
+                       * Any publicly exposed workflow platform that presents an abstraction layer
+                         such as a graphical user interface (GUI) builder, a domain-specific
+                         language (DSL), or proprietary API that consumes Restate functionality,
+                         provided that the mechanism by which a consumer of the platform specifies
+                         workflows, adds a new workflow implementation to the platform, and submits
+                         a new workflow invocation does not directly use the Restate APIs (as defined above).
+
+                      For the avoidance of doubt, the following scenarios are not permitted
+                      under the license:
+                       * A managed service that lets third party developers (other than the Licensee,
+                         their organization, employees, or contractors) register their own Restate service
+                         endpoints and invoke them through that managed service.
 
 Change Date:          4 years after release
 
