@@ -8,24 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt;
+use std::str::FromStr;
+use std::time::Duration;
+
+use bytes::Bytes;
+use bytestring::ByteString;
+use enum_dispatch::enum_dispatch;
+use serde::{Deserialize, Serialize};
+
 use crate::errors::IdDecodeError;
 use crate::identifiers::{
     AwakeableIdentifier, ExternalSignalIdentifier, IdempotencyId, InvocationId, ServiceId,
 };
 use crate::invocation::{Header, InvocationQuery, InvocationTarget, ServiceInvocationSpanContext};
-use crate::journal_v2::raw::{RawEntry, TryFromEntry, TryFromEntryError};
+use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
 use crate::journal_v2::{
-    CompletionId, Encoder, Entry, EntryMetadata, EntryType, Failure, GetStateResult, SignalId,
-    SignalResult,
+    CompletionId, Entry, EntryMetadata, EntryType, Failure, GetStateResult, SignalId, SignalResult,
 };
 use crate::time::MillisSinceEpoch;
-use bytes::Bytes;
-use bytestring::ByteString;
-use enum_dispatch::enum_dispatch;
-use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::str::FromStr;
-use std::time::Duration;
 
 #[enum_dispatch]
 pub trait CommandMetadata {
@@ -59,12 +60,6 @@ pub enum Command {
     AttachInvocation(AttachInvocationCommand),
     GetInvocationOutput(GetInvocationOutputCommand),
     CompleteAwakeable(CompleteAwakeableCommand),
-}
-
-impl Command {
-    pub fn encode<E: Encoder>(&self) -> RawEntry {
-        E::encode_entry(&Entry::Command(self.clone()))
-    }
 }
 
 impl fmt::Display for CommandType {
@@ -216,6 +211,7 @@ impl_command_accessors!(GetEagerState -> [@metadata @from_entry @no_completion])
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetEagerStateKeysCommand {
+    // todo: check if this can be ByteString
     pub state_keys: Vec<String>,
     pub name: ByteString,
 }
