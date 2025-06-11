@@ -21,9 +21,16 @@ use restate_types::identifiers::{
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PurgeInvocationResponse, SubmittedInvocationNotification,
+    PurgeInvocationResponse, ResetInvocationResponse, RestartInvocationResponse,
+    SubmittedInvocationNotification,
 };
-use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
+use restate_types::invocation::reset::{
+    ApplyToChildInvocations, ApplyToPinnedDeployment, TruncateFrom,
+};
+use restate_types::invocation::restart::{ApplyToWorkflowRun, IfRunning};
+use restate_types::invocation::{
+    InvocationEpoch, InvocationQuery, InvocationRequest, InvocationResponse,
+};
 use restate_types::journal_v2::Signal;
 use restate_types::live::Live;
 use restate_types::net::codec::EncodeError;
@@ -32,6 +39,7 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
+use std::time::Duration;
 use tracing::trace;
 
 #[derive(Debug, thiserror::Error)]
@@ -450,11 +458,15 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
     ) -> Result<PurgeInvocationResponse, InvocationClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
-                PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id },
+                PartitionProcessorRpcRequestInner::PurgeInvocation {
+                    invocation_id,
+                    invocation_epoch,
+                },
             )
             .await?;
 
@@ -472,11 +484,15 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
     ) -> Result<PurgeInvocationResponse, InvocationClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
-                PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id },
+                PartitionProcessorRpcRequestInner::PurgeJournal {
+                    invocation_id,
+                    invocation_epoch,
+                },
             )
             .await?;
 
@@ -486,6 +502,68 @@ where
             }
             _ => {
                 panic!("Expecting PurgeInvocation rpc response")
+            }
+        })
+    }
+
+    async fn restart_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+        if_running: IfRunning,
+        previous_attempt_retention: Option<Duration>,
+        apply_to_workflow_run: ApplyToWorkflowRun,
+    ) -> Result<RestartInvocationResponse, InvocationClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::RestartInvocation {
+                    invocation_id,
+                    if_running,
+                    previous_attempt_retention,
+                    apply_to_workflow_run,
+                },
+            )
+            .await?;
+
+        Ok(match response {
+            PartitionProcessorRpcResponse::RestartInvocation(purge_invocation_response) => {
+                purge_invocation_response.into()
+            }
+            _ => {
+                panic!("Expecting RestartInvocation rpc response")
+            }
+        })
+    }
+
+    async fn reset_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+        truncate_from: TruncateFrom,
+        previous_attempt_retention: Option<Duration>,
+        apply_to_child_invocations: ApplyToChildInvocations,
+        apply_to_pinned_deployment: ApplyToPinnedDeployment,
+    ) -> Result<ResetInvocationResponse, InvocationClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::ResetInvocation {
+                    invocation_id,
+                    previous_attempt_retention,
+                    apply_to_child_calls: apply_to_child_invocations,
+                    apply_to_pinned_deployment,
+                    truncate_from,
+                },
+            )
+            .await?;
+
+        Ok(match response {
+            PartitionProcessorRpcResponse::ResetInvocation(reset_invocation_response) => {
+                reset_invocation_response.into()
+            }
+            _ => {
+                panic!("Expecting ResetInvocation rpc response")
             }
         })
     }

@@ -104,6 +104,9 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
     let columns = vec![
         sys_invocation_status.remove("id").expect("id should exist"),
         sys_invocation_status
+            .remove("epoch")
+            .expect("epoch should exist"),
+        sys_invocation_status
             .remove("target")
             .expect("target should exist"),
         sys_invocation_status

@@ -114,9 +114,17 @@ pub fn pinned_deployment(
     invocation_id: InvocationId,
     service_protocol_version: ServiceProtocolVersion,
 ) -> Command {
+    pinned_deployment_for_epoch(invocation_id, 0, service_protocol_version)
+}
+
+pub fn pinned_deployment_for_epoch(
+    invocation_id: InvocationId,
+    invocation_epoch: InvocationEpoch,
+    service_protocol_version: ServiceProtocolVersion,
+) -> Command {
     Command::InvokerEffect(InvokerEffect {
         invocation_id,
-        invocation_epoch: 0,
+        invocation_epoch,
         kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
             deployment_id: DeploymentId::default(),
             service_protocol_version,

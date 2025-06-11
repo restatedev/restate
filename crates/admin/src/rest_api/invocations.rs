@@ -9,21 +9,27 @@
 // by the Apache License, Version 2.0.
 
 use super::error::*;
-use std::sync::Arc;
-
 use crate::generate_meta_api_error;
 use crate::rest_api::create_envelope_header;
 use crate::state::AdminServiceState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::client::{
-    CancelInvocationResponse, InvocationClient, KillInvocationResponse, PurgeInvocationResponse,
+    self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
+    PurgeInvocationResponse,
 };
-use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
+use restate_types::invocation::reset::TruncateFrom;
+use restate_types::invocation::{
+    InvocationEpoch, InvocationTermination, PurgeInvocationRequest, TerminationFlavor, reset,
+    restart,
+};
 use restate_wal_protocol::{Command, Envelope};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::Duration;
 use tracing::warn;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -98,6 +104,7 @@ pub async fn delete_invocation<V, IC>(
         DeletionMode::Purge => Command::PurgeInvocation(PurgeInvocationRequest {
             invocation_id,
             response_sink: None,
+            invocation_epoch: 0,
         }),
     };
 
@@ -224,21 +231,37 @@ where
 
 generate_meta_api_error!(PurgeInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, PurgeInvocationNotCompletedError]);
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct PurgeInvocationParams {
+    pub epoch: Option<InvocationEpoch>,
+}
+
 /// Purge an invocation
 #[openapi(
     summary = "Purge an invocation",
-    description = "Purge the given invocation. This cleanups all the state for the given invocation. This command applies only to completed invocations.",
+    description = "Purge the given invocation. This cleanups all the state for the given invocation, including its journal. This command applies only to completed invocations.",
     operation_id = "purge_invocation",
     tags = "invocation",
-    parameters(path(
-        name = "invocation_id",
-        description = "Invocation identifier.",
-        schema = "std::string::String"
-    ))
+    parameters(
+        path(
+            name = "invocation_id",
+            description = "Invocation identifier.",
+            schema = "std::string::String"
+        ),
+        query(
+            name = "epoch",
+            description = "Remove the specific epoch. If not provided, epoch 0 will be removed. When removing the latest epoch, all the previous epochs will be cleaned up as well.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = InvocationEpoch,
+        )
+    )
 )]
 pub async fn purge_invocation<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
     Path(invocation_id): Path<String>,
+    Query(PurgeInvocationParams { epoch }): Query<PurgeInvocationParams>,
 ) -> Result<(), PurgeInvocationError>
 where
     IC: InvocationClient,
@@ -249,7 +272,11 @@ where
 
     match state
         .invocation_client
-        .purge_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .purge_invocation(
+            PartitionProcessorRpcRequestId::new(),
+            invocation_id,
+            epoch.unwrap_or_default(),
+        )
         .await
         .map_err(InvocationClientError)?
     {
@@ -273,15 +300,26 @@ generate_meta_api_error!(PurgeJournalError: [InvocationNotFoundError, Invocation
     description = "Purge the given invocation journal. This cleanups only the journal for the given invocation, retaining the metadata. This command applies only to completed invocations.",
     operation_id = "purge_journal",
     tags = "invocation",
-    parameters(path(
-        name = "invocation_id",
-        description = "Invocation identifier.",
-        schema = "std::string::String"
-    ))
+    parameters(
+        path(
+            name = "invocation_id",
+            description = "Invocation identifier.",
+            schema = "std::string::String"
+        ),
+        query(
+            name = "epoch",
+            description = "Remove the specific epoch. If not provided, epoch 0 will be removed. When removing the latest epoch, all the previous epochs will be cleaned up as well.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = InvocationEpoch,
+        )
+    )
 )]
 pub async fn purge_journal<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
     Path(invocation_id): Path<String>,
+    Query(PurgeInvocationParams { epoch }): Query<PurgeInvocationParams>,
 ) -> Result<(), PurgeJournalError>
 where
     IC: InvocationClient,
@@ -292,7 +330,11 @@ where
 
     match state
         .invocation_client
-        .purge_journal(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .purge_journal(
+            PartitionProcessorRpcRequestId::new(),
+            invocation_id,
+            epoch.unwrap_or_default(),
+        )
         .await
         .map_err(InvocationClientError)?
     {
@@ -306,4 +348,339 @@ where
     };
 
     Ok(())
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RestartInvocationResponse {
+    /// The new invocation epoch of the invocation.
+    pub new_invocation_epoch: InvocationEpoch,
+}
+
+/// What to do if the invocation is still running. By default, the running invocation will be killed.
+#[derive(Default, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartInvocationIfRunning {
+    /// Kill the invocation, sending a failure to the waiting callers, then restart the invocation.
+    #[default]
+    Kill,
+    /// Fail the Restart operation if the invocation is still running.
+    Fail,
+}
+
+impl From<RestartInvocationIfRunning> for restart::IfRunning {
+    fn from(value: RestartInvocationIfRunning) -> Self {
+        match value {
+            RestartInvocationIfRunning::Kill => restart::IfRunning::Kill,
+            RestartInvocationIfRunning::Fail => restart::IfRunning::Fail,
+        }
+    }
+}
+
+/// What to do in case of restarting a workflow run. By default, clears all promises and state.
+#[derive(Default, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartInvocationApplyToWorkflowRun {
+    Nothing,
+    /// Clear all the promises, retain the state
+    ClearAllPromises,
+    /// Clear all the state, retain the promises
+    ClearAllState,
+    /// Clear all the promises and state
+    #[default]
+    ClearAllPromisesAndState,
+}
+
+impl From<RestartInvocationApplyToWorkflowRun> for restart::ApplyToWorkflowRun {
+    fn from(value: RestartInvocationApplyToWorkflowRun) -> Self {
+        match value {
+            RestartInvocationApplyToWorkflowRun::Nothing => restart::ApplyToWorkflowRun::Nothing,
+            RestartInvocationApplyToWorkflowRun::ClearAllPromises => {
+                restart::ApplyToWorkflowRun::ClearOnlyPromises
+            }
+            RestartInvocationApplyToWorkflowRun::ClearAllState => {
+                restart::ApplyToWorkflowRun::ClearOnlyState
+            }
+            RestartInvocationApplyToWorkflowRun::ClearAllPromisesAndState => {
+                restart::ApplyToWorkflowRun::ClearAllPromisesAndState
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct RestartInvocationParams {
+    pub if_running: Option<RestartInvocationIfRunning>,
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    #[schemars(with = "Option<String>")]
+    pub previous_attempt_retention: Option<Duration>,
+    pub apply_to_workflow_run: Option<RestartInvocationApplyToWorkflowRun>,
+}
+
+generate_meta_api_error!(RestartInvocationError: [
+    InvocationNotFoundError,
+    InvocationClientError,
+    InvalidFieldError,
+    RestartInvocationStillRunningError,
+    RestartInvocationUnsupportedError,
+    RestartInvocationMissingInputError,
+    RestartInvocationNotStartedError
+]);
+
+/// Restart an invocation
+#[openapi(
+    summary = "Restart an invocation",
+    description = "Restart the given invocation. This will restart the invocation, given its input is available.",
+    operation_id = "restart_invocation",
+    tags = "invocation",
+    parameters(
+        path(
+            name = "invocation_id",
+            description = "Invocation identifier.",
+            schema = "std::string::String"
+        ),
+        query(
+            name = "if_running",
+            description = "What to do if the invocation is still running. By default, the running invocation will be killed.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = RestartInvocationIfRunning,
+        ),
+        query(
+            name = "previous_attempt_retention",
+            description = "If set, it will override the configured completion_retention/journal_retention when the invocation was executed the first time. If none of the completion_retention/journal_retention are configured, and neither this previous_attempt_retention, then the previous attempt won't be retained at all. Can be configured using humantime format or ISO8601.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = String,
+        ),
+        query(
+            name = "apply_to_workflow_run",
+            description = "What to do in case of restarting a workflow run. By default, clears all promises and state.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = RestartInvocationApplyToWorkflowRun,
+        )
+    )
+)]
+pub async fn restart_invocation<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
+    Path(invocation_id): Path<String>,
+    Query(RestartInvocationParams {
+        if_running,
+        previous_attempt_retention,
+        apply_to_workflow_run,
+    }): Query<RestartInvocationParams>,
+) -> Result<Json<RestartInvocationResponse>, RestartInvocationError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .restart_invocation(
+            PartitionProcessorRpcRequestId::new(),
+            invocation_id,
+            if_running.unwrap_or_default().into(),
+            previous_attempt_retention,
+            apply_to_workflow_run.unwrap_or_default().into(),
+        )
+        .await
+        .map_err(InvocationClientError)?
+    {
+        client::RestartInvocationResponse::Ok { new_epoch } => Ok(RestartInvocationResponse {
+            new_invocation_epoch: new_epoch,
+        }
+        .into()),
+        client::RestartInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        client::RestartInvocationResponse::StillRunning => Err(
+            RestartInvocationStillRunningError(invocation_id.to_string()),
+        )?,
+        client::RestartInvocationResponse::Unsupported => {
+            Err(RestartInvocationUnsupportedError(invocation_id.to_string()))?
+        }
+        client::RestartInvocationResponse::MissingInput => Err(
+            RestartInvocationMissingInputError(invocation_id.to_string()),
+        )?,
+        client::RestartInvocationResponse::NotStarted => {
+            Err(RestartInvocationNotStartedError(invocation_id.to_string()))?
+        }
+    }
+}
+
+#[derive(Default, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetInvocationApplyToChildInvocations {
+    Nothing,
+    /// Kill all the child invocations that have been created after the truncation point
+    #[default]
+    Kill,
+    /// Cancel all the child invocations that have been created after the truncation point
+    Cancel,
+}
+
+impl From<ResetInvocationApplyToChildInvocations> for reset::ApplyToChildInvocations {
+    fn from(value: ResetInvocationApplyToChildInvocations) -> Self {
+        match value {
+            ResetInvocationApplyToChildInvocations::Kill => reset::ApplyToChildInvocations::Kill,
+            ResetInvocationApplyToChildInvocations::Nothing => {
+                reset::ApplyToChildInvocations::Nothing
+            }
+            ResetInvocationApplyToChildInvocations::Cancel => {
+                reset::ApplyToChildInvocations::Cancel
+            }
+        }
+    }
+}
+
+#[derive(Default, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetInvocationApplyToPinnedDeployment {
+    #[default]
+    Keep,
+    /// Clear the pinned deployment.
+    ///
+    /// NOTE: If the new picked up deployment doesn't support the current service protocol version, the invocation will remain stuck in a retry loop. Use with caution!
+    Clear,
+}
+
+impl From<ResetInvocationApplyToPinnedDeployment> for reset::ApplyToPinnedDeployment {
+    fn from(value: ResetInvocationApplyToPinnedDeployment) -> Self {
+        match value {
+            ResetInvocationApplyToPinnedDeployment::Keep => reset::ApplyToPinnedDeployment::Keep,
+            ResetInvocationApplyToPinnedDeployment::Clear => reset::ApplyToPinnedDeployment::Clear,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct ResetInvocationParams {
+    pub truncate_from: Option<u32>,
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    #[schemars(with = "Option<String>")]
+    pub previous_attempt_retention: Option<Duration>,
+    pub apply_to_child_calls: Option<ResetInvocationApplyToChildInvocations>,
+    pub apply_to_pinned_deployment: Option<ResetInvocationApplyToPinnedDeployment>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ResetInvocationResponse {
+    /// The new invocation epoch of the invocation.
+    pub new_invocation_epoch: InvocationEpoch,
+}
+
+generate_meta_api_error!(ResetInvocationError: [
+    InvocationNotFoundError,
+    InvocationClientError,
+    InvalidFieldError,
+    ResetInvocationUnsupportedError,
+    ResetInvocationNotRunningError
+]);
+
+/// Reset an invocation
+#[openapi(
+    summary = "Reset an invocation",
+    description = "Reset the given invocation, truncating the progress from the given journal entry index onward and resuming afterward.",
+    operation_id = "reset_invocation",
+    tags = "invocation",
+    parameters(
+        path(
+            name = "invocation_id",
+            description = "Invocation identifier.",
+            schema = "std::string::String"
+        ),
+        query(
+            name = "truncate_from",
+            description = "Journal entry index to truncate from, inclusive. The index MUST correspond to a command entry or to a signal notification, and it cannot be zero, otherwise this operation will fail. If not provided, it defaults to 1 (after the first entry).",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = "u32",
+        ),
+        query(
+            name = "previous_attempt_retention",
+            description = "If set, it will override the configured completion_retention/journal_retention when the invocation was executed the first time. If none of the completion_retention/journal_retention are configured, and neither this previous_attempt_retention, then the previous attempt won't be retained at all. Can be configured using humantime format or ISO8601.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = String,
+        ),
+        query(
+            name = "apply_to_child_calls",
+            description = "What to do with children calls that have been created after the truncation point. By default, kills all the children calls. This doesn't apply to sends.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = ResetInvocationApplyToChildInvocations,
+        ),
+        query(
+            name = "apply_to_pinned_deployment",
+            description = "What to do with pinned deployment. By default, the current pinned deployment will be kept.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = ResetInvocationApplyToPinnedDeployment,
+        )
+    )
+)]
+pub async fn reset_invocation<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
+    Path(invocation_id): Path<String>,
+    Query(ResetInvocationParams {
+        truncate_from,
+        previous_attempt_retention,
+        apply_to_child_calls,
+        apply_to_pinned_deployment,
+    }): Query<ResetInvocationParams>,
+) -> Result<Json<ResetInvocationResponse>, ResetInvocationError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .reset_invocation(
+            PartitionProcessorRpcRequestId::new(),
+            invocation_id,
+            TruncateFrom::EntryIndex { entry_index: truncate_from.unwrap_or(1) },
+            previous_attempt_retention,
+            apply_to_child_calls.unwrap_or_default().into(),
+            apply_to_pinned_deployment.unwrap_or_default().into(),
+        )
+        .await
+        .map_err(InvocationClientError)?
+    {
+        client::ResetInvocationResponse::Ok { new_epoch } => Ok(ResetInvocationResponse {
+            new_invocation_epoch: new_epoch,
+        }
+            .into()),
+
+        client::ResetInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        client::ResetInvocationResponse::Unsupported => {
+            Err(ResetInvocationUnsupportedError(invocation_id.to_string()))?
+        }
+        client::ResetInvocationResponse::NotRunning => {
+            Err(   ResetInvocationNotRunningError(invocation_id.to_string()))?
+        }
+        client::ResetInvocationResponse::BadIndex => {
+            Err(InvalidFieldError("truncate_from", "The index MUST correspond to a command entry or to a signal notification, and it cannot be zero.".to_owned()))?
+        }
+    }
 }

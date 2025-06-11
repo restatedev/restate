@@ -9,8 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use crate::Result;
+use crate::journal_table_v2::JournalEntryId;
 use futures_util::Stream;
-use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{CompletionResult, EntryType};
 use std::future::Future;

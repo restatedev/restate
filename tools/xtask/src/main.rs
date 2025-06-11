@@ -28,10 +28,15 @@ use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, S
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PurgeInvocationResponse, SubmittedInvocationNotification,
+    PurgeInvocationResponse, ResetInvocationResponse, RestartInvocationResponse,
+    SubmittedInvocationNotification,
 };
+use restate_types::invocation::reset::{
+    ApplyToChildInvocations, ApplyToPinnedDeployment, TruncateFrom,
+};
+use restate_types::invocation::restart::{ApplyToWorkflowRun, IfRunning};
 use restate_types::invocation::{
-    InvocationQuery, InvocationRequest, InvocationResponse, InvocationTermination,
+    InvocationEpoch, InvocationQuery, InvocationRequest, InvocationResponse, InvocationTermination,
 };
 use restate_types::journal_v2::Signal;
 use restate_types::live::Constant;
@@ -174,6 +179,7 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
+        _: InvocationEpoch,
     ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send {
         pending()
     }
@@ -182,7 +188,31 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
+        _: InvocationEpoch,
     ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn restart_invocation(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+        _: IfRunning,
+        _: Option<Duration>,
+        _: ApplyToWorkflowRun,
+    ) -> impl Future<Output = Result<RestartInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn reset_invocation(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+        _: TruncateFrom,
+        _: Option<Duration>,
+        _: ApplyToChildInvocations,
+        _: ApplyToPinnedDeployment,
+    ) -> impl Future<Output = Result<ResetInvocationResponse, InvocationClientError>> + Send {
         pending()
     }
 }

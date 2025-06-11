@@ -24,8 +24,8 @@ mod peek_promise_command;
 mod send_signal_command;
 mod set_state_command;
 mod sleep_command;
+pub(crate) mod write_entry;
 
-use crate::debug_if_leader;
 use crate::partition::state_machine::entries::attach_invocation_command::ApplyAttachInvocationCommand;
 use crate::partition::state_machine::entries::call_commands::{
     ApplyCallCommand, ApplyOneWayCallCommand,
@@ -44,6 +44,7 @@ use crate::partition::state_machine::entries::peek_promise_command::ApplyPeekPro
 use crate::partition::state_machine::entries::send_signal_command::ApplySendSignalCommand;
 use crate::partition::state_machine::entries::set_state_command::ApplySetStateCommand;
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
+use crate::partition::state_machine::entries::write_entry::WriteJournalEntryCommand;
 use crate::partition::state_machine::lifecycle::VerifyOrMigrateJournalTableToV2Command;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -334,36 +335,20 @@ where
                 }
             };
 
-            // -- Append journal entry
-            let journal_meta = self
+            let invocation_epoch = self.invocation_status.get_epoch();
+            let journal_metadata = self
                 .invocation_status
                 .get_journal_metadata_mut()
                 .expect("At this point there must be a journal");
-
-            let entry_index = journal_meta.length;
-            debug_if_leader!(
-                ctx.is_leader,
-                restate.journal.index = entry_index,
-                restate.invocation.id = %self.invocation_id,
-                "Write journal entry {:?} to storage",
-                entry.ty()
-            );
-
-            // Store journal entry
-            JournalTable::put_journal_entry(
-                ctx.storage,
-                self.invocation_id,
-                entry_index,
-                &entry,
-                &related_completion_ids,
-            )
-            .await?;
-
-            // Update journal length
-            journal_meta.length += 1;
-            if matches!(entry.ty(), EntryType::Command(_)) {
-                journal_meta.commands += 1;
+            WriteJournalEntryCommand {
+                invocation_id: self.invocation_id,
+                journal_metadata,
+                invocation_epoch,
+                entry,
+                related_completion_ids,
             }
+            .apply(ctx)
+            .await?;
         }
 
         // Update timestamps

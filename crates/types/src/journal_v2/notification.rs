@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// See [`Notification`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, strum::EnumTryAs)]
 pub enum NotificationId {
     CompletionId(CompletionId),
     SignalIndex(SignalIndex),
@@ -54,7 +54,7 @@ impl fmt::Display for NotificationId {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::From)]
 pub enum NotificationType {
     Completion(CompletionType),
     Signal,
@@ -69,9 +69,9 @@ impl fmt::Display for NotificationType {
     }
 }
 
-impl From<CompletionType> for NotificationType {
+impl From<CompletionType> for EntryType {
     fn from(value: CompletionType) -> Self {
-        NotificationType::Completion(value)
+        EntryType::Notification(value.into())
     }
 }
 
