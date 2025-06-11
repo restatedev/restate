@@ -1249,14 +1249,14 @@ where
                         .invocation_state_machine_manager
                         .resolve_partition_sender(partition)
                         .expect("Partition should be registered")
-                        .send(Effect {
+                        .send(Box::new(Effect {
                             invocation_id,
                             invocation_epoch: ism.invocation_epoch,
                             kind: EffectKind::JournalEntryV2 {
                                 entry: RawEntry::new(RawEntryHeader::new(), RawEvent::from(event)),
                                 command_index_to_ack: None,
                             },
-                        })
+                        }))
                         .await;
                 }
 

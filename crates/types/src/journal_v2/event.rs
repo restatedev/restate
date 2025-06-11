@@ -8,15 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
+use std::num::NonZeroU32;
 
-use bytestring::ByteString;
 use serde::{Deserialize, Serialize};
 use strum::EnumString;
 
-use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};
-use crate::journal_v2::{Entry, EntryMetadata, EntryType};
-
+use crate::errors::InvocationErrorCode;
+use crate::journal_v2::raw::{RawEntry, TryFromEntry, TryFromEntryError};
+use crate::journal_v2::{CommandIndex, CommandType, Encoder, Entry, EntryMetadata, EntryType};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, EnumString, strum::Display, Serialize, Deserialize)]
 pub enum EventType {
@@ -58,8 +57,8 @@ impl EntryMetadata for Event {
 }
 
 impl Event {
-    pub fn encode<E: Encoder>(&self) -> RawEntry {
-        E::encode_entry(&Entry::Event(self.clone()))
+    pub fn encode<E: Encoder>(self) -> RawEntry {
+        E::encode_entry(Entry::Event(self.clone()))
     }
 }
 

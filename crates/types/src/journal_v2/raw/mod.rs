@@ -10,14 +10,17 @@
 
 use std::time::Duration;
 
+use anyhow::Context;
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
 
+use crate::errors::GenericError;
 use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use crate::journal_v2::encoding::DecodingError;
 use crate::journal_v2::{
-    CommandType, Decoder, Entry, EntryMetadata, EntryType, Event, NotificationId, NotificationType,
+    CommandType, Decoder, Entry, EntryMetadata, EntryType, Event, EventType, NotificationId,
+    NotificationType,
 };
 use crate::time::MillisSinceEpoch;
 
