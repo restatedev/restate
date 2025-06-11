@@ -13,6 +13,7 @@ pub mod invocation_target;
 pub mod openapi;
 pub mod service;
 pub mod subscriptions;
+mod v2;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,16 +32,17 @@ use crate::net::metadata::MetadataContainer;
 use crate::net::metadata::MetadataKind;
 
 /// The schema information
-#[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
 pub struct Schema {
+    /// This gets bumped on each update.
     pub version: Version,
+
+    // TODO(slinkydeveloper) replace these with the new data model,
+    //  See https://github.com/restatedev/restate/issues/3303
     pub services: HashMap<String, ServiceSchemas>,
-    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
-    #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub deployments: HashMap<DeploymentId, DeploymentSchemas>,
-    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
-    #[serde_as(as = "serde_with::Seq<(_, _)>")]
+
     pub subscriptions: HashMap<SubscriptionId, Subscription>,
 }
 
@@ -108,6 +110,96 @@ pub mod storage {
     use super::Schema;
 
     flexbuffers_storage_encode_decode!(Schema);
+}
+
+mod serde_hacks {
+    use super::*;
+
+    /// The schema information
+    #[serde_as]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    pub struct Schema {
+        // --- Old data structure
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub services: Option<HashMap<String, ServiceSchemas>>,
+        // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+        #[serde_as(as = "Option<serde_with::Seq<(_, _)>>")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub deployments: Option<HashMap<DeploymentId, DeploymentSchemas>>,
+
+        // --- New data structure
+
+        // Registered deployments
+        #[serde_as(as = "Option<restate_serde_util::MapAsVec>")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub deployments_v2: Option<HashMap<DeploymentId, v2::Deployment>>,
+
+        // --- Same in old and new schema data structure
+        /// This gets bumped on each update.
+        pub version: Version,
+        // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+        #[serde_as(as = "serde_with::Seq<(_, _)>")]
+        pub subscriptions: HashMap<SubscriptionId, Subscription>,
+    }
+
+    impl From<super::Schema> for Schema {
+        fn from(
+            super::Schema {
+                version,
+                services,
+                deployments,
+                subscriptions,
+            }: super::Schema,
+        ) -> Self {
+            // TODO(slinkydeveloper) Switch the default to write the new data structure in 1.5
+            Self {
+                services: Some(services),
+                deployments: Some(deployments),
+                deployments_v2: None,
+                version,
+                subscriptions,
+            }
+        }
+    }
+
+    impl From<Schema> for super::Schema {
+        fn from(
+            Schema {
+                services,
+                deployments,
+                deployments_v2,
+                version,
+                subscriptions,
+            }: Schema,
+        ) -> Self {
+            if let Some(deployments_v2) = deployments_v2 {
+                let v2::conversions::V1Schemas {
+                    services,
+                    deployments,
+                } = v2::conversions::V2Schemas {
+                    deployments: deployments_v2,
+                }
+                .into_v1();
+                Self {
+                    version,
+                    services,
+                    deployments,
+                    subscriptions,
+                }
+            } else if let (Some(services), Some(deployments)) = (services, deployments) {
+                Self {
+                    version,
+                    services,
+                    deployments,
+                    subscriptions,
+                }
+            } else {
+                panic!(
+                    "Unexpected situation where neither v1 data structure nor v2 data structure is used!"
+                )
+            }
+        }
+    }
 }
 
 #[cfg(feature = "test-util")]
