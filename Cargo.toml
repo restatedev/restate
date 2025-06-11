@@ -242,6 +242,7 @@ debug = true
 
 [profile.dev]
 # Let's be defensive and abort on every panic
+opt-level = 1
 panic = "abort"
 
 [profile.release.package.service-protocol-wireshark-dissector]
