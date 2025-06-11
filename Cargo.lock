@@ -3981,7 +3981,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5036,9 +5036,9 @@ dependencies = [
 
 [[package]]
 name = "object_store"
-version = "0.12.0"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9ce831b09395f933addbc56d894d889e4b226eba304d4e7adbab591e26daf1e"
+checksum = "7781f96d79ed0f961a7021424ab01840efbda64ae7a505aaea195efc91eaaec4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5055,7 +5055,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "quick-xml 0.37.2",
- "rand 0.8.5",
+ "rand 0.9.0",
  "reqwest",
  "ring",
  "serde",
@@ -5066,6 +5066,8 @@ dependencies = [
  "tracing",
  "url",
  "walkdir",
+ "wasm-bindgen-futures",
+ "web-time",
 ]
 
 [[package]]
@@ -6778,7 +6780,7 @@ dependencies = [
  "hyper-util",
  "itertools 0.14.0",
  "metrics",
- "object_store 0.12.0",
+ "object_store 0.12.2",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",
@@ -7133,7 +7135,7 @@ dependencies = [
  "derive_more",
  "etcd-client",
  "indexmap 2.7.1",
- "object_store 0.12.0",
+ "object_store 0.12.2",
  "parking_lot",
  "rand 0.9.0",
  "restate-core",
@@ -7313,7 +7315,7 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "futures",
- "object_store 0.12.0",
+ "object_store 0.12.2",
  "restate-types",
  "tracing",
  "url",
@@ -7905,7 +7907,7 @@ dependencies = [
  "humantime",
  "itertools 0.14.0",
  "metrics",
- "object_store 0.12.0",
+ "object_store 0.12.2",
  "opentelemetry",
  "parking_lot",
  "pin-project",
