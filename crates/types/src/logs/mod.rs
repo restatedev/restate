@@ -60,18 +60,18 @@ impl LogId {
     pub const fn new(value: u32) -> Self {
         Self(value)
     }
-}
 
-impl From<PartitionId> for LogId {
-    fn from(value: PartitionId) -> Self {
+    /// Use to create an authoritative partition-to-log association. Typically the log id value
+    /// should be read from the partition table.
+    pub fn default_for_partition(value: PartitionId) -> Self {
         LogId(u32::from(*value))
     }
 }
 
-impl From<LogId> for PartitionId {
-    fn from(value: LogId) -> Self {
-        // lower 16 bits represent the partition id
-        PartitionId::from(value.0 as u16)
+#[cfg(any(test, feature = "test-util"))]
+impl From<PartitionId> for LogId {
+    fn from(value: PartitionId) -> Self {
+        LogId(u32::from(*value))
     }
 }
 

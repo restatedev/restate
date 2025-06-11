@@ -52,6 +52,7 @@ use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
 };
+use restate_types::partitions::Partition;
 use restate_types::partitions::state::{MembershipState, PartitionReplicaSetStates};
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
@@ -239,6 +240,13 @@ impl ClusterControllerHandle {
     ) -> Result<anyhow::Result<Snapshot>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
+        let log_id = Metadata::with_current(|m| {
+            m.partition_table_ref()
+                .get(&partition_id)
+                .map(Partition::log_id)
+        })
+        .expect("partition is in partition table");
+
         let _ = self
             .tx
             .send(ClusterControllerCommand::CreateSnapshot {
@@ -251,14 +259,9 @@ impl ClusterControllerHandle {
         let create_snapshot_response = response_rx.await.map_err(|_| ShutdownError)?;
 
         if let (Ok(snapshot), true) = (&create_snapshot_response, trim_log) {
-            // todo(pavel): this is currently as safe as the cluster auto-trim safety check
-            // at this point, we know that we have successfully archived the to-be-trimmed LSN
-            // to the snapshot repository; what we are missing here and in cluster auto-trim
-            // is closing the loop on the new snapshot being visible to other cluster members.
-            if let Err(trim_error) = self
-                .trim_log(LogId::from(partition_id), snapshot.min_applied_lsn)
-                .await?
-            {
+            // We have successfully archived the target LSN to the snapshot repository. For added
+            // safety, we could optionally download and test the snapshot in the future.
+            if let Err(trim_error) = self.trim_log(log_id, snapshot.min_applied_lsn).await? {
                 return Ok(Err(trim_error));
             }
         }

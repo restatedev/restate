@@ -18,28 +18,22 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use codederror::CodedError;
 use enum_map::Enum;
-use rocksdb::DBPinnableSlice;
-use rocksdb::DBRawIteratorWithThreadMode;
-use rocksdb::PrefixRange;
-use rocksdb::ReadOptions;
 use rocksdb::table_properties::TablePropertiesExt;
-use rocksdb::{BoundColumnFamily, SliceTransform};
-use rocksdb::{DBCompressionType, SnapshotWithThreadMode};
+use rocksdb::{
+    BoundColumnFamily, DBCompressionType, DBPinnableSlice, DBRawIteratorWithThreadMode,
+    PrefixRange, ReadOptions, SliceTransform, SnapshotWithThreadMode,
+};
 use static_assertions::const_assert_eq;
 use tracing::trace;
 
-use restate_core::ShutdownError;
-use restate_rocksdb::CfName;
-use restate_rocksdb::IoMode;
-use restate_rocksdb::Priority;
-use restate_rocksdb::{RocksDb, RocksError};
+use restate_core::{Metadata, ShutdownError};
+use restate_rocksdb::{CfName, IoMode, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::config::Configuration;
-use restate_types::identifiers::SnapshotId;
-use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::logs::LogId;
+use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
 use restate_types::logs::Lsn;
+use restate_types::partitions::Partition;
 use restate_types::storage::StorageCodec;
 
 use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
@@ -465,6 +459,13 @@ impl PartitionStore {
         min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
     ) -> Result<LocalPartitionSnapshot> {
+        let log_id = Metadata::with_current(|m| {
+            m.partition_table_ref()
+                .get(&self.partition_id)
+                .map(Partition::log_id)
+        })
+        .expect("partition is in partition table");
+
         let applied_lsn = self
             .get_applied_lsn()
             .await
@@ -487,7 +488,7 @@ impl PartitionStore {
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
         let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
 
-        let metadata = self
+        let export_files = self
             .rocksdb
             .export_cf(self.data_cf_name.clone(), snapshot_dir.clone())
             .await
@@ -502,9 +503,9 @@ impl PartitionStore {
 
         Ok(LocalPartitionSnapshot {
             base_dir: snapshot_dir,
-            files: metadata.get_files(),
-            db_comparator_name: metadata.get_db_comparator_name(),
-            log_id: LogId::from(self.partition_id),
+            files: export_files.get_files(),
+            db_comparator_name: export_files.get_db_comparator_name(),
+            log_id,
             min_applied_lsn: applied_lsn,
             key_range: self.key_range.clone(),
         })

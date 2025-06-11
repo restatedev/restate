@@ -33,6 +33,7 @@ pub enum SnapshotFormatVersion {
 /// when the snapshot is imported and opened for reading.
 #[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "PartitionSnapshotMetadataShadow")]
 pub struct PartitionSnapshotMetadata {
     pub version: SnapshotFormatVersion,
 
@@ -56,10 +57,8 @@ pub struct PartitionSnapshotMetadata {
     /// responsible for, at the time the snapshot was generated.
     pub key_range: RangeInclusive<PartitionKey>,
 
-    /// The log id backing the partition. This field is optional as it wasn't always included
-    /// in the snapshot structure. Older snapshots which do not explicitly set this may be
-    /// assumed to be taken from a log with id numerically equal to their `partition_id`.
-    pub log_id: Option<LogId>,
+    /// The log id backing the partition.
+    pub log_id: LogId,
 
     /// The minimum LSN guaranteed to be applied in this snapshot. The actual
     /// LSN may be >= [minimum_lsn].
@@ -73,9 +72,44 @@ pub struct PartitionSnapshotMetadata {
     pub files: Vec<LiveFile>,
 }
 
-impl PartitionSnapshotMetadata {
-    pub fn get_log_id(&self) -> LogId {
-        self.log_id.unwrap_or(LogId::from(self.partition_id))
+#[serde_as]
+#[derive(Clone, Debug, Deserialize)]
+struct PartitionSnapshotMetadataShadow {
+    pub version: SnapshotFormatVersion,
+    pub cluster_name: String,
+    pub partition_id: PartitionId,
+    pub node_name: String,
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    pub created_at: humantime::Timestamp,
+    pub snapshot_id: SnapshotId,
+    pub key_range: RangeInclusive<PartitionKey>,
+    pub log_id: Option<LogId>,
+    pub min_applied_lsn: Lsn,
+    pub db_comparator_name: String,
+    #[serde_as(as = "Vec<SnapshotSstFile>")]
+    pub files: Vec<LiveFile>,
+}
+
+impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
+    fn from(value: PartitionSnapshotMetadataShadow) -> Self {
+        PartitionSnapshotMetadata {
+            version: value.version,
+            cluster_name: value.cluster_name,
+            partition_id: value.partition_id,
+            node_name: value.node_name,
+            created_at: value.created_at,
+            snapshot_id: value.snapshot_id,
+            key_range: value.key_range,
+            // if a log id was not written into the snapshot metadata, then it wasn't available at
+            // the time; the current log id stored in the partition table might be different now
+            // todo: delete this in 1.5
+            log_id: value
+                .log_id
+                .unwrap_or(LogId::default_for_partition(value.partition_id)),
+            min_applied_lsn: value.min_applied_lsn,
+            db_comparator_name: value.db_comparator_name,
+            files: value.files,
+        }
     }
 }
 
@@ -83,7 +117,7 @@ impl From<&PartitionSnapshotMetadata> for SnapshotCreated {
     fn from(metadata: &PartitionSnapshotMetadata) -> SnapshotCreated {
         SnapshotCreated {
             snapshot_id: metadata.snapshot_id,
-            log_id: metadata.get_log_id(),
+            log_id: metadata.log_id,
             min_applied_lsn: metadata.min_applied_lsn,
         }
     }

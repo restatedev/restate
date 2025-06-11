@@ -8,15 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::leadership::Error;
-use futures::never::Never;
-use restate_bifrost::{Bifrost, CommitToken, ErrorRecoveryStrategy};
-use restate_core::my_node_id;
-use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
-use restate_types::identifiers::{PartitionId, PartitionKey};
-use restate_types::logs::LogId;
-use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 use std::sync::Arc;
+
+use futures::never::Never;
+
+use restate_bifrost::{Bifrost, CommitToken, ErrorRecoveryStrategy};
+use restate_core::{Metadata, my_node_id};
+use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
+use restate_types::{
+    identifiers::{PartitionId, PartitionKey},
+    partitions::Partition,
+};
+use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
+
+use crate::partition::leadership::Error;
 
 // Constants since it's very unlikely that we can derive a meaningful configuration
 // that the user can reason about.
@@ -41,9 +46,16 @@ impl SelfProposer {
         epoch_sequence_number: EpochSequenceNumber,
         bifrost: &Bifrost,
     ) -> Result<Self, Error> {
+        let log_id = Metadata::with_current(|m| {
+            m.partition_table_ref()
+                .get(&partition_id)
+                .map(Partition::log_id)
+        })
+        .expect("partition is in partition table");
+
         let bifrost_appender = bifrost
             .create_background_appender(
-                LogId::from(partition_id),
+                log_id,
                 ErrorRecoveryStrategy::ExtendChainPreferred,
                 BIFROST_QUEUE_SIZE,
                 MAX_BIFROST_APPEND_BATCH,
