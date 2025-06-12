@@ -393,9 +393,9 @@ impl<T: TransportConnect> Scheduler<T> {
                 partition_processor_epoch_key(partition_id),
                 |epoch_metadata: Option<EpochMetadata>| {
                     if let Some(epoch_metadata) = epoch_metadata {
-                        // check if current has been modified in the meantime
-                        if epoch_metadata.current().version() < current.version() {
-                            Ok(epoch_metadata.update_current_configuration(current.clone()))
+                        // check whether someone else stored an initial current partition configuration
+                        if epoch_metadata.current().version() == Version::INVALID {
+                            Ok(epoch_metadata.set_initial_current_configuration(current.clone()))
                         } else {
                             let (_, _, current, next) = epoch_metadata.into_inner();
                             Err(PartitionConfigurationUpdate { current, next })

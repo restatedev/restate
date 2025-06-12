@@ -75,11 +75,28 @@ impl EpochMetadata {
         }
     }
 
-    pub fn update_current_configuration(self, current: PartitionConfiguration) -> Self {
+    /// Sets the initial current partition configuration. It makes sure that the version of the
+    /// current partition configuration is the same as the next version of the epoch metadata to
+    /// avoid reusing a version that was lost due to an older version overwriting the `current`
+    /// field.
+    pub fn set_initial_current_configuration(
+        self,
+        mut initial_current: PartitionConfiguration,
+    ) -> Self {
+        let version = self.version.next();
+
+        // Set the version of the initial current partition configuration to be the next version of
+        // the epoch metadata. This ensures that the current partition configuration will have a
+        // version which was not used before. If we started with Version::MIN, then there is the
+        // possibility that an older version (e.g. during a rolling upgrade) clobbers this field
+        // causing another node to store a potentially different partition configuration using again
+        // Version::MIN.
+        initial_current.version = version;
+
         Self {
-            version: self.version.next(),
+            version,
             leader_metadata: self.leader_metadata,
-            current,
+            current: initial_current,
             next: self.next,
             epoch: self.epoch,
         }
@@ -151,7 +168,7 @@ mod compatibility {
                 leader_metadata: value.leader_metadata,
 
                 epoch: value.next_epoch.unwrap_or_else(|| {
-                    // in Restate < 1.3.3 we used the version as the epoch
+                    // in Restate <= 1.3.2 we used the version as the epoch
                     let version: u32 = value.version.into();
                     LeaderEpoch::from(u64::from(version))
                 }),
