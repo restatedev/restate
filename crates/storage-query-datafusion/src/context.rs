@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use tokio::sync::watch;
 use tracing::warn;
 
+use codederror::CodedError;
 use datafusion::catalog::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
@@ -24,8 +25,6 @@ use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
-
-use codederror::CodedError;
 use restate_core::{Metadata, TaskCenter};
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
@@ -38,6 +37,7 @@ use restate_types::partition_table::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
+use tokio::runtime::Runtime;
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::{analyzer, physical_optimizer};
@@ -261,6 +261,7 @@ impl RegisterTable for ClusterTables {
 pub struct QueryContext {
     sql_options: SQLOptions,
     datafusion_context: SessionContext,
+    runtime: Arc<Runtime>,
 }
 
 impl QueryContext {
@@ -406,8 +407,16 @@ impl QueryContext {
             .with_allow_ddl(false)
             .with_allow_dml(false);
 
+        // TODO: this needs to come from elsewhere, but for now let's see if bulkheading runtime works
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+
         Self {
             sql_options,
+            runtime: Arc::new(runtime),
             datafusion_context: ctx,
         }
     }
@@ -416,12 +425,20 @@ impl QueryContext {
         &self,
         sql: &str,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        let state = self.datafusion_context.state();
-        let statement = state.sql_to_statement(sql, "postgres")?;
-        let plan = state.statement_to_plan(statement).await?;
-        self.sql_options.verify_plan(&plan)?;
-        let df = self.datafusion_context.execute_logical_plan(plan).await?;
-        df.execute_stream().await
+        let sql_str = sql.to_string();
+        let df_context = self.datafusion_context.clone();
+        let sql_opts = self.sql_options;
+        let handle = self.runtime.spawn(async move {
+            let state = df_context.state();
+            let statement = state.sql_to_statement(&sql_str, "postgres")?;
+            let plan = state.statement_to_plan(statement).await?;
+            sql_opts.verify_plan(&plan)?;
+            let df = df_context.execute_logical_plan(plan).await?;
+            df.execute_stream().await
+        });
+        handle
+            .await
+            .unwrap_or_else(|err| Err(DataFusionError::ExecutionJoin(err)))
     }
 }
 
