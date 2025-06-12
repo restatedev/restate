@@ -364,6 +364,7 @@ fn print_warning_deprecated_value_using_default(option: &str, value: &str) {
     );
 }
 
+#[allow(unused)]
 fn print_warning_deprecated_value(option: &str, value: &str, help_msg: &str) {
     eprintln!("Value '{value}' of config option '{option}' is deprecated: {help_msg}")
 }

@@ -23,7 +23,7 @@ use restate_metadata_providers::create_client;
 use restate_metadata_server::tests::Value;
 use restate_metadata_store::{MetadataStoreClient, WriteError, retry_on_retryable_error};
 use restate_types::config::{
-    Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerKind, RaftOptions,
+    Configuration, MetadataClientKind, MetadataClientOptions, RaftOptions,
 };
 use restate_types::metadata::Precondition;
 use restate_types::nodes_config::Role;
@@ -143,9 +143,6 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
     let chaos_duration = Duration::from_secs(20);
     let expected_recovery_duration = Duration::from_secs(10);
     let mut base_config = Configuration::default();
-    base_config
-        .metadata_server
-        .set_kind(MetadataServerKind::Raft);
     base_config.metadata_server.set_raft_options(RaftOptions {
         raft_election_tick: NonZeroUsize::new(5).expect("5 to be non zero"),
         raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
@@ -327,9 +324,6 @@ async fn raft_metadata_cluster_reconfiguration() -> googletest::Result<()> {
     let test_duration = Duration::from_secs(20);
     let expected_recovery_duration = Duration::from_secs(10);
     let mut base_config = Configuration::default();
-    base_config
-        .metadata_server
-        .set_kind(MetadataServerKind::Raft);
     base_config.metadata_server.set_raft_options(RaftOptions {
         raft_election_tick: NonZeroUsize::new(5).expect("5 to be non zero"),
         raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),

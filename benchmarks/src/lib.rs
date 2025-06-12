@@ -22,7 +22,7 @@ use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::{
     BifrostOptionsBuilder, CommonOptionsBuilder, Configuration, ConfigurationBuilder,
-    MetadataServerKind, MetadataServerOptionsBuilder, WorkerOptionsBuilder,
+    MetadataServerOptionsBuilder, WorkerOptionsBuilder,
 };
 use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::live::Constant;
@@ -168,7 +168,6 @@ pub fn restate_configuration() -> Configuration {
         .expect("building worker options should work");
 
     let metadata_server_options = MetadataServerOptionsBuilder::default()
-        .kind(Some(MetadataServerKind::Raft))
         .build()
         .expect("building metadata server options should work");
 

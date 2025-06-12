@@ -22,7 +22,7 @@ use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
-use restate_types::config::{MetadataServerKind, RaftOptions};
+use restate_types::config::RaftOptions;
 use restate_types::logs::metadata::{
     NodeSetSize, ProviderConfiguration, ProviderKind, ReplicatedLogletConfig,
 };
@@ -93,9 +93,6 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
     let chaos_duration = Duration::from_secs(20);
     let expected_recovery_interval = Duration::from_secs(10);
     let mut base_config = Configuration::default();
-    base_config
-        .metadata_server
-        .set_kind(MetadataServerKind::Raft);
     base_config.metadata_server.set_raft_options(RaftOptions {
         raft_election_tick: NonZeroUsize::new(5).expect("5 to be non zero"),
         raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
