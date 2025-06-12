@@ -78,6 +78,15 @@ impl PartitionState {
         current: PartitionConfiguration,
         next: Option<PartitionConfiguration>,
     ) -> bool {
+        // If the provided current configuration is not valid, then this means that the epoch
+        // metadata was clobbered by an old version. Reset the partition state so that the scheduler
+        // finds a new valid configuration on the next event/tick.
+        if !current.is_valid() && self.current.is_valid() {
+            self.current = current;
+            self.next = None;
+            return true;
+        }
+
         let mut updated = false;
 
         if self.current.version() < current.version() {
@@ -272,23 +281,29 @@ impl<T: TransportConnect> Scheduler<T> {
                             NodeSet::new(),
                             &self.cluster_state,
                         ) {
-                            *entry.get_mut() = Self::reconfigure_partition_configuration(
-                                self.metadata_writer.raw_metadata_store_client(),
-                                partition_id,
-                                entry
-                                    .get()
-                                    .next
-                                    .as_ref()
-                                    .map(|next| next.version())
-                                    .unwrap_or_else(|| entry.get().current.version()),
-                                next,
-                            )
-                            .await?;
-                            Self::note_observed_membership_update(
-                                partition_id,
-                                entry.get(),
-                                &self.replica_set_states,
-                            );
+                            let partition_configuration_update =
+                                Self::reconfigure_partition_configuration(
+                                    self.metadata_writer.raw_metadata_store_client(),
+                                    partition_id,
+                                    entry
+                                        .get()
+                                        .next
+                                        .as_ref()
+                                        .map(|next| next.version())
+                                        .unwrap_or_else(|| entry.get().current.version()),
+                                    next,
+                                )
+                                .await?;
+                            if entry.get_mut().update_configuration(
+                                partition_configuration_update.current,
+                                partition_configuration_update.next,
+                            ) {
+                                Self::note_observed_membership_update(
+                                    partition_id,
+                                    entry.get(),
+                                    &self.replica_set_states,
+                                );
+                            }
                         }
                     }
 
@@ -424,7 +439,7 @@ impl<T: TransportConnect> Scheduler<T> {
         partition_id: PartitionId,
         expected_next_version: Version,
         next: PartitionConfiguration,
-    ) -> Result<PartitionState, Error> {
+    ) -> Result<PartitionConfigurationUpdate, Error> {
         match metadata_store_client
             .read_modify_write(
                 partition_processor_epoch_key(partition_id),
@@ -455,11 +470,9 @@ impl<T: TransportConnect> Scheduler<T> {
             Ok(epoch_metadata) => {
                 debug!(%partition_id, "Reconfigured partition to {next:?}");
                 let (_, _, current, next) = epoch_metadata.into_inner();
-                Ok(PartitionState::new(current, next))
+                Ok(PartitionConfigurationUpdate { current, next })
             }
-            Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => Ok(
-                PartitionState::new(concurrent_update.current, concurrent_update.next),
-            ),
+            Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => Ok(concurrent_update),
             Err(ReadModifyWriteError::ReadWrite(err)) => Err(err.into()),
         }
     }
