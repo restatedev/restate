@@ -60,19 +60,10 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: ReadOnlyJournalTable>
             && last_event.deduplication_hash() == new_event.deduplication_hash()
         {
             trace!(
-                "Deduplicating event {} because the last entry in the journal is an event, and has deduplication hashes that match",
+                "Deduplicating event {} because the last entry in the journal is an event, and its deduplication hash matches with the current event",
                 last_event.event_type()
             );
             *self.entry = None;
-        } else {
-            trace!(
-                "{} != {}\n
-                {:?} != {:?}",
-                last_event.event_type(),
-                new_event.event_type(),
-                last_event.deduplication_hash(),
-                new_event.deduplication_hash()
-            );
         }
 
         Ok(())

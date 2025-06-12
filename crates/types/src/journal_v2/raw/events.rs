@@ -44,6 +44,7 @@ mod pb {
     use crate::errors::InvocationErrorCode;
     use crate::journal_v2;
     use crate::journal_v2::event;
+    use anyhow::Context;
 
     include!(concat!(env!("OUT_DIR"), "/restate.journal.events.rs"));
 
@@ -96,8 +97,8 @@ mod pb {
                 related_command_type: related_command_type
                     .map(|ct| {
                         transient_error_event::CommandType::try_from(ct)
-                            .unwrap_or(transient_error_event::CommandType::Unknown)
-                            .try_into()
+                            .context("Unrecognized command type")
+                            .map(Into::into)
                     })
                     .transpose()?,
             })
@@ -131,40 +132,31 @@ mod pb {
         }
     }
 
-    impl TryFrom<transient_error_event::CommandType> for journal_v2::CommandType {
-        type Error = anyhow::Error;
-
-        fn try_from(value: transient_error_event::CommandType) -> Result<Self, Self::Error> {
+    impl From<transient_error_event::CommandType> for journal_v2::CommandType {
+        fn from(value: transient_error_event::CommandType) -> Self {
             match value {
-                transient_error_event::CommandType::Unknown => {
-                    Err(anyhow::anyhow!("unknown command type"))
-                }
-                transient_error_event::CommandType::Input => Ok(Self::Input),
-                transient_error_event::CommandType::Output => Ok(Self::Output),
-                transient_error_event::CommandType::GetLazyState => Ok(Self::GetLazyState),
-                transient_error_event::CommandType::SetState => Ok(Self::SetState),
-                transient_error_event::CommandType::ClearState => Ok(Self::ClearState),
-                transient_error_event::CommandType::ClearAllState => Ok(Self::ClearAllState),
-                transient_error_event::CommandType::GetLazyStateKeys => Ok(Self::GetLazyStateKeys),
-                transient_error_event::CommandType::GetEagerState => Ok(Self::GetEagerState),
-                transient_error_event::CommandType::GetEagerStateKeys => {
-                    Ok(Self::GetEagerStateKeys)
-                }
-                transient_error_event::CommandType::GetPromise => Ok(Self::GetPromise),
-                transient_error_event::CommandType::PeekPromise => Ok(Self::PeekPromise),
-                transient_error_event::CommandType::CompletePromise => Ok(Self::CompletePromise),
-                transient_error_event::CommandType::Sleep => Ok(Self::Sleep),
-                transient_error_event::CommandType::Call => Ok(Self::Call),
-                transient_error_event::CommandType::OneWayCall => Ok(Self::OneWayCall),
-                transient_error_event::CommandType::SendSignal => Ok(Self::SendSignal),
-                transient_error_event::CommandType::Run => Ok(Self::Run),
-                transient_error_event::CommandType::AttachInvocation => Ok(Self::AttachInvocation),
+                transient_error_event::CommandType::Input => Self::Input,
+                transient_error_event::CommandType::Output => Self::Output,
+                transient_error_event::CommandType::GetLazyState => Self::GetLazyState,
+                transient_error_event::CommandType::SetState => Self::SetState,
+                transient_error_event::CommandType::ClearState => Self::ClearState,
+                transient_error_event::CommandType::ClearAllState => Self::ClearAllState,
+                transient_error_event::CommandType::GetLazyStateKeys => Self::GetLazyStateKeys,
+                transient_error_event::CommandType::GetEagerState => Self::GetEagerState,
+                transient_error_event::CommandType::GetEagerStateKeys => Self::GetEagerStateKeys,
+                transient_error_event::CommandType::GetPromise => Self::GetPromise,
+                transient_error_event::CommandType::PeekPromise => Self::PeekPromise,
+                transient_error_event::CommandType::CompletePromise => Self::CompletePromise,
+                transient_error_event::CommandType::Sleep => Self::Sleep,
+                transient_error_event::CommandType::Call => Self::Call,
+                transient_error_event::CommandType::OneWayCall => Self::OneWayCall,
+                transient_error_event::CommandType::SendSignal => Self::SendSignal,
+                transient_error_event::CommandType::Run => Self::Run,
+                transient_error_event::CommandType::AttachInvocation => Self::AttachInvocation,
                 transient_error_event::CommandType::GetInvocationOutput => {
-                    Ok(Self::GetInvocationOutput)
+                    Self::GetInvocationOutput
                 }
-                transient_error_event::CommandType::CompleteAwakeable => {
-                    Ok(Self::CompleteAwakeable)
-                }
+                transient_error_event::CommandType::CompleteAwakeable => Self::CompleteAwakeable,
             }
         }
     }

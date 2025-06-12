@@ -14,27 +14,26 @@ package restate.journal.events;
 
 message TransientErrorEvent {
   enum CommandType {
-    UNKNOWN = 0;
-    INPUT = 1;
-    OUTPUT = 2;
-    GET_LAZY_STATE = 3;
-    SET_STATE = 4;
-    CLEAR_STATE = 5;
-    CLEAR_ALL_STATE = 6;
-    GET_LAZY_STATE_KEYS = 7;
-    GET_EAGER_STATE = 8;
-    GET_EAGER_STATE_KEYS = 9;
-    GET_PROMISE = 10;
-    PEEK_PROMISE = 11;
-    COMPLETE_PROMISE = 12;
-    SLEEP = 13;
-    CALL = 14;
-    ONE_WAY_CALL = 15;
-    SEND_SIGNAL = 16;
-    RUN = 17;
-    ATTACH_INVOCATION = 18;
-    GET_INVOCATION_OUTPUT = 19;
-    COMPLETE_AWAKEABLE = 20;
+    INPUT = 0;
+    OUTPUT = 1;
+    GET_LAZY_STATE = 2;
+    SET_STATE = 3;
+    CLEAR_STATE = 4;
+    CLEAR_ALL_STATE = 5;
+    GET_LAZY_STATE_KEYS = 6;
+    GET_EAGER_STATE = 7;
+    GET_EAGER_STATE_KEYS = 8;
+    GET_PROMISE = 9;
+    PEEK_PROMISE = 10;
+    COMPLETE_PROMISE = 11;
+    SLEEP = 12;
+    CALL = 13;
+    ONE_WAY_CALL = 14;
+    SEND_SIGNAL = 15;
+    RUN = 16;
+    ATTACH_INVOCATION = 17;
+    GET_INVOCATION_OUTPUT = 18;
+    COMPLETE_AWAKEABLE = 19;
   }
 
   uint32 error_code = 1;

@@ -93,6 +93,7 @@ pub trait EntryMetadata {
     Clone,
     PartialEq,
     Eq,
+    /* The serialize trait is used in Datafusion to propagate entries to the UI and CLI */
     Serialize,
     /* The deserialize trait is used only by CLI */ Deserialize,
 )]
