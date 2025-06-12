@@ -407,9 +407,10 @@ impl<T: TransportConnect> Scheduler<T> {
             )
             .await
         {
-            Ok(_) => {
+            Ok(epoch_metadata) => {
+                let (_, _, current, next) = epoch_metadata.into_inner();
                 debug!("Initialized partition {} with {:?}", partition_id, current);
-                Ok(PartitionState::new(current, None))
+                Ok(PartitionState::new(current, next))
             }
             Err(ReadModifyWriteError::FailedOperation(concurrent_update)) => Ok(
                 PartitionState::new(concurrent_update.current, concurrent_update.next),
