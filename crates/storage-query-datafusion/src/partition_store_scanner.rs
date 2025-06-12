@@ -65,6 +65,7 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 2);
         let tx = stream_builder.tx();
@@ -80,6 +81,10 @@ where
 
             let rows = S::scan_partition_store(&partition_store, range)
                 .map_err(|e| DataFusionError::External(e.into()))?;
+            let rows = match limit {
+                Some(limit) => rows.take(limit).left_stream(),
+                None => rows.right_stream(),
+            };
             let mut builder = S::Builder::new(projection.clone());
             let mut temp = String::new();
 

@@ -39,6 +39,8 @@ pub struct RemoteQueryScannerOpen {
     pub range: RangeInclusive<PartitionKey>,
     pub table: String,
     pub projection_schema_bytes: Vec<u8>,
+    #[serde(default)]
+    pub limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

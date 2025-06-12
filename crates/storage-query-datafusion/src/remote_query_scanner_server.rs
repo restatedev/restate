@@ -53,6 +53,9 @@ impl Scanner {
             request.partition_id,
             request.range.clone(),
             Arc::new(schema),
+            request
+                .limit
+                .map(|limit| usize::try_from(limit).expect("limit to fit in a usize")),
         )?;
         Ok(Self {
             stream,

@@ -92,6 +92,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
         partition_id: PartitionId,
         _range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let status = self.status_handle.clone();
         let partition_store_manager = self.partition_store_manager.clone();
@@ -101,8 +102,12 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
 
         let background_task = async move {
             let range = partition_key_range(partition_store_manager, partition_id).await?;
-            let rows = status.read_status(range).await;
-            for_each_state(schema, tx, rows).await;
+            match limit {
+                Some(limit) => {
+                    for_each_state(schema, tx, status.read_status(range).await.take(limit)).await
+                }
+                None => for_each_state(schema, tx, status.read_status(range).await).await,
+            }
             Ok(())
         };
 
