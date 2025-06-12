@@ -25,7 +25,8 @@ use restate_types::NodeId;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
-    RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened,
+    RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened, ScannerBatch,
+    ScannerFailure,
 };
 
 use crate::{decode_record_batch, encode_schema};
@@ -123,10 +124,15 @@ pub fn remote_scan_as_datafusion_stream(
                     close_fn().await;
                     return Err(e);
                 }
-                Ok(RemoteQueryScannerNextResult::NextBatch { record_batch, .. }) => {
-                    decode_record_batch(&record_batch)?
+                Ok(RemoteQueryScannerNextResult::Unknown) => {
+                    return Err(DataFusionError::Internal(
+                        "Received unknown scanner result".to_owned(),
+                    ));
                 }
-                Ok(RemoteQueryScannerNextResult::Failure { message, .. }) => {
+                Ok(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
+                    record_batch, ..
+                })) => decode_record_batch(&record_batch)?,
+                Ok(RemoteQueryScannerNextResult::Failure(ScannerFailure { message, .. })) => {
                     // assume server closed the scanner before responding
                     return Err(DataFusionError::Internal(message));
                 }
