@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::query_utils::{JsonWriter, WriteRecordBatchStream};
@@ -83,6 +84,14 @@ pub async fn query(
             "application/vnd.apache.arrow.stream",
         ),
     };
+
+    let mut result_stream = result_stream.peekable();
+
+    // return an error (instead of just closing the stream) if there is a error getting the first record batch (eg, out of memory)
+    if let Some(Err(_)) = futures::stream::Peekable::peek(Pin::new(&mut result_stream)).await {
+        let err = result_stream.next().await.unwrap().unwrap_err();
+        return Err(StorageQueryError::DataFusion(err));
+    }
 
     Ok(Response::builder()
         .header(http::header::CONTENT_TYPE, content_type)
