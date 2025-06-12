@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::InvocationStatus;
-use restate_storage_api::journal_table_v2::JournalTable;
+use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawEntry;
-use restate_types::journal_v2::{EntryMetadata, EntryType, Event};
+use restate_types::journal_v2::{EntryMetadata, EntryType};
+use tracing::trace;
 
 pub(super) struct ApplyEventCommand<'e> {
     pub(super) invocation_id: InvocationId,
@@ -22,7 +22,7 @@ pub(super) struct ApplyEventCommand<'e> {
     pub(super) entry: &'e mut Option<RawEntry>,
 }
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S: JournalTable>
+impl<'e, 'ctx: 'e, 's: 'ctx, S: ReadOnlyJournalTable>
     CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for ApplyEventCommand<'e>
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
@@ -44,55 +44,36 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: JournalTable>
             return Ok(());
         }
 
-        let new_entry = self.entry.as_ref().unwrap();
+        let last_event = last_entry
+            .inner
+            .try_as_event_ref()
+            .ok_or_else(|| Error::BadEntryVariant(EntryType::Event))?;
+        let new_event = self
+            .entry
+            .as_ref()
+            .unwrap()
+            .inner
+            .try_as_event_ref()
+            .ok_or_else(|| Error::BadEntryVariant(EntryType::Event))?;
 
-        // If entry types don't match, there's nothing to deduplicate
-        if last_entry.inner.try_as_event_ref().map(|e| e.event_type())
-            != new_entry.inner.try_as_event_ref().map(|e| e.event_type())
+        if last_event.event_type() == new_event.event_type()
+            && last_event.deduplication_hash() == new_event.deduplication_hash()
         {
-            return Ok(());
+            trace!(
+                "Deduplicating event {} because the last entry in the journal is an event, and has deduplication hashes that match",
+                last_event.event_type()
+            );
+            *self.entry = None;
+        } else {
+            trace!(
+                "{} != {}\n
+                {:?} != {:?}",
+                last_event.event_type(),
+                new_event.event_type(),
+                last_event.deduplication_hash(),
+                new_event.deduplication_hash()
+            );
         }
-
-        let new_event = new_entry.decode::<ServiceProtocolV4Codec, Event>()?;
-        let last_stored_event = last_entry.decode::<ServiceProtocolV4Codec, Event>()?;
-
-        match (last_stored_event, new_event) {
-            (
-                Event::TransientError(mut stored_transient_error_event),
-                Event::TransientError(new_transient_error_event),
-            ) if stored_transient_error_event.error_code
-                == new_transient_error_event.error_code
-                && stored_transient_error_event.error_message
-                    == new_transient_error_event.error_message
-                && stored_transient_error_event.restate_doc_error_code
-                    == new_transient_error_event.restate_doc_error_code
-                && stored_transient_error_event.related_command_type
-                    == new_transient_error_event.related_command_type
-                && stored_transient_error_event.related_command_name
-                    == new_transient_error_event.related_command_name
-                && stored_transient_error_event.related_command_index
-                    == new_transient_error_event.related_command_index =>
-            {
-                // Override count and error_stacktrace
-                stored_transient_error_event.count =
-                    stored_transient_error_event.count.saturating_add(1);
-                stored_transient_error_event.error_stacktrace =
-                    new_transient_error_event.error_stacktrace;
-
-                ctx.storage
-                    .put_journal_entry(
-                        self.invocation_id,
-                        last_entry_index,
-                        &Event::TransientError(stored_transient_error_event)
-                            .encode::<ServiceProtocolV4Codec>(),
-                        &[],
-                    )
-                    .await?;
-
-                *self.entry = None;
-            }
-            _ => {}
-        };
 
         Ok(())
     }
@@ -101,12 +82,15 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: JournalTable>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::num::NonZeroU32;
 
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use crate::partition::types::InvokerEffectKind;
     use googletest::prelude::*;
+    use restate_invoker_api::Effect;
     use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
-    use restate_types::journal_v2::TransientErrorEvent;
+    use restate_types::journal_v2::raw::{RawEntryHeader, RawEvent};
+    use restate_types::journal_v2::{Event, TransientErrorEvent};
+    use restate_wal_protocol::Command;
 
     #[restate_core::test]
     async fn store_event_then_get_deduplicated() {
@@ -114,7 +98,7 @@ mod tests {
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
         fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
-        let mut transient_error_event = TransientErrorEvent {
+        let transient_error_event = TransientErrorEvent {
             error_code: 501u16.into(),
             error_message: "my bad".to_string(),
             error_stacktrace: Some("something something".to_string()),
@@ -122,14 +106,24 @@ mod tests {
             related_command_index: None,
             related_command_name: Some("my command".to_string()),
             related_command_type: None,
-            count: NonZeroU32::new(1).unwrap(),
+        };
+        let raw_entry = {
+            let deduplication_hash = transient_error_event.deduplication_hash();
+            let mut raw_event =
+                RawEvent::from(Event::TransientError(transient_error_event.clone()));
+            raw_event.set_deduplication_hash(deduplication_hash);
+            RawEntry::new(RawEntryHeader::new(), raw_event)
         };
 
         let _ = test_env
-            .apply(fixtures::invoker_entry_effect(
+            .apply(Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
-                Event::TransientError(transient_error_event.clone()),
-            ))
+                invocation_epoch: 0,
+                kind: InvokerEffectKind::JournalEntryV2 {
+                    entry: raw_entry.clone(),
+                    command_index_to_ack: None,
+                },
+            })))
             .await;
 
         assert_eq!(
@@ -137,16 +131,18 @@ mod tests {
             Event::TransientError(transient_error_event.clone())
         );
 
-        // --- Applying the same event the second time will result in bumping the count
+        // --- Applying the same event the second time will result in deduplication
 
         let _ = test_env
-            .apply(fixtures::invoker_entry_effect(
+            .apply(Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
-                Event::TransientError(transient_error_event.clone()),
-            ))
+                invocation_epoch: 0,
+                kind: InvokerEffectKind::JournalEntryV2 {
+                    entry: raw_entry,
+                    command_index_to_ack: None,
+                },
+            })))
             .await;
-
-        transient_error_event.count = transient_error_event.count.saturating_add(1);
 
         assert_that!(
             test_env.storage.get_invocation_status(&invocation_id).await,
@@ -167,14 +163,24 @@ mod tests {
             related_command_index: None,
             related_command_name: Some("my command 2".to_string()),
             related_command_type: None,
-            count: NonZeroU32::new(1).unwrap(),
+        };
+        let another_raw_entry = {
+            let deduplication_hash = another_transient_error_event.deduplication_hash();
+            let mut raw_event =
+                RawEvent::from(Event::TransientError(another_transient_error_event.clone()));
+            raw_event.set_deduplication_hash(deduplication_hash);
+            RawEntry::new(RawEntryHeader::new(), raw_event)
         };
 
         let _ = test_env
-            .apply(fixtures::invoker_entry_effect(
+            .apply(Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
-                Event::TransientError(another_transient_error_event.clone()),
-            ))
+                invocation_epoch: 0,
+                kind: InvokerEffectKind::JournalEntryV2 {
+                    entry: another_raw_entry,
+                    command_index_to_ack: None,
+                },
+            })))
             .await;
 
         assert_that!(

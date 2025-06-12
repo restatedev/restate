@@ -42,7 +42,6 @@ use restate_types::schema::deployment::DeploymentResolver;
 use status_store::InvocationStatusStore;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -1230,7 +1229,7 @@ where
                         .is_some_and(|sp| sp >= ServiceProtocolVersion::V4)
                 {
                     // Only if protocol version >= 4 was selected we can propose the transient error
-                    let event = Event::TransientError(TransientErrorEvent {
+                    let transient_error_event = TransientErrorEvent {
                         error_code: invocation_error_report.err.code(),
                         error_message: invocation_error_report.err.message().to_owned(),
                         // Note from the review:
@@ -1247,8 +1246,14 @@ where
                         related_command_index: invocation_error_report.related_entry_index,
                         related_command_name: invocation_error_report.related_entry_name.clone(),
                         related_command_type: journal_v2_related_command_type,
-                        count: NonZeroU32::new(1).unwrap(),
-                    });
+                    };
+                    // Modify or remove this to disable the deduplication logic!
+                    let deduplication_hash = transient_error_event.deduplication_hash();
+
+                    let mut raw_event =
+                        RawEvent::from(Event::TransientError(transient_error_event));
+                    raw_event.set_deduplication_hash(deduplication_hash);
+
                     let _ = self
                         .invocation_state_machine_manager
                         .resolve_partition_sender(partition)
@@ -1257,7 +1262,7 @@ where
                             invocation_id,
                             invocation_epoch: ism.invocation_epoch,
                             kind: EffectKind::JournalEntryV2 {
-                                entry: RawEntry::new(RawEntryHeader::new(), RawEvent::from(event)),
+                                entry: RawEntry::new(RawEntryHeader::new(), raw_event),
                                 command_index_to_ack: None,
                             },
                         }))

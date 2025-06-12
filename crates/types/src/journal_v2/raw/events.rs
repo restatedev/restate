@@ -44,7 +44,6 @@ mod pb {
     use crate::errors::InvocationErrorCode;
     use crate::journal_v2;
     use crate::journal_v2::event;
-    use std::num::NonZeroU32;
 
     include!(concat!(env!("OUT_DIR"), "/restate.journal.events.rs"));
 
@@ -58,7 +57,6 @@ mod pb {
                 related_command_index,
                 related_command_name,
                 related_command_type,
-                count,
             }: event::TransientErrorEvent,
         ) -> Self {
             TransientErrorEvent {
@@ -70,7 +68,6 @@ mod pb {
                 related_command_name,
                 related_command_type: related_command_type
                     .map(|ct| transient_error_event::CommandType::from(ct).into()),
-                count: count.into(),
             }
         }
     }
@@ -87,7 +84,6 @@ mod pb {
                 related_command_index,
                 related_command_name,
                 related_command_type,
-                count,
             }: TransientErrorEvent,
         ) -> Result<Self, Self::Error> {
             Ok(event::TransientErrorEvent {
@@ -104,8 +100,6 @@ mod pb {
                             .try_into()
                     })
                     .transpose()?,
-                count: NonZeroU32::new(count)
-                    .ok_or_else(|| anyhow::anyhow!("count out of bounds"))?,
             })
         }
     }

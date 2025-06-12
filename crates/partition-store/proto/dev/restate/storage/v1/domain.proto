@@ -590,6 +590,7 @@ message Entry {
 
   // Additional metadata for EVENT
   EventType event_type = 10;
+  optional bytes event_deduplication_hash = 11;
 }
 
 message ResponseResult {

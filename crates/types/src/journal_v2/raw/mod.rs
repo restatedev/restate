@@ -235,27 +235,45 @@ impl EntryMetadata for RawNotification {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawEvent {
     ty: EventType,
+    deduplication_hash: Option<Bytes>,
     value: Bytes,
 }
 
 impl RawEvent {
     pub fn new(ty: EventType, value: Bytes) -> Self {
-        RawEvent { ty, value }
+        RawEvent {
+            ty,
+            deduplication_hash: None,
+            value,
+        }
     }
 
     pub fn unknown() -> Self {
         RawEvent {
             ty: EventType::Unknown,
+            deduplication_hash: None,
             value: Bytes::default(),
         }
+    }
+
+    /// See [self.set_deduplication_hash].
+    pub fn deduplication_hash(&self) -> Option<&Bytes> {
+        self.deduplication_hash.as_ref()
+    }
+
+    /// When setting the deduplication hash, the Partition processor will try to deduplicate this event with the last event in the journal (if present) by matching the deduplication_hash.
+    ///
+    /// When unset, no deduplication will happen and the event is stored as is.
+    pub fn set_deduplication_hash(&mut self, hash: impl Into<Bytes>) {
+        self.deduplication_hash = Some(hash.into());
     }
 
     pub fn event_type(&self) -> EventType {
         self.ty
     }
 
-    pub fn into_inner(self) -> (EventType, Bytes) {
-        (self.ty, self.value)
+    pub fn into_inner(self) -> (EventType, Option<Bytes>, Bytes) {
+        (self.ty, self.deduplication_hash, self.value)
     }
 }
 

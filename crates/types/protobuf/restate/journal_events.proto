@@ -44,5 +44,4 @@ message TransientErrorEvent {
   optional uint32 related_command_index = 5;
   optional string related_command_name = 6;
   optional CommandType related_command_type = 7;
-  uint32 count = 8;
 }

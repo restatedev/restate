@@ -3368,10 +3368,12 @@ pub mod v1 {
                             let event_type = journal_v2::EventType::from(
                                 entry::EventType::try_from(value.event_type).unwrap_or_default(),
                             );
-                            journal_v2::raw::RawEntry::new(
-                                header,
-                                journal_v2::raw::RawEvent::new(event_type, value.content),
-                            )
+                            let mut raw_event =
+                                journal_v2::raw::RawEvent::new(event_type, value.content);
+                            if let Some(deduplication_hash) = value.event_deduplication_hash {
+                                raw_event.set_deduplication_hash(deduplication_hash);
+                            }
+                            journal_v2::raw::RawEntry::new(header, raw_event)
                         }
                         journal_v2::EntryType::Notification(notification_ty) => {
                             let notification_id = match value
@@ -3433,6 +3435,7 @@ pub mod v1 {
                 let append_time = raw_entry.header().append_time.into();
 
                 let mut event_type = entry::EventType::UnknownEvent;
+                let mut event_deduplication_hash = None;
                 let mut call_or_send_command_metadata: Option<entry::CallOrSendCommandMetadata> =
                     None;
                 let mut notification_id: Option<entry::NotificationId> = None;
@@ -3466,8 +3469,9 @@ pub mod v1 {
                         notification.serialized_content()
                     }
                     journal_v2::raw::RawEntryInner::Event(event) => {
-                        let (ty, value) = event.into_inner();
+                        let (ty, deduplication_hash, value) = event.into_inner();
                         event_type = ty.into();
+                        event_deduplication_hash = deduplication_hash;
                         value
                     }
                 };
@@ -3478,6 +3482,7 @@ pub mod v1 {
                     append_time,
                     call_or_send_command_metadata,
                     event_type: event_type.into(),
+                    event_deduplication_hash,
                     notification_id,
                 }
             }

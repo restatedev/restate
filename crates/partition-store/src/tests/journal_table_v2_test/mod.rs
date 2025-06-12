@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU32;
 use std::pin::pin;
 use std::time::Duration;
 
@@ -316,7 +315,6 @@ async fn test_event() {
         related_command_index: None,
         related_command_name: Some("Input".to_string()),
         related_command_type: None,
-        count: NonZeroU32::new(10).unwrap(),
     });
 
     // Populate
