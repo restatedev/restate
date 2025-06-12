@@ -204,12 +204,13 @@ where
             .pinned()
             .find_partition_id(inner_request.partition_key())?;
 
-        let node_id = self
-            .partition_routing
-            .get_node_by_partition(partition_id)
-            .ok_or(PartitionProcessorInvocationClientError::UnknownNode(
-                partition_id,
-            ))?;
+        let node_id = NodeId::from(
+            self.partition_routing
+                .get_node_by_partition(partition_id)
+                .ok_or(PartitionProcessorInvocationClientError::UnknownNode(
+                    partition_id,
+                ))?,
+        );
 
         // find connection for this node
         let connection = self

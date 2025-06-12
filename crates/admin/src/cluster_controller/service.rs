@@ -768,6 +768,7 @@ impl SealAndExtendTask {
                     TaskCenter::with_current(|handle| {
                         self.membership_state
                             .first_alive_node(handle.cluster_state())
+                            .map(NodeId::from)
                     })
                 }
             });
