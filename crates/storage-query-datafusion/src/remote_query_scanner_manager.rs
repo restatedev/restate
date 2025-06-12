@@ -102,10 +102,10 @@ impl PartitionLocator for MetadataAwarePartitionLocator {
             None => {
                 bail!("node lookup for partition {} failed", partition_id)
             }
-            Some(node_id) if node_id.as_generational().is_some_and(|id| id == my_node_id) => {
-                Ok(PartitionLocation::Local)
-            }
-            Some(node_id) => Ok(PartitionLocation::Remote { node_id }),
+            Some(node_id) if node_id == my_node_id => Ok(PartitionLocation::Local),
+            Some(node_id) => Ok(PartitionLocation::Remote {
+                node_id: NodeId::from(node_id),
+            }),
         }
     }
 }

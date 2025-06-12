@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use crate::TaskCenter;
+use restate_types::GenerationalNodeId;
 use restate_types::identifiers::PartitionId;
 use restate_types::partitions::state::PartitionReplicaSetStates;
-use restate_types::{GenerationalNodeId, NodeId};
 
 /// Discover cluster nodes for a given partition based on the [`PartitionReplicaSetStates`] and the
 /// [`ClusterState`].
@@ -33,14 +33,14 @@ impl PartitionRouting {
     /// retrying the request, or returning an error upstream when information is not available.
     ///
     /// A `None` response indicates that we have no knowledge about this partition.
-    pub fn get_node_by_partition(&self, partition_id: PartitionId) -> Option<NodeId> {
+    pub fn get_node_by_partition(&self, partition_id: PartitionId) -> Option<GenerationalNodeId> {
         let membership = self
             .partition_replica_set_states
             .membership_state(partition_id);
 
         // if we know about a leader, then return it
         if membership.current_leader().current_leader != GenerationalNodeId::INVALID {
-            return Some(NodeId::from(membership.current_leader().current_leader));
+            return Some(membership.current_leader().current_leader);
         }
 
         // otherwise, overlay the current configuration with the cluster state and take the first

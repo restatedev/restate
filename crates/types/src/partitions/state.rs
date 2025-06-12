@@ -20,7 +20,7 @@ use crate::cluster_state::ClusterState;
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::{Lsn, SequenceNumber};
 use crate::partitions::PartitionConfiguration;
-use crate::{GenerationalNodeId, Merge, NodeId, PlainNodeId, Version};
+use crate::{GenerationalNodeId, Merge, PlainNodeId, Version};
 
 type DashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
 
@@ -329,12 +329,19 @@ impl MembershipState {
 
     /// Returns the first alive node from `observed_current_membership` by overlaying it with the
     /// current cluster state.
-    pub fn first_alive_node(&self, cluster_state: &ClusterState) -> Option<NodeId> {
+    pub fn first_alive_node(&self, cluster_state: &ClusterState) -> Option<GenerationalNodeId> {
         self.observed_current_membership
             .members
             .iter()
-            .map(|member| NodeId::from(member.node_id))
-            .find(|node_id| cluster_state.is_alive(*node_id))
+            .find_map(|member| {
+                let (node_id, state) =
+                    cluster_state.get_node_state_and_generation(member.node_id)?;
+                if state.is_alive() {
+                    Some(node_id)
+                } else {
+                    None
+                }
+            })
     }
 }
 
