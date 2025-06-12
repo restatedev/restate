@@ -179,6 +179,10 @@ pub struct InvokerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub disable_eager_state: bool,
+
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    experimental_features_propose_events: bool,
 }
 
 impl InvokerOptions {
@@ -198,6 +202,10 @@ impl InvokerOptions {
 
     pub fn message_size_limit(&self) -> Option<usize> {
         self.message_size_limit.map(Into::into)
+    }
+
+    pub fn experimental_features_propose_events(&self) -> bool {
+        self.experimental_features_propose_events
     }
 }
 
@@ -219,6 +227,7 @@ impl Default for InvokerOptions {
             tmp_dir: None,
             concurrent_invocations_limit: None,
             disable_eager_state: false,
+            experimental_features_propose_events: false,
         }
     }
 }

@@ -118,22 +118,6 @@ pub mod v1 {
     ));
 
     pub mod pb_conversion {
-        use crate::protobuf_types::v1::entry::EntryType;
-        use crate::protobuf_types::v1::entry::EventEntry;
-        use std::collections::{HashMap, HashSet};
-        use std::str::FromStr;
-        use std::sync::Arc;
-
-        use anyhow::anyhow;
-        use bytes::{Buf, Bytes};
-        use bytestring::ByteString;
-        use opentelemetry::trace::TraceState;
-        use prost::Message;
-        use restate_storage_api::invocation_status_table::{
-            CompletionRangeEpochMap, JournalMetadata,
-        };
-        use restate_types::deployment::PinnedDeployment;
-
         use crate::protobuf_types::ConversionError;
         use crate::protobuf_types::v1::dedup_sequence_number::Variant;
         use crate::protobuf_types::v1::enriched_entry_header::{
@@ -142,6 +126,7 @@ pub mod v1 {
             GetInvocationOutput, GetPromise, GetState, GetStateKeys, Input, Invoke, Output,
             PeekPromise, SetState, SideEffect, Sleep,
         };
+        use crate::protobuf_types::v1::entry::EntryType;
         use crate::protobuf_types::v1::invocation_status::{
             Completed, Free, Inboxed, Invoked, Suspended,
         };
@@ -171,7 +156,16 @@ pub mod v1 {
             response_result, source, span_relation, submit_notification_sink, timer,
             virtual_object_status,
         };
+        use anyhow::anyhow;
+        use bytes::{Buf, Bytes};
+        use bytestring::ByteString;
+        use opentelemetry::trace::TraceState;
+        use prost::Message;
         use restate_storage_api::StorageError;
+        use restate_storage_api::invocation_status_table::{
+            CompletionRangeEpochMap, JournalMetadata,
+        };
+        use restate_types::deployment::PinnedDeployment;
         use restate_types::errors::{IdDecodeError, InvocationError};
         use restate_types::identifiers::{
             PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
@@ -189,6 +183,8 @@ pub mod v1 {
         };
         use restate_types::time::MillisSinceEpoch;
         use restate_types::{GenerationalNodeId, journal_v2};
+        use std::collections::{HashMap, HashSet};
+        use std::str::FromStr;
 
         impl TryFrom<VirtualObjectStatus>
             for restate_storage_api::service_status_table::VirtualObjectStatus
@@ -3369,22 +3365,15 @@ pub mod v1 {
                         .try_into()?
                     {
                         journal_v2::EntryType::Event => {
-                            let event_entry = EventEntry::decode(value.content)
-                                .map_err(|e| ConversionError::InvalidData(e.into()))?;
-                            journal_v2::raw::RawEntry::new(
-                                header,
-                                journal_v2::Event {
-                                    ty: event_entry
-                                        .ty
-                                        .parse::<journal_v2::EventType>()
-                                        .map_err(|e| ConversionError::InvalidData(e.into()))?,
-                                    metadata: event_entry
-                                        .metadata
-                                        .into_iter()
-                                        .map(|(k, v)| (k, v.into()))
-                                        .collect(),
-                                },
-                            )
+                            let event_type = journal_v2::EventType::from(
+                                entry::EventType::try_from(value.event_type).unwrap_or_default(),
+                            );
+                            let mut raw_event =
+                                journal_v2::raw::RawEvent::new(event_type, value.content);
+                            if let Some(deduplication_hash) = value.event_deduplication_hash {
+                                raw_event.set_deduplication_hash(deduplication_hash);
+                            }
+                            journal_v2::raw::RawEntry::new(header, raw_event)
                         }
                         journal_v2::EntryType::Notification(notification_ty) => {
                             let notification_id = match value
@@ -3445,6 +3434,8 @@ pub mod v1 {
                 let ty = EntryType::from(raw_entry.ty());
                 let append_time = raw_entry.header().append_time.into();
 
+                let mut event_type = entry::EventType::UnknownEvent;
+                let mut event_deduplication_hash = None;
                 let mut call_or_send_command_metadata: Option<entry::CallOrSendCommandMetadata> =
                     None;
                 let mut notification_id: Option<entry::NotificationId> = None;
@@ -3477,16 +3468,12 @@ pub mod v1 {
 
                         notification.serialized_content()
                     }
-                    journal_v2::raw::RawEntryInner::Event(event) => EventEntry {
-                        ty: event.ty.to_string(),
-                        metadata: event
-                            .metadata
-                            .into_iter()
-                            .map(|(k, v)| (k, v.to_string()))
-                            .collect(),
+                    journal_v2::raw::RawEntryInner::Event(event) => {
+                        let (ty, deduplication_hash, value) = event.into_inner();
+                        event_type = ty.into();
+                        event_deduplication_hash = deduplication_hash;
+                        value
                     }
-                    .encode_to_vec()
-                    .into(),
                 };
 
                 Entry {
@@ -3494,7 +3481,27 @@ pub mod v1 {
                     content,
                     append_time,
                     call_or_send_command_metadata,
+                    event_type: event_type.into(),
+                    event_deduplication_hash,
                     notification_id,
+                }
+            }
+        }
+
+        impl From<journal_v2::EventType> for entry::EventType {
+            fn from(value: journal_v2::EventType) -> Self {
+                match value {
+                    journal_v2::EventType::TransientError => entry::EventType::TransientError,
+                    journal_v2::EventType::Unknown => entry::EventType::UnknownEvent,
+                }
+            }
+        }
+
+        impl From<entry::EventType> for journal_v2::EventType {
+            fn from(value: entry::EventType) -> Self {
+                match value {
+                    entry::EventType::TransientError => journal_v2::EventType::TransientError,
+                    entry::EventType::UnknownEvent => journal_v2::EventType::Unknown,
                 }
             }
         }

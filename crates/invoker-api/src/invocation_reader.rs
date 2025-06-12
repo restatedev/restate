@@ -77,6 +77,8 @@ pub trait InvocationReaderTransaction {
 
     /// Read the journal for the given invocation id.
     ///
+    /// The returned journal **MUST** not return events.
+    ///
     /// Returns `None` when either the invocation was not found, or the invocation is not in `Invoked` state.
     fn read_journal<'a>(
         &'a mut self,

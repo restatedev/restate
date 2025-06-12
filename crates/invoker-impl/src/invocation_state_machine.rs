@@ -12,6 +12,7 @@ use super::*;
 
 use restate_types::journal::Completion;
 use restate_types::retries;
+use restate_types::service_protocol::ServiceProtocolVersion;
 use std::fmt;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -22,6 +23,7 @@ use tokio::task::AbortHandle;
 pub(super) struct InvocationStateMachine {
     pub(super) invocation_target: InvocationTarget,
     pub(super) invocation_epoch: InvocationEpoch,
+    selected_service_protocol: Option<ServiceProtocolVersion>,
     invocation_state: InvocationState,
     retry_iter: retries::RetryIter<'static>,
     /// This retry count is passed in the StartMessage.
@@ -166,6 +168,7 @@ impl InvocationStateMachine {
         Self {
             invocation_target,
             invocation_epoch,
+            selected_service_protocol: None,
             invocation_state: InvocationState::New,
             retry_iter: retry_policy.into_iter(),
             start_message_retry_count_since_last_stored_command: 0,
@@ -214,6 +217,17 @@ impl InvocationStateMachine {
         }
     }
 
+    pub(super) fn notify_selected_service_protocol(
+        &mut self,
+        service_protocol_version: ServiceProtocolVersion,
+    ) {
+        self.selected_service_protocol = Some(service_protocol_version);
+    }
+
+    pub(super) fn selected_service_protocol(&self) -> Option<ServiceProtocolVersion> {
+        self.selected_service_protocol
+    }
+
     pub(super) fn pinned_deployment_to_notify(&mut self) -> Option<PinnedDeployment> {
         debug_assert!(matches!(
             &self.invocation_state,
@@ -224,7 +238,13 @@ impl InvocationStateMachine {
             pinned_deployment, ..
         } = &mut self.invocation_state
         {
-            pinned_deployment.take()
+            if let Some(pinned_deployment) = pinned_deployment.take() {
+                // When notifying the pinned deployment, we also set the protocol version
+                self.selected_service_protocol = Some(pinned_deployment.service_protocol_version);
+                Some(pinned_deployment)
+            } else {
+                None
+            }
         } else {
             None
         }

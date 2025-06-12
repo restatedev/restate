@@ -1,0 +1,46 @@
+// Copyright (c) 2024 - 2025 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+syntax = "proto3";
+
+package restate.journal.events;
+
+message TransientErrorEvent {
+  enum CommandType {
+    INPUT = 0;
+    OUTPUT = 1;
+    GET_LAZY_STATE = 2;
+    SET_STATE = 3;
+    CLEAR_STATE = 4;
+    CLEAR_ALL_STATE = 5;
+    GET_LAZY_STATE_KEYS = 6;
+    GET_EAGER_STATE = 7;
+    GET_EAGER_STATE_KEYS = 8;
+    GET_PROMISE = 9;
+    PEEK_PROMISE = 10;
+    COMPLETE_PROMISE = 11;
+    SLEEP = 12;
+    CALL = 13;
+    ONE_WAY_CALL = 14;
+    SEND_SIGNAL = 15;
+    RUN = 16;
+    ATTACH_INVOCATION = 17;
+    GET_INVOCATION_OUTPUT = 18;
+    COMPLETE_AWAKEABLE = 19;
+  }
+
+  uint32 error_code = 1;
+  string error_message = 2;
+  optional string error_stacktrace = 3;
+  optional string restate_doc_error_code = 4;
+  optional uint32 related_command_index = 5;
+  optional string related_command_name = 6;
+  optional CommandType related_command_type = 7;
+}
