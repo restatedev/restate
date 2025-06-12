@@ -11,13 +11,14 @@
 use std::time::Duration;
 
 use metrics::{Counter, counter};
+use restate_types::live::Live;
 use tokio::sync::mpsc;
 use tracing::{info, trace};
 
 use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, my_node_id};
 use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, ReplicatedLogletOptions};
 use restate_types::logs::{
     KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber, TailOffsetWatch,
 };
@@ -98,8 +99,10 @@ impl ReadStreamTask {
         if move_beyond_global_tail && read_to.is_none() {
             panic!("read_to must be set if move_beyond_global_tail=true");
         }
+        let mut configuration = Configuration::live();
         let (tx, rx) = mpsc::channel(
-            Configuration::pinned()
+            configuration
+                .live_load()
                 .bifrost
                 .replicated_loglet
                 .readahead_records
@@ -123,7 +126,7 @@ impl ReadStreamTask {
         let handle = TaskCenter::spawn_unmanaged(
             TaskKind::ReplicatedLogletReadStream,
             "replicatedloglet-read-stream",
-            task.run(networking),
+            task.run(networking, configuration),
         )?;
 
         Ok((rx, handle))
@@ -132,21 +135,18 @@ impl ReadStreamTask {
     async fn run<T: TransportConnect>(
         mut self,
         networking: Networking<T>,
+        mut configuration: Live<Configuration>,
     ) -> Result<(), OperationError> {
         let mut nodes_config = Metadata::with_current(|m| m.updateable_nodes_config());
-        let records_rpc_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
         // Channel size. This is the largest number of records we will try to readahead, if we can
         // acquire the capacity for it.
-        //
         let readahead_max = self.tx.max_capacity();
         debug_assert!(readahead_max <= u16::MAX.into());
         // This is automatically capped. This is the minimum number of slots that needs to be
         // available in order to trigger fetching a new batch.
         let readahead_trigger = {
-            let ratio = Configuration::pinned()
+            let ratio = configuration
+                .live_load()
                 .bifrost
                 .replicated_loglet
                 .readahead_trigger_ratio
@@ -362,7 +362,12 @@ impl ReadStreamTask {
                 };
 
                 let ServerReadResult::Records(records) = self
-                    .readahead_from_server(server, to_offset, &networking, records_rpc_timeout)
+                    .readahead_from_server(
+                        server,
+                        to_offset,
+                        &networking,
+                        &configuration.live_load().bifrost.replicated_loglet,
+                    )
                     .await?
                 else {
                     // move to the next server
@@ -507,14 +512,14 @@ impl ReadStreamTask {
         server: PlainNodeId,
         to_offset: LogletOffset,
         networking: &Networking<T>,
-        timeout: Duration,
+        options: &ReplicatedLogletOptions,
     ) -> Result<ServerReadResult, OperationError> {
         let request = GetRecords {
             header: LogServerRequestHeader::new(
                 self.my_params.loglet_id,
                 self.global_tail_watch.latest_offset(),
             ),
-            total_limit_in_bytes: None,
+            total_limit_in_bytes: Some(options.read_batch_size.as_usize()),
             filter: self.filter.clone(),
             from_offset: self.read_pointer,
             to_offset,
@@ -533,12 +538,19 @@ impl ReadStreamTask {
                 Swimlane::BifrostData,
                 request,
                 Some(self.my_params.loglet_id.into()),
-                Some(timeout),
+                Some(*options.log_server_rpc_timeout),
             )
             .await;
 
         match maybe_records {
             Ok(records) => {
+                trace!(
+                    loglet_id = %self.my_params.loglet_id,
+                    from_offset = %self.read_pointer,
+                    "Received {} records from {}",
+                    records.records.len(),
+                    server
+                );
                 self.global_tail_watch
                     .notify_offset_update(records.known_global_tail);
                 Ok(ServerReadResult::Records(records.records))
