@@ -26,7 +26,6 @@ mod partition;
 mod partition_replica_set;
 mod partition_state;
 mod partition_store_scanner;
-mod physical_optimizer;
 mod promise;
 mod service;
 mod state;

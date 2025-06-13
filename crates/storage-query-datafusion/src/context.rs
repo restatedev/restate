@@ -20,7 +20,6 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::SQLOptions;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
@@ -39,8 +38,8 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
+use crate::analyzer;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
-use crate::{analyzer, physical_optimizer};
 
 const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.id,
@@ -94,8 +93,8 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             END, 'LargeUtf8') AS status,
             ss.completion_result,
             ss.completion_failure
-        FROM sys_invocation_status ss
-        LEFT JOIN sys_invocation_state sis ON ss.id = sis.id";
+        FROM sys_invocation_state sis
+        RIGHT JOIN sys_invocation_status ss ON ss.id = sis.id";
 
 const CLUSTER_LOGS_TAIL_SEGMENTS_VIEW: &str = "CREATE VIEW logs_tail_segments as SELECT
         l.* FROM logs AS l JOIN (
@@ -368,28 +367,6 @@ impl QueryContext {
         state_builder = state_builder.with_analyzer_rule(Arc::new(
             analyzer::UseSymmetricHashJoinWhenPartitionKeyIsPresent::new(),
         ));
-
-        //
-        // Prepend the join rewrite optimizer to the list of physical optimizers.
-        //
-        // It is important that the join rewrite optimizer will run before ProjectionPushdown::try_embed_to_hash_join.
-        // because the SymmetricHashJoin doesn't support embedded projections out of the box
-        //
-        // If we don't do that, then when translating a HashJoinExc to SymmetricHashJoinExc we will lose the embedded projection
-        // and the query will fail.
-        // For example try the following query without prepending but rather appending:
-        //
-        // 'SELECT  b.service_key FROM sys_invocation_status a JOIN state b on a.target_service_key = b.service_key'
-        //
-        // A far more involved but potentially more robust solution would be wrap the SymmetricHashJoin in a ProjectionExec
-        // If this would become an issue for any reason, then we can explore that alternative.
-        //
-        let join_rewrite = Arc::new(physical_optimizer::JoinRewrite::new());
-        let mut default_physical_optimizer_rules = PhysicalOptimizer::default().rules;
-        default_physical_optimizer_rules.insert(0, join_rewrite);
-
-        state_builder =
-            state_builder.with_physical_optimizer_rules(default_physical_optimizer_rules);
 
         let state = state_builder.build();
 
