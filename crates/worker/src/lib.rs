@@ -101,7 +101,7 @@ pub enum Error {
 pub struct Worker {
     live_config: Live<Configuration>,
     storage_query_context: QueryContext,
-    storage_query_postgres: PostgresQueryService,
+    storage_query_postgres: Option<PostgresQueryService>,
     datafusion_remote_scanner: RemoteQueryScannerServer,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
@@ -180,10 +180,15 @@ impl Worker {
         )
         .await?;
 
-        let storage_query_postgres = PostgresQueryService::from_options(
-            &config.admin.query_engine,
-            storage_query_context.clone(),
-        );
+        #[allow(deprecated)]
+        let storage_query_postgres = match config.admin.query_engine.pgsql_bind_address {
+            Some(bind_address) => {
+                let storage_query_postgres =
+                    PostgresQueryService::from_options(bind_address, storage_query_context.clone());
+                Some(storage_query_postgres)
+            }
+            None => None,
+        };
 
         let datafusion_remote_scanner = RemoteQueryScannerServer::new(
             Duration::from_secs(60),
@@ -216,11 +221,13 @@ impl Worker {
 
     pub async fn run(self) -> anyhow::Result<()> {
         // Postgres external server
-        TaskCenter::spawn_child(
-            TaskKind::RpcServer,
-            "postgres-query-server",
-            self.storage_query_postgres.run(),
-        )?;
+        if let Some(postgres) = self.storage_query_postgres {
+            TaskCenter::spawn_child(
+                TaskKind::SystemService,
+                "postgres-query-server",
+                postgres.run(),
+            )?;
+        }
 
         // Datafusion remote scanner
         TaskCenter::spawn_child(
