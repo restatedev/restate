@@ -8,21 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::TaskCenter;
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::PartitionId;
 use restate_types::partitions::state::PartitionReplicaSetStates;
+
+use crate::task_center;
 
 /// Discover cluster nodes for a given partition based on the [`PartitionReplicaSetStates`] and the
 /// [`ClusterState`].
 #[derive(Clone)]
 pub struct PartitionRouting {
+    task_center: task_center::Handle,
     partition_replica_set_states: PartitionReplicaSetStates,
 }
 
 impl PartitionRouting {
-    pub fn new(partition_replica_set_states: PartitionReplicaSetStates) -> Self {
+    pub fn new(
+        partition_replica_set_states: PartitionReplicaSetStates,
+        task_center: task_center::Handle,
+    ) -> Self {
         Self {
+            task_center,
             partition_replica_set_states,
         }
     }
@@ -45,32 +51,6 @@ impl PartitionRouting {
 
         // otherwise, overlay the current configuration with the cluster state and take the first
         // node alive
-        TaskCenter::with_current(|handle| membership.first_alive_node(handle.cluster_state()))
-    }
-}
-
-#[cfg(any(test, feature = "test-util"))]
-pub mod mocks {
-    use crate::partitions::PartitionRouting;
-    use restate_types::GenerationalNodeId;
-    use restate_types::identifiers::{LeaderEpoch, PartitionId};
-    use restate_types::partitions::state::{LeadershipState, PartitionReplicaSetStates};
-
-    pub fn fixed_single_node(
-        node_id: GenerationalNodeId,
-        partition_id: PartitionId,
-    ) -> PartitionRouting {
-        let partition_replica_set_states = PartitionReplicaSetStates::default();
-        partition_replica_set_states.note_observed_leader(
-            partition_id,
-            LeadershipState {
-                current_leader: node_id,
-                current_leader_epoch: LeaderEpoch::INITIAL,
-            },
-        );
-
-        PartitionRouting {
-            partition_replica_set_states,
-        }
+        membership.first_alive_node(self.task_center.cluster_state())
     }
 }

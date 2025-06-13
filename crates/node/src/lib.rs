@@ -149,6 +149,7 @@ impl Node {
         // We need to se the global metadata as soon as possible since the metadata store client's
         // auto update functionality won't be started if the global metadata is not set.
         let is_set = TaskCenter::try_set_global_metadata(metadata.clone());
+        let tc = TaskCenter::current();
         debug_assert!(is_set, "Global metadata was already set");
 
         let is_provisioned =
@@ -179,7 +180,7 @@ impl Node {
         {
             restate_metadata_server::create_metadata_server_and_client(
                 updateable_config.clone(),
-                TaskCenter::with_current(|tc| tc.health().metadata_server_status()),
+                tc.health().metadata_server_status(),
                 &mut server_builder,
             )
             .await
@@ -233,7 +234,7 @@ impl Node {
         let log_server = if config.has_role(Role::LogServer) {
             Some(
                 LogServerService::create(
-                    TaskCenter::with_current(|tc| tc.health().log_server_status()),
+                    tc.health().log_server_status(),
                     updateable_config.clone(),
                     metadata.clone(),
                     record_cache,
@@ -249,9 +250,9 @@ impl Node {
         let worker_role = if config.has_role(Role::Worker) {
             Some(
                 WorkerRole::create(
-                    TaskCenter::with_current(|tc| tc.health().worker_status()),
+                    tc.health().worker_status(),
                     metadata.clone(),
-                    PartitionRouting::new(replica_set_states.clone()),
+                    PartitionRouting::new(replica_set_states.clone(), tc.clone()),
                     replica_set_states.clone(),
                     updateable_config.clone(),
                     &mut router_builder,
@@ -290,11 +291,11 @@ impl Node {
                     .clone()
                     .map(|config| &config.ingress)
                     .boxed(),
-                TaskCenter::with_current(|tc| tc.health().ingress_status()),
+                tc.health().ingress_status(),
                 networking.clone(),
                 metadata.updateable_schema(),
                 metadata.updateable_partition_table(),
-                PartitionRouting::new(replica_set_states.clone()),
+                PartitionRouting::new(replica_set_states.clone(), tc.clone()),
             ))
         } else {
             None
@@ -303,10 +304,10 @@ impl Node {
         let admin_role = if config.has_role(Role::Admin) {
             Some(
                 AdminRole::create(
-                    TaskCenter::with_current(|tc| tc.health().admin_status()),
+                    tc.health().admin_status(),
                     bifrost.clone(),
                     updateable_config.clone(),
-                    PartitionRouting::new(replica_set_states.clone()),
+                    PartitionRouting::new(replica_set_states.clone(), tc),
                     metadata.updateable_partition_table(),
                     replica_set_states.clone(),
                     networking.clone(),
