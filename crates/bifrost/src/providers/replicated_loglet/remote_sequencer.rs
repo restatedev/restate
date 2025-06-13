@@ -370,27 +370,30 @@ impl RemoteSequencerConnection {
 
             // handle status of the response.
             match appended.header.status {
-                SequencerStatus::Ok => {
+                None => {
                     commit_resolver.offset(appended.last_offset);
                 }
 
-                SequencerStatus::Sealed => {
+                Some(SequencerStatus::Sealed) => {
                     // A sealed status returns a terminal error since we can immediately cancel
                     // all inflight append jobs.
                     commit_resolver.sealed();
                     break AppendError::Sealed;
                 }
-                SequencerStatus::Gone | SequencerStatus::Shutdown => {
+                Some(SequencerStatus::Gone | SequencerStatus::Shutdown) => {
                     // this sequencer is not coming back
                     commit_resolver.error(AppendError::ReconfigurationNeeded(
                         format!("sequencer at {} is terminating", connection.peer()).into(),
                     ));
                 }
-                SequencerStatus::UnknownLogId
-                | SequencerStatus::UnknownSegmentIndex
-                | SequencerStatus::LogletIdMismatch
-                | SequencerStatus::NotSequencer
-                | SequencerStatus::Error { .. } => {
+                Some(
+                    SequencerStatus::UnknownLogId
+                    | SequencerStatus::UnknownSegmentIndex
+                    | SequencerStatus::LogletIdMismatch
+                    | SequencerStatus::NotSequencer
+                    | SequencerStatus::Error { .. }
+                    | SequencerStatus::Unknown,
+                ) => {
                     let err = RemoteSequencerError::try_from(appended.header.status).unwrap();
                     // While the UnknownLoglet status is non-terminal for the connection
                     // (since only one request is bad),
@@ -454,22 +457,24 @@ impl MaybeRetryableError for RemoteSequencerError {
     }
 }
 
-impl TryFrom<SequencerStatus> for RemoteSequencerError {
+impl TryFrom<Option<SequencerStatus>> for RemoteSequencerError {
     type Error = &'static str;
-    fn try_from(value: SequencerStatus) -> Result<Self, &'static str> {
+    fn try_from(value: Option<SequencerStatus>) -> Result<Self, &'static str> {
         let value = match value {
-            SequencerStatus::UnknownLogId => RemoteSequencerError::UnknownLogId,
-            SequencerStatus::UnknownSegmentIndex => RemoteSequencerError::UnknownSegmentIndex,
-            SequencerStatus::LogletIdMismatch => RemoteSequencerError::LogletIdMismatch,
-            SequencerStatus::NotSequencer => RemoteSequencerError::NotSequencer,
-            SequencerStatus::Error { retryable, message } => {
+            Some(SequencerStatus::UnknownLogId) => RemoteSequencerError::UnknownLogId,
+            Some(SequencerStatus::UnknownSegmentIndex) => RemoteSequencerError::UnknownSegmentIndex,
+            Some(SequencerStatus::LogletIdMismatch) => RemoteSequencerError::LogletIdMismatch,
+            Some(SequencerStatus::NotSequencer) => RemoteSequencerError::NotSequencer,
+            Some(SequencerStatus::Error { retryable, message }) => {
                 RemoteSequencerError::Error { retryable, message }
             }
-            SequencerStatus::Ok
-            | SequencerStatus::Sealed
-            | SequencerStatus::Shutdown
-            | SequencerStatus::Gone => {
-                unreachable!("not a failure status")
+            Some(SequencerStatus::Unknown) => RemoteSequencerError::Error {
+                retryable: false,
+                message: "unknown error".to_owned(),
+            },
+            None
+            | Some(SequencerStatus::Sealed | SequencerStatus::Shutdown | SequencerStatus::Gone) => {
+                return Err("not a permanent failure status");
             }
         };
 
@@ -508,11 +513,11 @@ mod test {
 
     struct SequencerMockHandler {
         offset: AtomicU32,
-        reply_status: SequencerStatus,
+        reply_status: Option<SequencerStatus>,
     }
 
     impl SequencerMockHandler {
-        fn with_reply_status(reply_status: SequencerStatus) -> Self {
+        fn with_reply_status(reply_status: Option<SequencerStatus>) -> Self {
             Self {
                 reply_status,
                 ..Default::default()
@@ -524,7 +529,7 @@ mod test {
         fn default() -> Self {
             Self {
                 offset: AtomicU32::new(LogletOffset::OLDEST.into()),
-                reply_status: SequencerStatus::Ok,
+                reply_status: None,
             }
         }
     }
@@ -611,7 +616,7 @@ mod test {
 
     #[restate_core::test]
     async fn test_remote_stream_sealed() {
-        let handler = SequencerMockHandler::with_reply_status(SequencerStatus::Sealed);
+        let handler = SequencerMockHandler::with_reply_status(Some(SequencerStatus::Sealed));
         let test_env = create_test_env(handler).await;
 
         let params = ReplicatedLogletParams {

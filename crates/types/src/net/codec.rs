@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::any::type_name;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -104,7 +105,12 @@ pub fn decode_as_flexbuffers<T: DeserializeOwned>(
         "unknown protocol version should never be set"
     );
 
-    flexbuffers::from_slice(buf.chunk()).context("failed decoding V1 (flexbuffers) network message")
+    flexbuffers::from_slice(buf.chunk()).with_context(|| {
+        format!(
+            "failed decoding V1 (flexbuffers) network message {}",
+            type_name::<T>()
+        )
+    })
 }
 
 pub fn encode_as_bilrost<T: bilrost::Message>(value: &T) -> Bytes {
