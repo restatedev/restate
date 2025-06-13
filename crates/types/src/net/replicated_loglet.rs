@@ -48,14 +48,10 @@ define_rpc! {
 bilrost_wire_codec_with_v1_fallback!(GetSequencerState);
 bilrost_wire_codec_with_v1_fallback!(SequencerState);
 
-/// Status of sequencer response.
+/// Non-success status of sequencer response.
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::IsVariant, BilrostAs, Default)]
 #[bilrost_as(dto::SequencerStatus)]
 pub enum SequencerStatus {
-    /// Ok is returned when request is accepted and processes
-    /// successfully. Hence response body is valid
-    #[default]
-    Ok,
     /// Sealed is returned when the sequencer cannot accept more
     /// [`Append`] requests because it's sealed
     Sealed,
@@ -73,6 +69,9 @@ pub enum SequencerStatus {
     Shutdown,
     /// Generic error message.
     Error { retryable: bool, message: String },
+    /// Future unknown error type
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
@@ -95,7 +94,7 @@ pub struct CommonResponseHeader {
     #[bilrost(2)]
     pub sealed: Option<bool>,
     #[bilrost(3)]
-    pub status: SequencerStatus,
+    pub status: Option<SequencerStatus>,
 }
 
 impl CommonResponseHeader {
@@ -103,7 +102,7 @@ impl CommonResponseHeader {
         Self {
             known_global_tail: tail_state.map(|t| t.offset()),
             sealed: tail_state.map(|t| t.is_sealed()),
-            status: SequencerStatus::Ok,
+            status: None,
         }
     }
 
@@ -111,7 +110,7 @@ impl CommonResponseHeader {
         Self {
             known_global_tail: None,
             sealed: None,
-            status: SequencerStatus::Ok,
+            status: None,
         }
     }
 }
@@ -172,7 +171,7 @@ impl Appended {
         }
     }
 
-    pub fn with_status(mut self, status: SequencerStatus) -> Self {
+    pub fn with_status(mut self, status: Option<SequencerStatus>) -> Self {
         self.header.status = status;
         self
     }
@@ -198,9 +197,6 @@ mod dto {
 
     #[derive(Debug, Clone, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
     pub enum SequencerStatus {
-        Unknown,
-        #[bilrost(1)]
-        Ok(()),
         #[bilrost(2)]
         Sealed(()),
         #[bilrost(3)]
@@ -217,12 +213,12 @@ mod dto {
         Shutdown(()),
         #[bilrost(9)]
         Error((bool, String)),
+        Unknown,
     }
 
     impl From<&super::SequencerStatus> for SequencerStatus {
         fn from(status: &super::SequencerStatus) -> Self {
             match status {
-                super::SequencerStatus::Ok => SequencerStatus::Ok(()),
                 &super::SequencerStatus::Sealed => SequencerStatus::Sealed(()),
                 &super::SequencerStatus::Gone => SequencerStatus::Gone(()),
                 &super::SequencerStatus::LogletIdMismatch => SequencerStatus::LogletIdMismatch(()),
@@ -235,6 +231,7 @@ mod dto {
                 super::SequencerStatus::Error { retryable, message } => {
                     SequencerStatus::Error((*retryable, message.clone()))
                 }
+                &super::SequencerStatus::Unknown => SequencerStatus::Unknown,
             }
         }
     }
@@ -242,11 +239,6 @@ mod dto {
     impl From<SequencerStatus> for super::SequencerStatus {
         fn from(status: SequencerStatus) -> Self {
             match status {
-                SequencerStatus::Unknown => super::SequencerStatus::Error {
-                    retryable: false,
-                    message: "Unknown sequencer response status code".to_string(),
-                },
-                SequencerStatus::Ok(()) => super::SequencerStatus::Ok,
                 SequencerStatus::Sealed(()) => super::SequencerStatus::Sealed,
                 SequencerStatus::Gone(()) => super::SequencerStatus::Gone,
                 SequencerStatus::LogletIdMismatch(()) => super::SequencerStatus::LogletIdMismatch,
@@ -259,6 +251,7 @@ mod dto {
                 SequencerStatus::Error((retryable, message)) => {
                     super::SequencerStatus::Error { retryable, message }
                 }
+                SequencerStatus::Unknown => super::SequencerStatus::Unknown,
             }
         }
     }
