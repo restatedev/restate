@@ -382,11 +382,13 @@ impl Default for ReplicaSetState {
 
 impl Merge for ReplicaSetState {
     fn merge(&mut self, other: Self) -> bool {
-        debug_assert_eq!(
-            self.members.iter().map(|m| m.node_id).collect::<Vec<_>>(),
-            other.members.iter().map(|m| m.node_id).collect::<Vec<_>>(),
+        assert!(
+            itertools::equal(
+                self.members.iter().map(|m| m.node_id),
+                other.members.iter().map(|m| m.node_id)
+            ),
+            "The system currently relies on a consistent view of the replica set state (e.g. for routing decisions and starting partition processors)"
         );
-
         let mut modified = false;
         for (member, incoming_member) in self.members.iter_mut().zip(other.members) {
             if incoming_member.durable_lsn > member.durable_lsn {
