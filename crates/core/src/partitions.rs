@@ -8,21 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::TaskCenter;
 use restate_types::GenerationalNodeId;
 use restate_types::identifiers::PartitionId;
 use restate_types::partitions::state::PartitionReplicaSetStates;
+
+use crate::task_center;
 
 /// Discover cluster nodes for a given partition based on the [`PartitionReplicaSetStates`] and the
 /// [`ClusterState`].
 #[derive(Clone)]
 pub struct PartitionRouting {
+    task_center: task_center::Handle,
     partition_replica_set_states: PartitionReplicaSetStates,
 }
 
 impl PartitionRouting {
-    pub fn new(partition_replica_set_states: PartitionReplicaSetStates) -> Self {
+    pub fn new(
+        partition_replica_set_states: PartitionReplicaSetStates,
+        task_center: task_center::Handle,
+    ) -> Self {
         Self {
+            task_center,
             partition_replica_set_states,
         }
     }
@@ -45,7 +51,7 @@ impl PartitionRouting {
 
         // otherwise, overlay the current configuration with the cluster state and take the first
         // node alive
-        TaskCenter::with_current(|handle| membership.first_alive_node(handle.cluster_state()))
+        membership.first_alive_node(self.task_center.cluster_state())
     }
 }
 
