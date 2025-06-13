@@ -66,7 +66,7 @@ where
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 2);
+        let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 1);
         let tx = stream_builder.tx();
         let partition_store_manager = self.partition_store_manager.clone();
         let background_task = async move {
@@ -101,7 +101,6 @@ where
                 let result = builder.finish();
                 let _ = tx.send(result).await;
             }
-
             Ok(())
         };
         stream_builder.spawn(background_task);

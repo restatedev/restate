@@ -76,7 +76,7 @@ pub fn remote_scan_as_datafusion_stream(
     table_name: String,
     projection_schema: SchemaRef,
 ) -> SendableRecordBatchStream {
-    let mut builder = RecordBatchReceiverStream::builder(projection_schema.clone(), 2);
+    let mut builder = RecordBatchReceiverStream::builder(projection_schema.clone(), 1);
 
     let tx = builder.tx();
 
