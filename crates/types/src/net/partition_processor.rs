@@ -105,6 +105,10 @@ pub enum PartitionProcessorRpcError {
     NotLeader(PartitionId),
     #[error("not leader anymore for partition '{0}'")]
     LostLeadership(PartitionId),
+    // todo: remove in 1.5
+    #[error("rejecting rpc because too busy")]
+    // #[deprecated(since = "1.4.0", note = "retained for backwards compatibility with <= 1.3.2 nodes, remove in 1.5")]
+    Busy,
     #[error("internal error: {0}")]
     Internal(String),
     #[error("partition processor starting")]
@@ -119,6 +123,7 @@ impl PartitionProcessorRpcError {
             PartitionProcessorRpcError::NotLeader(_) => true,
             PartitionProcessorRpcError::LostLeadership(_) => true,
             PartitionProcessorRpcError::Stopping => true,
+            PartitionProcessorRpcError::Busy => false,
             PartitionProcessorRpcError::Internal(_) => false,
             PartitionProcessorRpcError::Starting => false,
         }
