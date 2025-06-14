@@ -354,7 +354,7 @@ impl Node {
             Cow::Borrowed("None")
         };
 
-        let ingress_address = if self.config().has_role(Role::Worker) {
+        let ingress_address = if self.config().has_role(Role::HttpIngress) {
             Cow::Owned(self.config().ingress.bind_address.to_string())
         } else {
             Cow::Borrowed("None")
@@ -701,7 +701,7 @@ impl StartedNode {
     }
 
     pub fn ingress_address(&self) -> Option<&SocketAddr> {
-        if self.config().has_role(Role::Worker) {
+        if self.config().has_role(Role::HttpIngress) {
             Some(&self.config().ingress.bind_address)
         } else {
             None
