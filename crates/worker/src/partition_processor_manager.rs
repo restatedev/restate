@@ -29,7 +29,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, error, info, info_span, instrument, trace, warn};
+use tracing::{Instrument, debug, error, info, info_span, instrument, trace, warn};
 
 use crate::metric_definitions::PARTITION_DURABLE_LSN;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
@@ -241,7 +241,7 @@ impl PartitionProcessorManager {
         gauge!(NUM_PARTITIONS).set(self.partition_table.live_load().len() as f64);
 
         let mut snapshot_check_interval = tokio::time::interval_at(
-            tokio::time::Instant::now() + Duration::from_secs(rand::rng().random_range(30..60)), // delay scheduled snapshots on startup
+            tokio::time::Instant::now() + Duration::from_secs(rand::rng().random_range(0..1)), // delay scheduled snapshots on startup
             with_jitter(Duration::from_secs(1), 0.1),
         );
         snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -393,7 +393,7 @@ impl PartitionProcessorManager {
     }
 
     #[instrument(
-        level = "debug",
+        level = "error",
         skip_all,
         fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner))
     )]
@@ -518,7 +518,7 @@ impl PartitionProcessorManager {
                                     }
                                 }
                                 Err(err) => {
-                                    warn!(%err, "Partition processor exited unexpectedly");
+                                    error!(%err, "Partition processor exited unexpectedly");
                                     // todo make delay depending on number of restart attempts
                                     Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY)
                                 }
@@ -1074,8 +1074,9 @@ impl PartitionProcessorManager {
                     let archived_lsn = snapshot_repository
                         .get_latest_archived_lsn(partition_id)
                         .await
+                        .inspect(|lsn| debug!(?partition_id, "Latest archived LSN: {}", lsn))
                         .inspect_err(|err| {
-                            info!(?partition_id, "Unable to get latest archived LSN: {}", err)
+                            warn!(?partition_id, "Unable to get latest archived LSN: {}", err)
                         })
                         .ok()
                         .unwrap_or(Lsn::INVALID);
@@ -1085,6 +1086,7 @@ impl PartitionProcessorManager {
                         inner: EventKind::NewArchivedLsn { archived_lsn },
                     }
                 }
+                .instrument(info_span!("update-archived-lsn"))
                 .in_current_tc(),
             )
             .expect("to spawn update archived LSN task");

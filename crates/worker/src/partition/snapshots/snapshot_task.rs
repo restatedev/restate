@@ -36,20 +36,21 @@ pub struct SnapshotPartitionTask {
 }
 
 impl SnapshotPartitionTask {
-    #[instrument(level = "info", skip_all, fields(snapshot_id = %self.snapshot_id, partition_id = %self.partition_id))]
+    #[instrument(
+        name = "create-snapshot",
+        level = "error",
+        skip_all,
+        fields(partition_id = %self.partition_id, snapshot_id = %self.snapshot_id)
+    )]
     pub async fn run(self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
         debug!("Creating partition snapshot");
         self.create_snapshot_inner()
             .await
             .inspect(|metadata| {
-                info!(
-                    archived_lsn = %metadata.min_applied_lsn,
-                    snapshot_id = %metadata.snapshot_id,
-                    "Created partition snapshot"
-                );
+                info!(archived_lsn = %metadata.min_applied_lsn, "Created partition snapshot");
             })
             .inspect_err(|err| {
-                warn!("Failed to create partition snapshot: {}", err);
+                warn!("Create snapshot failed: {}", err);
             })
     }
 
