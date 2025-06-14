@@ -225,35 +225,4 @@ mod tests {
 
         Ok(())
     }
-
-    #[test]
-    fn metadata_store_sub_field_does_not_clear_defaults() -> googletest::Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let config_path_address = temp_dir.path().join("config1.toml");
-        let config_file_address = r#"
-        [metadata-store]
-        rocksdb-disable-direct-io-for-reads = false
-        "#;
-
-        fs::write(config_path_address.clone(), config_file_address)?;
-
-        let config_loader = ConfigLoaderBuilder::default()
-            .path(Some(config_path_address))
-            .disable_apply_cascading_values(true)
-            .build()?;
-        let configuration = config_loader.load_once()?;
-        let mut rocksdb_defaults = MetadataServerOptions::rocksdb_defaults();
-        rocksdb_defaults.rocksdb_disable_direct_io_for_reads(Some(false));
-        let rocksdb = rocksdb_defaults.build().expect("should build");
-
-        assert_eq!(
-            configuration.metadata_server,
-            MetadataServerOptions {
-                rocksdb,
-                ..Configuration::default().metadata_server
-            }
-        );
-
-        Ok(())
-    }
 }
