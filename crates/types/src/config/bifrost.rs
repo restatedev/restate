@@ -283,6 +283,15 @@ pub struct ReplicatedLogletOptions {
     /// that are not co-located with the loglet sequencer (i.e. partition processor followers).
     pub readahead_records: NonZeroU16,
 
+    /// # Limits memory per remote batch read
+    ///
+    /// When reading from a log-server, the server stops reading if the next record will tip over the
+    /// total number of bytes allowed in this configuration option.
+    ///
+    /// Note the limit is not strict and the server will always allow at least a single record to be
+    /// read even if that record exceeds the stated budget.
+    pub read_batch_size: NonZeroByteCount,
+
     /// Trigger to prefetch more records
     ///
     /// When read-ahead is used (readahead-records), this value (percentage in float) will determine when
@@ -353,6 +362,9 @@ impl Default for ReplicatedLogletOptions {
                 Some(Duration::from_millis(5000)),
             ),
             sequencer_inactivity_timeout: Duration::from_secs(15).into(),
+            read_batch_size: NonZeroByteCount::new(
+                NonZeroUsize::new(4 * 1024).expect("Non zero number"),
+            ),
             log_server_rpc_timeout: Duration::from_millis(2000).into(),
             log_server_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
@@ -360,7 +372,7 @@ impl Default for ReplicatedLogletOptions {
                 Some(3),
                 Some(Duration::from_millis(2000)),
             ),
-            readahead_records: NonZeroU16::new(100).unwrap(),
+            readahead_records: NonZeroU16::new(20).unwrap(),
             readahead_trigger_ratio: 0.5,
             default_nodeset_size: NodeSetSize::default(),
             default_log_replication: None,
@@ -387,6 +399,7 @@ pub struct ReplicatedLogletOptionsShadow {
     log_server_rpc_timeout: humantime::Duration,
     log_server_retry_policy: RetryPolicy,
     readahead_records: NonZeroU16,
+    read_batch_size: NonZeroByteCount,
     readahead_trigger_ratio: f32,
     #[serde_as(as = "Option<crate::replication::ReplicationPropertyFromTo>")]
     default_log_replication: Option<ReplicationProperty>,
@@ -411,6 +424,7 @@ impl From<ReplicatedLogletOptionsShadow> for ReplicatedLogletOptions {
             log_server_rpc_timeout: value.log_server_rpc_timeout,
             log_server_retry_policy: value.log_server_retry_policy,
             readahead_records: value.readahead_records,
+            read_batch_size: value.read_batch_size,
             readahead_trigger_ratio: value.readahead_trigger_ratio,
             default_log_replication: value.default_log_replication,
             default_nodeset_size: value.default_nodeset_size,
