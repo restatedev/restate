@@ -47,6 +47,8 @@ pub struct RemoteQueryScannerOpen {
     pub table: String,
     #[bilrost(tag(4), encoding(plainbytes))]
     pub projection_schema_bytes: Vec<u8>,
+    #[serde(default)]
+    pub limit: Option<u64>,
 }
 
 #[derive(
