@@ -25,10 +25,10 @@ use restate_storage_api::invocation_status_table::{
     CompletionRangeEpochMap, InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
     InvokedInvocationStatusLite, JournalMetadata, ReadOnlyInvocationStatusTable, StatusTimestamps,
 };
+use restate_types::RestateVersion;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::{
-    InvocationTarget, RestateVersion, ServiceInvocationSpanContext, Source,
-    VirtualObjectHandlerType,
+    InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
 };
 use restate_types::time::MillisSinceEpoch;
 

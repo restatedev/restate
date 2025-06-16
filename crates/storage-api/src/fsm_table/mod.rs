@@ -8,10 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
+use std::future::Future;
+
+use restate_types::SemanticRestateVersion;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
-use std::future::Future;
+
+use crate::Result;
 
 pub trait ReadOnlyFsmTable {
     fn get_inbox_seq_number(&mut self) -> impl Future<Output = Result<MessageIndex>> + Send + '_;
@@ -19,6 +22,10 @@ pub trait ReadOnlyFsmTable {
     fn get_outbox_seq_number(&mut self) -> impl Future<Output = Result<MessageIndex>> + Send + '_;
 
     fn get_applied_lsn(&mut self) -> impl Future<Output = Result<Option<Lsn>>> + Send + '_;
+
+    fn get_min_restate_version(
+        &mut self,
+    ) -> impl Future<Output = Result<SemanticRestateVersion>> + Send + '_;
 }
 
 pub trait FsmTable: ReadOnlyFsmTable {
@@ -32,5 +39,10 @@ pub trait FsmTable: ReadOnlyFsmTable {
     fn put_outbox_seq_number(
         &mut self,
         seq_number: MessageIndex,
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    fn put_min_restate_version(
+        &mut self,
+        version: &SemanticRestateVersion,
     ) -> impl Future<Output = Result<()>> + Send;
 }
