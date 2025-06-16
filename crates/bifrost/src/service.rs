@@ -86,17 +86,9 @@ impl BifrostService {
     /// before continuing. For instance, a worker mark itself as `STARTING_UP` and not accept any
     /// requests until this is completed.
     ///
-    /// This requires to run within a task_center context.
+    /// This requires to run within a task_center context. Expects that logs metadata is synced.
     pub async fn start(self) -> anyhow::Result<()> {
-        // Make sure we have v1 metadata written to metadata store with the default
-        // configuration. If metadata is already initialized, this will make sure we have the
-        // latest version set in metadata manager.
-
-        // todo we seem to have a race condition between this call and the provision step which might
-        //  write a different logs configuration
-        self.bifrost.admin().init_metadata().await?;
-
-        // initialize all enabled providers.
+        // Initialize enabled providers.
         if self.factories.is_empty() {
             anyhow::bail!("No loglet providers enabled!");
         }

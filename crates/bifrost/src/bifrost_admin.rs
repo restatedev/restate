@@ -13,12 +13,10 @@ use std::sync::Arc;
 use tracing::{debug, instrument, warn};
 
 use restate_core::{Metadata, MetadataKind};
-use restate_metadata_store::retry_on_retryable_error;
 use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Chain, LogletParams, Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, TailState};
-use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
 use crate::bifrost::BifrostInner;
 use crate::error::AdminError;
@@ -274,29 +272,5 @@ impl<'a> BifrostAdmin<'a> {
             Err(Error::AdminError(AdminError::LogAlreadyExists(_))) => Ok(()),
             Err(other) => Err(other),
         }
-    }
-
-    /// Creates empty metadata if none exists for bifrost and publishes it to metadata
-    /// manager.
-    pub async fn init_metadata(&self) -> Result<(), Error> {
-        let retry_policy = Configuration::pinned()
-            .common
-            .network_error_retry_policy
-            .clone();
-
-        let logs = retry_on_retryable_error(retry_policy, || {
-            self.inner
-                .metadata_writer
-                .raw_metadata_store_client()
-                .get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                    debug!("Attempting to initialize logs metadata in metadata store");
-                    Logs::from_configuration(&Configuration::pinned())
-                })
-        })
-        .await
-        .map_err(|err| err.into_inner())?;
-
-        self.inner.metadata_writer.update(Arc::new(logs)).await?;
-        Ok(())
     }
 }

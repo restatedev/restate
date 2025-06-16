@@ -42,7 +42,7 @@ use restate_types::health::NodeStatus;
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::RecordCache;
-use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration};
+use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration, ProviderKind};
 use restate_types::metadata::{GlobalMetadata, Precondition};
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
@@ -207,8 +207,7 @@ impl Node {
                 .as_usize(),
         );
 
-        // Setup bifrost
-        // replicated-loglet
+        // Setup Bifrost replicated-loglet
         let replicated_loglet_factory = restate_bifrost::providers::replicated_loglet::Factory::new(
             networking.clone(),
             record_cache.clone(),
@@ -456,9 +455,9 @@ impl Node {
             .context("Failed initializing the node")?;
 
         self.failure_detector
-            .start(self.updateable_config.map(|c| &c.common.gossip))?;
+            .start(self.updateable_config.clone().map(|c| &c.common.gossip))?;
 
-        // wait for initial metadata sync.
+        // Wait for initial metadata sync.
         //
         // Note that the sync can happen via adhoc peer-to-peer connection since failure
         // detector/gossip service has been started as well.
@@ -485,8 +484,7 @@ impl Node {
             }
         };
 
-        // Ensures bifrost has initial metadata synced up before starting the worker.
-        // Need to run start in new tc scope to have access to metadata()
+        // Bifrost expects metadata to be in sync, which it is by this point.
         self.bifrost.start().await?;
 
         info!(
@@ -503,6 +501,14 @@ impl Node {
         let nodes_config = metadata.nodes_config_ref();
         let my_node_id = metadata.my_node_id();
         debug_assert!(nodes_config.find_node_by_id(my_node_id).is_ok());
+
+        migrate_logs_configuration_to_replicated_if_needed(
+            &nodes_config,
+            &metadata,
+            &metadata_writer,
+            &config,
+        )
+        .await?;
 
         if let Some(log_server) = self.log_server {
             log_server.start(metadata_writer).await?;
@@ -752,3 +758,71 @@ async fn write_initial_logs_dont_fail_if_it_exists(
 
 #[derive(Debug)]
 struct AlreadyInitialized;
+
+/// Update the logs configuration metadata on single nodes, if it is still using the local loglet
+/// when the configured provider is replicated (default in 1.4.0+). This migrates older nodes
+/// provisioned with default config from versions <1.4.0 to use the replicated loglet. Does not
+/// update logs, we leave it to Bifrost auto-improvement to create the new segments.
+async fn migrate_logs_configuration_to_replicated_if_needed(
+    nodes_config: &NodesConfiguration,
+    metadata: &Metadata,
+    metadata_writer: &MetadataWriter,
+    config: &Configuration,
+) -> Result<(), anyhow::Error> {
+    if nodes_config.len() != 1 {
+        // Bail if this is a multi-node cluster.
+        return Ok(());
+    }
+
+    if !config.has_role(Role::LogServer) {
+        // This means that roles were explicitly set; we can not migrate to replicated.
+        return Ok(());
+    }
+
+    let logs = metadata.logs_ref();
+    let logs_configuration = logs.configuration();
+
+    if matches!(config.bifrost.default_provider, ProviderKind::Replicated)
+        && matches!(
+            logs_configuration.default_provider.kind(),
+            ProviderKind::Local
+        )
+    {
+        info!("Migrating default loglet configuration to replicated");
+        let result = metadata_writer
+            .global_metadata()
+            .read_modify_write(|current: Option<Arc<Logs>>| {
+                let logs = current.expect("logs are initialized");
+                let mut builder = logs.as_ref().clone().into_builder();
+
+                // Why not ProviderConfiguration::from_configuration(config)? Using the default
+                // replicated loglet provider configuration is a safer alternative as there might be
+                // untested config changes that would fail later, while this is an appropriate
+                // successor to the pre-1.4.0 default local loglet config for single nodes. Anything
+                // more complex should be done as an explicit reconfiguration by the operator.
+                let logs_configuration = LogsConfiguration {
+                    default_provider: ProviderConfiguration::default(),
+                };
+                builder.set_configuration(logs_configuration);
+
+                let Some(logs) = builder.build_if_modified() else {
+                    return Err(anyhow::anyhow!("already up to date"));
+                };
+
+                Ok(logs)
+            })
+            .await;
+
+        match result {
+            Ok(_) => {}
+            Err(err) => {
+                warn!(
+                    "Failed to update the default loglet configuration in metadata: {}",
+                    err
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
