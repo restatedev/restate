@@ -245,10 +245,13 @@ struct FormatHyperError<'a>(&'a hyper_util::client::legacy::Error);
 
 impl fmt::Display for FormatHyperError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(source) = self.0.source() {
-            write!(f, "{}, {}", self.0, source)
-        } else {
-            write!(f, "{}", self.0)
+        write!(f, "{}", self.0)?;
+        let mut source = self.0.source();
+        while let Some(err) = source {
+            write!(f, " caused by: {}", err)?;
+            source = err.source();
         }
+
+        Ok(())
     }
 }

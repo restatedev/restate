@@ -553,7 +553,7 @@ macro_rules! define_table {
 
             #[inline]
             pub fn default_capacity() -> usize {
-                1024
+                64
             }
         }
 

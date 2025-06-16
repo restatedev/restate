@@ -13,11 +13,12 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::Stream;
 use rangemap::RangeInclusiveMap;
+use restate_types::RestateVersion;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::invocation::{
-    Header, InvocationEpoch, InvocationInput, InvocationTarget, ResponseResult, RestateVersion,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    Header, InvocationEpoch, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal_v2::{CompletionId, EntryIndex, NotificationId};
 use restate_types::time::MillisSinceEpoch;

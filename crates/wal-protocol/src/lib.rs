@@ -20,7 +20,7 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::{PlainNodeId, Version, logs};
 
-use crate::control::AnnounceLeader;
+use crate::control::{AnnounceLeader, VersionBarrier};
 use crate::timer::TimerKeyValue;
 
 pub mod control;
@@ -128,6 +128,9 @@ pub enum Destination {
 #[strum_discriminants(derive(strum::IntoStaticStr))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Command {
+    ///
+    /// Since 1.4.0. Readers before this version will crash when reading this command.
+    VersionBarrier(VersionBarrier),
     // -- Control-plane related events
     AnnounceLeader(Box<AnnounceLeader>),
 
@@ -187,8 +190,8 @@ impl WithPartitionKey for Envelope {
 
 impl HasRecordKeys for Envelope {
     fn record_keys(&self) -> logs::Keys {
-        // Placeholder implementation
         match &self.command {
+            Command::VersionBarrier(barrier) => barrier.partition_key_range.clone(),
             Command::AnnounceLeader(announce) => {
                 if let Some(range) = &announce.partition_key_range {
                     Keys::RangeInclusive(range.clone())
@@ -316,6 +319,7 @@ mod envelope {
         NotifyGetInvocationOutputResponse = 13, // bilrost
         NotifySignal = 14,                      // protobuf
         PurgeJournal = 15,                      // flexbuffers
+        VersionBarrier = 16,                    // bilrost
     }
 
     #[derive(bilrost::Message)]
@@ -421,6 +425,9 @@ mod envelope {
     pub fn encode(envelope: &super::Envelope) -> Result<Bytes, StorageEncodeError> {
         // todo(azmy): avoid clone? this will require change to `From` implementation
         let (command_kind, command) = match &envelope.command {
+            Command::VersionBarrier(value) => {
+                (CommandKind::VersionBarrier, Field::encode_bilrost(value))
+            }
             Command::AnnounceLeader(value) => (
                 CommandKind::AnnounceLeader,
                 Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
@@ -509,6 +516,10 @@ mod envelope {
 
         let command = match envelope.command_kind {
             CommandKind::Unknown => return Err(DecodeError::UnknownCommandKind.into()),
+            CommandKind::VersionBarrier => {
+                codec_or_error!(envelope.command, StorageCodecKind::Bilrost);
+                Command::VersionBarrier(envelope.command.decode_bilrost()?)
+            }
             CommandKind::AnnounceLeader => {
                 codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
                 Command::AnnounceLeader(envelope.command.decode_serde()?)

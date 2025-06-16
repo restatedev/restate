@@ -29,7 +29,7 @@ use restate_types::net::RpcRequest;
 use restate_types::net::remote_query_scanner::{
     RemoteDataFusionService, RemoteQueryScannerClose, RemoteQueryScannerClosed,
     RemoteQueryScannerNext, RemoteQueryScannerNextResult, RemoteQueryScannerOpen,
-    RemoteQueryScannerOpened, ScannerId,
+    RemoteQueryScannerOpened, ScannerBatch, ScannerFailure, ScannerId,
 };
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -53,6 +53,9 @@ impl Scanner {
             request.partition_id,
             request.range.clone(),
             Arc::new(schema),
+            request
+                .limit
+                .map(|limit| usize::try_from(limit).expect("limit to fit in a usize")),
         )?;
         Ok(Self {
             stream,
@@ -181,10 +184,10 @@ impl RemoteQueryScannerServer {
             return RemoteQueryScannerNextResult::NoSuchScanner(scanner_id);
         };
         match scanner.next_batch().await {
-            Ok(Some(record_batch)) => RemoteQueryScannerNextResult::NextBatch {
+            Ok(Some(record_batch)) => RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
                 scanner_id,
                 record_batch,
-            },
+            }),
             Ok(None) => {
                 scanners.remove(&scanner_id);
                 RemoteQueryScannerNextResult::NoMoreRecords(scanner_id)
@@ -193,10 +196,10 @@ impl RemoteQueryScannerServer {
                 scanners.remove(&scanner_id);
                 warn!("Error while scanning {}: {}", scanner_id, e);
 
-                RemoteQueryScannerNextResult::Failure {
+                RemoteQueryScannerNextResult::Failure(ScannerFailure {
                     scanner_id,
                     message: format!("{e}"),
-                }
+                })
             }
         }
     }

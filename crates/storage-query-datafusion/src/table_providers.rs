@@ -37,6 +37,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream>;
 }
 
@@ -108,7 +109,7 @@ where
         state: &(dyn datafusion::catalog::Session),
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
-        _limit: Option<usize>,
+        limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let projected_schema = match projection {
             Some(p) => SchemaRef::new(self.schema.project(p)?),
@@ -162,6 +163,7 @@ where
         Ok(Arc::new(PartitionedExecutionPlan {
             live_partitions: partitions_to_scan,
             projected_schema,
+            limit,
             scanner: self.partition_scanner.clone(),
             plan,
         }))
@@ -184,6 +186,7 @@ where
 struct PartitionedExecutionPlan<T> {
     live_partitions: Vec<(PartitionId, Partition)>,
     projected_schema: SchemaRef,
+    limit: Option<usize>,
     scanner: T,
     plan: PlanProperties,
 }
@@ -237,7 +240,12 @@ where
         let range = partition.key_range.clone();
         let stream = self
             .scanner
-            .scan_partition(*partition_id, range, self.projected_schema.clone())
+            .scan_partition(
+                *partition_id,
+                range,
+                self.projected_schema.clone(),
+                self.limit,
+            )
             .map_err(|e| DataFusionError::External(e.into()))?;
         Ok(stream)
     }
