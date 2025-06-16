@@ -68,6 +68,7 @@ rand = { workspace = true }
 regex = { workspace = true }
 regress = { workspace = true }
 schemars = { workspace = true, optional = true }
+semver = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
 serde_path_to_error = { version = "0.1" }
@@ -100,7 +101,6 @@ futures = { workspace = true }
 tempfile = { workspace = true }
 googletest = { workspace = true }
 rand = { workspace = true }
-semver = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
