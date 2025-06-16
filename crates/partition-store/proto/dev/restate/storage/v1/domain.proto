@@ -61,6 +61,10 @@ message SequenceNumber {
   uint64 sequence_number = 1;
 }
 
+message RestateVersion {
+  string version = 1;
+}
+
 message JournalEntryIndex {
   uint32 entry_index = 1;
 }

@@ -26,10 +26,9 @@ use restate_core::network::protobuf::network::message::Body;
 use restate_core::network::protobuf::network::{Datagram, Message, datagram};
 use restate_invoker_api::{Effect, EffectKind};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber, ProducerId};
-use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
-    InvocationTarget, RestateVersion, ServiceInvocation, ServiceInvocationSpanContext,
+    InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext,
 };
 use restate_types::journal_v2::CommandType;
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader, RawEntryInner};
@@ -39,6 +38,7 @@ use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
 use restate_types::net::replicated_loglet::{Append, CommonRequestHeader};
 use restate_types::net::{RpcRequest, Service};
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{GenerationalNodeId, RestateVersion};
 use restate_wal_protocol::{Command, Destination, Envelope};
 
 #[cfg(not(target_env = "msvc"))]
