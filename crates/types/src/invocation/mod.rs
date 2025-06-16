@@ -12,7 +12,6 @@
 
 pub mod client;
 
-use crate::GenerationalNodeId;
 use crate::errors::InvocationError;
 use crate::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, PartitionKey, PartitionProcessorRpcRequestId,
@@ -20,12 +19,12 @@ use crate::identifiers::{
 };
 use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 use crate::time::MillisSinceEpoch;
+use crate::{GenerationalNodeId, RestateVersion};
 
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
 use serde_with::{FromInto, serde_as};
-use std::borrow::Cow;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::str::FromStr;
@@ -397,33 +396,6 @@ impl InvocationRequest {
 impl WithInvocationId for InvocationRequest {
     fn invocation_id(&self) -> InvocationId {
         self.header.invocation_id()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub struct RestateVersion(Cow<'static, str>);
-
-impl RestateVersion {
-    pub fn current() -> Self {
-        Self(Cow::Borrowed(env!("CARGO_PKG_VERSION")))
-    }
-
-    pub fn unknown() -> Self {
-        // We still provide a semver valid version here
-        Self(Cow::Borrowed("0.0.0-unknown"))
-    }
-
-    pub fn new(s: String) -> Self {
-        Self(Cow::Owned(s))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn into_string(self) -> String {
-        self.0.into_owned()
     }
 }
 
