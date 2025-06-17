@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -271,7 +272,8 @@ impl QueryContext {
             options.memory_size.get(),
             options.tmp_dir.clone(),
             options.query_parallelism(),
-        );
+            &options.datafusion_options,
+        )?;
 
         registerer.register(&ctx).await?;
 
@@ -325,7 +327,8 @@ impl QueryContext {
         memory_limit: usize,
         temp_folder: Option<String>,
         default_parallelism: Option<usize>,
-    ) -> Self {
+        datafusion_options: &HashMap<String, String>,
+    ) -> Result<Self, DataFusionError> {
         //
         // build the runtime
         //
@@ -343,9 +346,13 @@ impl QueryContext {
         session_config = session_config.with_target_partitions(default_parallelism.unwrap_or(2));
 
         session_config = session_config
-            .with_allow_symmetric_joins_without_pruning(true)
             .with_information_schema(true)
             .with_default_catalog_and_schema("restate", "public");
+
+        for (k, v) in datafusion_options {
+            session_config.options_mut().set(k, v)?;
+        }
+
         //
         // build the state
         //
@@ -383,10 +390,10 @@ impl QueryContext {
             .with_allow_ddl(false)
             .with_allow_dml(false);
 
-        Self {
+        Ok(Self {
             sql_options,
             datafusion_context: ctx,
-        }
+        })
     }
 
     pub async fn execute(

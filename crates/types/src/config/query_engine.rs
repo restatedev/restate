@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
@@ -41,6 +42,10 @@ pub struct QueryEngineOptions {
     /// The number of parallel partitions to use for a query execution
     query_parallelism: Option<NonZeroUsize>,
 
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub datafusion_options: HashMap<String, String>,
+
     /// # Pgsql Bind address
     ///
     /// The address to bind for the psql service.
@@ -64,6 +69,7 @@ impl Default for QueryEngineOptions {
             memory_size: NonZeroUsize::new(4 * 1024 * 1024 * 1024).unwrap(), // 4GiB
             tmp_dir: None,
             query_parallelism: None,
+            datafusion_options: HashMap::new(),
             pgsql_bind_address: None,
         }
     }
