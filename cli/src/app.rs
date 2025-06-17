@@ -80,7 +80,7 @@ pub enum Command {
     /// Manage Restate Cloud
     Cloud(cloud::Cloud),
 
-    /// Run a AWS Lambda server
+    /// Run as an AWS Lambda server
     Lambda(restate_cli_util::lambda::LambdaOpts),
 }
 
