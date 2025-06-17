@@ -14,6 +14,7 @@ mod base62_util;
 mod id_util;
 mod macros;
 mod node_id;
+mod restate_version;
 mod version;
 
 pub mod art;
@@ -56,6 +57,7 @@ pub mod timer;
 
 pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
 pub use node_id::*;
+pub use restate_version::*;
 pub use version::*;
 
 // Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)

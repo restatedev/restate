@@ -148,7 +148,7 @@ pub mod v1 {
             InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
             InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
             JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage, Promise,
-            ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
+            ResponseResult, RestateVersion, SequenceNumber, ServiceId, ServiceInvocation,
             ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
             SubmitNotificationSink, Timer, VirtualObjectStatus, enriched_entry_header, entry,
             entry_result, inbox_entry, invocation_resolution_result, invocation_status,
@@ -1240,8 +1240,7 @@ pub mod v1 {
                         journal_metadata,
                         pinned_deployment,
                         response_sinks,
-                        created_using_restate_version:
-                            restate_types::invocation::RestateVersion::unknown(),
+                        created_using_restate_version: restate_types::RestateVersion::unknown(),
                         timestamps:
                             restate_storage_api::invocation_status_table::StatusTimestamps::new(
                                 MillisSinceEpoch::new(value.creation_time),
@@ -1360,8 +1359,7 @@ pub mod v1 {
                 Ok((
                     restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
                         invocation_target,
-                        created_using_restate_version:
-                            restate_types::invocation::RestateVersion::unknown(),
+                        created_using_restate_version: restate_types::RestateVersion::unknown(),
                         journal_metadata,
                         pinned_deployment,
                         response_sinks,
@@ -1489,7 +1487,7 @@ pub mod v1 {
                 Ok(restate_storage_api::invocation_status_table::InboxedInvocation {
                     inbox_sequence_number: value.inbox_sequence_number,
                     metadata: restate_storage_api::invocation_status_table::PreFlightInvocationMetadata {
-                        created_using_restate_version:   restate_types::invocation::RestateVersion::unknown(),
+                        created_using_restate_version:   restate_types::RestateVersion::unknown(),
                         response_sinks,
                         timestamps: restate_storage_api::invocation_status_table::StatusTimestamps::new(
                             MillisSinceEpoch::new(value.creation_time),
@@ -1579,8 +1577,7 @@ pub mod v1 {
                 Ok(
                     restate_storage_api::invocation_status_table::CompletedInvocation {
                         invocation_target,
-                        created_using_restate_version:
-                            restate_types::invocation::RestateVersion::unknown(),
+                        created_using_restate_version: restate_types::RestateVersion::unknown(),
                         source,
                         timestamps:
                             restate_storage_api::invocation_status_table::StatusTimestamps::new(
@@ -4115,6 +4112,20 @@ pub mod v1 {
             }
         }
 
+        impl From<RestateVersion> for restate_types::SemanticRestateVersion {
+            fn from(value: RestateVersion) -> Self {
+                Self::parse(&value.version).unwrap_or_default()
+            }
+        }
+
+        impl From<restate_types::SemanticRestateVersion> for RestateVersion {
+            fn from(value: restate_types::SemanticRestateVersion) -> Self {
+                RestateVersion {
+                    version: value.to_string(),
+                }
+            }
+        }
+
         impl From<crate::fsm_table::SequenceNumber> for SequenceNumber {
             fn from(value: crate::fsm_table::SequenceNumber) -> Self {
                 SequenceNumber {
@@ -4143,13 +4154,11 @@ pub mod v1 {
             }
         }
 
-        fn restate_version_from_pb(
-            restate_version: String,
-        ) -> restate_types::invocation::RestateVersion {
+        fn restate_version_from_pb(restate_version: String) -> restate_types::RestateVersion {
             if restate_version.is_empty() {
-                restate_types::invocation::RestateVersion::unknown()
+                restate_types::RestateVersion::unknown()
             } else {
-                restate_types::invocation::RestateVersion::new(restate_version)
+                restate_types::RestateVersion::new(restate_version)
             }
         }
     }
