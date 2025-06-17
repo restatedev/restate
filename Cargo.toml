@@ -139,8 +139,8 @@ http-body = "1.0.1"
 http-body-util = "0.1.2"
 http-serde = { version = "2.1.1" }
 humantime = "2.1.0"
-hyper = { version = "1.4.1", default-features = false }
-hyper-rustls = { version = "0.27.2", default-features = false, features = [
+hyper = { version = "1.6.0", default-features = false }
+hyper-rustls = { version = "0.27.7", default-features = false, features = [
     "http1",
     "http2",
     "ring",
@@ -148,7 +148,7 @@ hyper-rustls = { version = "0.27.2", default-features = false, features = [
     "tls12",
     "logging",
 ] }
-hyper-util = { version = "0.1" }
+hyper-util = { version = "0.1.14" }
 indexmap = "2.7"
 itertools = "0.14.0"
 jiff = "0.2.14"
@@ -228,6 +228,10 @@ ulid = { version = "1.1.0" }
 url = { version = "2.5" }
 uuid = { version = "1.3.0", features = ["v7", "serde"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[patch.crates-io]
+# fixes out-of-order frames when RST_STREAM is in the same packet as HEADERS at max-concurrency capacity of the peer 
+h2 = { version = "0.4.10", git = "https://github.com/restatedev/h2", rev = "703bbe28e9a922aa77a16087ce6b9edf258125f2" }
 
 [profile.release]
 opt-level = 3
