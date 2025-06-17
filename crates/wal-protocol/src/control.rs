@@ -10,8 +10,9 @@
 
 use std::ops::RangeInclusive;
 
-use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{LeaderEpoch, PartitionKey};
+use restate_types::logs::Keys;
+use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 
 /// Announcing a new leader. This message can be written by any component to make the specified
 /// partition processor the leader.
@@ -25,6 +26,21 @@ pub struct AnnounceLeader {
     // Fallback if this is not set to use Envelope's header's destination partition-key as a
     // single key filter.
     pub partition_key_range: Option<RangeInclusive<PartitionKey>>,
+}
+
+/// A version barrier to fence off state machine changes that require a certain minimum
+/// version of restate server.
+///
+/// Readers before v1.4.0 will crash when reading this command. For v1.4.0+, the barrier defines the
+/// minimum version of restate server that can progress after this command. It also updates the FSM
+/// in case command has been trimmed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+pub struct VersionBarrier {
+    /// The minimum version required (inclusive) to progress after this barrier.
+    pub version: SemanticRestateVersion,
+    /// A human-readable reason for why this barrier exists.
+    pub human_reason: Option<String>,
+    pub partition_key_range: Keys,
 }
 
 #[cfg(all(test, feature = "serde"))]

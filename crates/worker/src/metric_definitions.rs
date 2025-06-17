@@ -14,6 +14,8 @@ use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub const PARTITION_LABEL: &str = "partition";
 
+pub const PARTITION_BLOCKED_FLARE: &str = "restate.partition.blocked_flare";
+
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command.seconds";
 pub const PARTITION_ACTUATOR_HANDLED: &str = "restate.partition.actuator_handled.total";
 pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_created.total";
@@ -45,6 +47,11 @@ pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
 pub const PARTITION_RECORD_READ_COUNT: &str = "restate.partition.record_read_count";
 
 pub(crate) fn describe_metrics() {
+    describe_gauge!(
+        PARTITION_BLOCKED_FLARE,
+        Unit::Count,
+        "A partition requires a higher restate-server version and is blocked from starting on this node"
+    );
     describe_histogram!(
         PARTITION_APPLY_COMMAND,
         Unit::Seconds,
