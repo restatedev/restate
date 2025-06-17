@@ -488,11 +488,12 @@ pub async fn find_active_invocations(
     let mut full_count = 0;
     let mut active = vec![];
     let query = format!(
-        "WITH enriched_invocations AS
+        "WITH invocations AS
         (SELECT
             inv.id,
             inv.target,
             inv.target_service_ty,
+            inv.target_service_name,
             {select_idempotency_key},
             inv.status,
             inv.created_at,
@@ -509,17 +510,30 @@ pub async fn find_active_invocations(
             inv.last_start_at,
             inv.invoked_by_id,
             inv.invoked_by_target,
-            svc.deployment_id as comp_latest_deployment,
-            dp.id as known_deployment_id,
             inv.trace_id,
             {select_completion_columns}
         FROM sys_invocation inv
-        LEFT JOIN sys_service svc ON svc.name = inv.target_service_name
-        LEFT JOIN sys_deployment dp ON dp.id = inv.pinned_deployment_id
         {filter}
         {order}
+        ),
+
+        invocations_with_latest_deployment_id AS
+        (SELECT
+            inv.*,
+            svc.deployment_id as comp_latest_deployment
+        FROM sys_service svc
+        RIGHT JOIN invocations inv ON svc.name = inv.target_service_name
+        ),
+
+        invocations_with_known_deployment_id as
+        (SELECT
+            inv.*,
+            dp.id as known_deployment_id
+        FROM sys_deployment dp
+        RIGHT JOIN invocations_with_latest_deployment_id inv ON dp.id = inv.pinned_deployment_id
         )
-        SELECT *, COUNT(*) OVER() AS full_count from enriched_invocations
+
+        SELECT *, COUNT(*) OVER() AS full_count from invocations_with_known_deployment_id
         {post_filter}
         LIMIT {limit}"
     );
