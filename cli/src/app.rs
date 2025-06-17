@@ -79,6 +79,9 @@ pub enum Command {
     #[clap(subcommand)]
     /// Manage Restate Cloud
     Cloud(cloud::Cloud),
+
+    /// Run as an AWS Lambda server
+    Lambda(restate_cli_util::lambda::LambdaOpts),
 }
 
 fn init(common_opts: &CommonOpts, global_opts: &GlobalOpts) -> Result<State<CliEnv>> {

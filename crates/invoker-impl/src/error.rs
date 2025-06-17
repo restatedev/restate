@@ -118,10 +118,10 @@ pub(crate) enum InvokerError {
     #[error(transparent)]
     #[code(restate_errors::RT0010)]
     Client(Box<ServiceClientError>),
-    #[error("unexpected error while reading the response body: {0}")]
+    #[error("unexpected error while reading the response body: {0:?}")]
     #[code(restate_errors::RT0010)]
     ClientBody(Box<dyn std::error::Error + Send + Sync>),
-    #[error("unexpected join error, looks like hyper panicked: {0}")]
+    #[error("unexpected join error, looks like hyper panicked: {0:?}")]
     #[code(restate_errors::RT0010)]
     UnexpectedJoinError(#[from] JoinError),
     #[error("unexpected closed request stream while trying to write a message")]
