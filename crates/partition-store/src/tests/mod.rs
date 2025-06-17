@@ -28,6 +28,7 @@ use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
 use restate_types::live::Constant;
 use restate_types::state_mut::ExternalStateMutation;
 
+mod barrier_test;
 mod durable_lsn_tracking_test;
 mod idempotency_table_test;
 mod inbox_table_test;

@@ -95,6 +95,7 @@ impl TestEnv {
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
+            SemanticRestateVersion::unknown().clone(),
             experimental_features,
         ))
         .await
@@ -159,6 +160,18 @@ impl TestEnv {
         transaction.commit().await.unwrap();
 
         action_collector
+    }
+
+    pub async fn apply_fallible(&mut self, command: Command) -> Result<Vec<Action>, Error> {
+        let mut transaction = self.storage.transaction();
+        let mut action_collector = ActionCollector::default();
+        self.state_machine
+            .apply(command, &mut transaction, &mut action_collector, true)
+            .await?;
+
+        transaction.commit().await?;
+
+        Ok(action_collector)
     }
 
     pub async fn apply_multiple(
@@ -1057,6 +1070,7 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         outbox_tail_index,
         Some(outbox_head_index),
         PartitionKey::MIN..=PartitionKey::MAX,
+        SemanticRestateVersion::unknown().clone(),
         EnumSet::empty(),
     ))
     .await;

@@ -19,6 +19,7 @@ mod purge;
 mod purge_journal;
 mod resume;
 mod suspend;
+mod version_barrier;
 
 pub(super) use cancel::OnCancelCommand;
 pub(super) use migrate_journal_table::VerifyOrMigrateJournalTableToV2Command;
@@ -31,3 +32,4 @@ pub(super) use purge::OnPurgeCommand;
 pub(super) use purge_journal::OnPurgeJournalCommand;
 pub(super) use resume::ResumeInvocationCommand;
 pub(super) use suspend::OnSuspendCommand;
+pub(super) use version_barrier::OnVersionBarrierCommand;
