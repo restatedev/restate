@@ -27,7 +27,7 @@ struct LambdaState {
     filename: String,
 }
 
-/// Start a lambda runtime that handles incoming requests by executing this binary
+/// Start a Lambda runtime handling incoming requests by executing them as sub-commands of this binary
 async fn lambda() -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
     let filename = exe
