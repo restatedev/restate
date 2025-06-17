@@ -17,7 +17,7 @@ use anyhow::Context;
 use assert2::let_assert;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
-use metrics::{SharedString, counter, histogram};
+use metrics::{SharedString, counter, gauge, histogram};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{Span, debug, error, info, instrument, trace, warn};
@@ -65,13 +65,13 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{GenerationalNodeId, invocation};
+use restate_types::{GenerationalNodeId, SemanticRestateVersion, invocation};
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::metric_definitions::{
-    PARTITION_APPLY_COMMAND_BATCH_SIZE, PARTITION_APPLY_COMMAND_DURATION, PARTITION_LABEL,
-    PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
+    PARTITION_APPLY_COMMAND_BATCH_SIZE, PARTITION_APPLY_COMMAND_DURATION, PARTITION_BLOCKED_FLARE,
+    PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
     PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_RECORD_READ_COUNT,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -147,7 +147,7 @@ where
         bifrost: Bifrost,
         mut partition_store: PartitionStore,
         replica_set_states: PartitionReplicaSetStates,
-    ) -> Result<PartitionProcessor<InvokerInputSender>, StorageError> {
+    ) -> Result<PartitionProcessor<InvokerInputSender>, state_machine::Error> {
         let PartitionProcessorBuilder {
             partition_id,
             partition_key_range,
@@ -217,16 +217,28 @@ where
     async fn create_state_machine(
         partition_store: &mut PartitionStore,
         partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> Result<StateMachine, StorageError> {
+    ) -> Result<StateMachine, state_machine::Error> {
         let inbox_seq_number = partition_store.get_inbox_seq_number().await?;
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
+        let min_restate_version = partition_store.get_min_restate_version().await?;
+
+        if !SemanticRestateVersion::current().is_equal_or_newer_than(&min_restate_version) {
+            gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL =>
+                partition_store.partition_id().to_string())
+            .set(1);
+            return Err(state_machine::Error::VersionBarrier {
+                required_min_version: min_restate_version,
+                barrier_reason: String::new(),
+            });
+        }
 
         let state_machine = StateMachine::new(
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
             partition_key_range,
+            min_restate_version,
             EnumSet::empty(),
         );
 
@@ -296,6 +308,9 @@ where
                             %trim_gap_end,
                             "Shutting partition processor down because it encountered a trim gap in the log."
                         ),
+                    Err(ProcessorError::StateMachine(state_machine::Error::VersionBarrier { .. })) => {
+                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition_id.to_string()).set(1);
+                    }
                     Err(err) => warn!("Shutting partition processor down because of error: {err}"),
                 }
                 res

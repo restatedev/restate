@@ -13,17 +13,24 @@ mod entries;
 mod lifecycle;
 mod utils;
 
-use crate::metric_definitions::PARTITION_APPLY_COMMAND;
-use crate::partition::state_machine::lifecycle::OnCancelCommand;
-use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
-use ::tracing::{Instrument, Span, debug, trace, warn};
 pub use actions::{Action, ActionCollector};
+
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::fmt;
+use std::fmt::{Debug, Formatter};
+use std::ops::RangeInclusive;
+use std::str::FromStr;
+use std::time::Instant;
+
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 use enumset::EnumSet;
 use futures::{StreamExt, TryStreamExt};
 use metrics::{Histogram, histogram};
+use tracing::{Instrument, Span, debug, error, trace, warn};
+
 use restate_invoker_api::InvokeInputJournal;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -67,9 +74,9 @@ use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationEpoch,
     InvocationMutationResponseSink, InvocationQuery, InvocationResponse, InvocationTarget,
     InvocationTargetType, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
-    ResponseResult, RestateVersion, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, Source, SubmitNotificationSink, TerminationFlavor,
-    VirtualObjectHandlerType, WorkflowHandlerType,
+    ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    Source, SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType,
+    WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
 use restate_types::journal::Completion;
@@ -92,18 +99,15 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
-use std::borrow::Cow;
-use std::collections::HashSet;
-use std::fmt;
-use std::fmt::{Debug, Formatter};
-use std::ops::RangeInclusive;
-use std::str::FromStr;
-use std::time::Instant;
-use tracing::error;
-use utils::SpanExt;
+
+use self::utils::SpanExt;
+use crate::metric_definitions::PARTITION_APPLY_COMMAND;
+use crate::partition::state_machine::lifecycle::OnCancelCommand;
+use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 
 #[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
 pub enum ExperimentalFeature {}
@@ -113,6 +117,8 @@ pub struct StateMachine {
     inbox_seq_number: MessageIndex,
     /// First outbox message index.
     outbox_head_seq_number: Option<MessageIndex>,
+    /// The minimum version of restate server that we currently support
+    min_restate_version: SemanticRestateVersion,
     /// Sequence number of the next outbox message to be appended.
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
@@ -128,12 +134,21 @@ impl Debug for StateMachine {
             .field("inbox_seq_number", &self.inbox_seq_number)
             .field("outbox_head_seq_number", &self.outbox_head_seq_number)
             .field("outbox_seq_number", &self.outbox_seq_number)
+            .field("min_restate_version", &self.min_restate_version)
             .finish()
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(
+        "partition is blocked; requires and upgrade to restate-server version \
+        {required_min_version} or higher; reason='{barrier_reason}'"
+    )]
+    VersionBarrier {
+        required_min_version: SemanticRestateVersion,
+        barrier_reason: String,
+    },
     #[error("failed to deserialize entry: {0}")]
     Codec(#[from] RawEntryCodecError),
     #[error(transparent)]
@@ -198,6 +213,7 @@ impl StateMachine {
         outbox_seq_number: MessageIndex,
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
+        min_restate_version: SemanticRestateVersion,
         experimental_features: EnumSet<ExperimentalFeature>,
     ) -> Self {
         let invoker_apply_latency =
@@ -208,6 +224,7 @@ impl StateMachine {
             outbox_head_seq_number,
             partition_key_range,
             invoker_apply_latency,
+            min_restate_version,
             experimental_features,
         }
     }
@@ -219,6 +236,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     inbox_seq_number: &'a mut MessageIndex,
     outbox_seq_number: &'a mut MessageIndex,
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
+    min_restate_version: &'a mut SemanticRestateVersion,
     partition_key_range: RangeInclusive<PartitionKey>,
     invoker_apply_latency: &'a Histogram,
     #[allow(dead_code)]
@@ -249,6 +267,7 @@ impl StateMachine {
                 inbox_seq_number: &mut self.inbox_seq_number,
                 outbox_seq_number: &mut self.outbox_seq_number,
                 outbox_head_seq_number: &mut self.outbox_head_seq_number,
+                min_restate_version: &mut self.min_restate_version,
                 partition_key_range: self.partition_key_range.clone(),
                 invoker_apply_latency: &self.invoker_apply_latency,
                 experimental_features: &self.experimental_features,
@@ -409,6 +428,49 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::JournalTable,
     {
         match command {
+            Command::VersionBarrier(barrier) => {
+                // We have versions in play:
+                // - Our binary's version (this process)
+                // - `min_restate_version` coming from the FSM
+                // - `barrier.version` from bifrost.
+                //
+                // If we can process this command, we update the FSM.
+                //
+                // We can process this command if our own version is at or higher than the barrier
+                // version as indicated by the message. We'll apply the change to the FSM only
+                // if the new barrier version is higher than what the FSM already has.
+                //
+                // If we can't, then what?
+                //
+                // In v1.4 we crash the PP but tell a good message. This is not the best solution
+                // but it'll make clear what's going on. The issue with this approach is that we
+                // will probably continue restarting PP on the same node leading to unavailability.
+                //
+                // [todo] What's the ideal scenario?
+                // - Ideal scenario is that we inform the operator (flare).
+                // - We mark this node *generational* as a bad candidate (not to take leadership
+                //   or run follower again).
+                // - Through gossip, this node broadcasts its partition block-list so it won't be
+                //   considered for leadership until a new generation pops up.
+                //   Noting that the blocklist for a generational node can only increase/grow until
+                //   the daemon is restarted (higher generation).
+                // - Controller attempts to reconfigure or selects a different leader
+                //   that's not blocking this partition if such replacement exists.
+                // - Peers will not pick this node as leader candidate when performing
+                //   adhoc failovers.
+                if SemanticRestateVersion::current().is_equal_or_newer_than(&barrier.version) {
+                    // Feels amazing to be running a new version of restate!
+                    lifecycle::OnVersionBarrierCommand { barrier }
+                        .apply(self)
+                        .await?;
+                    Ok(())
+                } else {
+                    Err(Error::VersionBarrier {
+                        required_min_version: barrier.version,
+                        barrier_reason: barrier.human_reason.unwrap_or_default(),
+                    })
+                }
+            }
             Command::Invoke(service_invocation) => {
                 self.on_service_invocation(service_invocation).await
             }

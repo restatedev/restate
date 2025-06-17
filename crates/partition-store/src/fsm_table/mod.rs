@@ -10,6 +10,7 @@
 
 use restate_storage_api::Result;
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
+use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
@@ -32,11 +33,16 @@ impl PartitionStoreProtobufValue for SequenceNumber {
     type ProtobufType = crate::protobuf_types::v1::SequenceNumber;
 }
 
+impl PartitionStoreProtobufValue for SemanticRestateVersion {
+    type ProtobufType = crate::protobuf_types::v1::RestateVersion;
+}
+
 pub(crate) mod fsm_variable {
     pub(crate) const INBOX_SEQ_NUMBER: u64 = 0;
     pub(crate) const OUTBOX_SEQ_NUMBER: u64 = 1;
 
     pub(crate) const APPLIED_LSN: u64 = 2;
+    pub(crate) const RESTATE_VERSION_BARRIER: u64 = 3;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -80,6 +86,15 @@ impl ReadOnlyFsmTable for PartitionStore {
         get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::APPLIED_LSN)
             .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
     }
+
+    async fn get_min_restate_version(&mut self) -> Result<SemanticRestateVersion> {
+        get::<SemanticRestateVersion, _>(
+            self,
+            self.partition_id(),
+            fsm_variable::RESTATE_VERSION_BARRIER,
+        )
+        .map(|opt| opt.unwrap_or_default())
+    }
 }
 
 impl ReadOnlyFsmTable for PartitionStoreTransaction<'_> {
@@ -96,6 +111,15 @@ impl ReadOnlyFsmTable for PartitionStoreTransaction<'_> {
     async fn get_applied_lsn(&mut self) -> Result<Option<Lsn>> {
         get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::APPLIED_LSN)
             .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
+    }
+
+    async fn get_min_restate_version(&mut self) -> Result<SemanticRestateVersion> {
+        get::<SemanticRestateVersion, _>(
+            self,
+            self.partition_id(),
+            fsm_variable::RESTATE_VERSION_BARRIER,
+        )
+        .map(|opt| opt.unwrap_or_default())
     }
 }
 
@@ -124,6 +148,15 @@ impl FsmTable for PartitionStoreTransaction<'_> {
             self.partition_id(),
             fsm_variable::OUTBOX_SEQ_NUMBER,
             &SequenceNumber::from(seq_number),
+        )
+    }
+
+    async fn put_min_restate_version(&mut self, version: &SemanticRestateVersion) -> Result<()> {
+        put(
+            self,
+            self.partition_id(),
+            fsm_variable::RESTATE_VERSION_BARRIER,
+            version,
         )
     }
 }
