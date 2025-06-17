@@ -86,13 +86,15 @@ pub async fn create_object_store_client(
                         .with_region(region.to_string())
                         .with_credentials(Arc::new(AwsSdkCredentialsProvider::new(&sdk_config)?))
                 } else {
-                    let default_region = DefaultRegionChain::builder().build().region().await;
-                    let region = options
-                        .aws_region
-                        .clone()
-                        .map(Region::new)
-                        .or(default_region)
-                        .context("Unable to determine AWS region")?;
+                    let region = if let Some(region) = options.aws_region.as_ref() {
+                        Region::new(region.clone())
+                    } else {
+                        DefaultRegionChain::builder()
+                            .build()
+                            .region()
+                            .await
+                            .context("Unable to determine AWS region")?
+                    };
 
                     AmazonS3Builder::new().with_region(region.to_string())
                 }
