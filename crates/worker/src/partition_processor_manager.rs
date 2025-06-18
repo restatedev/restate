@@ -1003,6 +1003,19 @@ impl PartitionProcessorManager {
 
                 let snapshot_base_path = config.worker.snapshots.snapshots_dir(partition_id);
                 let snapshot_id = SnapshotId::new();
+                let (node_name, cluster_name, cluster_fingerprint) = Metadata::with_current(|m| {
+                    let nodes_config = m.nodes_config_ref();
+                    let node_name = nodes_config
+                        .find_node_by_id(m.my_node_id())
+                        .expect("my node must be present")
+                        .name
+                        .clone();
+                    (
+                        node_name,
+                        nodes_config.cluster_name().to_owned(),
+                        nodes_config.cluster_fingerprint(),
+                    )
+                });
 
                 let create_snapshot_task = SnapshotPartitionTask {
                     snapshot_id,
@@ -1010,8 +1023,9 @@ impl PartitionProcessorManager {
                     min_target_lsn,
                     snapshot_base_path,
                     partition_store_manager: self.partition_store_manager.clone(),
-                    cluster_name: config.common.cluster_name().into(),
-                    node_name: config.common.node_name().into(),
+                    cluster_name,
+                    cluster_fingerprint,
+                    node_name,
                     snapshot_repository,
                 };
 

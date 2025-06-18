@@ -19,6 +19,7 @@ use serde_with::{DeserializeAs, SerializeAs, serde_as};
 use restate_core::worker_api::SnapshotCreated;
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
+use restate_types::nodes_config::ClusterFingerprint;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SnapshotFormatVersion {
@@ -39,6 +40,10 @@ pub struct PartitionSnapshotMetadata {
 
     /// Restate cluster name which produced the snapshot.
     pub cluster_name: String,
+
+    // a unique fingerprint for this cluster.
+    #[serde(default)]
+    pub cluster_fingerprint: Option<ClusterFingerprint>,
 
     /// Restate partition id.
     pub partition_id: PartitionId,
@@ -77,6 +82,8 @@ pub struct PartitionSnapshotMetadata {
 struct PartitionSnapshotMetadataShadow {
     pub version: SnapshotFormatVersion,
     pub cluster_name: String,
+    #[serde(default)]
+    pub cluster_fingerprint: Option<ClusterFingerprint>,
     pub partition_id: PartitionId,
     pub node_name: String,
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
@@ -95,6 +102,7 @@ impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
         PartitionSnapshotMetadata {
             version: value.version,
             cluster_name: value.cluster_name,
+            cluster_fingerprint: value.cluster_fingerprint,
             partition_id: value.partition_id,
             node_name: value.node_name,
             created_at: value.created_at,
