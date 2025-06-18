@@ -22,6 +22,40 @@ use crate::{GenerationalNodeId, NodeId, PlainNodeId, flexbuffers_storage_encode_
 use crate::{Version, Versioned};
 use ahash::HashMap;
 
+#[derive(
+    Clone,
+    Copy,
+    derive_more::Debug,
+    derive_more::Display,
+    derive_more::From,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+#[debug("{_0}")]
+#[display("{_0}")]
+pub struct ClusterFingerprint(NonZero<u64>);
+
+#[derive(Debug, thiserror::Error)]
+#[error("invalid fingerprint value: {0}")]
+pub struct InvalidFingerprint(u64);
+
+impl TryFrom<u64> for ClusterFingerprint {
+    type Error = InvalidFingerprint;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Ok(Self(NonZero::new(value).ok_or(InvalidFingerprint(value))?))
+    }
+}
+
+impl ClusterFingerprint {
+    pub fn to_u64(self) -> u64 {
+        self.0.get()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum NodesConfigError {
     #[error("node {0} was not found in config")]
@@ -65,7 +99,7 @@ pub struct NodesConfiguration {
     // a unique fingerprint for this cluster. Introduced in v1.3 for forward compatibility. Will be
     // used to uniquely identify this cluster instance in future versions.
     #[serde(default)]
-    cluster_fingerprint: Option<NonZero<u64>>,
+    cluster_fingerprint: Option<ClusterFingerprint>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     nodes: HashMap<PlainNodeId, MaybeNode>,
@@ -176,6 +210,10 @@ impl NodesConfiguration {
 
     pub fn is_empty(&self) -> bool {
         self.name_lookup.is_empty()
+    }
+
+    pub fn cluster_fingerprint(&self) -> Option<ClusterFingerprint> {
+        self.cluster_fingerprint
     }
 
     pub fn cluster_name(&self) -> &str {

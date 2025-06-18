@@ -94,6 +94,10 @@ message Hello {
   ConnectionDirection direction = 5;
   // the purpose of this connection. Default is GENERAL.
   Swimlane swimlane = 6;
+
+  // a unique fingerprint for this cluster. It will be respected by the receiver 
+  // if it was a non-zero value.
+  uint64 cluster_fingerprint = 7;
 }
 
 message Welcome {

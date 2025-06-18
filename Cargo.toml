@@ -227,6 +227,7 @@ typed-builder = "0.21.0"
 ulid = { version = "1.2.0" }
 url = { version = "2.5" }
 uuid = { version = "1.3.0", features = ["v7", "serde"] }
+valuable = { version = "0.1.1", features = ["derive"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [profile.release]
