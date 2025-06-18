@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use tracing::{debug, info, trace};
 
 use restate_types::config::Configuration;
-use restate_types::nodes_config::{NodesConfigError, NodesConfiguration};
+use restate_types::nodes_config::{ClusterFingerprint, NodesConfigError, NodesConfiguration};
 use restate_types::{GenerationalNodeId, Merge, NodeId, PlainNodeId};
 
 use super::Swimlane;
@@ -299,6 +299,19 @@ impl ConnectionManager {
         let mut guard = self.inner.lock();
 
         let nodes_config = metadata.nodes_config_ref();
+
+        // check cluster fingerprint if it's set on the hello message *and* our nodes config has it
+        // set as well.
+        if let Ok(incoming_fingerprint) = ClusterFingerprint::try_from(hello.cluster_fingerprint) {
+            if let Some(cluster_fingerprint) = nodes_config.cluster_fingerprint() {
+                if incoming_fingerprint != cluster_fingerprint {
+                    return Err(
+                        HandshakeError::Failed("Cluster fingerprint mismatch".to_owned()).into(),
+                    );
+                }
+            }
+        }
+
         // NodeId **must** be generational at this layer, we may support accepting connections from
         // anonymous nodes in the future. When this happens, this restate-server release will not
         // be compatible with it.
@@ -711,6 +724,10 @@ mod tests {
             max_protocol_version: ProtocolVersion::Unknown.into(),
             my_node_id: Some(my_node_id.into()),
             cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
+            cluster_fingerprint: metadata
+                .nodes_config_ref()
+                .cluster_fingerprint()
+                .map_or(0, ClusterFingerprint::to_u64),
             direction: ConnectionDirection::Bidirectional.into(),
             swimlane: Swimlane::default().into(),
         };
@@ -736,6 +753,39 @@ mod tests {
             max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
             my_node_id: Some(my_node_id.into()),
             cluster_name: "Random-cluster".to_owned(),
+            cluster_fingerprint: metadata
+                .nodes_config_ref()
+                .cluster_fingerprint()
+                .map_or(0, ClusterFingerprint::to_u64),
+            direction: ConnectionDirection::Bidirectional.into(),
+            swimlane: Swimlane::default().into(),
+        };
+        let hello = Message::new(Header::default(), hello);
+        tx.send(hello).await?;
+
+        let connections = ConnectionManager::default();
+        let incoming = ReceiverStream::new(rx);
+        let err = connections
+            .accept_incoming_connection(incoming)
+            .await
+            .err()
+            .unwrap();
+        assert_that!(
+            err,
+            pat!(AcceptError::Handshake(pat!(HandshakeError::Failed(eq(
+                "cluster name mismatch"
+            )))))
+        );
+
+        // cluster fingerprint mismatch
+        let (tx, rx) = mpsc::channel(1);
+        let my_node_id = metadata.my_node_id();
+        let hello = Hello {
+            min_protocol_version: MIN_SUPPORTED_PROTOCOL_VERSION.into(),
+            max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
+            my_node_id: Some(my_node_id.into()),
+            cluster_name: "Random-cluster".to_owned(),
+            cluster_fingerprint: 42,
             direction: ConnectionDirection::Bidirectional.into(),
             swimlane: Swimlane::default().into(),
         };
@@ -771,6 +821,7 @@ mod tests {
         let hello = Hello::new(
             Some(my_node_id),
             metadata.nodes_config_ref().cluster_name().to_owned(),
+            None,
             ConnectionDirection::Bidirectional,
             Swimlane::default(),
         );
