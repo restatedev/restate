@@ -40,22 +40,18 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 comfy-table = { version = "7" }
-criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
 enumset = { version = "1", default-features = false, features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
-futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3" }
 futures-executor = { version = "0.3" }
-futures-io = { version = "0.3", default-features = false, features = ["std"] }
 futures-sink = { version = "0.3" }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
-getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std", "wasm_js"] }
-getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
+getrandom = { version = "0.3", default-features = false, features = ["std", "wasm_js"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", features = ["raw"] }
@@ -69,7 +65,7 @@ idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
 indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-5ef9efb8ec2df382 = { package = "itertools", version = "0.12" }
+itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
@@ -160,23 +156,19 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 comfy-table = { version = "7" }
-criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
 enumset = { version = "1", default-features = false, features = ["serde"] }
-enumset_derive = { version = "0.10", default-features = false, features = ["serde"] }
+enumset_derive = { version = "0.11", default-features = false, features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
-futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3" }
 futures-executor = { version = "0.3" }
-futures-io = { version = "0.3", default-features = false, features = ["std"] }
 futures-sink = { version = "0.3" }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
-getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std", "wasm_js"] }
-getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
+getrandom = { version = "0.3", default-features = false, features = ["std", "wasm_js"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", features = ["raw"] }
@@ -190,7 +182,7 @@ idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
 indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-5ef9efb8ec2df382 = { package = "itertools", version = "0.12" }
+itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
@@ -257,7 +249,6 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
@@ -269,7 +260,6 @@ signal-hook-mio = { version = "0.2", default-features = false, features = ["supp
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
@@ -281,7 +271,6 @@ signal-hook-mio = { version = "0.2", default-features = false, features = ["supp
 
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
@@ -292,7 +281,6 @@ signal-hook-mio = { version = "0.2", default-features = false, features = ["supp
 
 [target.aarch64-apple-darwin.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
