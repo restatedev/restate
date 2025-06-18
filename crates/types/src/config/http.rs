@@ -56,6 +56,19 @@ pub struct HttpOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub connect_timeout: humantime::Duration,
+
+    /// # Initial Max Send Streams
+    ///
+    /// Sets the initial maximum of locally initiated (send) streams.
+    ///
+    /// This value will be overwritten by the value included in the initial
+    /// SETTINGS frame received from the peer as part of a [connection preface].
+    ///
+    /// Default: None
+    ///
+    /// **NOTE**: Setting this value to None (default) users the default
+    /// recommended value from HTTP2 specs
+    pub initial_max_send_streams: Option<usize>,
 }
 
 impl Default for HttpOptions {
@@ -65,6 +78,7 @@ impl Default for HttpOptions {
             http_proxy: None,
             no_proxy: Vec::new(),
             connect_timeout: HttpOptions::default_connect_timeout(),
+            initial_max_send_streams: None,
         }
     }
 }
