@@ -48,7 +48,9 @@ jobs:
         uses: ./.github/actions/install-protoc
 
       - name: Install nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.98
 
       - name: Setup just
         uses: extractions/setup-just@v2
