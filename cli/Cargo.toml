@@ -29,7 +29,7 @@ restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-arrow = { version = "53.1.0", features = ["ipc", "prettyprint", "json"] }
+arrow = { workspace = true, features = ["ipc", "prettyprint", "json"] }
 arrow_convert = { version = "0.7.2" }
 axum = { workspace = true, default-features = false, features = ["http1", "http2", "query", "tokio"] }
 bytes = { workspace = true }
