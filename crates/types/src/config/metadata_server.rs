@@ -231,7 +231,7 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         let config_path_address = temp_dir.path().join("config1.toml");
         let config_file_address = r#"
-        [metadata-store]
+        [metadata-server]
         rocksdb-disable-direct-io-for-reads = false
         "#;
 
