@@ -459,18 +459,8 @@ impl ChannelManager {
         initial_addresses: Vec<AdvertisedAddress>,
         connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
     ) -> Self {
-        let initial_channels: Vec<_> = initial_addresses
-            .into_iter()
-            .map(|address| {
-                ChannelWithAddress::new(
-                    address.clone(),
-                    create_tonic_channel(address, connection_options.deref()),
-                )
-            })
-            .collect();
-
         ChannelManager {
-            channels: Arc::new(Mutex::new(Channels::new(initial_channels))),
+            channels: Arc::new(Mutex::new(Channels::new(initial_addresses))),
             connection_options,
         }
     }
@@ -492,7 +482,10 @@ impl ChannelManager {
     }
 
     fn choose_channel(&self) -> Option<ChannelWithAddress> {
-        self.channels.lock().choose_next_round_robin()
+        self.channels
+            .lock()
+            .choose_next_round_robin()
+            .map(|c| c.into_channel(self.connection_options.deref()))
     }
 
     /// Watches the [`NodesConfiguration`] and updates the channels based on which nodes run the
@@ -552,7 +545,7 @@ impl ChannelManager {
             // Only drop initial channels if we have found others. This is to handle the case where
             // we are resuming from an older Restate version which didn't write the
             // MetadataServerState properly.
-            channels.drop_initial_channels();
+            channels.drop_initial_addresses();
         }
     }
 }
@@ -573,19 +566,50 @@ impl ChannelWithAddress {
     }
 }
 
+#[derive(Clone, Debug, derive_more::From)]
+enum ChannelOrInitialAddress {
+    InitialAddress(#[from] AdvertisedAddress),
+    Channel(#[from] ChannelWithAddress),
+}
+
+impl ChannelOrInitialAddress {
+    fn into_channel<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
+        self,
+        connection_options: &T,
+    ) -> ChannelWithAddress {
+        match self {
+            ChannelOrInitialAddress::InitialAddress(address) => ChannelWithAddress::new(
+                address.clone(),
+                create_tonic_channel(address, connection_options),
+            ),
+            ChannelOrInitialAddress::Channel(channel) => channel,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn address(&self) -> &AdvertisedAddress {
+        match self {
+            ChannelOrInitialAddress::InitialAddress(address) => address,
+            ChannelOrInitialAddress::Channel(channel) => &channel.address,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Channels {
-    initial_channels: Vec<ChannelWithAddress>,
+    // initial addresses we will keep in address form and resolve+connect every time they are used
+    // this is to allow for the initial addresses being dns entries that resolve to multiple node IPs
+    initial_addresses: Vec<AdvertisedAddress>,
     channels: IndexMap<PlainNodeId, ChannelWithAddress>,
     channel_index: usize,
 }
 
 impl Channels {
-    fn new(initial_channels: Vec<ChannelWithAddress>) -> Self {
-        assert!(!initial_channels.is_empty());
-        let initial_index = rand::rng().random_range(..initial_channels.len());
+    fn new(initial_addresses: Vec<AdvertisedAddress>) -> Self {
+        assert!(!initial_addresses.is_empty());
+        let initial_index = rand::rng().random_range(..initial_addresses.len());
         Channels {
-            initial_channels,
+            initial_addresses,
             channels: IndexMap::default(),
             channel_index: initial_index,
         }
@@ -595,11 +619,11 @@ impl Channels {
         self.channels.insert(plain_node_id, channel);
     }
 
-    fn choose_next_round_robin(&mut self) -> Option<ChannelWithAddress> {
+    fn choose_next_round_robin(&mut self) -> Option<ChannelOrInitialAddress> {
         let num_channels = self.channels.len();
 
         self.channel_index += 1;
-        if self.channel_index >= num_channels + self.initial_channels.len() {
+        if self.channel_index >= num_channels + self.initial_addresses.len() {
             self.channel_index = 0;
         }
 
@@ -608,10 +632,12 @@ impl Channels {
                 .get_index(self.channel_index)
                 .map(|(_, channel)| channel)
                 .cloned()
-        } else if !self.initial_channels.is_empty() {
-            self.initial_channels
+                .map(ChannelOrInitialAddress::from)
+        } else if !self.initial_addresses.is_empty() {
+            self.initial_addresses
                 .get(self.channel_index - num_channels)
                 .cloned()
+                .map(ChannelOrInitialAddress::from)
         } else {
             None
         }
@@ -622,9 +648,9 @@ impl Channels {
         self.channels.is_empty()
     }
 
-    fn drop_initial_channels(&mut self) {
-        if !self.initial_channels.is_empty() {
-            self.initial_channels = Vec::new();
+    fn drop_initial_addresses(&mut self) {
+        if !self.initial_addresses.is_empty() {
+            self.initial_addresses = Vec::new();
         }
     }
 
@@ -646,7 +672,7 @@ mod tests {
     use super::{ChannelWithAddress, Channels};
 
     #[test]
-    #[should_panic(expected = "!initial_channels.is_empty()")]
+    #[should_panic(expected = "!initial_addresses.is_empty()")]
     fn empty_initial_channels() {
         Channels::new(vec![]);
     }
@@ -654,10 +680,7 @@ mod tests {
     #[test(restate_core::test)]
     async fn update_channels() {
         let initial_addr: AdvertisedAddress = "http://localhost".parse().unwrap();
-        let mut channels = Channels::new(vec![ChannelWithAddress::new(
-            initial_addr.clone(),
-            Channel::from_static("http://localhost").connect_lazy(),
-        )]);
+        let mut channels = Channels::new(vec![initial_addr.clone()]);
 
         assert!(channels.choose_next_round_robin().is_some());
 
@@ -693,7 +716,7 @@ mod tests {
         let mut seen_addresses = Vec::new();
         for _ in 0..4 {
             if let Some(channel) = channels.choose_next_round_robin() {
-                seen_addresses.push(channel.address);
+                seen_addresses.push(channel.address().clone());
             }
         }
 
@@ -702,12 +725,12 @@ mod tests {
         assert!(seen_addresses.contains(&node2_addr));
         assert!(seen_addresses.contains(&node3_addr));
 
-        channels.drop_initial_channels();
+        channels.drop_initial_addresses();
 
         seen_addresses.clear();
         for _ in 0..3 {
             if let Some(channel) = channels.choose_next_round_robin() {
-                seen_addresses.push(channel.address);
+                seen_addresses.push(channel.address().clone());
             }
         }
 

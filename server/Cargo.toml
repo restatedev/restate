@@ -53,12 +53,16 @@ codederror = { workspace = true }
 derive_builder = { workspace = true }
 enumset = { workspace = true }
 futures-util = { workspace = true }
-humantime = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
+humantime = { workspace = true }
+jiff = { workspace = true }
+octocrab = { version = "0.44.0", features = ["stream"] }
 pin-project = { workspace = true }
+regex = "1.10.4"
 rlimit = { workspace = true }
 rocksdb = { workspace = true }
+rustls = { workspace = true, features = ["aws-lc-rs"] }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
@@ -68,8 +72,6 @@ tokio-util = { workspace = true }
 toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
-regex = "1.10.4"
-rustls = { workspace = true, features = ["aws-lc-rs"] }
 ulid = { workspace = true }
 url = { version = "2.5.4", features = [] }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
