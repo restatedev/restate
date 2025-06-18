@@ -75,6 +75,7 @@ impl HttpClient {
         builder.timer(hyper_util::rt::TokioTimer::default());
 
         builder
+            .http2_initial_max_send_streams(options.initial_max_send_streams)
             .http2_adaptive_window(true)
             .http2_keep_alive_timeout(options.http_keep_alive_options.timeout.into())
             .http2_keep_alive_interval(Some(options.http_keep_alive_options.interval.into()));
