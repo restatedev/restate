@@ -19,8 +19,7 @@ pub mod metadata_proxy_svc {
     #[cfg(feature = "grpc-client")]
     pub mod client {
         /// Default send compression for grpc clients
-        // todo: change this to zstd in v1.4
-        const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Gzip;
+        const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Zstd;
 
         use bytestring::ByteString;
         use tonic::{Code, Status};
