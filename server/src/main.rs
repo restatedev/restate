@@ -194,6 +194,12 @@ fn main() {
             let tracing_guard =
                 init_tracing_and_logging(&Configuration::pinned().common, "restate-server")
                     .expect("failed to configure logging and tracing!");
+            // spawn checking latest release
+            let _ = TaskCenter::spawn_unmanaged(
+                TaskKind::Background,
+                "check-latest-release",
+                build_info::check_if_latest_version(),
+            );
             // Starts prometheus periodic upkeep tasks
             prometheus.start_upkeep_task();
 
