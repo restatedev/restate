@@ -477,7 +477,7 @@ impl SnapshotRepository {
             "Downloaded partition snapshot",
         );
         Ok(Some(LocalPartitionSnapshot {
-            base_dir: snapshot_dir.into_path(),
+            base_dir: snapshot_dir.keep(),
             log_id: snapshot_metadata.log_id,
             min_applied_lsn: snapshot_metadata.min_applied_lsn,
             db_comparator_name: snapshot_metadata.db_comparator_name,
