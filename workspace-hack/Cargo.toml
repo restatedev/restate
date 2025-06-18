@@ -54,8 +54,7 @@ futures-executor = { version = "0.3" }
 futures-io = { version = "0.3", default-features = false, features = ["std"] }
 futures-sink = { version = "0.3" }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
-getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std", "wasm_js"] }
-getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
+getrandom = { version = "0.3", default-features = false, features = ["std", "wasm_js"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", features = ["raw"] }
@@ -69,7 +68,7 @@ idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
 indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-5ef9efb8ec2df382 = { package = "itertools", version = "0.12" }
+itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
@@ -83,7 +82,7 @@ num-traits = { version = "0.2", features = ["i128", "libm"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 petgraph = { version = "0.6" }
 phf_shared = { version = "0.11" }
-pprof = { version = "0.14", features = ["criterion", "flamegraph", "frame-pointer"] }
+pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
 prost = { version = "0.13", features = ["prost-derive"] }
 prost-types = { version = "0.13" }
@@ -107,7 +106,6 @@ serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 snafu = { version = "0.8" }
 stable_deref_trait = { version = "1" }
-strum = { version = "0.26", features = ["derive"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
@@ -166,7 +164,7 @@ digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
 enumset = { version = "1", default-features = false, features = ["serde"] }
-enumset_derive = { version = "0.10", default-features = false, features = ["serde"] }
+enumset_derive = { version = "0.11", default-features = false, features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
@@ -175,8 +173,7 @@ futures-executor = { version = "0.3" }
 futures-io = { version = "0.3", default-features = false, features = ["std"] }
 futures-sink = { version = "0.3" }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
-getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std", "wasm_js"] }
-getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
+getrandom = { version = "0.3", default-features = false, features = ["std", "wasm_js"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", features = ["raw"] }
@@ -190,7 +187,7 @@ idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
 indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-5ef9efb8ec2df382 = { package = "itertools", version = "0.12" }
+itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
@@ -204,7 +201,7 @@ num-traits = { version = "0.2", features = ["i128", "libm"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 petgraph = { version = "0.6" }
 phf_shared = { version = "0.11" }
-pprof = { version = "0.14", features = ["criterion", "flamegraph", "frame-pointer"] }
+pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
 prost = { version = "0.13", features = ["prost-derive"] }
 prost-types = { version = "0.13" }
@@ -228,7 +225,6 @@ serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 snafu = { version = "0.8" }
 stable_deref_trait = { version = "1" }
-strum = { version = "0.26", features = ["derive"] }
 syn-dff4ba8e3ae991db = { package = "syn", version = "1", features = ["extra-traits", "visit"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
@@ -257,48 +253,48 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
-rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
+rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
-rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
+rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
-rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
+rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-crossterm = { version = "0.28" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
-rustix = { version = "0.38", features = ["fs", "stdio", "termios"] }
+rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
 signal-hook-mio = { version = "0.2", default-features = false, features = ["support-v0_8", "support-v1_0"] }
 
 ### END HAKARI SECTION

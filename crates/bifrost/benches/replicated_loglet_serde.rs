@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use pprof::criterion::{Output, PProfProfiler};
 use pprof::flamegraph::Options;
 use prost::Message as _;

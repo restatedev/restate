@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use restate_queue::SegmentQueue;
 use std::path;
 use std::time::Duration;
@@ -34,7 +34,7 @@ async fn writing_to_queue_reading_from_queue(base_path: &path::Path) {
         }
     }
 
-    black_box(counter);
+    std::hint::black_box(counter);
 }
 
 fn queue_writing_reading_benchmark(c: &mut Criterion) {

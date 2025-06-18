@@ -1729,7 +1729,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut segment_queue = SegmentQueue::new(tempdir().unwrap().into_path(), 1024);
+        let mut segment_queue = SegmentQueue::new(tempdir().unwrap().keep(), 1024);
         let cancel_token = CancellationToken::new();
         let shutdown = cancel_token.cancelled();
         tokio::pin!(shutdown);

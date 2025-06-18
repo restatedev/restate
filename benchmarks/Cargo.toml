@@ -24,7 +24,7 @@ anyhow = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 http = { workspace = true }
-pprof = { version = "0.14", features = ["criterion", "flamegraph"] }
+pprof = { version = "0.15", features = ["criterion", "flamegraph"] }
 reqwest = { workspace = true }
 rlimit = { workspace = true }
 serde_json = { workspace = true }

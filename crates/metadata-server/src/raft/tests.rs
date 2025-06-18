@@ -44,7 +44,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     configuration.metadata_server.set_raft_options(raft_options);
     set_current_config(configuration);
 
-    let uds = tempfile::tempdir()?.into_path().join("server.sock");
+    let uds = tempfile::tempdir()?.keep().join("server.sock");
     let bind_address = BindAddress::Uds(uds.clone());
     let advertised_address = AdvertisedAddress::Uds(uds);
 
