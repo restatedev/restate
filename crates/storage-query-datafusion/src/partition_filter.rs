@@ -98,7 +98,7 @@ where
         for filter in filters {
             if let Expr::BinaryExpr(BinaryExpr { op, left, right }) = filter {
                 if *op == Operator::Eq && **left == self.column {
-                    if let Expr::Literal(ScalarValue::LargeUtf8(Some(value))) = &**right {
+                    if let Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _) = &**right {
                         let f = &self.extractor;
                         let pk = f(value)?;
                         return Ok(Some(pk));
@@ -125,7 +125,7 @@ impl PartitionKeyExtractor for IdentityPartitionKeyExtractor {
         for filter in filters {
             if let Expr::BinaryExpr(BinaryExpr { op, left, right }) = filter {
                 if *op == Operator::Eq && **left == self.0 {
-                    if let Expr::Literal(ScalarValue::UInt64(Some(value))) = &**right {
+                    if let Expr::Literal(ScalarValue::UInt64(Some(value)), _) = &**right {
                         return Ok(Some(*value as PartitionKey));
                     }
                 }
@@ -183,6 +183,6 @@ mod tests {
     }
 
     fn utf8_lit(value: impl Into<String>) -> Expr {
-        Expr::Literal(ScalarValue::LargeUtf8(Some(value.into())))
+        Expr::Literal(ScalarValue::LargeUtf8(Some(value.into())), None)
     }
 }

@@ -260,6 +260,9 @@ where
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "PartitionedExecutionPlan({:?})", self.scanner)
             }
+            DisplayFormatType::TreeRender => {
+                write!(f, "PartitionedExecutionPlan\nscanner={:?}", self.scanner)
+            }
         }
     }
 }
@@ -421,7 +424,10 @@ impl DisplayAs for GenericExecutionPlan {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "GenericExecutionPlan()",)
+                write!(f, "GenericExecutionPlan",)
+            }
+            DisplayFormatType::TreeRender => {
+                write!(f, "GenericExecutionPlan")
             }
         }
     }

@@ -86,7 +86,7 @@ restate-worker = { path = "crates/worker" }
 ahash = "0.8.5"
 anyhow = "1.0.68"
 arc-swap = "1.6"
-arrow = { version = "53.1.0", default-features = false }
+arrow = { version = "55.1.0", default-features = false }
 assert2 = "0.3.11"
 async-channel = "2.1.1"
 async-trait = "0.1.73"
@@ -114,13 +114,13 @@ cling = { version = "0.1", default-features = false, features = ["derive"] }
 criterion = "0.5"
 crossterm = { version = "0.28.1" }
 dashmap = { version = "6" }
-datafusion = { version = "44.0.0", default-features = false, features = [
+datafusion = { version = "48.0.0", default-features = false, features = [
     "crypto_expressions",
     "encoding_expressions",
     "regex_expressions",
     "unicode_expressions",
 ] }
-datafusion-expr = { version = "44.0.0" }
+datafusion-expr = { version = "48.0.0" }
 derive_builder = "0.20.0"
 derive_more = { version = "2.0.1", features = ["full"] }
 dialoguer = { version = "0.11.0" }
