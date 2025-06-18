@@ -158,7 +158,7 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
 
 pub fn restate_configuration() -> Configuration {
     let common_options = CommonOptionsBuilder::default()
-        .base_dir(tempfile::tempdir().expect("tempdir failed").into_path())
+        .base_dir(tempfile::tempdir().expect("tempdir failed").keep())
         .default_num_partitions(10)
         .build()
         .expect("building common options should work");

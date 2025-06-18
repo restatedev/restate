@@ -252,9 +252,7 @@ impl MaybeTempDir {
         if let Ok("true" | "1") = std::env::var("LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR").as_deref() {
             let dir = match std::env::var("LOCAL_CLUSTER_RUNNER_TEMPDIR") {
                 Ok(v) => Path::new(&v).join(path).to_path_buf(),
-                Err(_) => tempfile::tempdir()
-                    .expect("to create a tempdir")
-                    .into_path(),
+                Err(_) => tempfile::tempdir().expect("to create a tempdir").keep(),
             };
             eprintln!(
                 "Will retain local cluster runner tempdir upon cluster drop: {}",

@@ -55,8 +55,8 @@ indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 metrics = { workspace = true }
 moka = { workspace = true, features = ["sync", "logging"] }
-notify = { version = "7.0.0" }
-notify-debouncer-full = { version = "0.4" }
+notify = { version = "8.0.0" }
+notify-debouncer-full = { version = "0.5" }
 num-traits = { workspace = true }
 opentelemetry = { workspace = true }
 parking_lot = { workspace = true }
