@@ -136,7 +136,7 @@ pub fn reset_base_temp_dir() -> PathBuf {
 /// the test is done (no automatic deletion)
 pub fn reset_base_temp_dir_and_retain() -> PathBuf {
     let mut guard = NODE_BASE_DIR.write();
-    let path = tempfile::TempDir::new().unwrap().into_path();
+    let path = tempfile::TempDir::new().unwrap().keep();
     *guard = TempOrPath::Path(path.clone());
     path
 }
