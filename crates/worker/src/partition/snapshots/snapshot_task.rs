@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use restate_types::nodes_config::ClusterFingerprint;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::worker_api::{SnapshotError, SnapshotErrorKind};
@@ -31,6 +32,7 @@ pub struct SnapshotPartitionTask {
     pub snapshot_base_path: PathBuf,
     pub partition_store_manager: PartitionStoreManager,
     pub cluster_name: String,
+    pub cluster_fingerprint: Option<ClusterFingerprint>,
     pub node_name: String,
     pub snapshot_repository: SnapshotRepository,
 }
@@ -86,6 +88,7 @@ impl SnapshotPartitionTask {
         PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
             cluster_name: self.cluster_name.clone(),
+            cluster_fingerprint: self.cluster_fingerprint,
             node_name: self.node_name.clone(),
             partition_id: self.partition_id,
             created_at: humantime::Timestamp::from(created_at),
