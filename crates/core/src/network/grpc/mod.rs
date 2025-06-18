@@ -20,5 +20,4 @@ use tonic::codec::CompressionEncoding;
 pub const MAX_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
 
 /// Default send compression for grpc clients
-// todo: change this to zstd in v1.4
-pub const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Gzip;
+pub const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Zstd;

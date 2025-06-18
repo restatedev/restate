@@ -24,8 +24,7 @@ pub fn new_log_server_client(
 
     use tonic::codec::CompressionEncoding;
     /// Default send compression for grpc clients
-    // todo: change this to zstd in v1.4
-    pub const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Gzip;
+    pub const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Zstd;
 
     log_server_svc_client::LogServerSvcClient::new(channel)
         .max_decoding_message_size(MAX_MESSAGE_SIZE)

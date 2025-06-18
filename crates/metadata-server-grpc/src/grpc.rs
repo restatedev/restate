@@ -17,9 +17,8 @@ pub fn new_metadata_server_client(
     channel: tonic::transport::Channel,
 ) -> metadata_server_svc_client::MetadataServerSvcClient<tonic::transport::Channel> {
     /// Default send compression for grpc clients
-    // todo: change this to zstd in v1.4
     use tonic::codec::CompressionEncoding;
-    pub const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Gzip;
+    pub const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Zstd;
 
     metadata_server_svc_client::MetadataServerSvcClient::new(channel)
         // note: the order of those calls defines the priority
