@@ -22,6 +22,7 @@ pub mod network {
 
     use restate_types::GenerationalNodeId;
     use restate_types::net::metadata::MetadataKind;
+    use restate_types::nodes_config::ClusterFingerprint;
 
     use restate_types::net::{
         CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, ProtocolVersion,
@@ -46,6 +47,7 @@ pub mod network {
         pub fn new(
             my_node_id: Option<GenerationalNodeId>,
             cluster_name: String,
+            cluster_fingerprint: Option<ClusterFingerprint>,
             direction: ConnectionDirection,
             swimlane: Swimlane,
         ) -> Self {
@@ -55,6 +57,7 @@ pub mod network {
                 max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
                 my_node_id: my_node_id.map(Into::into),
                 cluster_name,
+                cluster_fingerprint: cluster_fingerprint.map_or(0, ClusterFingerprint::to_u64),
                 swimlane: swimlane.into(),
             }
         }
