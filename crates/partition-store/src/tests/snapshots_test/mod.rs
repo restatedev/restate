@@ -40,6 +40,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
     let snapshot_meta = PartitionSnapshotMetadata {
         version: SnapshotFormatVersion::V1,
         cluster_name: "cluster_name".to_string(),
+        cluster_fingerprint: None,
         partition_id,
         node_name: "node".to_string(),
         created_at: humantime::Timestamp::from(SystemTime::from(MillisSinceEpoch::new(0))),

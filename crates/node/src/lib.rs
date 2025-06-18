@@ -487,18 +487,20 @@ impl Node {
         // Bifrost expects metadata to be in sync, which it is by this point.
         self.bifrost.start().await?;
 
+        let nodes_config = metadata.nodes_config_ref();
         info!(
-            name = %my_node_config.name,
+            node_name = %my_node_config.name,
             roles = %my_node_config.roles,
             address = %my_node_config.address,
             location = %my_node_config.location,
             nodes_config_version = %metadata.nodes_config_version(),
+            cluster_name = %nodes_config.cluster_name(),
+            cluster_fingerprint =?nodes_config.cluster_fingerprint(),
             %partition_table_version,
             %logs_version,
             "My Node ID is {}", my_node_config.current_generation,
         );
 
-        let nodes_config = metadata.nodes_config_ref();
         let my_node_id = metadata.my_node_id();
         debug_assert!(nodes_config.find_node_by_id(my_node_id).is_ok());
 

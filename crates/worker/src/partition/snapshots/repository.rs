@@ -34,6 +34,7 @@ use restate_partition_store::snapshots::{
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{Lsn, SequenceNumber};
+use restate_types::nodes_config::ClusterFingerprint;
 
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
@@ -77,6 +78,10 @@ pub struct LatestSnapshot {
     /// Restate cluster name which produced the snapshot.
     pub cluster_name: String,
 
+    /// a unique fingerprint for this cluster.
+    #[serde(default)]
+    pub cluster_fingerprint: Option<ClusterFingerprint>,
+
     /// Node that produced this snapshot.
     pub node_name: String,
 
@@ -100,6 +105,7 @@ impl LatestSnapshot {
         LatestSnapshot {
             version: snapshot.version,
             cluster_name: snapshot.cluster_name.clone(),
+            cluster_fingerprint: snapshot.cluster_fingerprint,
             node_name: snapshot.node_name.clone(),
             partition_id: snapshot.partition_id,
             snapshot_id: snapshot.snapshot_id,
@@ -539,6 +545,16 @@ impl SnapshotRepository {
                         "Snapshot does not match the cluster name of latest snapshot at destination!"
                     );
                 }
+                // The check is disabled until we pass the point where fingerprints are enforced.
+                //
+                // If this check is turned on, nodes will not be able to migrate from "no
+                // fingerprint" to "fingerprint" being set.
+                // It's estimated that this will happen in v1.5.0
+                // if snapshot.cluster_fingerprint != latest.cluster_fingerprint {
+                //     bail!(
+                //         "Snapshot does not match the cluster fingerprint of latest snapshot at destination!"
+                //     );
+                // }
                 Ok(Some((latest, version)))
             }
             Err(object_store::Error::NotFound { .. }) => {
@@ -902,6 +918,7 @@ mod tests {
         PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
             cluster_name: "cluster".to_string(),
+            cluster_fingerprint: None,
             node_name: "node".to_string(),
             partition_id: PartitionId::MIN,
             created_at: humantime::Timestamp::from(SystemTime::now()),
