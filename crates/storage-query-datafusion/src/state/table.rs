@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use futures::Stream;
 
+use restate_partition_store::keys::TableKey;
+use restate_partition_store::scan::TableScan;
+use restate_partition_store::state_table::StateKey;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::state_table::ReadOnlyStateTable;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -64,7 +66,23 @@ impl ScanLocalPartition for StateScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        partition_store.get_all_user_states_in_range(range)
+        partition_store
+            .run_iterator(
+                "df-user-state",
+                TableScan::FullScanPartitionKeyRange::<StateKey>(range),
+                |(mut key, value)| {
+                    let row_key = StateKey::deserialize_from(&mut key)?;
+                    let (partition_key, service_name, service_key, state_key) =
+                        row_key.into_inner_ok_or()?;
+
+                    Ok((
+                        ServiceId::from_parts(partition_key, service_name, service_key),
+                        state_key,
+                        Bytes::copy_from_slice(value),
+                    ))
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)
     }
 
     fn append_row(row_builder: &mut Self::Builder, _: &mut String, value: Self::Item) {

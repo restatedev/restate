@@ -12,15 +12,15 @@ mod background;
 mod db_manager;
 mod db_spec;
 mod error;
+mod iterator;
 mod metric_definitions;
 mod perf;
 mod rock_access;
 
+use bytes::Bytes;
 use metrics::counter;
 use metrics::gauge;
 use metrics::histogram;
-use restate_core::ShutdownError;
-use restate_types::config::RocksDbOptions;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -36,10 +36,15 @@ use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
 
+use restate_core::ShutdownError;
+use restate_types::config::RocksDbOptions;
+
 // re-exports
 pub use self::db_manager::RocksDbManager;
 pub use self::db_spec::*;
 pub use self::error::*;
+pub use self::iterator::IterAction;
+use self::iterator::RocksIterator;
 pub use self::perf::RocksDbPerfGuard;
 pub use self::rock_access::RocksAccess;
 
@@ -284,6 +289,62 @@ impl RocksDb {
                 Err(e.into())
             }
         }
+    }
+
+    #[tracing::instrument(skip_all, fields(db = %self.name))]
+    pub fn run_background_iterator(
+        &self,
+        cf: CfName,
+        name: &'static str,
+        priority: Priority,
+        from: Bytes,
+        mut read_options: rocksdb::ReadOptions,
+        on_item: impl Fn(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
+    ) -> Result<(), ShutdownError> {
+        let db = self.db.clone();
+        // ensure that we allow blocking IO.
+        read_options.set_read_tier(rocksdb::ReadTier::All);
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::BackgroundIterator)
+            .priority(priority)
+            .op(move || {
+                // note: the perf guard's lifetime encapsulates all operations in the iterator and
+                // the total duration includes all the time spent blocking on the tx's capacity.
+                let _x = RocksDbPerfGuard::new(name);
+                let Some(cf) = db.cf_handle(cf.as_str()) else {
+                    on_item(Err(RocksError::UnknownColumnFamily(cf)));
+                    return;
+                };
+                let mut iter = RocksIterator::new(
+                    db.as_raw_db().raw_iterator_cf_opt(&cf, read_options),
+                    on_item,
+                );
+                // set the starting position
+                iter.seek(from);
+                loop {
+                    match iter.step() {
+                        iterator::Disposition::WouldBlock => {
+                            // we should not be here if the iterator is configured correctly.
+                            // as we are already in the storage thread pool, we expect the
+                            // iterator to be blocking.
+                            //
+                            // Why do we panic? because this iterator will be stopped short of all
+                            // values it should return and we don't want to mislead readers that
+                            // they have consumed the iterator cleanly.
+                            panic!(
+                                "RocksDB iterator is reporting that it WouldBlock but it's \
+                                already on the storage thread pool. This is a bug!"
+                            );
+                        }
+                        iterator::Disposition::Continue => continue,
+                        iterator::Disposition::Stop => return,
+                    }
+                }
+            })
+            .build()
+            .unwrap();
+
+        self.manager.spawn(task)
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name))]
