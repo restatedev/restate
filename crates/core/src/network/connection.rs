@@ -283,6 +283,7 @@ impl Connection {
         let my_node_id = my_node_id.or_else(|| metadata.my_node_id_opt());
         let nodes_config = metadata.nodes_config_snapshot();
         let cluster_name = nodes_config.cluster_name().to_owned();
+        let cluster_fingerprint = nodes_config.cluster_fingerprint();
 
         let (tx, egress, shared) = if let Swimlane::Gossip = swimlane {
             // For gossip swimlane, we need those connections to be as tight as possible. Buffering
@@ -297,7 +298,14 @@ impl Connection {
         shared
             .unbounded_send(EgressMessage::Message(
                 Header::default(),
-                Hello::new(my_node_id, cluster_name, direction, swimlane).into(),
+                Hello::new(
+                    my_node_id,
+                    cluster_name,
+                    cluster_fingerprint,
+                    direction,
+                    swimlane,
+                )
+                .into(),
                 Some(Span::current()),
             ))
             .unwrap();
