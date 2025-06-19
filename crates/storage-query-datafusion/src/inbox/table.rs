@@ -14,9 +14,14 @@ use std::sync::Arc;
 
 use futures::Stream;
 
+use restate_partition_store::Priority;
+use restate_partition_store::inbox_table::InboxKey;
+use restate_partition_store::keys::TableKey;
+use restate_partition_store::protobuf_types::PartitionStoreProtobufValue;
+use restate_partition_store::scan::TableScan;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::inbox_table::{ReadOnlyInboxTable, SequenceNumberInboxEntry};
+use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
 use restate_types::identifiers::PartitionKey;
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -66,7 +71,20 @@ impl ScanLocalPartition for InboxScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        partition_store.all_inboxes(range)
+        partition_store
+            .run_iterator(
+                "df-inbox",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
+                |(mut key, mut value)| {
+                    let key = InboxKey::deserialize_from(&mut key)?;
+                    let sequence_number = *key.sequence_number_ok_or()?;
+                    let inbox_entry = InboxEntry::decode(&mut value)?;
+
+                    Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)
     }
 
     fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {
