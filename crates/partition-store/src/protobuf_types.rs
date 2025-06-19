@@ -14,7 +14,7 @@ use restate_types::errors::IdDecodeError;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageDecodeError, StorageEncode};
 
 /// Marker trait to specify the Protobuf equivalent of a user facing type
-pub(crate) trait PartitionStoreProtobufValue: Sized {
+pub trait PartitionStoreProtobufValue: Sized {
     type ProtobufType: From<Self> + TryInto<Self> + prost::Message + Default;
 
     /// Helper to use StorageCodec::decode

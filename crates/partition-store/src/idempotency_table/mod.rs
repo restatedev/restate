@@ -8,22 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::owned_iter::OwnedIterator;
-use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::scan::TableScan;
-use crate::{PartitionStore, TableKind};
-use crate::{PartitionStoreTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::Stream;
-use futures_util::stream;
+
+use restate_storage_api::Result;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
-use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{IdempotencyId, PartitionKey, WithPartitionKey};
-use std::ops::RangeInclusive;
+
+use crate::keys::{KeyKind, define_table_key};
+use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::{PartitionStore, TableKind};
+use crate::{PartitionStoreTransaction, StorageAccess};
 
 define_table_key!(
     TableKind::Idempotency,
@@ -64,36 +61,6 @@ fn get_idempotency_metadata<S: StorageAccess>(
     storage.get_value(create_key(idempotency_id))
 }
 
-fn all_idempotency_metadata<S: StorageAccess>(
-    storage: &S,
-    range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + use<'_, S>> {
-    let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<IdempotencyKey>(
-        range,
-    ))?;
-    Ok(stream::iter(OwnedIterator::new(iter).map(
-        |(mut k, mut v)| {
-            let key = IdempotencyKey::deserialize_from(&mut k)?;
-            let idempotency_metadata = IdempotencyMetadata::decode(&mut v)?;
-
-            Ok((
-                IdempotencyId::new(
-                    key.service_name_ok_or()?.clone(),
-                    key.service_key
-                        .clone()
-                        .map(|b| {
-                            ByteString::try_from(b).map_err(|e| StorageError::Generic(e.into()))
-                        })
-                        .transpose()?,
-                    key.service_handler_ok_or()?.clone(),
-                    key.idempotency_key_ok_or()?.clone(),
-                ),
-                idempotency_metadata,
-            ))
-        },
-    )))
-}
-
 fn put_idempotency_metadata<S: StorageAccess>(
     storage: &mut S,
     idempotency_id: &IdempotencyId,
@@ -118,13 +85,6 @@ impl ReadOnlyIdempotencyTable for PartitionStore {
         self.assert_partition_key(idempotency_id)?;
         get_idempotency_metadata(self, idempotency_id)
     }
-
-    fn all_idempotency_metadata(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send> {
-        all_idempotency_metadata(self, range)
-    }
 }
 
 impl ReadOnlyIdempotencyTable for PartitionStoreTransaction<'_> {
@@ -134,13 +94,6 @@ impl ReadOnlyIdempotencyTable for PartitionStoreTransaction<'_> {
     ) -> Result<Option<IdempotencyMetadata>> {
         self.assert_partition_key(idempotency_id)?;
         get_idempotency_metadata(self, idempotency_id)
-    }
-
-    fn all_idempotency_metadata(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send> {
-        all_idempotency_metadata(self, range)
     }
 }
 

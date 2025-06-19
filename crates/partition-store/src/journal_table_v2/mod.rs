@@ -8,28 +8,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
+use std::io::Cursor;
+
+use anyhow::anyhow;
+use futures::Stream;
+use futures_util::stream;
+
+use restate_rocksdb::RocksDbPerfGuard;
+use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
+use restate_storage_api::{Result, StorageError};
+use restate_types::identifiers::{
+    EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithPartitionKey,
+};
+use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryInner};
+use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
+
 use crate::TableKind::Journal;
 use crate::keys::TableKey;
 use crate::keys::{KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::scan::TableScan::FullScanPartitionKeyRange;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
-use anyhow::anyhow;
-use futures::Stream;
-use futures_util::stream;
-use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
-use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::{
-    EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
-};
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryInner};
-use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
-use std::collections::HashMap;
-use std::io::Cursor;
-use std::ops::RangeInclusive;
 
 define_table_key!(
     Journal,
@@ -155,30 +156,6 @@ fn get_journal<S: StorageAccess>(
             }
         },
     )
-}
-
-fn all_journals<S: StorageAccess>(
-    storage: &S,
-    range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send + use<'_, S>> {
-    let iter = storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range))?;
-    Ok(stream::iter(OwnedIterator::new(iter).map(
-        |(mut key, mut value)| {
-            let journal_key = JournalKey::deserialize_from(&mut key)?;
-            let journal_entry = StoredEntry::decode(&mut value)
-                .map_err(|err| StorageError::Conversion(err.into()))?;
-
-            let (partition_key, invocation_uuid, entry_index) = journal_key.into_inner_ok_or()?;
-
-            Ok((
-                JournalEntryId::from_parts(
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    entry_index,
-                ),
-                journal_entry.0,
-            ))
-        },
-    )))
 }
 
 fn delete_journal<S: StorageAccess>(
@@ -328,13 +305,6 @@ impl ReadOnlyJournalTable for PartitionStore {
         )?))
     }
 
-    fn all_journals(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send> {
-        all_journals(self, range)
-    }
-
     async fn get_notifications_index(
         &mut self,
         invocation_id: InvocationId,
@@ -373,13 +343,6 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
             &invocation_id,
             journal_length,
         )?))
-    }
-
-    fn all_journals(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send> {
-        all_journals(self, range)
     }
 
     async fn get_notifications_index(

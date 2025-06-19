@@ -8,12 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures::Stream;
-use restate_storage_api::journal_table_v2::ReadOnlyJournalTable as ReadOnlyJournalTableV2;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
+
+use futures::Stream;
 use tokio_stream::StreamExt;
+
+use restate_partition_store::Priority;
+use restate_partition_store::journal_table_v2::StoredEntry;
+use restate_partition_store::keys::TableKey;
+use restate_partition_store::protobuf_types::PartitionStoreProtobufValue;
+use restate_partition_store::scan::TableScan;
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use restate_storage_api::StorageError;
+use restate_storage_api::journal_table::JournalEntry;
+use restate_types::identifiers::{InvocationId, JournalEntryId, PartitionKey};
+use restate_types::journal_v2::raw::RawEntry;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::journal::row::{append_journal_row, append_journal_row_v2};
@@ -22,11 +33,6 @@ use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::StorageError;
-use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
-use restate_types::identifiers::{JournalEntryId, PartitionKey};
-use restate_types::journal_v2::raw::RawEntry;
 
 const NAME: &str = "sys_journal";
 
@@ -71,11 +77,8 @@ impl ScanLocalPartition for JournalScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        let v1 = ReadOnlyJournalTable::all_journals(partition_store, range.clone())?
-            .map(|x| x.map(|(id, entry)| (id, ScannedEntry::V1(entry))));
-
-        let v2 = ReadOnlyJournalTableV2::all_journals(partition_store, range)?
-            .map(|x| x.map(|(id, entry)| (id, ScannedEntry::V2(entry))));
+        let v1 = all_v1_journals(partition_store, range.clone())?;
+        let v2 = all_v2_journals(partition_store, range)?;
 
         Ok(v1.merge(v2))
     }
@@ -90,4 +93,71 @@ impl ScanLocalPartition for JournalScanner {
             }
         }
     }
+}
+
+fn all_v1_journals(
+    partition_store: &PartitionStore,
+    range: RangeInclusive<PartitionKey>,
+) -> Result<
+    impl Stream<Item = restate_storage_api::Result<(JournalEntryId, ScannedEntry)>> + Send,
+    StorageError,
+> {
+    use restate_partition_store::journal_table::JournalKey;
+
+    partition_store
+        .run_iterator(
+            "df-v1-journal",
+            Priority::Low,
+            TableScan::FullScanPartitionKeyRange::<JournalKey>(range),
+            |(mut key, mut value)| {
+                let journal_key = JournalKey::deserialize_from(&mut key)?;
+                let journal_entry = JournalEntry::decode(&mut value)?;
+
+                let (partition_key, invocation_uuid, entry_index) =
+                    journal_key.into_inner_ok_or()?;
+
+                Ok((
+                    JournalEntryId::from_parts(
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        entry_index,
+                    ),
+                    ScannedEntry::V1(journal_entry),
+                ))
+            },
+        )
+        .map_err(|_| StorageError::OperationalError)
+}
+
+fn all_v2_journals(
+    partition_store: &PartitionStore,
+    range: RangeInclusive<PartitionKey>,
+) -> Result<
+    impl Stream<Item = restate_storage_api::Result<(JournalEntryId, ScannedEntry)>> + Send,
+    StorageError,
+> {
+    use restate_partition_store::journal_table_v2::JournalKey;
+
+    partition_store
+        .run_iterator(
+            "df-v2-journal",
+            Priority::Low,
+            TableScan::FullScanPartitionKeyRange::<JournalKey>(range),
+            |(mut key, mut value)| {
+                let journal_key = JournalKey::deserialize_from(&mut key)?;
+                let journal_entry = StoredEntry::decode(&mut value)
+                    .map_err(|err| StorageError::Conversion(err.into()))?;
+
+                let (partition_key, invocation_uuid, entry_index) =
+                    journal_key.into_inner_ok_or()?;
+
+                Ok((
+                    JournalEntryId::from_parts(
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        entry_index,
+                    ),
+                    ScannedEntry::V2(journal_entry.0),
+                ))
+            },
+        )
+        .map_err(|_| StorageError::OperationalError)
 }
