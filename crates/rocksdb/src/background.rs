@@ -31,6 +31,7 @@ pub enum StorageTaskKind {
     Compaction,
     Shutdown,
     OpenDb,
+    BackgroundIterator,
 }
 
 impl StorageTaskKind {
