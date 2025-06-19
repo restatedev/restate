@@ -18,15 +18,17 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use codederror::CodedError;
 use enum_map::Enum;
-use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{
     BoundColumnFamily, DBCompressionType, DBPinnableSlice, DBRawIteratorWithThreadMode,
     PrefixRange, ReadOptions, SliceTransform, SnapshotWithThreadMode,
 };
 use static_assertions::const_assert_eq;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::trace;
 
 use restate_core::{Metadata, ShutdownError};
+use restate_rocksdb::IterAction;
 use restate_rocksdb::{CfName, IoMode, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
@@ -35,6 +37,7 @@ use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPart
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
 use restate_types::storage::StorageCodec;
+use rocksdb::table_properties::TablePropertiesExt;
 
 use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
 use crate::keys::KeyKind;
@@ -106,7 +109,7 @@ const_assert_eq!(
     std::mem::size_of::<PaddedPartitionId>(),
 );
 
-pub(crate) type Result<T> = std::result::Result<T, StorageError>;
+pub(crate) type Result<T, E = StorageError> = std::result::Result<T, E>;
 
 pub enum TableScanIterationDecision<R> {
     Emit(Result<R>),
@@ -311,50 +314,23 @@ impl PartitionStore {
         find_cf_handle(&self.rocksdb, &self.data_cf_name, table_kind)
     }
 
-    fn prefix_iterator(
-        &self,
-        table: TableKind,
-        _key_kind: KeyKind,
-        prefix: Bytes,
-    ) -> Result<DBIterator> {
-        let table = self.table_handle(table)?;
+    fn new_prefix_iterator_opts(&self, _key_kind: KeyKind, prefix: Bytes) -> ReadOptions {
         let mut opts = ReadOptions::default();
         opts.set_prefix_same_as_start(true);
         opts.set_iterate_range(PrefixRange(prefix.clone()));
         opts.set_async_io(true);
         opts.set_total_order_seek(false);
-        let mut it = self
-            .rocksdb
-            .inner()
-            .as_raw_db()
-            .raw_iterator_cf_opt(&table, opts);
-        it.seek(prefix);
-        Ok(it)
+        opts
     }
 
-    fn range_iterator(
-        &self,
-        table: TableKind,
-        _key: KeyKind,
-        scan_mode: ScanMode,
-        from: Bytes,
-        to: Bytes,
-    ) -> Result<DBIterator> {
-        let table = self.table_handle(table)?;
+    fn new_range_iterator_opts(&self, scan_mode: ScanMode, from: Bytes, to: Bytes) -> ReadOptions {
         let mut opts = ReadOptions::default();
         // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
         // binding.
         opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
-        opts.set_iterate_range(from.clone()..to);
+        opts.set_iterate_range(from..to);
         opts.set_async_io(true);
-
-        let mut it = self
-            .rocksdb
-            .inner()
-            .as_raw_db()
-            .raw_iterator_cf_opt(&table, opts);
-        it.seek(from);
-        Ok(it)
+        opts
     }
 
     #[track_caller]
@@ -366,13 +342,32 @@ impl PartitionStore {
         match scan {
             PhysicalScan::Prefix(table, key_kind, prefix) => {
                 assert!(table.has_key_kind(&prefix));
-                self.prefix_iterator(table, key_kind, prefix.freeze())
+                let prefix = prefix.freeze();
+                let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
+                let table = self.table_handle(table)?;
+                let mut it = self
+                    .rocksdb
+                    .inner()
+                    .as_raw_db()
+                    .raw_iterator_cf_opt(&table, opts);
+                it.seek(prefix);
+                Ok(it)
             }
-            PhysicalScan::RangeExclusive(table, key_kind, scan_mode, start, end) => {
+            PhysicalScan::RangeExclusive(table, _key_kind, scan_mode, start, end) => {
                 assert!(table.has_key_kind(&start));
-                self.range_iterator(table, key_kind, scan_mode, start.freeze(), end.freeze())
+                let start = start.freeze();
+                let end = end.freeze();
+                let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
+                let table = self.table_handle(table)?;
+                let mut it = self
+                    .rocksdb
+                    .inner()
+                    .as_raw_db()
+                    .raw_iterator_cf_opt(&table, opts);
+                it.seek(start);
+                Ok(it)
             }
-            PhysicalScan::RangeOpen(table, key_kind, start) => {
+            PhysicalScan::RangeOpen(table, _key_kind, start) => {
                 // We delayed the generate the synthetic iterator upper bound until this point
                 // because we might have different prefix length requirements based on the
                 // table+key_kind combination and we should keep this knowledge as low-level as
@@ -386,15 +381,107 @@ impl PartitionStore {
                 // So, we limit the iterator to the upper bound of this prefix
                 let kind_upper_bound = K::KEY_KIND.exclusive_upper_bound();
                 end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
-                self.range_iterator(
-                    table,
-                    key_kind,
-                    ScanMode::TotalOrder,
-                    start.freeze(),
-                    end.freeze(),
-                )
+                let start = start.freeze();
+                let end = end.freeze();
+                let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
+                let table = self.table_handle(table)?;
+                let mut it = self
+                    .rocksdb
+                    .inner()
+                    .as_raw_db()
+                    .raw_iterator_cf_opt(&table, opts);
+                it.seek(start);
+                Ok(it)
             }
         }
+    }
+
+    #[track_caller]
+    pub fn run_iterator<K: TableKey, O: Send + 'static>(
+        &self,
+        name: &'static str,
+        scan: TableScan<K>,
+        f: impl Fn((&[u8], &[u8])) -> Result<O> + Send + 'static,
+    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
+        let (tx, rx) = mpsc::channel(1);
+        let scan: PhysicalScan = scan.into();
+        let on_iter = move |item: Result<(&[u8], &[u8]), RocksError>| -> IterAction {
+            let res = match item {
+                // apply the caller's function
+                Ok((key, value)) => match f((key, value)) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(e));
+                        return IterAction::Stop;
+                    }
+                },
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
+                    return IterAction::Stop;
+                }
+            };
+            if tx.blocking_send(Ok(res)).is_err() {
+                return IterAction::Stop;
+            }
+            // the channel is not closed yet, keep iterating
+            IterAction::Next
+        };
+        match scan {
+            PhysicalScan::Prefix(table, key_kind, prefix) => {
+                assert!(table.has_key_kind(&prefix));
+                let prefix = prefix.freeze();
+                let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
+                self.rocksdb.run_background_iterator(
+                    self.data_cf_name.clone(),
+                    name,
+                    Priority::Low,
+                    prefix,
+                    opts,
+                    on_iter,
+                )?;
+            }
+            PhysicalScan::RangeExclusive(table, _key_kind, scan_mode, start, end) => {
+                assert!(table.has_key_kind(&start));
+                let start = start.freeze();
+                let end = end.freeze();
+                let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
+                self.rocksdb.run_background_iterator(
+                    self.data_cf_name.clone(),
+                    name,
+                    Priority::Low,
+                    start,
+                    opts,
+                    on_iter,
+                )?;
+            }
+            PhysicalScan::RangeOpen(_table, _key_kind, start) => {
+                // We delayed the generate the synthetic iterator upper bound until this point
+                // because we might have different prefix length requirements based on the
+                // table+key_kind combination and we should keep this knowledge as low-level as
+                // possible.
+                //
+                // make the end has the same length as all prefixes to ensure rocksdb key
+                // comparator can leverage bloom filters when applicable
+                // (if auto_prefix_mode is enabled)
+                let mut end = BytesMut::zeroed(DB_PREFIX_LENGTH);
+                // We want to ensure that Range scans fall within the same key kind.
+                // So, we limit the iterator to the upper bound of this prefix
+                let kind_upper_bound = K::KEY_KIND.exclusive_upper_bound();
+                end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
+                let start = start.freeze();
+                let end = end.freeze();
+                let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
+                self.rocksdb.run_background_iterator(
+                    self.data_cf_name.clone(),
+                    name,
+                    Priority::Low,
+                    start,
+                    opts,
+                    on_iter,
+                )?;
+            }
+        }
+        Ok(ReceiverStream::new(rx))
     }
 
     pub fn transaction(&mut self) -> PartitionStoreTransaction {
