@@ -608,15 +608,7 @@ impl ClusterConfiguration {
     pub fn from_configuration(configuration: &Configuration) -> Self {
         ClusterConfiguration {
             num_partitions: configuration.common.default_num_partitions,
-            partition_replication: {
-                #[allow(deprecated)]
-                configuration
-                    .admin
-                    .default_partition_replication
-                    .clone()
-                    .unwrap_or_else(|| configuration.common.default_replication.clone())
-                    .into()
-            },
+            partition_replication: configuration.common.default_replication.clone().into(),
             bifrost_provider: ProviderConfiguration::from_configuration(configuration),
         }
     }

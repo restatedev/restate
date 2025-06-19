@@ -53,6 +53,7 @@ pub struct QueryEngineOptions {
         since = "1.4.0",
         note = "Pgsql query engine be disable with 1.4.0, and removed with 1.5.0"
     )]
+    #[serde(skip_serializing)]
     pub pgsql_bind_address: Option<SocketAddr>,
 }
 

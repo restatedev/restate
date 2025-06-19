@@ -83,14 +83,7 @@ impl NodeCtlSvcHandler {
             .partition_replication
             .map(TryInto::try_into)
             .transpose()?
-            .unwrap_or_else(|| {
-                #[allow(deprecated)]
-                config
-                    .admin
-                    .default_partition_replication
-                    .clone()
-                    .unwrap_or_else(|| config.common.default_replication.clone())
-            });
+            .unwrap_or_else(|| config.common.default_replication.clone());
         let log_provider = request
             .log_provider
             .map(|log_provider| log_provider.parse())
@@ -105,15 +98,7 @@ impl NodeCtlSvcHandler {
             .log_replication
             .map(ReplicationProperty::try_from)
             .transpose()?
-            .unwrap_or_else(|| {
-                #[allow(deprecated)]
-                config
-                    .bifrost
-                    .replicated_loglet
-                    .default_log_replication
-                    .clone()
-                    .unwrap_or_else(|| config.common.default_replication.clone())
-            });
+            .unwrap_or_else(|| config.common.default_replication.clone());
 
         let provider_configuration =
             ProviderConfiguration::from((log_provider, log_replication, target_nodeset_size));
