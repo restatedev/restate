@@ -88,7 +88,7 @@ async fn start_metadata_server(mut config: Configuration) -> anyhow::Result<Meta
     let mut server_builder = NetworkServerBuilder::default();
 
     // right now we only support running a local metadata store
-    let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
+    let uds = tempfile::tempdir()?.keep().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
     config.common.metadata_client.kind = MetadataClientKind::Replicated {
         addresses: vec![AdvertisedAddress::Uds(uds)],
