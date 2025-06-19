@@ -12,11 +12,17 @@ use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use bytestring::ByteString;
 use futures::Stream;
 
+use restate_partition_store::Priority;
+use restate_partition_store::idempotency_table::IdempotencyKey;
+use restate_partition_store::keys::TableKey;
+use restate_partition_store::protobuf_types::PartitionStoreProtobufValue;
+use restate_partition_store::scan::TableScan;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::idempotency_table::{IdempotencyMetadata, ReadOnlyIdempotencyTable};
+use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_types::identifiers::{IdempotencyId, PartitionKey};
 
 use super::row::append_idempotency_row;
@@ -65,7 +71,33 @@ impl ScanLocalPartition for IdempotencyScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        partition_store.all_idempotency_metadata(range)
+        partition_store
+            .run_iterator(
+                "df-idempotency",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<IdempotencyKey>(range),
+                |(mut key, mut value)| {
+                    let key = IdempotencyKey::deserialize_from(&mut key)?;
+                    let idempotency_metadata = IdempotencyMetadata::decode(&mut value)?;
+
+                    Ok((
+                        IdempotencyId::new(
+                            key.service_name_ok_or()?.clone(),
+                            key.service_key
+                                .clone()
+                                .map(|b| {
+                                    ByteString::try_from(b)
+                                        .map_err(|e| StorageError::Generic(e.into()))
+                                })
+                                .transpose()?,
+                            key.service_handler_ok_or()?.clone(),
+                            key.idempotency_key_ok_or()?.clone(),
+                        ),
+                        idempotency_metadata,
+                    ))
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)
     }
 
     fn append_row(

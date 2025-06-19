@@ -10,12 +10,11 @@
 
 use crate::Result;
 use futures_util::Stream;
-use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::journal_v2::raw::{RawCommand, RawEntry};
 use restate_types::journal_v2::{CompletionId, NotificationId};
 use std::collections::HashMap;
 use std::future::Future;
-use std::ops::RangeInclusive;
 
 pub trait ReadOnlyJournalTable {
     fn get_journal_entry(
@@ -29,11 +28,6 @@ pub trait ReadOnlyJournalTable {
         invocation_id: InvocationId,
         length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send>;
-
-    fn all_journals(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send>;
 
     fn get_notifications_index(
         &mut self,
