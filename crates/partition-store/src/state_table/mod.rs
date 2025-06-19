@@ -8,20 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::TableKind::State;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::owned_iter::OwnedIterator;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
-use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
+
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use std::ops::RangeInclusive;
+
+use crate::TableKind::State;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
+use crate::{TableScan, TableScanIterationDecision};
 
 define_table_key!(
     State,
@@ -117,27 +117,6 @@ fn get_all_user_states_for_service<S: StorageAccess>(
     )
 }
 
-fn get_all_user_states<S: StorageAccess>(
-    storage: &S,
-    range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send + use<'_, S>> {
-    let _x = RocksDbPerfGuard::new("get-all-user-state");
-    let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<StateKey>(range));
-    Ok(stream::iter(OwnedIterator::new(iter?).map(
-        |(mut key, value)| {
-            let row_key = StateKey::deserialize_from(&mut key)?;
-            let (partition_key, service_name, service_key, state_key) =
-                row_key.into_inner_ok_or()?;
-
-            Ok((
-                ServiceId::from_parts(partition_key, service_name, service_key),
-                state_key,
-                value,
-            ))
-        },
-    )))
-}
-
 impl ReadOnlyStateTable for PartitionStore {
     async fn get_user_state(
         &mut self,
@@ -156,19 +135,6 @@ impl ReadOnlyStateTable for PartitionStore {
         Ok(stream::iter(get_all_user_states_for_service(
             self, service_id,
         )?))
-    }
-
-    fn get_all_user_states(
-        &self,
-    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send> {
-        get_all_user_states(self, self.partition_key_range().clone())
-    }
-
-    fn get_all_user_states_in_range(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send> {
-        get_all_user_states(self, range)
     }
 }
 
@@ -190,19 +156,6 @@ impl ReadOnlyStateTable for PartitionStoreTransaction<'_> {
         Ok(stream::iter(get_all_user_states_for_service(
             self, service_id,
         )?))
-    }
-
-    fn get_all_user_states(
-        &self,
-    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send> {
-        get_all_user_states(self, self.partition_key_range().clone())
-    }
-
-    fn get_all_user_states_in_range(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send> {
-        get_all_user_states(self, range)
     }
 }
 
