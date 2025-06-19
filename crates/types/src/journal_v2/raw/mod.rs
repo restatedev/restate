@@ -92,6 +92,10 @@ impl RawEntry {
     pub fn header(&self) -> &RawEntryHeader {
         &self.header
     }
+
+    pub fn header_mut(&mut self) -> &mut RawEntryHeader {
+        &mut self.header
+    }
 }
 
 impl RawEntry {
