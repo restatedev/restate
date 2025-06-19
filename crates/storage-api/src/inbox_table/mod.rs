@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
-use crate::promise_table::ReadOnlyPromiseTable;
 use futures_util::Stream;
+
 use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
-use std::future::Future;
-use std::ops::RangeInclusive;
+
+use crate::Result;
+use crate::promise_table::ReadOnlyPromiseTable;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InboxEntry {
@@ -87,11 +87,6 @@ pub trait ReadOnlyInboxTable {
     fn inbox(
         &mut self,
         service_id: &ServiceId,
-    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send>;
-
-    fn all_inboxes(
-        &self,
-        range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send>;
 }
 

@@ -12,12 +12,18 @@ use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use bytestring::ByteString;
 use futures::Stream;
 
+use restate_partition_store::Priority;
+use restate_partition_store::keys::TableKey;
+use restate_partition_store::promise_table::PromiseKey;
+use restate_partition_store::protobuf_types::PartitionStoreProtobufValue;
+use restate_partition_store::scan::TableScan;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::promise_table::{OwnedPromiseRow, ReadOnlyPromiseTable};
-use restate_types::identifiers::PartitionKey;
+use restate_storage_api::promise_table::{OwnedPromiseRow, Promise};
+use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use super::row::append_promise_row;
 use super::schema::{SysPromiseBuilder, sys_promise_sort_order};
@@ -63,7 +69,31 @@ impl ScanLocalPartition for PromiseScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        partition_store.all_promises(range)
+        partition_store
+            .run_iterator(
+                "df-promise",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<PromiseKey>(range),
+                |(mut k, mut v)| {
+                    let key = PromiseKey::deserialize_from(&mut k)?;
+                    let metadata = Promise::decode(&mut v)?;
+
+                    let (partition_key, service_name, service_key, promise_key) =
+                        key.into_inner_ok_or()?;
+
+                    Ok(OwnedPromiseRow {
+                        service_id: ServiceId::with_partition_key(
+                            partition_key,
+                            service_name,
+                            ByteString::try_from(service_key)
+                                .map_err(|e| anyhow::anyhow!("Cannot convert to string {e}"))?,
+                        ),
+                        key: promise_key,
+                        metadata,
+                    })
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)
     }
 
     fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {

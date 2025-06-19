@@ -8,14 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::TableKind::Inbox;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
-use crate::{TableScan, TableScanIterationDecision};
+use std::io::Cursor;
+
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
+
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::Result;
 use restate_storage_api::inbox_table::{
@@ -23,8 +21,12 @@ use restate_storage_api::inbox_table::{
 };
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
-use std::io::Cursor;
-use std::ops::RangeInclusive;
+
+use crate::TableKind::Inbox;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
+use crate::{TableScan, TableScanIterationDecision};
 
 define_table_key!(
     Inbox,
@@ -80,19 +82,6 @@ fn inbox<S: StorageAccess>(
     )?))
 }
 
-fn all_inboxes<S: StorageAccess>(
-    storage: &S,
-    range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
-    Ok(stream::iter(storage.for_each_key_value_in_place(
-        TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
-        |k, v| {
-            let inbox_entry = decode_inbox_key_value(k, v);
-            TableScanIterationDecision::Emit(inbox_entry)
-        },
-    )?))
-}
-
 impl ReadOnlyInboxTable for PartitionStore {
     async fn peek_inbox(
         &mut self,
@@ -108,13 +97,6 @@ impl ReadOnlyInboxTable for PartitionStore {
     ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
         self.assert_partition_key(service_id)?;
         inbox(self, service_id)
-    }
-
-    fn all_inboxes(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
-        all_inboxes(self, range)
     }
 }
 
@@ -133,13 +115,6 @@ impl ReadOnlyInboxTable for PartitionStoreTransaction<'_> {
     ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
         self.assert_partition_key(service_id)?;
         inbox(self, service_id)
-    }
-
-    fn all_inboxes(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
-        all_inboxes(self, range)
     }
 }
 
