@@ -166,7 +166,7 @@ pub fn set_current_config(config: Configuration) {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(default))]
 #[builder(default)]
-#[serde(rename_all = "kebab-case", from = "ConfigurationShadow")]
+#[serde(rename_all = "kebab-case")]
 pub struct Configuration {
     #[serde(flatten)]
     pub common: CommonOptions,
@@ -221,6 +221,7 @@ impl Configuration {
     }
 
     pub fn apply_cascading_values(mut self) -> Self {
+        self.admin.print_deprecation_warnings();
         self.worker.storage.print_deprecation_warnings();
         self.worker.storage.apply_common(&self.common);
         self.bifrost.apply_common(&self.common);
@@ -301,52 +302,6 @@ pub enum InvalidConfigurationError {
     RequiredNodeName(String),
 }
 
-/// Used to deserialize the [`Configuration`] in backwards compatible way which allows to specify
-/// a `metadata_store` field instead of `metadata_server`. Can be removed once we drop support for
-/// `metadata_store`.
-#[serde_as]
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct ConfigurationShadow {
-    #[serde(flatten)]
-    common: CommonOptions,
-    worker: WorkerOptions,
-    admin: AdminOptions,
-    ingress: IngressOptions,
-    bifrost: BifrostOptions,
-    metadata_server: MetadataServerOptions,
-    // previous name of metadata server options; kept for backwards compatibility
-    // todo remove with 1.4.0
-    #[serde_as(as = "Option<metadata_server::MetadataServerOptionsWithConfigurationDefaults>")]
-    metadata_store: Option<MetadataServerOptions>,
-    networking: NetworkingOptions,
-    log_server: LogServerOptions,
-}
-
-impl From<ConfigurationShadow> for Configuration {
-    fn from(value: ConfigurationShadow) -> Self {
-        let metadata_server = if value.metadata_server == MetadataServerOptions::default()
-            && value.metadata_store.is_some()
-        {
-            print_warning_deprecated_config_option("metadata-store", Some("metadata-server"));
-            value.metadata_store.unwrap()
-        } else {
-            value.metadata_server
-        };
-
-        Configuration {
-            common: value.common,
-            worker: value.worker,
-            admin: value.admin,
-            ingress: value.ingress,
-            bifrost: value.bifrost,
-            metadata_server,
-            networking: value.networking,
-            log_server: value.log_server,
-        }
-    }
-}
-
 fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<&str>) {
     // we can't use tracing since config loading happens before tracing is initialized
     if let Some(replacement) = replacement {
@@ -356,12 +311,6 @@ fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<
     } else {
         eprintln!("Using the deprecated config option '{deprecated}'.");
     }
-}
-
-fn print_warning_deprecated_value_using_default(option: &str, value: &str) {
-    eprintln!(
-        "Config option '{option}' does no longer support the value '{value}'. Using the default value instead."
-    );
 }
 
 #[allow(unused)]

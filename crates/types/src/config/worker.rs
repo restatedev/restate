@@ -272,13 +272,15 @@ pub struct StorageOptions {
     /// This configuration option is deprecated and ignored in Restate >= 1.3.3.
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    #[deprecated(since = "1.3.3", note = "no longer used, will be removed with 1.4.0")]
+    #[deprecated(since = "1.4.0", note = "no longer used, will be removed with >1.4.0")]
+    #[serde(skip_serializing)]
     persist_lsn_interval: Option<humantime::Duration>,
 
     /// # Persist LSN threshold (deprecated)
     ///
     /// This configuration option is deprecated and ignored in Restate >= 1.3.3.
-    #[deprecated(since = "1.3.3", note = "no longer used, will be removed with 1.4.0")]
+    #[deprecated(since = "1.4.0", note = "no longer used, will be removed with >1.4.0")]
+    #[serde(skip_serializing)]
     pub persist_lsn_threshold: Option<u64>,
 
     /// Whether to perform commits in background IO thread pools eagerly or not
