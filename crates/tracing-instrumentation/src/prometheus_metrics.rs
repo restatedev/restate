@@ -45,7 +45,10 @@ impl Prometheus {
                 opts.histogram_inactivity_timeout.map(Into::into),
             )
             .add_global_label("cluster_name", opts.cluster_name())
-            .add_global_label("node_name", opts.node_name());
+            .add_global_label("node_name", opts.node_name())
+            .set_quantiles(&[0.5, 0.9, 0.99, 1.0])
+            .expect("valid quantiles");
+
         let recorder = builder.build_recorder();
         let prometheus_handle = recorder.handle();
 
