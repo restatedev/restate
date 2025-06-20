@@ -31,7 +31,7 @@ use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_storage_api::invocation_status_table::{
-    InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable,
+    InvokedInvocationStatusLite, ScanInvocationStatusTable,
 };
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::timer_table::{TimerKey, TimerTable};
@@ -459,7 +459,7 @@ where
 
         {
             let invoked_invocations = partition_store
-                .all_invoked_invocations()
+                .scan_invoked_invocations()
                 .map_err(Error::Storage)?;
             tokio::pin!(invoked_invocations);
 

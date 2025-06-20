@@ -8,24 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::TableScan::FullScanPartitionKeyRange;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::owned_iter::OwnedIterator;
-use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::{PartitionStore, TableKind, TableScanIterationDecision};
-use crate::{PartitionStoreTransaction, StorageAccess};
+use std::ops::RangeInclusive;
+
 use futures::Stream;
-use futures_util::stream;
-use restate_rocksdb::RocksDbPerfGuard;
+use tokio_stream::StreamExt;
+use tracing::trace;
+
+use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
-    InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable,
+    InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable, ScanInvocationStatusTable,
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
-use std::ops::RangeInclusive;
-use tracing::trace;
+
+use crate::TableScan::FullScanPartitionKeyRange;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::scan::TableScan;
+use crate::{PartitionStore, TableKind};
+use crate::{PartitionStoreTransaction, StorageAccess};
 
 // TODO remove this once we remove the old InvocationStatus
 define_table_key!(
@@ -190,80 +193,12 @@ fn delete_invocation_status<S: StorageAccess>(
     storage.delete_key(&create_invocation_status_key(invocation_id))
 }
 
-fn invoked_invocations<S: StorageAccess>(
-    storage: &mut S,
-    partition_key_range: RangeInclusive<PartitionKey>,
-) -> Result<Vec<Result<InvokedInvocationStatusLite>>> {
-    let _x = RocksDbPerfGuard::new("invoked-invocations");
-    let mut invocations = storage.for_each_key_value_in_place(
-        FullScanPartitionKeyRange::<InvocationStatusKeyV1>(partition_key_range.clone()),
-        |mut k, mut v| {
-            let result = read_invoked_v1_full_invocation_id(&mut k, &mut v).transpose();
-            if let Some(res) = result {
-                TableScanIterationDecision::Emit(res)
-            } else {
-                TableScanIterationDecision::Continue
-            }
-        },
-    )?;
-    invocations.extend(storage.for_each_key_value_in_place(
-        FullScanPartitionKeyRange::<InvocationStatusKey>(partition_key_range),
-        |mut k, mut v| {
-            let result = read_invoked_full_invocation_id(&mut k, &mut v).transpose();
-            if let Some(res) = result {
-                TableScanIterationDecision::Emit(res)
-            } else {
-                TableScanIterationDecision::Continue
-            }
-        },
-    )?);
-
-    Ok(invocations)
-}
-
-fn all_invocation_status<S: StorageAccess>(
-    storage: &S,
-    range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send + use<'_, S>> {
-    Ok(stream::iter(
-        OwnedIterator::new(storage.iterator_from(FullScanPartitionKeyRange::<
-            InvocationStatusKeyV1,
-        >(range.clone()))?)
-        .map(|(mut key, mut value)| {
-            let state_key = InvocationStatusKeyV1::deserialize_from(&mut key)?;
-            let state_value = InvocationStatusV1::decode(&mut value)?;
-
-            let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
-            Ok((
-                InvocationId::from_parts(partition_key, invocation_uuid),
-                state_value.0,
-            ))
-        })
-        .chain(
-            OwnedIterator::new(storage.iterator_from(FullScanPartitionKeyRange::<
-                InvocationStatusKey,
-            >(range.clone()))?)
-            .map(|(mut key, mut value)| {
-                let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
-                let state_value = InvocationStatus::decode(&mut value)?;
-
-                let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
-                Ok((
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    state_value,
-                ))
-            }),
-        ),
-    ))
-}
-
 // TODO remove this once we remove the old InvocationStatus
 fn read_invoked_v1_full_invocation_id(
-    mut k: &mut &[u8],
-    v: &mut &[u8],
+    mut kv: (&[u8], &[u8]),
 ) -> Result<Option<InvokedInvocationStatusLite>> {
-    let invocation_id = invocation_id_from_v1_key_bytes(&mut k)?;
-    let invocation_status = InvocationStatusV1::decode(v)?;
+    let invocation_id = invocation_id_from_v1_key_bytes(&mut kv.0)?;
+    let invocation_status = InvocationStatusV1::decode(&mut kv.1)?;
     if let InvocationStatus::Invoked(invocation_meta) = invocation_status.0 {
         Ok(Some(InvokedInvocationStatusLite {
             invocation_id,
@@ -276,11 +211,10 @@ fn read_invoked_v1_full_invocation_id(
 }
 
 fn read_invoked_full_invocation_id(
-    mut k: &mut &[u8],
-    v: &mut &[u8],
+    mut kv: (&[u8], &[u8]),
 ) -> Result<Option<InvokedInvocationStatusLite>> {
-    let invocation_id = invocation_id_from_key_bytes(&mut k)?;
-    let invocation_status = InvocationLite::decode(v)?;
+    let invocation_id = invocation_id_from_key_bytes(&mut kv.0)?;
+    let invocation_status = InvocationLite::decode(&mut kv.1)?;
     if let InvocationStatusDiscriminants::Invoked = invocation_status.status {
         Ok(Some(InvokedInvocationStatusLite {
             invocation_id,
@@ -300,21 +234,87 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
         self.assert_partition_key(invocation_id)?;
         get_invocation_status(self, invocation_id)
     }
+}
 
-    fn all_invoked_invocations(
-        &mut self,
+impl ScanInvocationStatusTable for PartitionStore {
+    fn scan_invoked_invocations(
+        &self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
-        Ok(stream::iter(invoked_invocations(
-            self,
-            self.partition_key_range().clone(),
-        )?))
+        // Note: this is a high priority iterator because it's used by the leadership
+        // state machine when switching from candidate to leader.
+        let invocations_1 = self
+            .run_iterator(
+                "scan-all-invoked-v1",
+                Priority::High,
+                FullScanPartitionKeyRange::<InvocationStatusKeyV1>(
+                    self.partition_key_range().clone(),
+                ),
+                read_invoked_v1_full_invocation_id,
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+        // fitler and map the stream from Result<Option<T>> to Result<T>
+
+        let invocations_2 = self
+            .run_iterator(
+                "scan-all-invoked",
+                Priority::High,
+                FullScanPartitionKeyRange::<InvocationStatusKey>(
+                    self.partition_key_range().clone(),
+                ),
+                read_invoked_full_invocation_id,
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(invocations_1
+            .chain(invocations_2)
+            .filter_map(|result| match result {
+                Ok(Some(res)) => Some(Ok(res)),
+                Ok(None) => None,
+                Err(e) => Some(Err(e)),
+            }))
     }
 
-    fn all_invocation_statuses(
+    fn scan_invocation_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send> {
-        all_invocation_status(self, range)
+        let old_status_keys = self
+            .run_iterator(
+                "df-invocation-status-v1",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<InvocationStatusKeyV1>(range.clone()),
+                |(mut key, mut value)| {
+                    let state_key = InvocationStatusKeyV1::deserialize_from(&mut key)?;
+                    let state_value = InvocationStatusV1::decode(&mut value)?;
+
+                    let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
+                    Ok((
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        state_value.0,
+                    ))
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        let new_status_keys = self
+            .run_iterator(
+                "df-invocation-status",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                |(mut key, mut value)| {
+                    let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
+                    let state_value = InvocationStatus::decode(&mut value)?;
+
+                    let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
+                    Ok((
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        state_value,
+                    ))
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(old_status_keys.chain(new_status_keys))
     }
 }
 
@@ -325,22 +325,6 @@ impl ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'_> {
     ) -> Result<InvocationStatus> {
         self.assert_partition_key(invocation_id)?;
         try_migrate_and_get_invocation_status(self, invocation_id)
-    }
-
-    fn all_invoked_invocations(
-        &mut self,
-    ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
-        Ok(stream::iter(invoked_invocations(
-            self,
-            self.partition_key_range().clone(),
-        )?))
-    }
-
-    fn all_invocation_statuses(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send> {
-        all_invocation_status(self, range)
     }
 }
 

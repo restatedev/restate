@@ -758,15 +758,17 @@ pub trait ReadOnlyInvocationStatusTable {
         &mut self,
         invocation_id: &InvocationId,
     ) -> impl Future<Output = Result<InvocationStatus>> + Send;
+}
 
-    fn all_invoked_invocations(
-        &mut self,
-    ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
-
-    fn all_invocation_statuses(
+pub trait ScanInvocationStatusTable {
+    fn scan_invocation_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
+
+    fn scan_invoked_invocations(
+        &self,
+    ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
 }
 
 pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {

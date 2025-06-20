@@ -16,9 +16,7 @@ use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ReadOnlyInvocationStatusTable,
-};
+use restate_storage_api::invocation_status_table::{InvocationStatus, ScanInvocationStatusTable};
 use restate_types::identifiers::{InvocationId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -69,7 +67,7 @@ impl ScanLocalPartition for StatusScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        partition_store.all_invocation_statuses(range)
+        partition_store.scan_invocation_statuses(range)
     }
 
     fn append_row(
