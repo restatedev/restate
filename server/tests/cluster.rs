@@ -46,7 +46,9 @@ async fn replicated_loglet() -> googletest::Result<()> {
     let nodes = Node::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::Admin | Role::MetadataServer | Role::Worker | Role::LogServer),
+        enum_set!(
+            Role::Admin | Role::MetadataServer | Role::Worker | Role::LogServer | Role::HttpIngress
+        ),
         3,
         false,
     );
@@ -105,7 +107,9 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
     let nodes = Node::new_test_nodes(
         base_config,
         BinarySource::CargoTest,
-        enum_set!(Role::Admin | Role::Worker | Role::LogServer | Role::MetadataServer),
+        enum_set!(
+            Role::Admin | Role::Worker | Role::LogServer | Role::MetadataServer | Role::HttpIngress
+        ),
         num_nodes,
         false,
     );
