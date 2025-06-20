@@ -16,7 +16,7 @@ use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::inbox_table::{ReadOnlyInboxTable, SequenceNumberInboxEntry};
+use restate_storage_api::inbox_table::{ScanInboxTable, SequenceNumberInboxEntry};
 use restate_types::identifiers::PartitionKey;
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -66,7 +66,7 @@ impl ScanLocalPartition for InboxScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        partition_store.all_inboxes(range)
+        partition_store.scan_inboxes(range)
     }
 
     fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {
