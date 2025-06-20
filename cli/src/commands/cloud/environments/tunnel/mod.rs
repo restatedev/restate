@@ -27,7 +27,6 @@ use crate::{build_info, cli_env::CliEnv};
 mod local;
 mod remote;
 mod renderer;
-mod request_identity;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_tunnel")]
@@ -54,7 +53,7 @@ pub struct Tunnel {
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error(transparent)]
-    Local(#[from] local::ServeError),
+    Local(#[from] restate_cloud_tunnel_client::client::ServeError),
     #[error(transparent)]
     Remote(#[from] remote::ServeError),
     #[error("Ctrl-C pressed")]
