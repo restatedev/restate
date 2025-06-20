@@ -12,7 +12,7 @@ use super::Result;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures_util::Stream;
+use futures::Stream;
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use restate_types::invocation::JournalCompletionTarget;

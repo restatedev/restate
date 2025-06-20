@@ -10,7 +10,7 @@
 
 use crate::Result;
 use crate::promise_table::ReadOnlyPromiseTable;
-use futures_util::Stream;
+use futures::Stream;
 use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;

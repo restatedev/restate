@@ -8,24 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::TableKind::Journal;
-use crate::keys::TableKey;
-use crate::keys::{KeyKind, define_table_key};
-use crate::owned_iter::OwnedIterator;
-use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::scan::TableScan::FullScanPartitionKeyRange;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
-use crate::{TableScan, TableScanIterationDecision};
+use std::io::Cursor;
+use std::ops::RangeInclusive;
+
 use futures::Stream;
 use futures_util::stream;
-use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::Result;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
+
+use restate_rocksdb::{Priority, RocksDbPerfGuard};
+use restate_storage_api::journal_table::{
+    JournalEntry, JournalTable, ReadOnlyJournalTable, ScanJournalTable,
+};
+use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
-use std::io::Cursor;
-use std::ops::RangeInclusive;
+
+use crate::TableKind::Journal;
+use crate::keys::TableKey;
+use crate::keys::{KeyKind, define_table_key};
+use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
+use crate::{TableScan, TableScanIterationDecision};
 
 define_table_key!(
     Journal,
@@ -101,29 +104,6 @@ fn get_journal<S: StorageAccess>(
     )
 }
 
-fn all_journals<S: StorageAccess>(
-    storage: &S,
-    range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send + use<'_, S>> {
-    let iter = storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range))?;
-    Ok(stream::iter(OwnedIterator::new(iter).map(
-        |(mut key, mut value)| {
-            let journal_key = JournalKey::deserialize_from(&mut key)?;
-            let journal_entry = JournalEntry::decode(&mut value)?;
-
-            let (partition_key, invocation_uuid, entry_index) = journal_key.into_inner_ok_or()?;
-
-            Ok((
-                JournalEntryId::from_parts(
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    entry_index,
-                ),
-                journal_entry,
-            ))
-        },
-    )))
-}
-
 fn delete_journal<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
@@ -161,12 +141,34 @@ impl ReadOnlyJournalTable for PartitionStore {
             journal_length,
         )?))
     }
+}
 
-    fn all_journals(
+impl ScanJournalTable for PartitionStore {
+    fn scan_journals(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send> {
-        all_journals(self, range)
+        self.run_iterator(
+            "df-v1-journal",
+            Priority::Low,
+            TableScan::FullScanPartitionKeyRange::<JournalKey>(range),
+            |(mut key, mut value)| {
+                let journal_key = JournalKey::deserialize_from(&mut key)?;
+                let journal_entry = JournalEntry::decode(&mut value)?;
+
+                let (partition_key, invocation_uuid, entry_index) =
+                    journal_key.into_inner_ok_or()?;
+
+                Ok((
+                    JournalEntryId::from_parts(
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        entry_index,
+                    ),
+                    journal_entry,
+                ))
+            },
+        )
+        .map_err(|_| StorageError::OperationalError)
     }
 }
 
@@ -192,13 +194,6 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
             invocation_id,
             journal_length,
         )?))
-    }
-
-    fn all_journals(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send> {
-        all_journals(self, range)
     }
 }
 

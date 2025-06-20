@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Result;
-
-use futures_util::Stream;
-use restate_types::identifiers::{IdempotencyId, InvocationId, PartitionKey};
-use std::future::Future;
 use std::ops::RangeInclusive;
+
+use futures::Stream;
+
+use restate_types::identifiers::{IdempotencyId, InvocationId, PartitionKey};
+
+use super::Result;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdempotencyMetadata {
@@ -25,8 +26,10 @@ pub trait ReadOnlyIdempotencyTable {
         &mut self,
         idempotency_id: &IdempotencyId,
     ) -> impl Future<Output = Result<Option<IdempotencyMetadata>>> + Send;
+}
 
-    fn all_idempotency_metadata(
+pub trait ScanIdempotencyTable {
+    fn scan_idempotency_metadata(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send>;

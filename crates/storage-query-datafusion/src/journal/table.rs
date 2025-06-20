@@ -8,12 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures::Stream;
-use restate_storage_api::journal_table_v2::ReadOnlyJournalTable as ReadOnlyJournalTableV2;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
+
+use futures::Stream;
 use tokio_stream::StreamExt;
+
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use restate_storage_api::StorageError;
+use restate_storage_api::journal_table::JournalEntry;
+use restate_storage_api::journal_table::ScanJournalTable;
+use restate_storage_api::journal_table_v2::ScanJournalTable as ScanJournalTableV2;
+use restate_types::identifiers::{JournalEntryId, PartitionKey};
+use restate_types::journal_v2::raw::RawEntry;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::journal::row::{append_journal_row, append_journal_row_v2};
@@ -22,11 +30,6 @@ use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::StorageError;
-use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
-use restate_types::identifiers::{JournalEntryId, PartitionKey};
-use restate_types::journal_v2::raw::RawEntry;
 
 const NAME: &str = "sys_journal";
 
@@ -71,10 +74,10 @@ impl ScanLocalPartition for JournalScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        let v1 = ReadOnlyJournalTable::all_journals(partition_store, range.clone())?
+        let v1 = ScanJournalTable::scan_journals(partition_store, range.clone())?
             .map(|x| x.map(|(id, entry)| (id, ScannedEntry::V1(entry))));
 
-        let v2 = ReadOnlyJournalTableV2::all_journals(partition_store, range)?
+        let v2 = ScanJournalTableV2::scan_journals(partition_store, range)?
             .map(|x| x.map(|(id, entry)| (id, ScannedEntry::V2(entry))));
 
         Ok(v1.merge(v2))

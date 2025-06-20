@@ -8,13 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
-use futures_util::Stream;
+use std::ops::RangeInclusive;
+
+use futures::Stream;
+
 use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{CompletionResult, EntryType};
-use std::future::Future;
-use std::ops::RangeInclusive;
+
+use crate::Result;
 
 /// Different types of journal entries persisted by the runtime
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,8 +61,10 @@ pub trait ReadOnlyJournalTable {
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send>;
+}
 
-    fn all_journals(
+pub trait ScanJournalTable {
+    fn scan_journals(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send>;

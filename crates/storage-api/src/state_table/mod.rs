@@ -11,7 +11,7 @@
 use std::ops::RangeInclusive;
 
 use bytes::Bytes;
-use futures_util::Stream;
+use futures::Stream;
 
 use restate_types::identifiers::{PartitionKey, ServiceId};
 

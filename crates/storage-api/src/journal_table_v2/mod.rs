@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
-use futures_util::Stream;
-use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
+use std::collections::HashMap;
+use std::ops::RangeInclusive;
+
+use futures::Stream;
+
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
 use restate_types::journal_v2::raw::{RawCommand, RawEntry};
 use restate_types::journal_v2::{CompletionId, NotificationId};
-use std::collections::HashMap;
-use std::future::Future;
-use std::ops::RangeInclusive;
+
+use crate::Result;
 
 pub trait ReadOnlyJournalTable {
     fn get_journal_entry(
@@ -30,11 +32,6 @@ pub trait ReadOnlyJournalTable {
         length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send>;
 
-    fn all_journals(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(JournalEntryId, RawEntry)>> + Send>;
-
     fn get_notifications_index(
         &mut self,
         invocation_id: InvocationId,
@@ -45,6 +42,15 @@ pub trait ReadOnlyJournalTable {
         invocation_id: InvocationId,
         notification_id: CompletionId,
     ) -> impl Future<Output = Result<Option<RawCommand>>> + Send;
+}
+
+pub trait ScanJournalTable {
+    fn scan_journals(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> Result<
+        impl Stream<Item = Result<(restate_types::identifiers::JournalEntryId, RawEntry)>> + Send,
+    >;
 }
 
 pub trait JournalTable: ReadOnlyJournalTable {
