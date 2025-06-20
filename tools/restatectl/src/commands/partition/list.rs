@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::PartialOrd;
 use std::collections::{BTreeMap, HashMap};
 
 use cling::prelude::*;
@@ -18,20 +17,15 @@ use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::Tense;
 use restate_cli_util::ui::console::StyledTable;
-use restate_core::protobuf::cluster_ctrl_svc::{
-    ClusterStateRequest, ListLogsRequest, new_cluster_ctrl_client,
-};
-use restate_types::logs::metadata::{Chain, Logs};
-use restate_types::logs::{LogId, Lsn};
+use restate_core::protobuf::cluster_ctrl_svc::{ClusterStateRequest, new_cluster_ctrl_client};
+use restate_types::logs::Lsn;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::{
     DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode, node_state,
 };
-use restate_types::storage::StorageCodec;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
 use crate::commands::display_util::render_as_duration;
-use crate::commands::log::deserialize_replicated_log_params;
 use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug, Default)]
@@ -82,20 +76,6 @@ pub async fn list_partitions(
         .cluster_state
         .ok_or_else(|| anyhow::anyhow!("no cluster state returned"))?;
 
-    // we need the logs to show the current sequencer for each partition's log
-    let list_logs_response = connection
-        .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
-                .list_logs(ListLogsRequest::default())
-                .await
-        })
-        .await?
-        .into_inner();
-
-    let mut buf = list_logs_response.logs;
-    let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
-    let logs: HashMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
-
     let mut partitions: Vec<(u32, PartitionListEntry)> = vec![];
     let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
     let mut max_epoch_per_partition: HashMap<u32, u64> = HashMap::new();
@@ -130,19 +110,8 @@ pub async fn list_partitions(
     // Show information organized by partition and node
     let mut partitions_table = Table::new_styled();
     partitions_table.set_styled_header(vec![
-        "P-ID",
-        "NODE",
-        "MODE",
-        "STATUS",
-        "LEADER",
-        "EPOCH",
-        "SEQUENCER",
-        "APPLIED-LSN",
-        "DURABLE-LSN",
-        "SKIPPED-RECORDS",
-        "ARCHIVED-LSN",
-        "LSN-LAG",
-        "LAST-UPDATE",
+        "ID", "NODE", "MODE", "STATUS", "EPOCH", "APPLIED", "DURABLE", "ARCHIVED", "LSN-LAG",
+        "UPDATED",
     ]);
 
     partitions
@@ -172,27 +141,6 @@ pub async fn list_partitions(
                 })
                 .unwrap_or_default();
 
-            let maybe_sequencer = if pp_sees_itself_as_leader {
-                logs.get(&LogId::from(partition_id)).and_then(|chain| {
-                    let tail = chain.tail();
-                    let in_tail = processor
-                        .status
-                        .last_applied_log_lsn
-                        .map(Lsn::from)
-                        .is_some_and(|applied_lsn| applied_lsn.ge(&tail.base_lsn));
-                    if in_tail {
-                        deserialize_replicated_log_params(&tail).map(|p| p.sequencer)
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                None
-            };
-
-            let leader_local_sequencer = pp_sees_itself_as_leader
-                && maybe_sequencer.is_some_and(|s| s == processor.host_node);
-
             let epoch = processor
                 .status
                 .last_observed_leader_epoch
@@ -211,15 +159,6 @@ pub async fn list_partitions(
                 (false, true) => Color::Yellow,
                 (false, false) => Color::Reset,
             };
-            let sequencer_color = if leader_local_sequencer {
-                if !outdated_leadership_epoch {
-                    Color::Green
-                } else {
-                    Color::Red
-                }
-            } else {
-                Color::Reset
-            };
 
             partitions_table.add_row(vec![
                 Cell::new(partition_id),
@@ -237,24 +176,11 @@ pub async fn list_partitions(
                 Cell::new(
                     processor
                         .status
-                        .last_observed_leader_node
-                        .map(|n| n.to_string())
-                        .unwrap_or("-".to_owned()),
-                )
-                .fg(observed_leader_color),
-                Cell::new(
-                    processor
-                        .status
                         .last_observed_leader_epoch
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
                 )
                 .fg(observed_leader_color),
-                Cell::new(match maybe_sequencer {
-                    Some(sequencer) => sequencer.to_string(),
-                    _ => "".to_owned(),
-                })
-                .fg(sequencer_color),
                 Cell::new(
                     processor
                         .status
@@ -269,7 +195,6 @@ pub async fn list_partitions(
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
                 ),
-                Cell::new(processor.status.num_skipped_records),
                 Cell::new(
                     processor
                         .status
