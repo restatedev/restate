@@ -8,23 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::TableScan::FullScanPartitionKeyRange;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::owned_iter::OwnedIterator;
-use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::{PartitionStore, TableKind};
-use crate::{PartitionStoreTransaction, StorageAccess};
+use std::ops::RangeInclusive;
+
 use bytestring::ByteString;
 use futures::Stream;
-use futures_util::stream;
-use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::Result;
+
+use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
+    ReadOnlyVirtualObjectStatusTable, ScanVirtualObjectStatusTable, VirtualObjectStatus,
+    VirtualObjectStatusTable,
 };
+use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{PartitionKey, ServiceId};
-use std::ops::RangeInclusive;
+
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::scan::TableScan;
+use crate::{PartitionStore, TableKind};
+use crate::{PartitionStoreTransaction, StorageAccess};
 
 define_table_key!(
     TableKind::ServiceStatus,
@@ -78,26 +80,6 @@ fn get_virtual_object_status<S: StorageAccess>(
         .map(|value| value.unwrap_or(VirtualObjectStatus::Unlocked))
 }
 
-fn all_virtual_object_status<S: StorageAccess>(
-    storage: &S,
-    range: RangeInclusive<PartitionKey>,
-) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send + use<'_, S>> {
-    let iter = storage.iterator_from(FullScanPartitionKeyRange::<ServiceStatusKey>(range))?;
-    Ok(stream::iter(OwnedIterator::new(iter).map(
-        |(mut key, mut value)| {
-            let state_key = ServiceStatusKey::deserialize_from(&mut key)?;
-            let state_value = VirtualObjectStatus::decode(&mut value)?;
-
-            let (partition_key, service_name, service_key) = state_key.into_inner_ok_or()?;
-
-            Ok((
-                ServiceId::from_parts(partition_key, service_name, service_key),
-                state_value,
-            ))
-        },
-    )))
-}
-
 fn delete_virtual_object_status<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
@@ -114,12 +96,30 @@ impl ReadOnlyVirtualObjectStatusTable for PartitionStore {
         self.assert_partition_key(service_id)?;
         get_virtual_object_status(self, service_id)
     }
+}
 
-    fn all_virtual_object_statuses(
+impl ScanVirtualObjectStatusTable for PartitionStore {
+    fn scan_virtual_object_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send> {
-        all_virtual_object_status(self, range)
+        self.run_iterator(
+            "df-vo-status",
+            Priority::Low,
+            TableScan::FullScanPartitionKeyRange::<ServiceStatusKey>(range),
+            |(mut key, mut value)| {
+                let state_key = ServiceStatusKey::deserialize_from(&mut key)?;
+                let state_value = VirtualObjectStatus::decode(&mut value)?;
+
+                let (partition_key, service_name, service_key) = state_key.into_inner_ok_or()?;
+
+                Ok((
+                    ServiceId::from_parts(partition_key, service_name, service_key),
+                    state_value,
+                ))
+            },
+        )
+        .map_err(|_| StorageError::OperationalError)
     }
 }
 
@@ -130,13 +130,6 @@ impl ReadOnlyVirtualObjectStatusTable for PartitionStoreTransaction<'_> {
     ) -> Result<VirtualObjectStatus> {
         self.assert_partition_key(service_id)?;
         get_virtual_object_status(self, service_id)
-    }
-
-    fn all_virtual_object_statuses(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send> {
-        all_virtual_object_status(self, range)
     }
 }
 
