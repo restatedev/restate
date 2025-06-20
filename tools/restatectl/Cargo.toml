@@ -2,7 +2,7 @@
 name = "restatectl"
 version.workspace = true
 authors.workspace = true
-description = "Restate administration tools"
+description = "Restate cluster administration tools"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -54,9 +54,9 @@ bytesize = { workspace = true }
 bytestring = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
-clap-stdin = "0.5.1"
+clap-stdin = "0.6.0"
 cling = { workspace = true }
-crossterm = { version = "0.27.0" }
+crossterm = { workspace = true }
 ctrlc = { version = "3.4" }
 diff = "0.1.13"
 futures = { workspace = true }
