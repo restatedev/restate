@@ -151,7 +151,7 @@ jobs:
         if: "${{ runner.os == 'macOS' }}"
         run: "echo MACOSX_DEPLOYMENT_TARGET=\"10.14.0\" >> \"$GITHUB_ENV\""
       - name: "Set up RUSTFLAGS"
-        run: "echo RUSTFLAGS=\"-C force-unwind-tables -C debug-assertions --cfg uuid_unstable --cfg tokio_unstable\" >> \"$GITHUB_ENV\""
+        run: "echo RUSTFLAGS=\"-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable\" >> \"$GITHUB_ENV\""
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
