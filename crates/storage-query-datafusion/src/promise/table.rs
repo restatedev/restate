@@ -16,7 +16,7 @@ use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::promise_table::{OwnedPromiseRow, ReadOnlyPromiseTable};
+use restate_storage_api::promise_table::{OwnedPromiseRow, ScanPromiseTable};
 use restate_types::identifiers::PartitionKey;
 
 use super::row::append_promise_row;
@@ -63,7 +63,7 @@ impl ScanLocalPartition for PromiseScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        partition_store.all_promises(range)
+        partition_store.scan_promises(range)
     }
 
     fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {

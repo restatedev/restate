@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Result;
+use std::future::Future;
+use std::ops::RangeInclusive;
 
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
+
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use restate_types::invocation::JournalCompletionTarget;
@@ -20,8 +22,8 @@ use restate_types::journal::{CompletionResult, EntryResult};
 use restate_types::journal_v2::{
     CompletePromiseValue, Failure, GetPromiseResult, PeekPromiseResult,
 };
-use std::future::Future;
-use std::ops::RangeInclusive;
+
+use super::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromiseResult {
@@ -111,8 +113,10 @@ pub trait ReadOnlyPromiseTable {
         service_id: &ServiceId,
         key: &ByteString,
     ) -> impl Future<Output = Result<Option<Promise>>> + Send;
+}
 
-    fn all_promises(
+pub trait ScanPromiseTable {
+    fn scan_promises(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<OwnedPromiseRow>> + Send>;
