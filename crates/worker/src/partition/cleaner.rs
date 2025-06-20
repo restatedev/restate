@@ -19,9 +19,7 @@ use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, cancellation_watcher};
-use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ReadOnlyInvocationStatusTable,
-};
+use restate_storage_api::invocation_status_table::{InvocationStatus, ScanInvocationStatusTable};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::invocation::PurgeInvocationRequest;
@@ -38,7 +36,7 @@ pub(super) struct Cleaner<Storage> {
 
 impl<Storage> Cleaner<Storage>
 where
-    Storage: ReadOnlyInvocationStatusTable + Send + Sync + 'static,
+    Storage: ScanInvocationStatusTable + Send + Sync + 'static,
 {
     pub(super) fn new(
         partition_id: PartitionId,
@@ -108,7 +106,7 @@ where
     ) -> anyhow::Result<()> {
         debug!("Executing completed invocations cleanup");
 
-        let invocations_stream = storage.all_invocation_statuses(partition_key_range)?;
+        let invocations_stream = storage.scan_invocation_statuses(partition_key_range)?;
         tokio::pin!(invocations_stream);
 
         while let Some((invocation_id, invocation_status)) = invocations_stream
@@ -207,39 +205,18 @@ mod tests {
     use restate_storage_api::StorageError;
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
-        InvokedInvocationStatusLite, JournalMetadata,
+        InvokedInvocationStatusLite, JournalMetadata, ScanInvocationStatusTable,
     };
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
     use restate_types::partition_table::{FindPartition, PartitionTable};
-    use std::future::Future;
     use test_log::test;
 
     #[allow(dead_code)]
     struct MockInvocationStatusReader(Vec<(InvocationId, InvocationStatus)>);
 
-    impl ReadOnlyInvocationStatusTable for MockInvocationStatusReader {
-        fn get_invocation_status(
-            &mut self,
-            _: &InvocationId,
-        ) -> impl Future<Output = restate_storage_api::Result<InvocationStatus>> + Send {
-            todo!();
-            #[allow(unreachable_code)]
-            std::future::pending()
-        }
-
-        fn all_invoked_invocations(
-            &mut self,
-        ) -> std::result::Result<
-            impl Stream<Item = restate_storage_api::Result<InvokedInvocationStatusLite>> + Send,
-            StorageError,
-        > {
-            todo!();
-            #[allow(unreachable_code)]
-            Ok(stream::empty())
-        }
-
-        fn all_invocation_statuses(
+    impl ScanInvocationStatusTable for MockInvocationStatusReader {
+        fn scan_invocation_statuses(
             &self,
             _: RangeInclusive<PartitionKey>,
         ) -> std::result::Result<
@@ -247,6 +224,14 @@ mod tests {
             StorageError,
         > {
             Ok(stream::iter(self.0.clone()).map(Ok))
+        }
+
+        fn scan_invoked_invocations(
+            &self,
+        ) -> restate_storage_api::Result<
+            impl Stream<Item = restate_storage_api::Result<InvokedInvocationStatusLite>> + Send,
+        > {
+            Ok(stream::empty())
         }
     }
 
