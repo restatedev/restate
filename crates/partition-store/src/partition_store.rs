@@ -775,10 +775,6 @@ impl PartitionStoreTransaction<'_> {
         self.partition_id
     }
 
-    pub(crate) fn partition_key_range(&self) -> &RangeInclusive<PartitionKey> {
-        self.partition_key_range
-    }
-
     #[inline]
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.partition_key_range, partition_key)
