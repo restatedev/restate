@@ -105,9 +105,7 @@ async fn handler(
         let request = state
             .client
             .request(head.method, url)
-            .body(reqwest::Body::wrap_stream(sync_wrapper::SyncStream::new(
-                body.into_data_stream(),
-            )))
+            .body(reqwest::Body::wrap_stream(body.into_data_stream()))
             .headers(head.headers)
             .bearer_auth(&state.bearer_token)
             .build()?;
