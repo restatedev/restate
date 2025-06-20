@@ -11,7 +11,7 @@
 use crate::Result;
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures_util::Stream;
+use futures::Stream;
 use rangemap::RangeInclusiveMap;
 use restate_types::RestateVersion;
 use restate_types::deployment::PinnedDeployment;

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::Result;
-use futures_util::Stream;
+use futures::Stream;
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationEpoch, ServiceInvocation};
 use restate_types::time::MillisSinceEpoch;

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::Result;
-use futures_util::Stream;
+use futures::Stream;
 use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
 use std::future::Future;
 use std::ops::RangeInclusive;

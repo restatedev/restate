@@ -14,7 +14,6 @@ use restate_types::invocation::{
     AttachInvocationRequest, InvocationResponse, InvocationTermination, NotifySignalRequest,
     ServiceInvocation,
 };
-use std::future::Future;
 use std::ops::RangeInclusive;
 
 /// Types of outbox messages.

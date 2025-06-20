@@ -16,7 +16,7 @@ use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::idempotency_table::{IdempotencyMetadata, ReadOnlyIdempotencyTable};
+use restate_storage_api::idempotency_table::{IdempotencyMetadata, ScanIdempotencyTable};
 use restate_types::identifiers::{IdempotencyId, PartitionKey};
 
 use super::row::append_idempotency_row;
@@ -65,7 +65,7 @@ impl ScanLocalPartition for IdempotencyScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        partition_store.all_idempotency_metadata(range)
+        partition_store.scan_idempotency_metadata(range)
     }
 
     fn append_row(
