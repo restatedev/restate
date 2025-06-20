@@ -277,6 +277,18 @@ pub enum LambdaError {
 }
 
 impl LambdaError {
+    /// Service down errors are those which might indicate that the service is down or
+    /// unreachable.
+    pub fn is_service_down(&self) -> bool {
+        match self {
+            LambdaError::SdkError(err) => matches!(
+                err.as_ref(),
+                SdkError::DispatchFailure(_) | SdkError::TimeoutError(_)
+            ),
+            _ => false,
+        }
+    }
+
     /// Retryable errors are those which can be caused by transient faults and where
     /// retrying can succeed.
     pub fn is_retryable(&self) -> bool {

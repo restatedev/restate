@@ -15,6 +15,7 @@ use crate::invocation_task::{
     ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
     invocation_id_to_header_value, service_protocol_version_to_header_value,
 };
+use crate::metric_definitions::{INVOKER_JOURNAL_REPLAY_TIME, INVOKER_SERVICE_RESPONSE_TIME};
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{FutureExt, Stream, StreamExt};
@@ -44,7 +45,7 @@ use restate_types::schema::deployment::{
 use restate_types::service_protocol::ServiceProtocolVersion;
 use std::collections::HashSet;
 use std::future::poll_fn;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace, warn};
@@ -70,6 +71,7 @@ pub struct ServiceProtocolRunner<'a, IR, EE, DMR> {
 
     // task state
     next_journal_index: EntryIndex,
+    http_stream_start_time: Instant,
 }
 
 impl<'a, IR, EE, DMR> ServiceProtocolRunner<'a, IR, EE, DMR>
@@ -93,6 +95,8 @@ where
             encoder,
             decoder,
             next_journal_index: 0,
+            // initial value will be overridden to the actual start time of the http stream
+            http_stream_start_time: Instant::now(),
         }
     }
 
@@ -161,6 +165,8 @@ where
             .await
         );
 
+        // update the start time for the service response time metric
+        self.http_stream_start_time = Instant::now();
         // Initialize the response stream state
         let mut http_stream_rx =
             ResponseStreamState::initialize(&self.invocation_task.client, request);
@@ -170,6 +176,9 @@ where
             self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
                 .await
         );
+
+        metrics::histogram!(INVOKER_JOURNAL_REPLAY_TIME)
+            .record(self.http_stream_start_time.elapsed());
 
         // Check all the entries have been replayed
         debug_assert_eq!(self.next_journal_index, journal_size);
@@ -460,6 +469,9 @@ where
         &mut self,
         mut parts: http::response::Parts,
     ) -> Result<(), InvokerError> {
+        metrics::histogram!(INVOKER_SERVICE_RESPONSE_TIME)
+            .record(self.http_stream_start_time.elapsed());
+
         // if service is running behind a gateway, the service can be down
         // but we still get a response code from the gateway itself. In that
         // case we still need to return the proper error

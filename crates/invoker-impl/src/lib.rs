@@ -54,14 +54,14 @@ use tracing::{error, instrument};
 
 use crate::error::SdkInvocationErrorV2;
 use crate::metric_definitions::{
-    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
-    TASK_OP_SUSPENDED,
+    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, INVOKER_SERVICE_UNREACHABLE_ERRORS,
+    TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED, TASK_OP_SUSPENDED,
 };
 use error::InvokerError;
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
 use restate_invoker_api::invocation_reader::InvocationReader;
-use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_service_client::{AssumeRoleCacheMode, HttpError, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal_v2;
@@ -1090,11 +1090,32 @@ where
             .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
+
+            if self.is_service_down_error(&error) {
+                counter!(INVOKER_SERVICE_UNREACHABLE_ERRORS, "service" => ism.invocation_target.service_name().to_string()).increment(1);
+            }
+
             self.handle_error_event(options, partition, invocation_id, error, ism)
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
             trace!("No state machine found for invocation task error signal");
+        }
+    }
+
+    fn is_service_down_error(&self, error: &InvokerError) -> bool {
+        if let InvokerError::Client(client_err) = error {
+            match client_err.as_ref() {
+                ServiceClientError::Http(_, HttpError::Connect(_)) => true,
+                ServiceClientError::Lambda(_, error) => {
+                    // service down errors are those which might indicate that the service is down or
+                    // unreachable.
+                    error.is_service_down()
+                }
+                _ => false,
+            }
+        } else {
+            false
         }
     }
 

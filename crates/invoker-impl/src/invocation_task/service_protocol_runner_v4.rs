@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::future::poll_fn;
 use std::ops::Deref;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -63,6 +63,7 @@ use crate::invocation_task::{
     ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
     invocation_id_to_header_value, service_protocol_version_to_header_value,
 };
+use crate::metric_definitions::{INVOKER_JOURNAL_REPLAY_TIME, INVOKER_SERVICE_RESPONSE_TIME};
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
@@ -85,6 +86,7 @@ pub struct ServiceProtocolRunner<'a, IR, EE, Schemas> {
 
     // task state
     command_index: CommandIndex,
+    http_stream_start_time: Instant,
 }
 
 impl<'a, IR, EE, Schemas> ServiceProtocolRunner<'a, IR, EE, Schemas>
@@ -108,6 +110,8 @@ where
             encoder,
             decoder,
             command_index: 0,
+            // initial value will be overridden to the actual start time of the http stream
+            http_stream_start_time: Instant::now(),
         }
     }
 
@@ -176,6 +180,9 @@ where
             .await
         );
 
+        // update the start time for the service response time metric
+        self.http_stream_start_time = Instant::now();
+
         // Initialize the response stream state
         let mut http_stream_rx =
             ResponseStreamState::initialize(&self.invocation_task.client, request);
@@ -185,6 +192,9 @@ where
             self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
                 .await
         );
+
+        metrics::histogram!(INVOKER_JOURNAL_REPLAY_TIME)
+            .record(self.http_stream_start_time.elapsed());
 
         // If we have the invoker_rx and the protocol type is bidi stream,
         // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
@@ -308,6 +318,7 @@ where
         let got_headers_future = poll_fn(|cx| http_stream_rx.poll_only_headers(cx)).fuse();
         tokio::pin!(got_headers_future);
 
+        // TODO: add metrics for delays for when headers are received (first response from service)
         loop {
             tokio::select! {
                 got_headers_res = got_headers_future.as_mut(), if !got_headers_future.is_terminated() => {
@@ -518,6 +529,9 @@ where
         &mut self,
         mut parts: http::response::Parts,
     ) -> Result<(), InvokerError> {
+        metrics::histogram!(INVOKER_SERVICE_RESPONSE_TIME)
+            .record(self.http_stream_start_time.elapsed());
+
         // if service is running behind a gateway, the service can be down
         // but we still get a response code from the gateway itself. In that
         // case we still need to return the proper error
