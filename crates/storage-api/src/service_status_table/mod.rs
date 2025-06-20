@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
-use futures::Stream;
-use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
-use std::future::Future;
 use std::ops::RangeInclusive;
+
+use futures::Stream;
+
+use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
+
+use crate::Result;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum VirtualObjectStatus {
@@ -26,8 +28,10 @@ pub trait ReadOnlyVirtualObjectStatusTable {
         &mut self,
         service_id: &ServiceId,
     ) -> impl Future<Output = Result<VirtualObjectStatus>> + Send;
+}
 
-    fn all_virtual_object_statuses(
+pub trait ScanVirtualObjectStatusTable {
+    fn scan_virtual_object_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send>;

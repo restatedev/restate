@@ -17,7 +17,7 @@ use futures::Stream;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
+    ScanVirtualObjectStatusTable, VirtualObjectStatus,
 };
 use restate_types::identifiers::{PartitionKey, ServiceId};
 
@@ -70,7 +70,7 @@ impl ScanLocalPartition for VirtualObjectStatusScanner {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
     {
-        partition_store.all_virtual_object_statuses(range)
+        partition_store.scan_virtual_object_statuses(range)
     }
 
     fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {
