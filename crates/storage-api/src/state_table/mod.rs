@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
+use std::ops::RangeInclusive;
+
 use bytes::Bytes;
 use futures_util::Stream;
+
 use restate_types::identifiers::{PartitionKey, ServiceId};
-use std::future::Future;
-use std::ops::RangeInclusive;
+
+use crate::Result;
 
 pub trait ReadOnlyStateTable {
     fn get_user_state(
@@ -26,12 +28,10 @@ pub trait ReadOnlyStateTable {
         &mut self,
         service_id: &ServiceId,
     ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send>;
+}
 
-    fn get_all_user_states(
-        &self,
-    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send>;
-
-    fn get_all_user_states_in_range(
+pub trait ScanStateTable {
+    fn scan_all_user_states(
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send>;

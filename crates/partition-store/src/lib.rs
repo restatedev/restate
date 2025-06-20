@@ -35,5 +35,7 @@ mod tests;
 
 pub use partition_store::*;
 pub use partition_store_manager::*;
+// re-export
+pub use restate_rocksdb::Priority;
 
 use crate::scan::TableScan;
