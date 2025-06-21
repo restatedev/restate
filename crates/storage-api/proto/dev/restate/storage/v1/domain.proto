@@ -57,17 +57,11 @@ message InvocationId {
   bytes invocation_uuid = 2;
 }
 
-message SequenceNumber {
-  uint64 sequence_number = 1;
-}
+message SequenceNumber { uint64 sequence_number = 1; }
 
-message RestateVersion {
-  string version = 1;
-}
+message RestateVersion { string version = 1; }
 
-message JournalEntryIndex {
-  uint32 entry_index = 1;
-}
+message JournalEntryIndex { uint32 entry_index = 1; }
 
 // Target of a completion sent from another Partition Processor.
 message JournalCompletionTarget {
@@ -99,18 +93,14 @@ message JournalMeta {
 }
 
 message Source {
-  message Ingress {
-    bytes rpc_id = 1;
-  }
+  message Ingress { bytes rpc_id = 1; }
 
   message Service {
     InvocationId invocation_id = 1;
     InvocationTarget invocation_target = 2;
   }
 
-  message Subscription {
-    bytes subscription_id = 1;
-  }
+  message Subscription { bytes subscription_id = 1; }
 
   oneof source {
     Ingress ingress = 9;
@@ -120,7 +110,8 @@ message Source {
   }
 }
 
-// Next generation InvocationStatus message, which will replace InvocationStatus in a future version.
+// Next generation InvocationStatus message, which will replace InvocationStatus
+// in a future version.
 message InvocationStatusV2 {
 
   enum Status {
@@ -171,7 +162,8 @@ message InvocationStatusV2 {
   uint32 journal_length = 14;
   uint32 commands = 26;
   optional string deployment_id = 15;
-  optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
+  optional dev.restate.service.protocol.ServiceProtocolVersion
+      service_protocol_version = 16;
   bool hotfix_apply_cancellation_after_deployment_is_pinned = 25;
   uint32 current_invocation_epoch = 27;
   // Used to reconstruct the completion_range_epoch_map
@@ -206,7 +198,8 @@ message InvocationStatus {
     Source source = 8;
     Duration completion_retention_time = 9;
     optional string idempotency_key = 10;
-    optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 11;
+    optional dev.restate.service.protocol.ServiceProtocolVersion
+        service_protocol_version = 11;
   }
 
   message Suspended {
@@ -220,7 +213,8 @@ message InvocationStatus {
     Source source = 8;
     Duration completion_retention_time = 9;
     optional string idempotency_key = 10;
-    optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 11;
+    optional dev.restate.service.protocol.ServiceProtocolVersion
+        service_protocol_version = 11;
   }
 
   message Completed {
@@ -233,8 +227,7 @@ message InvocationStatus {
     optional string idempotency_key = 12;
   }
 
-  message Free {
-  }
+  message Free {}
 
   message Inboxed {
     InvocationTarget invocation_target = 1;
@@ -263,13 +256,9 @@ message InvocationStatus {
 }
 
 message VirtualObjectStatus {
-  message Locked {
-    InvocationId invocation_id = 1;
-  }
+  message Locked { InvocationId invocation_id = 1; }
 
-  oneof status {
-    Locked locked = 1;
-  }
+  oneof status { Locked locked = 1; }
 }
 
 message ServiceInvocationResponseSink {
@@ -285,8 +274,7 @@ message ServiceInvocationResponseSink {
     bytes request_id = 2;
   }
 
-  message None {
-  }
+  message None {}
 
   oneof response_sink {
     None none = 1;
@@ -305,9 +293,7 @@ message SpanContext {
 }
 
 message SpanRelation {
-  message Parent {
-    uint64 span_id = 1;
-  }
+  message Parent { uint64 span_id = 1; }
 
   message Linked {
     bytes trace_id = 1;
@@ -383,44 +369,27 @@ message BackgroundCallResolutionResult {
 // Deprecated
 message EnrichedEntryHeader {
 
-  message Input {
-  }
+  message Input {}
 
-  message Output {
-  }
+  message Output {}
 
-  message GetState {
-    bool is_completed = 1;
-  }
+  message GetState { bool is_completed = 1; }
 
-  message SetState {
-  }
+  message SetState {}
 
-  message ClearState {
-  }
+  message ClearState {}
 
-  message GetStateKeys {
-    bool is_completed = 1;
-  }
+  message GetStateKeys { bool is_completed = 1; }
 
-  message ClearAllState {
-  }
+  message ClearAllState {}
 
-  message GetPromise {
-    bool is_completed = 1;
-  }
+  message GetPromise { bool is_completed = 1; }
 
-  message PeekPromise {
-    bool is_completed = 1;
-  }
+  message PeekPromise { bool is_completed = 1; }
 
-  message CompletePromise {
-    bool is_completed = 1;
-  }
+  message CompletePromise { bool is_completed = 1; }
 
-  message Sleep {
-    bool is_completed = 1;
-  }
+  message Sleep { bool is_completed = 1; }
 
   message Invoke {
     bool is_completed = 1;
@@ -431,36 +400,24 @@ message EnrichedEntryHeader {
     BackgroundCallResolutionResult resolution_result = 1;
   }
 
-  message Awakeable {
-    bool is_completed = 1;
-  }
+  message Awakeable { bool is_completed = 1; }
 
   message CompleteAwakeable {
     InvocationId invocation_id = 1;
     uint32 entry_index = 2;
   }
 
-  message SideEffect {
-  }
+  message SideEffect {}
 
-  message CancelInvocation {
-  }
+  message CancelInvocation {}
 
-  message GetCallInvocationId {
-    bool is_completed = 1;
-  }
+  message GetCallInvocationId { bool is_completed = 1; }
 
-  message AttachInvocation {
-    bool is_completed = 1;
-  }
+  message AttachInvocation { bool is_completed = 1; }
 
-  message GetInvocationOutput {
-    bool is_completed = 1;
-  }
+  message GetInvocationOutput { bool is_completed = 1; }
 
-  message Custom {
-    uint32 code = 1;
-  }
+  message Custom { uint32 code = 1; }
 
   oneof kind {
     Input input = 1;
@@ -496,12 +453,9 @@ message JournalEntry {
   }
 
   message CompletionResult {
-    message Empty {
-    }
+    message Empty {}
 
-    message Success {
-      bytes value = 1;
-    }
+    message Success { bytes value = 1; }
 
     message Failure {
       uint32 error_code = 1;
@@ -519,7 +473,6 @@ message JournalEntry {
     Entry entry = 1;
     CompletionResult completion_result = 2;
   }
-
 }
 
 // -------- Entry V2 --------
@@ -598,9 +551,7 @@ message Entry {
 }
 
 message ResponseResult {
-  message ResponseSuccess {
-    bytes value = 1;
-  }
+  message ResponseSuccess { bytes value = 1; }
 
   message ResponseFailure {
     uint32 failure_code = 1;
@@ -621,9 +572,7 @@ message OutboxMessage {
   // removed OutboxIngressResponse variant
   reserved 3;
 
-  message OutboxServiceInvocation {
-    ServiceInvocation service_invocation = 1;
-  }
+  message OutboxServiceInvocation { ServiceInvocation service_invocation = 1; }
 
   message OutboxServiceInvocationResponse {
     InvocationId invocation_id = 1;
@@ -632,13 +581,9 @@ message OutboxMessage {
     uint32 caller_invocation_epoch = 4;
   }
 
-  message OutboxKill {
-    InvocationId invocation_id = 1;
-  }
+  message OutboxKill { InvocationId invocation_id = 1; }
 
-  message OutboxCancel {
-    InvocationId invocation_id = 1;
-  }
+  message OutboxCancel { InvocationId invocation_id = 1; }
 
   message AttachInvocationRequest {
     oneof query {
@@ -676,7 +621,6 @@ message OutboxMessage {
     AttachInvocationRequest attach_invocation_request = 6;
     NotifySignal notify_signal = 7;
   }
-
 }
 
 // ---------------------------------------------------------------------
@@ -691,9 +635,7 @@ message Timer {
     uint32 caller_invocation_epoch = 3;
   }
 
-  message CleanInvocationStatus {
-    InvocationId invocation_id = 1;
-  }
+  message CleanInvocationStatus { InvocationId invocation_id = 1; }
 
   oneof value {
     // Scheduled invocations recorded with InvocationStatusV2
@@ -713,8 +655,9 @@ message SequencedTimer {
 // Deduplication
 // ---------------------------------------------------------------------
 
-// Sequence number which is prefixed by the epoch of the producer. Epoch sequence
-// numbers sort lexicographically based on (leader_epoch, sequence_number).
+// Sequence number which is prefixed by the epoch of the producer. Epoch
+// sequence numbers sort lexicographically based on (leader_epoch,
+// sequence_number).
 message EpochSequenceNumber {
   uint64 leader_epoch = 1;
   uint64 sequence_number = 2;
@@ -723,9 +666,11 @@ message EpochSequenceNumber {
 // Sequence number which is used for deduplicating incoming messages.
 message DedupSequenceNumber {
   oneof variant {
-    // Variant which is used for deduplicating messages across epoch/leadership changes
+    // Variant which is used for deduplicating messages across epoch/leadership
+    // changes
     uint64 sequence_number = 1;
-    // Variant which is used for guarding against messages from previous epochs/leaders
+    // Variant which is used for guarding against messages from previous
+    // epochs/leaders
     EpochSequenceNumber epoch_sequence_number = 2;
   }
 }
@@ -734,9 +679,7 @@ message DedupSequenceNumber {
 // Idempotency
 // ---------------------------------------------------------------------
 
-message IdempotencyMetadata {
-  InvocationId invocation_id = 1;
-}
+message IdempotencyMetadata { InvocationId invocation_id = 1; }
 
 message SubmitNotificationSink {
   message Ingress {
@@ -744,20 +687,15 @@ message SubmitNotificationSink {
     bytes request_id = 2;
   }
 
-  oneof notification_sink {
-    Ingress ingress = 2;
-  }
+  oneof notification_sink { Ingress ingress = 2; }
 }
-
 
 // ---------------------------------------------------------------------
 // Promises
 // ---------------------------------------------------------------------
 
 message Promise {
-  message CompletedState {
-    EntryResult result = 1;
-  }
+  message CompletedState { EntryResult result = 1; }
 
   message NotCompletedState {
     repeated JournalCompletionTarget listening_journal_entries = 1;

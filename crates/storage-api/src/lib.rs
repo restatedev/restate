@@ -37,6 +37,7 @@ pub mod invocation_status_table;
 pub mod journal_table;
 pub mod journal_table_v2;
 pub mod outbox_table;
+pub mod partition_store;
 pub mod promise_table;
 pub mod service_status_table;
 pub mod state_table;
