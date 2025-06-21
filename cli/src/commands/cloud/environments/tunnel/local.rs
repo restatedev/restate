@@ -108,7 +108,15 @@ pub(crate) async fn run_local(
 
                 let handler = handler.clone();
 
-                async move { Err(handler.serve(tunnel_url, CancellationToken::new()).await) }
+                async move {
+                    Err(handler
+                        .serve(
+                            tunnel_url,
+                            CancellationToken::new(),
+                            CancellationToken::new(),
+                        )
+                        .await)
+                }
             },
             |err: &ServeError| {
                 if !err.is_retryable() {
