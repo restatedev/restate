@@ -13,7 +13,7 @@ use clap::Parser;
 use cling::{Collect, Run};
 use tracing::debug;
 
-use restate_cli_util::c_println;
+use restate_cli_util::{c_print, c_println};
 use restate_metadata_server_grpc::grpc::RemoveNodeRequest;
 use restate_metadata_server_grpc::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::PlainNodeId;
@@ -77,6 +77,7 @@ async fn remove_node(
 
     for node_to_remove in &remove_node_opts.nodes {
         let mut success = false;
+        let mut errors = vec![];
 
         // check that we know the specified node
         let _ = nodes_configuration
@@ -87,10 +88,7 @@ async fn remove_node(
 
         // todo try to figure out who's the current leader and directly reach out to the leader
         //  based on the metadata server status call
-        for node_config in nodes_configuration
-            .iter_role(Role::MetadataServer)
-            .map(|(_, node_config)| node_config)
-        {
+        for (server_id, node_config) in nodes_configuration.iter_role(Role::MetadataServer) {
             if node_config.metadata_server_config.metadata_server_state
                 == MetadataServerState::Member
             {
@@ -111,7 +109,8 @@ async fn remove_node(
                         break;
                     }
                     Err(err) => {
-                        debug!(%err, "Failed removing node from the metadata cluster. Trying different metadata server.")
+                        debug!(%err, "Failed removing node from the metadata cluster. Trying different metadata server.");
+                        errors.push((server_id, err));
                     }
                 }
             }
@@ -120,7 +119,17 @@ async fn remove_node(
         if success {
             c_println!("Removed node '{node_to_remove}' from the metadata cluster");
         } else {
-            c_println!("Failed removing node '{node_to_remove}' from the metadata cluster");
+            c_println!("Failed removing node '{node_to_remove}' from the metadata cluster",);
+            for (server_id, error) in errors {
+                c_print!("  ├─ {}: {}", server_id, error.code());
+
+                let message = error.message();
+                if !message.is_empty() {
+                    c_print!(". {}", message);
+                }
+
+                c_println!("");
+            }
         }
     }
 
