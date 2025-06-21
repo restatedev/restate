@@ -27,7 +27,7 @@ dialoguer = { workspace = true }
 dotenvy = { version = "0.15" }
 lambda_runtime = "0.13.0"
 serde = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "process"] }
 tracing = { workspace = true }
 tracing-log = { version = "0.2.0" }
 tracing-subscriber = { workspace = true }
