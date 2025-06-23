@@ -52,12 +52,12 @@ use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, trace};
 use tracing::{error, instrument};
 
-use crate::error::SdkInvocationErrorV2;
+use crate::error::{InvokerError, SdkInvocationErrorV2};
 use crate::metric_definitions::{
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
     TASK_OP_SUSPENDED,
 };
-use error::InvokerError;
+use error::InvokerErrorKind;
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
 use restate_invoker_api::invocation_reader::InvocationReader;
@@ -1090,7 +1090,7 @@ where
             .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
-            self.handle_error_event(options, partition, invocation_id, error, ism)
+            self.handle_error_event(options, partition, invocation_id, error.kind, ism)
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -1176,7 +1176,7 @@ where
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        error: InvokerError,
+        error: InvokerErrorKind,
         mut ism: InvocationStateMachine,
     ) {
         match ism.handle_task_error(
@@ -1211,7 +1211,7 @@ where
                 let next_retry_at = SystemTime::now() + next_retry_timer_duration;
 
                 let journal_v2_related_command_type =
-                    if let InvokerError::SdkV2(SdkInvocationErrorV2 {
+                    if let InvokerErrorKind::SdkV2(SdkInvocationErrorV2 {
                         related_command: Some(ref related_entry),
                         ..
                     }) = error
@@ -1436,7 +1436,7 @@ mod tests {
     use restate_types::schema::invocation_target::InvocationTargetMetadata;
     use restate_types::schema::service::{InvocationAttemptOptions, ServiceMetadata};
 
-    use crate::error::{InvokerError, SdkInvocationErrorV2};
+    use crate::error::{InvokerErrorKind, SdkInvocationErrorV2};
     use crate::quota::InvokerConcurrencyQuota;
 
     // -- Mocks
@@ -1893,7 +1893,7 @@ mod tests {
                 MOCK_PARTITION,
                 invocation_id,
                 0,
-                InvokerError::EmptySuspensionMessage, /* any error is fine */
+                InvokerErrorKind::EmptySuspensionMessage.into(), /* any error is fine */
             )
             .await;
 
@@ -1947,7 +1947,7 @@ mod tests {
                 MOCK_PARTITION,
                 invocation_id,
                 0,
-                InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
+                InvokerErrorKind::SdkV2(SdkInvocationErrorV2::unknown()).into(),
             )
             .await;
         assert_eq!(
