@@ -18,5 +18,5 @@ helm install restate oci://ghcr.io/restatedev/restate-helm --namespace restate -
 Note that you need to explicitly provision the Restate cluster via
 
 ```bash
-kubectl exec -it restate-0 -- restatectl provision --log-provider replicated --log-replication 2 --yes
+kubectl exec -it restate-0 -- restatectl provision --replication 2 --yes
 ```
