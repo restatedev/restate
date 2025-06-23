@@ -34,7 +34,8 @@ pub struct AnnounceLeader {
 /// Readers before v1.4.0 will crash when reading this command. For v1.4.0+, the barrier defines the
 /// minimum version of restate server that can progress after this command. It also updates the FSM
 /// in case command has been trimmed.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VersionBarrier {
     /// The minimum version required (inclusive) to progress after this barrier.
     pub version: SemanticRestateVersion,
@@ -51,7 +52,8 @@ mod tests {
     use restate_types::storage::StorageCodec;
     use restate_types::{GenerationalNodeId, flexbuffers_storage_encode_decode};
 
-    #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+    #[derive(Debug, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     struct OldAnnounceLeader {
         pub node_id: GenerationalNodeId,
         pub leader_epoch: LeaderEpoch,
