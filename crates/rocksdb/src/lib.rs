@@ -559,6 +559,7 @@ impl RocksDb {
                 );
             }
             self.db.cancel_all_background_work(true);
+            manager.remove_db(&self.name);
         };
         // intentionally ignore scheduling error
         let task = StorageTask::default()

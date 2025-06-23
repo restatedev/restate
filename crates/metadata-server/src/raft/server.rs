@@ -266,15 +266,22 @@ impl RaftMetadataServer {
             self.provision().await?;
         } else {
             debug!("Replicated metadata store is already provisioned");
-            // For forward compatibility we try to seal a potentially migrated local metadata server
-            // db, in case it did not happen yet (Restate versions <= 1.3.0 weren't doing it).
-            if let Err(err) = Self::try_sealing_local_metadata_server().await {
-                // If we are in this branch, then we assume that users have explicitly configured
-                // the replicated metadata server. Hence, if sealing fails, it is not a catastrophe.
-                warn!(%err, "Failed sealing local metadata server. This can be problematic if you \
-                ever switch back to the local metadata server either explicitly or by rolling back \
-                to a Restate version <= 1.3.");
-            }
+        }
+
+        // todo: drop the local metadata store db in v1.5.0
+
+        // By always sealing the local metadata store, we enable a safe downgrade to v1.3.x. This
+        // prevents creating an empty local metadata store and ending up with split-brain.
+        if let Err(err) = Self::try_sealing_local_metadata_server().await {
+            // If we are in this branch, then we assume that users have explicitly configured the
+            // replicated metadata server. Hence, if sealing fails, it is not a catastrophe. With
+            // Restate 1.4.0, the minimum version is 1.3.0 which means that this installation can
+            // not be rolled back to 1.2.x or earlier, which are not aware of the seal marker.
+            warn!(%err, "Failed sealing local metadata store. This can be problematic if you \
+            ever switch back to the local metadata server explicitly and downgrade to Restate \
+            version <= v1.4.0");
+        } else {
+            debug!("Sealed local metadata store to prevent Restate v1.3.x from using it");
         }
 
         let mut provision_rx = self.provision_rx.take().expect("must be present");
@@ -531,14 +538,12 @@ impl RaftMetadataServer {
     }
 
     async fn try_sealing_local_metadata_server() -> anyhow::Result<()> {
-        if local::storage::RocksDbStorage::data_dir_exists() {
-            let mut local_storage = Self::open_local_metadata_storage().await?;
+        let mut local_storage = Self::open_local_metadata_storage().await?;
 
-            if !local_storage.is_sealed() {
-                local_storage.seal().await?;
-            }
-            // todo close local storage RocksDb instance
+        if !local_storage.is_sealed() {
+            local_storage.seal().await?;
         }
+        local_storage.close().await?;
 
         Ok(())
     }
