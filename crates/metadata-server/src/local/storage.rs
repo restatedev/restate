@@ -75,7 +75,7 @@ impl RocksDbStorage {
         )
         .add_cf_pattern(
             CfPrefixPattern::ANY,
-            cf_options(metadata_server_options.rocksdb_memory_budget()),
+            cf_options(1024 * 1024), // 1MB default memory budget is enough for seal check
         )
         .ensure_column_families(cfs)
         .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
@@ -360,6 +360,10 @@ impl RocksDbStorage {
         } else {
             Ok(())
         }
+    }
+
+    pub async fn close(self) {
+        self.rocksdb.close().await
     }
 }
 

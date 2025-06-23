@@ -510,8 +510,12 @@ impl RocksDb {
         self.manager.async_spawn(task).await?
     }
 
+    pub async fn close(&self) {
+        self.manager.close_db(&self.name).await
+    }
+
     #[tracing::instrument(skip_all, fields(db = %self.name))]
-    pub async fn shutdown(self: Arc<Self>) {
+    async fn shutdown(self: Arc<Self>) {
         let manager = self.manager;
         let op = move || {
             let _x = RocksDbPerfGuard::new("shutdown");

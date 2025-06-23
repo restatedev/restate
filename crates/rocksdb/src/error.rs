@@ -53,8 +53,8 @@ impl RocksError {
         } else {
             if err_message.contains("Direct I/O is not supported") {
                 warn!(
-                    r#"""Direct I/O can be disabled by configuring rocks-db-disable-direct-io-for-reads 
-                        and rocksdb-disable-direct-io-for-flush-and-compactions. RocksDB is better run 
+                    r#"""Direct I/O can be disabled by configuring rocks-db-disable-direct-io-for-reads
+                        and rocksdb-disable-direct-io-for-flush-and-compactions. RocksDB is better run
                         with Direct I/O enabled, are you running on an encrypted fs?"""#
                 );
             }

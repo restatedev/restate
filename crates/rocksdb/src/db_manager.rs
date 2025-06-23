@@ -233,8 +233,15 @@ impl RocksDbManager {
         self.dbs.read().values().cloned().collect()
     }
 
+    pub(crate) async fn close_db(&self, name: &DbName) {
+        let Some(db) = self.dbs.write().remove(name) else {
+            return;
+        };
+        db.shutdown().await;
+    }
+
+    /// Ask all databases to shut down cleanly
     pub async fn shutdown(&'static self) {
-        // Ask all databases to shutdown cleanly.
         let start = Instant::now();
         let mut tasks = tokio::task::JoinSet::new();
         for (name, db) in self.dbs.write().drain() {
