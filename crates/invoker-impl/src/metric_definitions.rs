@@ -19,6 +19,8 @@ pub const INVOKER_AVAILABLE_SLOTS: &str = "restate.invoker.available_slots";
 pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";
 pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
 pub const INVOKER_TASKS_IN_FLIGHT: &str = "restate.invoker.inflight_tasks";
+pub const INVOKER_DEPLOYMENT_UNREACHABLE_ERRORS: &str =
+    "restate.invoker.deployment_unreachable_errors.total";
 
 pub const TASK_OP_STARTED: &str = "started";
 pub const TASK_OP_SUSPENDED: &str = "suspended";
@@ -66,5 +68,11 @@ pub(crate) fn describe_metrics() {
         INVOKER_TASKS_IN_FLIGHT,
         Unit::Count,
         "Number of inflight invoker tasks"
+    );
+
+    describe_counter!(
+        INVOKER_DEPLOYMENT_UNREACHABLE_ERRORS,
+        Unit::Count,
+        "Number of deployment down errors"
     );
 }
