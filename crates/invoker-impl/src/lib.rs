@@ -17,29 +17,7 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
-use input_command::{InputCommand, InvokeCommand};
-use invocation_state_machine::InvocationStateMachine;
-use invocation_task::InvocationTask;
-use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
-use metric_definitions::{INVOKER_PENDING_TASKS, INVOKER_TASKS_IN_FLIGHT};
-use metrics::{counter, gauge};
-use restate_core::cancellation_watcher;
-use restate_errors::warn_it;
-use restate_invoker_api::{
-    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
-    InvokeInputJournal,
-};
-use restate_queue::SegmentQueue;
-use restate_timer_queue::TimerQueue;
-use restate_types::config::{InvokerOptions, ServiceClientOptions};
-use restate_types::identifiers::PartitionLeaderEpoch;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
-use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::{Completion, EntryIndex};
-use restate_types::live::{Live, LiveLoad};
-use restate_types::retries::RetryPolicy;
-use restate_types::schema::deployment::DeploymentResolver;
-use status_store::InvocationStatusStore;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::ops::RangeInclusive;
@@ -47,23 +25,30 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::SystemTime;
 use std::{cmp, panic};
+
+use metrics::{counter, gauge};
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, trace};
 use tracing::{error, instrument};
 
-use crate::error::{InvokerError, SdkInvocationErrorV2};
-use crate::metric_definitions::{
-    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
-    TASK_OP_SUSPENDED,
-};
-use error::InvokerErrorKind;
-pub use input_command::ChannelStatusReader;
-pub use input_command::InvokerHandle;
+use restate_core::cancellation_watcher;
+use restate_errors::warn_it;
 use restate_invoker_api::invocation_reader::InvocationReader;
-use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_invoker_api::{
+    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
+    InvokeInputJournal,
+};
+use restate_queue::SegmentQueue;
+use restate_service_client::{AssumeRoleCacheMode, HttpError, ServiceClient, ServiceClientError};
+use restate_timer_queue::TimerQueue;
+use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
+use restate_types::identifiers::PartitionLeaderEpoch;
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
+use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::{Completion, EntryIndex};
 use restate_types::journal_v2;
 use restate_types::journal_v2::raw::{
     RawCommand, RawEntry, RawEntryHeader, RawEvent, RawNotification,
@@ -71,9 +56,27 @@ use restate_types::journal_v2::raw::{
 use restate_types::journal_v2::{
     CommandIndex, EntryMetadata, Event, NotificationId, TransientErrorEvent,
 };
+use restate_types::live::{Live, LiveLoad};
+use restate_types::retries::RetryPolicy;
+use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
+
+use crate::error::{InvokerError, SdkInvocationErrorV2};
+use crate::metric_definitions::{
+    INVOKER_DEPLOYMENT_UNREACHABLE_ERRORS, INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS,
+    TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED, TASK_OP_SUSPENDED,
+};
+use error::InvokerErrorKind;
+pub use input_command::ChannelStatusReader;
+pub use input_command::InvokerHandle;
+use input_command::{InputCommand, InvokeCommand};
+use invocation_state_machine::InvocationStateMachine;
+use invocation_task::InvocationTask;
+use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
+use metric_definitions::{INVOKER_PENDING_TASKS, INVOKER_TASKS_IN_FLIGHT};
+use status_store::InvocationStatusStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -1090,11 +1093,36 @@ where
             .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
+
+            if self.is_service_down_error(&error.kind) {
+                let deployment_id = error
+                    .deployment_id
+                    .map(|id| Cow::Owned(id.to_string()))
+                    .unwrap_or_else(|| Cow::Borrowed("unknown"));
+                counter!(INVOKER_DEPLOYMENT_UNREACHABLE_ERRORS, "service" => ism.invocation_target.service_name().to_string(), "deployment" => deployment_id).increment(1);
+            }
+
             self.handle_error_event(options, partition, invocation_id, error.kind, ism)
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
             trace!("No state machine found for invocation task error signal");
+        }
+    }
+
+    fn is_service_down_error(&self, error: &InvokerErrorKind) -> bool {
+        if let InvokerErrorKind::Client(client_err) = error {
+            match client_err.as_ref() {
+                ServiceClientError::Http(_, HttpError::Connect(_)) => true,
+                ServiceClientError::Lambda(_, error) => {
+                    // service down errors are those which might indicate that the service is down or
+                    // unreachable.
+                    error.is_service_down()
+                }
+                _ => false,
+            }
+        } else {
+            false
         }
     }
 
@@ -1436,7 +1464,7 @@ mod tests {
     use restate_types::schema::invocation_target::InvocationTargetMetadata;
     use restate_types::schema::service::{InvocationAttemptOptions, ServiceMetadata};
 
-    use crate::error::{InvokerErrorKind, SdkInvocationErrorV2};
+    use crate::error::SdkInvocationErrorV2;
     use crate::quota::InvokerConcurrencyQuota;
 
     // -- Mocks

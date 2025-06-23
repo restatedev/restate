@@ -33,7 +33,6 @@ use tokio::task::JoinError;
 pub struct InvokerError {
     pub kind: InvokerErrorKind,
     // Deployment ID associated with the error, if any.
-    #[allow(dead_code)]
     pub deployment_id: Option<DeploymentId>,
 }
 
