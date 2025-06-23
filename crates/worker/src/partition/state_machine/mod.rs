@@ -28,7 +28,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use enumset::EnumSet;
 use futures::{StreamExt, TryStreamExt};
-use metrics::{Histogram, histogram};
+use metrics::histogram;
 use tracing::{Instrument, Span, debug, error, trace, warn};
 
 use restate_invoker_api::InvokeInputJournal;
@@ -122,7 +122,6 @@ pub struct StateMachine {
     /// Sequence number of the next outbox message to be appended.
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
-    invoker_apply_latency: Histogram,
 
     /// Enabled experimental features.
     experimental_features: EnumSet<ExperimentalFeature>,
@@ -216,14 +215,11 @@ impl StateMachine {
         min_restate_version: SemanticRestateVersion,
         experimental_features: EnumSet<ExperimentalFeature>,
     ) -> Self {
-        let invoker_apply_latency =
-            histogram!(crate::metric_definitions::PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
         Self {
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
             partition_key_range,
-            invoker_apply_latency,
             min_restate_version,
             experimental_features,
         }
@@ -238,7 +234,6 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
     min_restate_version: &'a mut SemanticRestateVersion,
     partition_key_range: RangeInclusive<PartitionKey>,
-    invoker_apply_latency: &'a Histogram,
     #[allow(dead_code)]
     experimental_features: &'a EnumSet<ExperimentalFeature>,
     is_leader: bool,
@@ -269,7 +264,6 @@ impl StateMachine {
                 outbox_head_seq_number: &mut self.outbox_head_seq_number,
                 min_restate_version: &mut self.min_restate_version,
                 partition_key_range: self.partition_key_range.clone(),
-                invoker_apply_latency: &self.invoker_apply_latency,
                 experimental_features: &self.experimental_features,
                 is_leader,
             }
@@ -1793,12 +1787,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             + VirtualObjectStatusTable
             + journal_table_v2::JournalTable,
     {
-        let start = Instant::now();
         let status = self
             .get_invocation_status(&invoker_effect.invocation_id)
             .await?;
         self.on_invoker_effect(invoker_effect, status).await?;
-        self.invoker_apply_latency.record(start.elapsed());
 
         Ok(())
     }
