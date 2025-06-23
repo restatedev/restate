@@ -85,7 +85,7 @@ impl MetadataServerOptions {
     pub fn rocksdb_memory_budget(&self) -> usize {
         self.rocksdb_memory_budget
             .unwrap_or_else(|| {
-                warn!("MetadataStore rocksdb_memory_budget is not set, defaulting to 1MB");
+                warn!("metadata-server rocksdb_memory_budget is not set, defaulting to 1MB");
                 // 1MB minimum
                 NonZeroUsize::new(1024 * 1024).unwrap()
             })
