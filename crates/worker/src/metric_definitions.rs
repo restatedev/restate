@@ -16,30 +16,19 @@ pub const PARTITION_LABEL: &str = "partition";
 
 pub const PARTITION_BLOCKED_FLARE: &str = "restate.partition.blocked_flare";
 
-pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command.seconds";
-pub const PARTITION_ACTUATOR_HANDLED: &str = "restate.partition.actuator_handled.total";
-pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_created.total";
-pub const PARTITION_STORAGE_TX_COMMITTED: &str = "restate.partition.storage_tx_committed.total";
+pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command_duration.seconds";
 pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_leader_action.total";
 
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
 pub const PARTITION_TIME_SINCE_LAST_STATUS_UPDATE: &str =
     "restate.partition.time_since_last_status_update";
-pub const PARTITION_TIME_SINCE_LAST_RECORD: &str = "restate.partition.time_since_last_record";
 pub const PARTITION_APPLIED_LSN: &str = "restate.partition.applied_lsn";
 pub const PARTITION_APPLIED_LSN_LAG: &str = "restate.partition.applied_lsn_lag";
 pub const PARTITION_DURABLE_LSN: &str = "restate.partition.durable_lsn";
 pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_leader";
 pub const PARTITION_IS_ACTIVE: &str = "restate.partition.is_active";
 
-pub const PARTITION_APPLY_COMMAND_DURATION: &str =
-    "restate.partition.apply_command_duration.seconds";
-pub const PARTITION_APPLY_COMMAND_BATCH_SIZE: &str = "restate.partition.apply_command_batch_size";
-pub const PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION: &str =
-    "restate.partition.handle_action_batch_duration.seconds";
-pub const PARTITION_HANDLE_INVOKER_EFFECT_COMMAND: &str =
-    "restate.partition.handle_invoker_effect.seconds";
 pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
     "restate.partition.record_committed_to_read_latency.seconds";
 
@@ -57,47 +46,11 @@ pub(crate) fn describe_metrics() {
         Unit::Seconds,
         "Time spent applying partition processor command"
     );
-    describe_counter!(
-        PARTITION_ACTUATOR_HANDLED,
-        Unit::Count,
-        "Number of actuator operation outputs processed"
-    );
-    describe_counter!(
-        PARTITION_STORAGE_TX_CREATED,
-        Unit::Count,
-        "Storage transactions created by from processing state machine commands"
-    );
-    describe_counter!(
-        PARTITION_STORAGE_TX_COMMITTED,
-        Unit::Count,
-        "Storage transactions committed by applying partition state machine commands"
-    );
-    describe_histogram!(
-        PARTITION_APPLY_COMMAND_DURATION,
-        Unit::Seconds,
-        "Time spent processing a single bifrost message"
-    );
-    describe_histogram!(
-        PARTITION_APPLY_COMMAND_BATCH_SIZE,
-        Unit::Count,
-        "Size of the applied command batch"
-    );
-    describe_histogram!(
-        PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
-        Unit::Seconds,
-        "Time spent applying actions/effects in a single iteration"
-    );
     describe_histogram!(
         PARTITION_HANDLE_LEADER_ACTIONS,
         Unit::Count,
         "Number of actions the leader has performed"
     );
-    describe_histogram!(
-        PARTITION_HANDLE_INVOKER_EFFECT_COMMAND,
-        Unit::Seconds,
-        "Time spent handling an invoker effect command"
-    );
-
     describe_histogram!(
         PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
         Unit::Seconds,
@@ -150,12 +103,6 @@ pub(crate) fn describe_metrics() {
         PARTITION_DURABLE_LSN,
         Unit::Count,
         "Raw value of the LSN that can be trimmed"
-    );
-
-    describe_gauge!(
-        PARTITION_TIME_SINCE_LAST_RECORD,
-        Unit::Seconds,
-        "Number of seconds since the last record was applied"
     );
 
     describe_counter!(

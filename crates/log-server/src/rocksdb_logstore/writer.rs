@@ -8,45 +8,36 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// todo: remove after scaffolding is complete
-#![allow(unused)]
-
 use std::sync::Arc;
 
 use bytes::BytesMut;
 use futures::StreamExt as FutureStreamExt;
 use metrics::histogram;
-use restate_types::GenerationalNodeId;
-use restate_types::health::HealthStatus;
-use restate_types::net::log_server::{Seal, Store, Trim};
-use restate_types::protobuf::common::LogServerStatus;
-use restate_types::time::NanosSinceEpoch;
 use rocksdb::{BoundColumnFamily, WriteBatch};
-use serde_with::TimestampNanoSeconds;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt as TokioStreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, trace, warn};
 
 use restate_bifrost::loglet::OperationError;
-use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
+use restate_core::{ShutdownError, TaskCenter, TaskKind};
 use restate_rocksdb::{IoMode, Priority, RocksDb};
+use restate_types::GenerationalNodeId;
 use restate_types::config::LogServerOptions;
+use restate_types::health::HealthStatus;
 use restate_types::live::{BoxLiveLoad, LiveLoad};
-use restate_types::logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber};
+use restate_types::logs::{LogletId, LogletOffset, RecordCache, SequenceNumber};
+use restate_types::net::log_server::{Seal, Store, Trim};
+use restate_types::protobuf::common::LogServerStatus;
 
 use super::keys::{DataRecordKey, KeyPrefixKind, MetadataKey};
 use super::record_format::DataRecordEncoder;
 use super::{DATA_CF, METADATA_CF};
 use crate::logstore::AsyncToken;
-use crate::metric_definitions::{
-    LOG_SERVER_STORE, LOG_SERVER_WRITE_BATCH_COUNT, LOG_SERVER_WRITE_BATCH_SIZE_BYTES,
-};
+use crate::metric_definitions::LOG_SERVER_WRITE_BATCH_SIZE_BYTES;
 
 type Ack = oneshot::Sender<Result<(), OperationError>>;
-type AckRecv = oneshot::Receiver<Result<(), OperationError>>;
 
-const RECORD_SIZE_GUESS: usize = 4_096; // Estimate 4KiB per record
 const INITIAL_SERDE_BUFFER_SIZE: usize = 16_384; // Initial capacity 16KiB
 
 pub struct LogStoreWriteCommand {
@@ -114,7 +105,6 @@ impl LogStoreWriter {
                 let mut opts = self.updateable_options.clone();
                 let mut receiver =
                     std::pin::pin!(ReceiverStream::new(receiver).ready_chunks(batch_size));
-                let mut cancel = std::pin::pin!(cancellation_watcher());
 
                 while let Some(cmds) = TokioStreamExt::next(&mut receiver).await {
                     self.handle_commands(opts.live_load(), cmds).await;
@@ -183,7 +173,6 @@ impl LogStoreWriter {
         }
 
         histogram!(LOG_SERVER_WRITE_BATCH_SIZE_BYTES).record(write_batch.size_in_bytes() as f64);
-        histogram!(LOG_SERVER_WRITE_BATCH_COUNT).record(write_batch.len() as f64);
         self.commit(opts, write_batch).await;
     }
 
@@ -318,12 +307,6 @@ impl RocksDbLogWriterHandle {
         set_sequencer_in_metadata: bool,
     ) -> Result<AsyncToken, OperationError> {
         let (ack, receiver) = oneshot::channel();
-        // Do not allow more than 65k records in a single batch!
-        // this is validated by the store handler
-        let last_offset_in_batch = store_message
-            .last_offset()
-            .expect("last_offset is within bounds");
-
         let loglet_id = store_message.header.loglet_id;
         let metadata_update = set_sequencer_in_metadata.then_some(MetadataUpdate::SetSequencer {
             sequencer: store_message.sequencer,
