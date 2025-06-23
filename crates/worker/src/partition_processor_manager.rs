@@ -35,7 +35,6 @@ use crate::metric_definitions::PARTITION_DURABLE_LSN;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
 use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
 use crate::metric_definitions::PARTITION_LABEL;
-use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
 use crate::metric_definitions::{NUM_PARTITIONS, PARTITION_APPLIED_LSN};
@@ -711,12 +710,6 @@ impl PartitionProcessorManager {
                     gauge!(PARTITION_DURABLE_LSN,
                         PARTITION_LABEL => partition_id.to_string())
                     .set(durable_lsn.as_u64() as f64);
-                }
-
-                if let Some(last_record_applied_at) = status.last_record_applied_at {
-                    gauge!(PARTITION_TIME_SINCE_LAST_RECORD,
-                        PARTITION_LABEL => partition_id.to_string())
-                    .set(last_record_applied_at.elapsed());
                 }
 
                 // it is a bit unfortunate that we share PartitionProcessorStatus between the
