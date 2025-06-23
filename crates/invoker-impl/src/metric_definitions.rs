@@ -18,6 +18,8 @@ pub const INVOKER_INVOCATION_TASKS: &str = "restate.invoker.invocation_tasks.tot
 pub const INVOKER_AVAILABLE_SLOTS: &str = "restate.invoker.available_slots";
 pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";
 pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
+pub const INVOKER_DEPLOYMENT_TIME_TO_FIRST_BYTE: &str =
+    "restate.invoker.deployment_time_to_first_byte.seconds";
 pub const INVOKER_TASKS_IN_FLIGHT: &str = "restate.invoker.inflight_tasks";
 
 pub const TASK_OP_STARTED: &str = "started";
@@ -60,6 +62,12 @@ pub(crate) fn describe_metrics() {
         INVOKER_TASK_DURATION,
         Unit::Seconds,
         "Time taken to complete an invoker task"
+    );
+
+    describe_histogram!(
+        INVOKER_DEPLOYMENT_TIME_TO_FIRST_BYTE,
+        Unit::Seconds,
+        "Time taken to receive the first response (headers) from the user deployment"
     );
 
     describe_gauge!(
