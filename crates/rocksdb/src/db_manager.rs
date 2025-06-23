@@ -233,9 +233,11 @@ impl RocksDbManager {
         self.dbs.read().values().cloned().collect()
     }
 
-    /// Remove a database which has already been shut down
-    pub fn remove_db(&self, name: &DbName) -> Option<bool> {
-        self.dbs.write().remove(name).map(|_| true)
+    pub(crate) async fn close_db(&self, name: &DbName) {
+        let Some(db) = self.dbs.write().remove(name) else {
+            return;
+        };
+        db.shutdown().await;
     }
 
     /// Ask all databases to shut down cleanly

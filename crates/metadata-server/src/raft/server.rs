@@ -543,7 +543,7 @@ impl RaftMetadataServer {
         if !local_storage.is_sealed() {
             local_storage.seal().await?;
         }
-        local_storage.close().await?;
+        local_storage.close().await;
 
         Ok(())
     }

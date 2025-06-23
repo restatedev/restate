@@ -362,10 +362,8 @@ impl RocksDbStorage {
         }
     }
 
-    pub async fn close(self) -> Result<(), RocksError> {
-        self.rocksdb.shutdown().await;
-
-        Ok(())
+    pub async fn close(self) {
+        self.rocksdb.close().await
     }
 }
 
