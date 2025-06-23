@@ -46,6 +46,9 @@ pub(crate) enum InvokerError {
     #[error("cannot start the invocation because the SDK doesn't support the protocol version '{}' negotiated at discovery time", .0.as_repr())]
     #[code(restate_errors::RT0015)]
     BadNegotiatedServiceProtocolVersion(ServiceProtocolVersion),
+    #[error("service replied with content too large")]
+    #[code(restate_errors::RT0019)]
+    ContentTooLarge,
 
     #[error("unexpected content type '{0:?}'; expected content type '{1:?}'")]
     #[code(restate_errors::RT0012)]
