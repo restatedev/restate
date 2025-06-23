@@ -429,9 +429,7 @@ impl CommonOptions {
 impl Default for CommonOptions {
     fn default() -> Self {
         Self {
-            // todo remove `- Role::Ingress` when the safe rollback version supports ingress
-            //   see "roles_compat_test" test below.
-            roles: EnumSet::all() - Role::HttpIngress,
+            roles: EnumSet::all(),
             node_name: None,
             location: None,
             force_node_id: None,
@@ -826,14 +824,6 @@ mod tests {
     use googletest::prelude::eq;
     use googletest::{assert_that, elements_are, pat};
     use http::Uri;
-
-    #[test]
-    fn roles_compat_test() {
-        let opts = CommonOptions::default();
-        // make sure we don't add ingress by default until previous version can parse nodes
-        // configuration with this role.
-        assert!(!opts.roles.contains(Role::HttpIngress));
-    }
 
     #[test]
     fn metadata_client_kind_backwards_compatibility() -> googletest::Result<()> {

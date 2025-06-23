@@ -38,16 +38,6 @@ pub struct IngressOptions {
 
     kafka_clusters: Vec<KafkaClusterOptions>,
 
-    /// # Experimental feature to run the ingress independent of the worker role
-    ///
-    /// This feature is experimental and should be used with caution. It enables the HTTP ingress
-    /// to run role independently of the worker role. If you activate this feature, you will need
-    /// to specify the [`Role::HttpIngress`] role for nodes explicitly, and nodes that run
-    /// only [`Role::Worker`] will not accept HTTP ingress requests. If you enable this feature,
-    /// then you might not be able to roll back to a previous version.
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    pub experimental_feature_enable_separate_ingress_role: bool,
-
     /// # Ingress endpoint
     ///
     /// Ingress endpoint that the Web UI should use to interact with.
@@ -111,7 +101,6 @@ impl Default for IngressOptions {
             // max is limited by Tower's LoadShedLayer.
             concurrent_api_requests_limit: None,
             kafka_clusters: Default::default(),
-            experimental_feature_enable_separate_ingress_role: false,
             advertised_ingress_endpoint: None,
         }
     }
