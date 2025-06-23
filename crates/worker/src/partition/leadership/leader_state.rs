@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_HANDLE_LEADER_ACTIONS};
+use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
@@ -18,7 +18,7 @@ use crate::partition::state_machine::Action;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
-use metrics::{Counter, counter};
+use metrics::counter;
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{TaskCenter, TaskHandle, TaskId};
@@ -54,7 +54,6 @@ pub struct LeaderState {
     pub leader_epoch: LeaderEpoch,
     // only needed for proposing TruncateOutbox to ourselves
     own_partition_key: PartitionKey,
-    action_effects_counter: Counter,
 
     pub shuffle_hint_tx: HintSender,
     // It's illegal to await the shuffle task handle once it has
@@ -91,7 +90,6 @@ impl LeaderState {
             partition_id,
             leader_epoch,
             own_partition_key,
-            action_effects_counter: counter!(PARTITION_ACTUATOR_HANDLED),
             shuffle_task_handle: Some(shuffle_task_handle),
             cleaner_task_id,
             shuffle_hint_tx,
@@ -227,8 +225,6 @@ impl LeaderState {
         action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> Result<(), Error> {
         for effect in action_effects {
-            self.action_effects_counter.increment(1);
-
             match effect {
                 ActionEffect::Invoker(invoker_effect) => {
                     self.self_proposer

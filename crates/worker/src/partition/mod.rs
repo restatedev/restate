@@ -11,7 +11,7 @@
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Context;
 use assert2::let_assert;
@@ -70,9 +70,8 @@ use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::metric_definitions::{
-    PARTITION_APPLY_COMMAND_BATCH_SIZE, PARTITION_APPLY_COMMAND_DURATION, PARTITION_BLOCKED_FLARE,
-    PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
-    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_RECORD_READ_COUNT,
+    PARTITION_BLOCKED_FLARE, PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    PARTITION_RECORD_READ_COUNT,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
@@ -424,10 +423,7 @@ where
 
         // Telemetry setup
         let partition_id_str = SharedString::from(self.partition_id.to_string());
-        let apply_command_latency = histogram!(PARTITION_APPLY_COMMAND_DURATION, PARTITION_LABEL => partition_id_str.clone());
-        let record_actions_latency = histogram!(PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION);
         let record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => partition_id_str.clone());
-        let command_batch_size = histogram!(PARTITION_APPLY_COMMAND_BATCH_SIZE, PARTITION_LABEL => partition_id_str.clone());
         let command_read_count =
             counter!(PARTITION_RECORD_READ_COUNT, PARTITION_LABEL => partition_id_str.clone());
         // Start reading after the last applied lsn
@@ -523,7 +519,6 @@ where
                     operation?;
 
                     command_read_count.increment(u64::try_from(command_buffer.len()).expect("usize fit in u64"));
-                    command_batch_size.record(command_buffer.len() as f64);
 
                     let mut transaction = partition_store.transaction();
 
@@ -531,8 +526,6 @@ where
                     action_collector.clear();
 
                     for (lsn, envelope) in command_buffer.drain(..) {
-                        let command_start = Instant::now();
-
                         trace!(%lsn, "Processing bifrost record for '{}': {:?}", envelope.command.name(), envelope.header);
 
                         let leadership_change = self.apply_record(
@@ -540,8 +533,6 @@ where
                             envelope,
                             &mut transaction,
                             &mut action_collector).await?;
-
-                        apply_command_latency.record(command_start.elapsed());
 
                         if let Some((header, announce_leader)) = leadership_change {
                             // commit all changes so far, this is important so that the actuators see all changes
@@ -589,9 +580,7 @@ where
 
                     // Commit our changes and notify actuators about actions if we are the leader
                     transaction.commit().await?;
-                    let actions_start = Instant::now();
                     self.leadership_state.handle_actions(action_collector.drain(..)).await?;
-                    record_actions_latency.record(actions_start.elapsed());
                 },
                 result = self.leadership_state.run() => {
                     let action_effects = result?;

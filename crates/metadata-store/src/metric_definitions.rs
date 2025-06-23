@@ -14,11 +14,14 @@ use metrics::{Unit, describe_counter, describe_histogram};
 pub const STATUS_COMPLETED: &str = "completed";
 pub const STATUS_FAILED: &str = "failed";
 
-pub(crate) const METADATA_CLIENT_GET_DURATION: &str = "restate.metadata_client.get.duration";
+pub(crate) const METADATA_CLIENT_GET_DURATION: &str =
+    "restate.metadata_client.get_duration.seconds";
 pub(crate) const METADATA_CLIENT_GET_VERSION_DURATION: &str =
-    "restate.metadata_client.get_version.duration";
-pub(crate) const METADATA_CLIENT_PUT_DURATION: &str = "restate.metadata_client.put.duration";
-pub(crate) const METADATA_CLIENT_DELETE_DURATION: &str = "restate.metadata_client.delete.duration";
+    "restate.metadata_client.get_version_duration.seconds";
+pub(crate) const METADATA_CLIENT_PUT_DURATION: &str =
+    "restate.metadata_client.put_duration.seconds";
+pub(crate) const METADATA_CLIENT_DELETE_DURATION: &str =
+    "restate.metadata_client.delete_duration.seconds";
 
 pub(crate) const METADATA_CLIENT_GET_TOTAL: &str = "restate.metadata_client.get.total";
 pub(crate) const METADATA_CLIENT_GET_VERSION_TOTAL: &str =
