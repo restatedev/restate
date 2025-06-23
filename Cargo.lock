@@ -7114,6 +7114,7 @@ dependencies = [
  "itertools 0.14.0",
  "metrics",
  "opentelemetry",
+ "parking_lot",
  "restate-core",
  "restate-errors",
  "restate-futures-util",

@@ -42,6 +42,7 @@ metrics = { workspace = true }
 opentelemetry = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+parking_lot = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
