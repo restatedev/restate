@@ -16,7 +16,7 @@ use futures::future::OptionFuture;
 use futures::never::Never;
 use tokio::time;
 use tokio::time::{Interval, MissedTickBehavior};
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, instrument, trace, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, cancellation_token};
@@ -108,10 +108,6 @@ impl TrimLogsTask {
     }
 
     fn create_log_trim_check_interval(options: &AdminOptions) -> Option<Interval> {
-        options
-            .log_trim_threshold
-            .inspect(|_| info!("The log trim threshold setting is deprecated and will be ignored"));
-
         options.log_trim_check_interval().map(|interval| {
             // delay the initial trim check, and introduces small amount of jitter (+/-10%) to avoid synchronization
             // among partition leaders in case of coordinated cluster restarts

@@ -15,15 +15,14 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use enumset::EnumSet;
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_with::{DeserializeAs, serde_as};
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 
 use super::{
-    AwsOptions, Configuration, GossipOptions, HttpOptions, InvalidConfigurationError,
-    ObjectStoreOptions, PerfStatsLevel, RocksDbOptions, StructWithDefaults,
-    print_warning_deprecated_config_option,
+    AwsOptions, GossipOptions, HttpOptions, InvalidConfigurationError, ObjectStoreOptions,
+    PerfStatsLevel, RocksDbOptions,
 };
 use crate::PlainNodeId;
 use crate::locality::NodeLocation;
@@ -45,7 +44,7 @@ static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(default))]
-#[serde(rename_all = "kebab-case", from = "CommonOptionsShadow")]
+#[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct CommonOptions {
     /// Defines the roles which this Restate node should run, by default the node
@@ -816,224 +815,10 @@ impl Default for TracingOptions {
     }
 }
 
-/// Used to deserialize the [`CommonOptions`] in backwards compatible way.
-///
-/// | Current Name             | Backwards Compatible Aliases  |
-/// |--------------------------|------------------------------|
-/// | `auto_provision`         | `allow_bootstrap`           |
-/// | `default_num_partitions` | `bootstrap_num_partitions`  |
-///
-/// Once we no longer support the backwards compatible aliases, we can remove this struct.
-#[serde_as]
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct CommonOptionsShadow {
-    roles: EnumSet<Role>,
-    node_name: Option<String>,
-    location: Option<NodeLocation>,
-    force_node_id: Option<PlainNodeId>,
-    cluster_name: String,
-    base_dir: Option<PathBuf>,
-    bind_address: Option<BindAddress>,
-    advertised_address: AdvertisedAddress,
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    shutdown_timeout: humantime::Duration,
-    default_thread_pool_size: Option<usize>,
-    #[serde(flatten)]
-    tracing: TracingOptions,
-    log_filter: String,
-    log_format: LogFormat,
-    log_disable_ansi_codes: bool,
-    tokio_console_bind_address: Option<BindAddress>,
-    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-    histogram_inactivity_timeout: Option<humantime::Duration>,
-    #[serde(flatten)]
-    service_client: ServiceClientOptions,
-    disable_prometheus: bool,
-    storage_high_priority_bg_threads: Option<NonZeroUsize>,
-    storage_low_priority_bg_threads: Option<NonZeroUsize>,
-    #[serde_as(as = "NonZeroByteCount")]
-    rocksdb_total_memory_size: NonZeroUsize,
-    rocksdb_total_memtables_ratio: f32,
-    rocksdb_bg_threads: Option<NonZeroU32>,
-    rocksdb_high_priority_bg_threads: NonZeroU32,
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    rocksdb_write_stall_threshold: humantime::Duration,
-    rocksdb_enable_stall_on_memory_limit: bool,
-    rocksdb_perf_level: PerfStatsLevel,
-    #[serde(flatten)]
-    rocksdb: RocksDbOptions,
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    metadata_update_interval: humantime::Duration,
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    metadata_fetch_from_peer_timeout: humantime::Duration,
-    network_error_retry_policy: RetryPolicy,
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    initialization_timeout: humantime::Duration,
-    disable_telemetry: bool,
-    #[serde(flatten)]
-    pub gossip: GossipOptions,
-
-    #[serde_as(as = "crate::replication::ReplicationPropertyFromTo")]
-    pub default_replication: ReplicationProperty,
-
-    metadata_client: MetadataClientOptions,
-    // todo drop in version 1.3
-    #[serde_as(as = "Option<MetadataClientOptionsWithConfigurationDefaults>")]
-    metadata_store_client: Option<MetadataClientOptions>,
-    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    // todo drop in version 1.3
-    metadata_store_connect_timeout: Option<humantime::Duration>,
-    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    // todo drop in version 1.3
-    metadata_store_keep_alive_interval: Option<humantime::Duration>,
-    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    // todo drop in version 1.3
-    metadata_store_keep_alive_timeout: Option<humantime::Duration>,
-    // todo drop in version 1.3
-    metadata_store_backoff_policy: Option<RetryPolicy>,
-
-    auto_provision: bool,
-    // todo drop in version 1.3
-    allow_bootstrap: Option<bool>,
-
-    default_num_partitions: u16,
-    // todo drop in version 1.3
-    bootstrap_num_partitions: Option<u16>,
-}
-
-impl From<CommonOptionsShadow> for CommonOptions {
-    fn from(value: CommonOptionsShadow) -> Self {
-        let auto_provision = value
-            // it's a pity that we give precedence to older options names but there is no way to
-            // figure out whether auto_provision was set or not by the user because of the default
-            // values and the production profile :-(
-            .allow_bootstrap
-            .inspect(|_value| {
-                // todo: Add macro for casing the variable names correctly
-                print_warning_deprecated_config_option("allow-bootstrap", Some("auto-provision"));
-            })
-            .unwrap_or(value.auto_provision);
-        let default_num_partitions = value
-            // it's a pity that we give precedence to older options names but there is no way to
-            // figure out whether default_num_partitions was set or not by the user because of the default
-            // values and the production profile :-(
-            .bootstrap_num_partitions
-            .inspect(|_value| {
-                // todo: Add macro for casing the variable names correctly
-                print_warning_deprecated_config_option(
-                    "bootstrap-num-partitions",
-                    Some("default-num-partitions"),
-                );
-            })
-            .unwrap_or(value.default_num_partitions);
-
-        let mut metadata_client = value
-            .metadata_store_client
-            .inspect(|_| {
-                print_warning_deprecated_config_option(
-                    "metadata-store-client",
-                    Some("metadata-client"),
-                );
-            })
-            .unwrap_or(value.metadata_client);
-
-        if let Some(backoff_policy) = value.metadata_store_backoff_policy {
-            print_warning_deprecated_config_option(
-                "metadata-store-backoff-policy",
-                Some("metadata-client.backoff-policy"),
-            );
-            metadata_client.backoff_policy = backoff_policy;
-        }
-
-        if let Some(connect_timeout) = value.metadata_store_connect_timeout {
-            print_warning_deprecated_config_option(
-                "metadata-store-connect-timeout",
-                Some("metadata-client.connect-timeout"),
-            );
-            metadata_client.connect_timeout = connect_timeout;
-        }
-
-        if let Some(keep_alive_interval) = value.metadata_store_keep_alive_interval {
-            print_warning_deprecated_config_option(
-                "metadata-store-keep-alive-interval",
-                Some("metadata-client.keep-alive-interval"),
-            );
-            metadata_client.keep_alive_interval = keep_alive_interval;
-        }
-
-        if let Some(keep_alive_timeout) = value.metadata_store_keep_alive_timeout {
-            print_warning_deprecated_config_option(
-                "metadata-store-keep-alive-timeout",
-                Some("metadata-client.keep-alive-timeout"),
-            );
-            metadata_client.keep_alive_timeout = keep_alive_timeout;
-        }
-
-        CommonOptions {
-            roles: value.roles,
-            node_name: value.node_name,
-            location: value.location,
-            force_node_id: value.force_node_id,
-            cluster_name: value.cluster_name,
-            base_dir: value.base_dir,
-            metadata_client,
-            bind_address: value.bind_address,
-            advertised_address: value.advertised_address,
-            shutdown_timeout: value.shutdown_timeout,
-            default_thread_pool_size: value.default_thread_pool_size,
-            default_replication: value.default_replication,
-            tracing: value.tracing,
-            log_filter: value.log_filter,
-            log_format: value.log_format,
-            log_disable_ansi_codes: value.log_disable_ansi_codes,
-            tokio_console_bind_address: value.tokio_console_bind_address,
-            histogram_inactivity_timeout: value.histogram_inactivity_timeout,
-            service_client: value.service_client,
-            disable_prometheus: value.disable_prometheus,
-            storage_high_priority_bg_threads: value.storage_high_priority_bg_threads,
-            storage_low_priority_bg_threads: value.storage_low_priority_bg_threads,
-            rocksdb_total_memory_size: value.rocksdb_total_memory_size,
-            rocksdb_total_memtables_ratio: value.rocksdb_total_memtables_ratio,
-            rocksdb_bg_threads: value.rocksdb_bg_threads,
-            rocksdb_high_priority_bg_threads: value.rocksdb_high_priority_bg_threads,
-            rocksdb_write_stall_threshold: value.rocksdb_write_stall_threshold,
-            rocksdb_enable_stall_on_memory_limit: value.rocksdb_enable_stall_on_memory_limit,
-            rocksdb_perf_level: value.rocksdb_perf_level,
-            rocksdb: value.rocksdb,
-            metadata_update_interval: value.metadata_update_interval,
-            metadata_fetch_from_peer_timeout: value.metadata_fetch_from_peer_timeout,
-            network_error_retry_policy: value.network_error_retry_policy,
-            initialization_timeout: value.initialization_timeout,
-            disable_telemetry: value.disable_telemetry,
-            gossip: value.gossip,
-
-            auto_provision,
-            default_num_partitions,
-        }
-    }
-}
-
-/// Deserializer for [`MetadataClientOptions`] that uses the [`Configuration`] defaults.
-struct MetadataClientOptionsWithConfigurationDefaults;
-
-impl<'de> DeserializeAs<'de, MetadataClientOptions>
-    for MetadataClientOptionsWithConfigurationDefaults
-{
-    fn deserialize_as<D>(deserializer: D) -> Result<MetadataClientOptions, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let struct_with_defaults =
-            StructWithDefaults::new(Configuration::default().common.metadata_client);
-        deserializer.deserialize_map(struct_with_defaults)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::CommonOptions;
-    use crate::config::{MetadataClientKind, MetadataClientOptions};
+    use crate::config::MetadataClientKind;
     use crate::config_loader::ConfigLoaderBuilder;
     use crate::net::AdvertisedAddress;
     use crate::nodes_config::Role;
@@ -1095,88 +880,6 @@ mod tests {
 
         assert_that!(
             metadata_client_kind,
-            pat!(MetadataClientKind::Etcd {
-                addresses: elements_are![
-                    eq("http://127.0.0.1:15123/"),
-                    eq("http://127.0.0.1:15124/")
-                ]
-            })
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn metadata_store_client_backwards_compatibility() -> googletest::Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let config_path_address = temp_dir.path().join("config1.toml");
-        let config_file_address = r#"
-        [metadata-store-client]
-        address = "http://127.0.0.1:15123/"
-        "#;
-
-        std::fs::write(config_path_address.clone(), config_file_address)?;
-
-        let config_loader = ConfigLoaderBuilder::default()
-            .path(Some(config_path_address))
-            .build()?;
-        let configuration = config_loader.load_once()?;
-
-        assert_eq!(
-            configuration.common.metadata_client,
-            MetadataClientOptions {
-                kind: MetadataClientKind::Replicated {
-                    addresses: vec![AdvertisedAddress::Http(Uri::from_static(
-                        "http://127.0.0.1:15123/"
-                    ))]
-                },
-                ..MetadataClientOptions::default()
-            }
-        );
-
-        let config_path_addresses = temp_dir.path().join("config2.toml");
-        let config_file_addresses = r#"
-        [metadata-store-client]
-        addresses = ["http://127.0.0.1:15123/", "http://127.0.0.1:15124/"]
-        "#;
-
-        std::fs::write(config_path_addresses.clone(), config_file_addresses)?;
-
-        let config_loader = ConfigLoaderBuilder::default()
-            .path(Some(config_path_addresses))
-            .build()?;
-        let configuration = config_loader.load_once()?;
-
-        assert_that!(
-            configuration.common.metadata_client.kind,
-            pat!(MetadataClientKind::Replicated {
-                addresses: elements_are![
-                    eq(AdvertisedAddress::Http(Uri::from_static(
-                        "http://127.0.0.1:15123/"
-                    ))),
-                    eq(AdvertisedAddress::Http(Uri::from_static(
-                        "http://127.0.0.1:15124/"
-                    )))
-                ]
-            })
-        );
-
-        let config_path_etcd = temp_dir.path().join("config2.toml");
-        let config_file_etcd = r#"
-        [metadata-store-client]
-        type = "etcd"
-        addresses = ["http://127.0.0.1:15123/", "http://127.0.0.1:15124/"]
-        "#;
-
-        std::fs::write(config_path_etcd.clone(), config_file_etcd)?;
-
-        let config_loader = ConfigLoaderBuilder::default()
-            .path(Some(config_path_etcd))
-            .build()?;
-        let configuration = config_loader.load_once()?;
-
-        assert_that!(
-            configuration.common.metadata_client.kind,
             pat!(MetadataClientKind::Etcd {
                 addresses: elements_are![
                     eq("http://127.0.0.1:15123/"),
