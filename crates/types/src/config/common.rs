@@ -816,11 +816,9 @@ impl Default for TracingOptions {
 
 #[cfg(test)]
 mod tests {
-    use super::CommonOptions;
     use crate::config::MetadataClientKind;
     use crate::config_loader::ConfigLoaderBuilder;
     use crate::net::AdvertisedAddress;
-    use crate::nodes_config::Role;
     use googletest::prelude::eq;
     use googletest::{assert_that, elements_are, pat};
     use http::Uri;
