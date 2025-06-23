@@ -18,9 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
-use crate::config::print_warning_deprecated_config_option;
-
 use super::QueryEngineOptions;
+use crate::config::print_warning_deprecated_config_option;
 
 /// # Admin server options
 #[serde_as]
@@ -68,11 +67,6 @@ pub struct AdminOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     log_trim_check_interval: humantime::Duration,
-
-    /// # Log trim threshold (deprecated)
-    ///
-    /// This configuration option is deprecated and ignored in Restate >= 1.2.
-    pub log_trim_threshold: Option<u64>,
 
     /// Disable serving the Restate Web UI on the admin port. Default is `false`.
     pub disable_web_ui: bool,
@@ -145,7 +139,6 @@ impl AdminOptions {
 
 impl Default for AdminOptions {
     fn default() -> Self {
-        #[allow(deprecated)]
         Self {
             bind_address: "0.0.0.0:9070".parse().unwrap(),
             advertised_admin_endpoint: None,
@@ -155,7 +148,6 @@ impl Default for AdminOptions {
             heartbeat_interval: Duration::from_millis(1500).into(),
             // check whether we can trim logs every hour
             log_trim_check_interval: Duration::from_secs(60 * 60).into(),
-            log_trim_threshold: None,
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             disable_web_ui: false,

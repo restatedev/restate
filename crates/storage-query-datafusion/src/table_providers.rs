@@ -7,15 +7,11 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use crate::context::SelectPartitions;
-use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
-use crate::table_util::{find_sort_columns, make_ordering};
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
@@ -24,12 +20,19 @@ use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
+use futures::stream::{self, StreamExt, TryStreamExt};
+
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::partition_table::Partition;
+
+use crate::context::SelectPartitions;
+use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
+use crate::table_util::{find_sort_columns, make_ordering};
 
 pub trait ScanPartition: Send + Sync + Debug + 'static {
     fn scan_partition(
@@ -68,21 +71,36 @@ impl<T, S> PartitionedTableProvider<T, S> {
     }
 }
 
-fn filter_partitions(
-    partition_key: PartitionKey,
-    mut partitions: impl Iterator<Item = (PartitionId, Partition)>,
-) -> Vec<(PartitionId, Partition)> {
-    partitions
-        .find_map(|(partition_id, partition)| {
-            if partition.key_range.contains(&partition_key) {
-                let new_range = partition_key..=partition_key;
-                let new_partition = Partition::new(partition_id, new_range);
-                Some((partition_id, new_partition))
-            } else {
-                None
-            }
-        })
-        .into_iter()
+#[derive(Debug, Clone)]
+struct LogicalPartition {
+    physical_partitions: Vec<(PartitionId, Partition)>,
+}
+
+impl LogicalPartition {
+    fn new(physical_partitions: Vec<(PartitionId, Partition)>) -> Self {
+        Self {
+            physical_partitions,
+        }
+    }
+}
+
+fn physical_partitions_to_logical(
+    physical_partitions: Vec<(PartitionId, Partition)>,
+    target_partitions: usize,
+) -> Vec<LogicalPartition> {
+    if physical_partitions.len() <= target_partitions {
+        // don't bother to coalesce physical partitions together, just
+        // use them as-is.
+        return physical_partitions
+            .into_iter()
+            .map(|p| LogicalPartition::new(vec![p]))
+            .collect();
+    }
+    // split the partitions_to_scan into group_size groups
+    let group_size = physical_partitions.len().div_ceil(target_partitions);
+    physical_partitions
+        .chunks(group_size)
+        .map(|chunks| LogicalPartition::new(chunks.to_vec()))
         .collect()
 }
 
@@ -121,17 +139,29 @@ where
             .try_extract(filters)
             .map_err(|e| DataFusionError::External(e.into()))?;
 
-        let live_partitions = self
+        let physical_partitions: Vec<(PartitionId, Partition)> = self
             .partition_selector
             .get_live_partitions()
             .await
-            .map_err(DataFusionError::External)?;
+            .map_err(DataFusionError::External)?
+            .into_iter()
+            .filter_map(|(partition_id, partition)| {
+                let Some(partition_key) = partition_key else {
+                    return Some((partition_id, partition));
+                };
+                if partition.key_range.contains(&partition_key) {
+                    let new_range = partition_key..=partition_key;
+                    let new_partition = Partition::new(partition_id, new_range);
+                    Some((partition_id, new_partition))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        let partitions_to_scan = if let Some(partition_key) = partition_key {
-            filter_partitions(partition_key, live_partitions.into_iter())
-        } else {
-            live_partitions
-        };
+        let target_partitions = state.config().target_partitions();
+        let logical_partitions =
+            physical_partitions_to_logical(physical_partitions, target_partitions);
 
         let sort_columns = find_sort_columns(&self.ordering, &projected_schema);
 
@@ -143,14 +173,10 @@ where
         };
 
         let partition_plan = if sort_columns.is_empty() {
-            Partitioning::UnknownPartitioning(partitions_to_scan.len())
-        } else if partitions_to_scan.len() <= state.config_options().execution.target_partitions {
-            Partitioning::Hash(sort_columns, partitions_to_scan.len())
+            Partitioning::UnknownPartitioning(logical_partitions.len())
         } else {
-            // although we have a valid sort order, we must ask datafusion to repartition the rows
-            // to fit into `target_partitions`.
-            // this is a hidden requirement/bug in the scan interface.
-            Partitioning::UnknownPartitioning(partitions_to_scan.len())
+            debug_assert!(logical_partitions.len() <= target_partitions);
+            Partitioning::Hash(sort_columns, logical_partitions.len())
         };
 
         let plan = PlanProperties::new(
@@ -161,7 +187,7 @@ where
         );
 
         Ok(Arc::new(PartitionedExecutionPlan {
-            live_partitions: partitions_to_scan,
+            logical_partitions,
             projected_schema,
             limit,
             scanner: self.partition_scanner.clone(),
@@ -184,7 +210,7 @@ where
 
 #[derive(Debug, Clone)]
 struct PartitionedExecutionPlan<T> {
-    live_partitions: Vec<(PartitionId, Partition)>,
+    logical_partitions: Vec<LogicalPartition>,
     projected_schema: SchemaRef,
     limit: Option<usize>,
     scanner: T,
@@ -193,7 +219,7 @@ struct PartitionedExecutionPlan<T> {
 
 impl<T> ExecutionPlan for PartitionedExecutionPlan<T>
 where
-    T: ScanPartition,
+    T: ScanPartition + Clone + Send,
 {
     fn name(&self) -> &str {
         "PartitionedExecutionPlan"
@@ -233,27 +259,36 @@ where
         partition: usize,
         _context: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        let (partition_id, partition) = self
-            .live_partitions
+        let physical_partitions = self
+            .logical_partitions
             .get(partition)
-            .expect("num_partitions within bounds");
-        let range = partition.key_range.clone();
-        let stream = self
-            .scanner
-            .scan_partition(
-                *partition_id,
-                range,
-                self.projected_schema.clone(),
-                self.limit,
-            )
-            .map_err(|e| DataFusionError::External(e.into()))?;
-        Ok(stream)
+            .expect("partition exists")
+            .physical_partitions
+            .to_vec();
+
+        let sequential_scanners_stream = stream::iter(physical_partitions)
+            .map({
+                let scanner = self.scanner.clone();
+                let schema = self.projected_schema.clone();
+                let limit = self.limit;
+                move |(partition_id, partition)| {
+                    scanner
+                        .scan_partition(partition_id, partition.key_range, schema.clone(), limit)
+                        .map_err(|e| DataFusionError::External(e.into()))
+                }
+            })
+            .try_flatten();
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.projected_schema.clone(),
+            sequential_scanners_stream,
+        )))
     }
 }
 
 impl<T> DisplayAs for PartitionedExecutionPlan<T>
 where
-    T: std::fmt::Debug,
+    T: Debug,
 {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         match t {
