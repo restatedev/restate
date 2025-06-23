@@ -11,24 +11,32 @@
 mod service_protocol_runner;
 mod service_protocol_runner_v4;
 
-use super::Notification;
+use std::collections::HashSet;
+use std::convert::Infallible;
+use std::future::Future;
+use std::iter::Empty;
+use std::pin::Pin;
+use std::task::{Context, Poll, ready};
+use std::time::{Duration, Instant};
 
-use crate::error::InvokerError;
-use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
-use crate::metric_definitions::INVOKER_TASK_DURATION;
 use bytes::Bytes;
 use futures::{FutureExt, future, stream};
 use http::response::Parts as ResponseParts;
-use http::{HeaderName, HeaderValue, Response};
+use http::{HeaderName, HeaderValue, Response, StatusCode};
 use http_body::{Body, Frame};
 use metrics::histogram;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::instrument;
+
 use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction,
 };
 use restate_invoker_api::{EntryEnricher, InvokeInputJournal};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -40,17 +48,11 @@ use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use std::collections::HashSet;
-use std::convert::Infallible;
-use std::future::Future;
-use std::iter::Empty;
-use std::pin::Pin;
-use std::task::{Context, Poll, ready};
-use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tokio_stream::wrappers::ReceiverStream;
-use tracing::instrument;
+
+use super::Notification;
+use crate::error::InvokerError;
+use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
+use crate::metric_definitions::{INVOKER_DEPLOYMENT_TIME_TO_FIRST_BYTE, INVOKER_TASK_DURATION};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -559,5 +561,34 @@ impl<T> Future for AbortOnDrop<T> {
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.0.abort()
+    }
+}
+
+#[derive(Debug)]
+struct Stats {
+    request_start_time: Instant,
+    deployment_id: DeploymentId,
+    ttfb_recorded: bool,
+}
+
+impl Stats {
+    fn new(deployment_id: DeploymentId) -> Self {
+        Self {
+            request_start_time: Instant::now(),
+            deployment_id,
+            ttfb_recorded: false,
+        }
+    }
+
+    /// Record the time to first byte for the deployment.
+    /// This is done once per invocation, on the first time a response is received.
+    fn record_time_to_first_byte(&mut self, status: StatusCode) {
+        if !self.ttfb_recorded {
+            self.ttfb_recorded = true;
+            metrics::histogram!(INVOKER_DEPLOYMENT_TIME_TO_FIRST_BYTE,
+                "deployment" => self.deployment_id.to_string(),
+                "status" => status.as_u16().to_string())
+            .record(self.request_start_time.elapsed());
+        }
     }
 }
