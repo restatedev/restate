@@ -158,9 +158,7 @@ fn main() {
             );
         }
 
-        // todo: this should be changed to HttpIngress
-        // once it's fully supported
-        if config.has_role(Role::Worker) {
+        if config.has_role(Role::HttpIngress) {
             let _ = writeln!(
                 &mut stdout,
                 "{:^40}",
