@@ -176,6 +176,13 @@ pub struct CommonOptions {
     /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
     pub log_filter: String,
 
+    /// # Metrics cardinality level
+    ///
+    /// Controls the cardinality of the metrics labels. Default is `info`.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub metrics_cardinality_level: restate_metrics::Level,
+
     /// # Logging format
     ///
     /// Format to use when logging.
@@ -450,6 +457,7 @@ impl Default for CommonOptions {
             shutdown_timeout: Duration::from_secs(60).into(),
             tracing: TracingOptions::default(),
             log_filter: "warn,restate=info".to_string(),
+            metrics_cardinality_level: restate_metrics::Level::Info,
             log_format: Default::default(),
             log_disable_ansi_codes: false,
             tokio_console_bind_address: Some(BindAddress::Socket("0.0.0.0:6669".parse().unwrap())),

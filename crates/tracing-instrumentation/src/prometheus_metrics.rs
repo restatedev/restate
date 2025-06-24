@@ -31,6 +31,8 @@ impl Prometheus {
     /// Note that this *does not* start the upkeep task, the caller should call
     /// `start_upkeep_task()` from within a tokio runtime.
     pub fn install(opts: &CommonOptions) -> Self {
+        restate_metrics::set_metrics_cardinality_level(opts.metrics_cardinality_level);
+
         if opts.disable_prometheus {
             return Self {
                 handle: None,
