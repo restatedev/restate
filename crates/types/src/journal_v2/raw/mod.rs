@@ -175,6 +175,9 @@ pub struct CallOrSendMetadata {
     pub invocation_target: InvocationTarget,
     pub span_context: ServiceInvocationSpanContext,
     pub completion_retention_duration: Duration,
+    // Since v1.4.0. Messages older than v1.4.0 will have zero retention as that
+    // matches the default behaviour of <= 1.3.x.
+    #[serde(default)]
     pub journal_retention_duration: Duration,
 }
 
