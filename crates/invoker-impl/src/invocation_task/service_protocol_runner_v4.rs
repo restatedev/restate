@@ -533,6 +533,9 @@ where
                     self.service_protocol_version,
                 ));
             }
+            if parts.status == StatusCode::PAYLOAD_TOO_LARGE {
+                return Err(InvokerError::ContentTooLarge);
+            }
 
             return Err(InvokerError::UnexpectedResponse(parts.status));
         }
