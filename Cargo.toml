@@ -60,6 +60,7 @@ restate-metadata-providers = { path = "crates/metadata-providers" }
 restate-metadata-server = { path = "crates/metadata-server" }
 restate-metadata-server-grpc = { path = "crates/metadata-server-grpc" }
 restate-metadata-store = { path = "crates/metadata-store" }
+restate-metrics = { path = "crates/metrics" }
 restate-node = { path = "crates/node" }
 restate-object-store-util = { path = "crates/object-store-util" }
 restate-partition-store = { path = "crates/partition-store" }

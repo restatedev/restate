@@ -268,6 +268,7 @@ libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
+once_cell = { version = "1" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
@@ -279,6 +280,7 @@ libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
+once_cell = { version = "1" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
@@ -289,6 +291,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["webpki
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
+once_cell = { version = "1" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
@@ -299,6 +302,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["webpki
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
+once_cell = { version = "1" }
 prost = { version = "0.13", default-features = false, features = ["no-recursion-limit"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
