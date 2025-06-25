@@ -11,16 +11,17 @@
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
-use crate::TableKind::Outbox;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::{
-    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
-};
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::Result;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::identifiers::PartitionId;
+
+use crate::TableKind::Outbox;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::{
+    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
+};
 
 define_table_key!(
     Outbox,

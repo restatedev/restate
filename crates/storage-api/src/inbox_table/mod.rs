@@ -12,12 +12,13 @@ use std::ops::RangeInclusive;
 
 use futures::Stream;
 
-use crate::Result;
-use crate::promise_table::ReadOnlyPromiseTable;
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
+
+use crate::Result;
+use crate::promise_table::ReadOnlyPromiseTable;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InboxEntry {

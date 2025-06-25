@@ -11,6 +11,12 @@
 use futures::Stream;
 use futures_util::stream;
 
+use restate_rocksdb::RocksDbPerfGuard;
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
+use restate_storage_api::{Result, StorageError};
+use restate_types::identifiers::{InvocationUuid, PartitionId};
+
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
 use crate::keys::{KeyKind, TableKey, define_table_key};
@@ -18,11 +24,6 @@ use crate::{
     PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision,
 };
-use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
-use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::{InvocationUuid, PartitionId};
 
 define_table_key!(
     Timers,
