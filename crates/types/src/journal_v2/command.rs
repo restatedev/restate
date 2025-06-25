@@ -269,6 +269,9 @@ pub struct CallRequest {
     pub headers: Vec<Header>,
     pub idempotency_key: Option<ByteString>,
     pub completion_retention_duration: Duration,
+    // Since v1.4.0. Messages older than v1.4.0 will have zero retention as that
+    // matches the default behaviour of <= 1.3.x.
+    #[serde(default)]
     pub journal_retention_duration: Duration,
 }
 

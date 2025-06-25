@@ -11,27 +11,22 @@
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
-use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::Result;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
-use restate_types::identifiers::PartitionId;
-
 use crate::TableKind::Outbox;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::{
     PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
 };
+use restate_rocksdb::RocksDbPerfGuard;
+use restate_storage_api::Result;
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_types::identifiers::PartitionId;
 
 define_table_key!(
     Outbox,
     KeyKind::Outbox,
     OutboxKey(partition_id: PaddedPartitionId, message_index: u64)
 );
-
-impl PartitionStoreProtobufValue for OutboxMessage {
-    type ProtobufType = crate::protobuf_types::v1::OutboxMessage;
-}
 
 fn add_message<S: StorageAccess>(
     storage: &mut S,

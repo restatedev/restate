@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use futures::Stream;
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationEpoch, ServiceInvocation};
@@ -241,6 +242,10 @@ impl Timer {
             Timer::NeoInvoke(invocation_id) => *invocation_id,
         }
     }
+}
+
+impl PartitionStoreProtobufValue for Timer {
+    type ProtobufType = crate::protobuf_types::v1::Timer;
 }
 
 impl WithPartitionKey for Timer {

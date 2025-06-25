@@ -21,7 +21,7 @@ use bytestring::ByteString;
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     CompletionRangeEpochMap, InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
-    JournalMetadata, ReadOnlyInvocationStatusTable, StatusTimestamps,
+    InvocationStatusV1, JournalMetadata, ReadOnlyInvocationStatusTable, StatusTimestamps,
 };
 use restate_types::RestateVersion;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
@@ -31,9 +31,7 @@ use restate_types::invocation::{
 use restate_types::time::MillisSinceEpoch;
 
 use super::storage_test_environment;
-use crate::invocation_status_table::{
-    InvocationStatusKey, InvocationStatusKeyV1, InvocationStatusV1,
-};
+use crate::invocation_status_table::{InvocationStatusKey, InvocationStatusKeyV1};
 use crate::partition_store::StorageAccess;
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
@@ -190,6 +188,7 @@ async fn test_invocation_status() {
     );
 }
 
+#[allow(unreachable_code)]
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_migration() {
     let mut rocksdb = storage_test_environment().await;

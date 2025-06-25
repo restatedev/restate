@@ -9,7 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::Result;
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
+use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable, SequenceNumber};
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
@@ -17,7 +18,6 @@ use restate_types::message::MessageIndex;
 
 use crate::TableKind::PartitionStateMachine;
 use crate::keys::{KeyKind, define_table_key};
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::{PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess};
 
 define_table_key!(
@@ -25,17 +25,6 @@ define_table_key!(
     KeyKind::Fsm,
     PartitionStateMachineKey(partition_id: PaddedPartitionId, state_id: u64)
 );
-
-#[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]
-pub(crate) struct SequenceNumber(pub(crate) u64);
-
-impl PartitionStoreProtobufValue for SequenceNumber {
-    type ProtobufType = crate::protobuf_types::v1::SequenceNumber;
-}
-
-impl PartitionStoreProtobufValue for SemanticRestateVersion {
-    type ProtobufType = crate::protobuf_types::v1::RestateVersion;
-}
 
 pub(crate) mod fsm_variable {
     pub(crate) const INBOX_SEQ_NUMBER: u64 = 0;

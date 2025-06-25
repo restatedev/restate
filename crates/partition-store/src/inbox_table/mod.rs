@@ -18,15 +18,16 @@ use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::inbox_table::{
     InboxEntry, InboxTable, ReadOnlyInboxTable, ScanInboxTable, SequenceNumberInboxEntry,
 };
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 
 use crate::TableKind::Inbox;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
-use crate::{TableScan, TableScanIterationDecision};
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+};
 
 define_table_key!(
     Inbox,
@@ -38,10 +39,6 @@ define_table_key!(
         sequence_number: u64
     )
 );
-
-impl PartitionStoreProtobufValue for InboxEntry {
-    type ProtobufType = crate::protobuf_types::v1::InboxEntry;
-}
 
 fn peek_inbox<S: StorageAccess>(
     storage: &mut S,

@@ -14,21 +14,21 @@ use std::ops::RangeInclusive;
 use futures::Stream;
 use futures_util::stream;
 
+use crate::TableKind::Journal;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+};
+
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table::{
     JournalEntry, JournalTable, ReadOnlyJournalTable, ScanJournalTable,
 };
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
-
-use crate::TableKind::Journal;
-use crate::keys::TableKey;
-use crate::keys::{KeyKind, define_table_key};
-use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
-use crate::{TableScan, TableScanIterationDecision};
 
 define_table_key!(
     Journal,
@@ -45,10 +45,6 @@ fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> 
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid())
         .journal_index(journal_index)
-}
-
-impl PartitionStoreProtobufValue for JournalEntry {
-    type ProtobufType = crate::protobuf_types::v1::JournalEntry;
 }
 
 fn put_journal_entry<S: StorageAccess>(

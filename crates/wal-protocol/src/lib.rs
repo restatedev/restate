@@ -235,7 +235,7 @@ mod envelope {
     use bilrost::{Message, OwnedMessage};
     use bytes::{Buf, Bytes, BytesMut};
 
-    use restate_partition_store::protobuf_types::v1 as protobuf;
+    use restate_storage_api::protobuf_types::v1 as protobuf;
     use restate_types::storage::decode::{decode_bilrost, decode_serde};
     use restate_types::storage::encode::{encode_bilrost, encode_serde};
     use restate_types::storage::{

@@ -10,6 +10,7 @@
 
 use std::future::Future;
 
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::SemanticRestateVersion;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
@@ -45,4 +46,11 @@ pub trait FsmTable: ReadOnlyFsmTable {
         &mut self,
         version: &SemanticRestateVersion,
     ) -> impl Future<Output = Result<()>> + Send;
+}
+
+#[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]
+pub struct SequenceNumber(pub u64);
+
+impl PartitionStoreProtobufValue for SequenceNumber {
+    type ProtobufType = crate::protobuf_types::v1::SequenceNumber;
 }

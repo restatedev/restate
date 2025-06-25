@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationResponse, InvocationTermination, NotifySignalRequest,
@@ -33,6 +34,10 @@ pub enum OutboxMessage {
 
     /// Notify signal request
     NotifySignal(NotifySignalRequest),
+}
+
+impl PartitionStoreProtobufValue for OutboxMessage {
+    type ProtobufType = crate::protobuf_types::v1::OutboxMessage;
 }
 
 impl WithPartitionKey for OutboxMessage {
