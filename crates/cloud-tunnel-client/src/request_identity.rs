@@ -72,6 +72,7 @@ pub(crate) fn validate_request_identity(
     validate.reject_tokens_expiring_in_less_than = 0;
     validate.validate_exp = true;
     validate.validate_nbf = true;
+    validate.validate_aud = false;
     validate.set_audience(&[path]);
 
     jsonwebtoken::decode::<Claims>(jwt, decoding_key, &validate)?;
