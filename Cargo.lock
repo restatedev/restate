@@ -6856,7 +6856,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cloud-tunnel-client"
-version = "1.4.0-dev"
+version = "1.4.2-dev"
 dependencies = [
  "anyhow",
  "bs58",
@@ -8011,8 +8011,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.0.81"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.0.81#73bc0af6034030dfbe66339e0a05e8c06deb8f61"
+version = "0.0.82"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.0.82#5b12dfc89fa8db8035df3602b78b77e59986f68b"
 dependencies = [
  "anyhow",
  "include_dir",
