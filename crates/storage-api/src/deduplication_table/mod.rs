@@ -10,13 +10,13 @@
 
 use std::cmp::Ordering;
 
-use crate::Result;
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use bytestring::ByteString;
-use futures::Stream;
 
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::message::MessageIndex;
+
+use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DedupInformation {
@@ -114,10 +114,6 @@ pub trait ReadOnlyDeduplicationTable {
         &mut self,
         producer_id: &ProducerId,
     ) -> impl Future<Output = Result<Option<DedupSequenceNumber>>> + Send;
-
-    fn get_all_sequence_numbers(
-        &mut self,
-    ) -> Result<impl Stream<Item = Result<DedupInformation>> + Send>;
 }
 
 pub trait DeduplicationTable: ReadOnlyDeduplicationTable {

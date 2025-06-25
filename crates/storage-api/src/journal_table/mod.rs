@@ -12,11 +12,12 @@ use std::ops::RangeInclusive;
 
 use futures::Stream;
 
-use crate::Result;
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{CompletionResult, EntryType};
+
+use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 
 /// Different types of journal entries persisted by the runtime
 #[derive(Debug, Clone, PartialEq, Eq)]

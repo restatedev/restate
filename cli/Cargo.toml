@@ -24,6 +24,7 @@ no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"
 [dependencies]
 restate-admin-rest-model = { workspace = true }
 restate-cli-util = { workspace = true }
+restate-cloud-tunnel-client = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-types = { workspace = true }
 
@@ -33,9 +34,7 @@ arrow = { workspace = true, features = ["ipc", "prettyprint", "json"] }
 arrow_convert = { version = "0.9.0" }
 axum = { workspace = true, default-features = false, features = ["http1", "http2", "query", "tokio"] }
 bytes = { workspace = true }
-base62 = { version = "2.0.2" }
 base64 = { workspace = true }
-bs58 = { version = "0.5.0" }
 chrono = { workspace = true }
 chrono-humanize = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
@@ -51,15 +50,11 @@ dirs = { version = "5.0" }
 figment = { version = "0.10.8", features = ["env", "toml"] }
 futures = { workspace = true }
 http = { workspace = true }
-http-body-util = { workspace = true }
-hyper = { workspace = true, features = ["server", "http2"] }
-hyper-rustls = { workspace = true, default-features = false, features = ["http1", "http2", "aws-lc-rs", "native-tokio", "tls12", "logging"]  }
-hyper-util = { workspace = true, features = ["client-legacy", "http2", "server", "client", "tokio"] }
+hyper = { workspace = true }
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
 itertools = { workspace = true }
 json-patch = "2.0.0"
-jsonwebtoken = { version = "9.1.0" }
 octocrab = { version = "0.44.0", features = ["stream"] }
 open = "5.1.2"
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls", "stream", "http2"] }
@@ -68,15 +63,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }
 strum = { workspace = true }
-sync_wrapper = { workspace = true, features = ["futures"] }
-termcolor = { version = "1.4.0" }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tokio-util = { workspace = true }
 toml = "0.8.15"
 toml_edit = "0.22.12"
-tower = { workspace = true }
 tracing = { workspace = true }
 typify = "0.1.0"
 url = { workspace = true }

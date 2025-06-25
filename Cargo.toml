@@ -25,7 +25,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.4.1"
+version = "1.4.2-dev"
 authors = ["restate.dev"]
 edition = "2024"
 rust-version = "1.87.0"
@@ -43,6 +43,7 @@ restate-admin-rest-model = { path = "crates/admin-rest-model" }
 restate-base64-util = { path = "crates/base64-util" }
 restate-bifrost = { path = "crates/bifrost" }
 restate-cli-util = { path = "crates/cli-util" }
+restate-cloud-tunnel-client = { path = "crates/cloud-tunnel-client" }
 restate-core = { path = "crates/core" }
 restate-core-derive = { path = "crates/core/derive" }
 restate-encoding = { path = "crates/encoding" }
