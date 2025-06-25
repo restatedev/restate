@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::StorageError;
 use bytes::{Buf, BytesMut};
-use restate_storage_api::StorageError;
+use restate_types::SemanticRestateVersion;
 use restate_types::errors::IdDecodeError;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageDecodeError, StorageEncode};
 
 /// Marker trait to specify the Protobuf equivalent of a user facing type
-pub(crate) trait PartitionStoreProtobufValue: Sized {
+pub trait PartitionStoreProtobufValue: Sized {
     type ProtobufType: From<Self> + TryInto<Self> + prost::Message + Default;
 
     /// Helper to use StorageCodec::decode
@@ -32,7 +33,11 @@ pub(crate) trait PartitionStoreProtobufValue: Sized {
     }
 }
 
-pub(crate) struct ProtobufStorageWrapper<T>(pub(crate) T);
+impl PartitionStoreProtobufValue for SemanticRestateVersion {
+    type ProtobufType = crate::protobuf_types::v1::RestateVersion;
+}
+
+pub struct ProtobufStorageWrapper<T>(pub T);
 
 impl<T: prost::Message + 'static> StorageEncode for ProtobufStorageWrapper<T> {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), restate_types::storage::StorageEncodeError> {
@@ -118,31 +123,24 @@ pub mod v1 {
     ));
 
     pub mod pb_conversion {
-        use crate::protobuf_types::ConversionError;
-        use crate::protobuf_types::v1::dedup_sequence_number::Variant;
-        use crate::protobuf_types::v1::enriched_entry_header::{
+        use super::dedup_sequence_number::Variant;
+        use super::enriched_entry_header::{
             AttachInvocation, Awakeable, BackgroundCall, CancelInvocation, ClearAllState,
             ClearState, CompleteAwakeable, CompletePromise, Custom, GetCallInvocationId,
             GetInvocationOutput, GetPromise, GetState, GetStateKeys, Input, Invoke, Output,
             PeekPromise, SetState, SideEffect, Sleep,
         };
-        use crate::protobuf_types::v1::entry::EntryType;
-        use crate::protobuf_types::v1::invocation_status::{
-            Completed, Free, Inboxed, Invoked, Suspended,
-        };
-        use crate::protobuf_types::v1::invocation_status_v2::JournalTrimPoint;
-        use crate::protobuf_types::v1::journal_entry::completion_result::{
-            Empty, Failure, Success,
-        };
-        use crate::protobuf_types::v1::journal_entry::{CompletionResult, Kind, completion_result};
-        use crate::protobuf_types::v1::outbox_message::{
+        use super::entry::EntryType;
+        use super::invocation_status::{Completed, Free, Inboxed, Invoked, Suspended};
+        use super::invocation_status_v2::JournalTrimPoint;
+        use super::journal_entry::completion_result::{Empty, Failure, Success};
+        use super::journal_entry::{CompletionResult, Kind, completion_result};
+        use super::outbox_message::{
             NotifySignal, OutboxCancel, OutboxKill, OutboxServiceInvocation,
             OutboxServiceInvocationResponse,
         };
-        use crate::protobuf_types::v1::service_invocation_response_sink::{
-            Ingress, PartitionProcessor, ResponseSink,
-        };
-        use crate::protobuf_types::v1::{
+        use super::service_invocation_response_sink::{Ingress, PartitionProcessor, ResponseSink};
+        use super::{
             BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
             Entry, EntryResult, EpochSequenceNumber, Header, IdempotencyId, IdempotencyMetadata,
             InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
@@ -156,15 +154,14 @@ pub mod v1 {
             response_result, source, span_relation, submit_notification_sink, timer,
             virtual_object_status,
         };
+        use crate::StorageError;
+        use crate::invocation_status_table::{CompletionRangeEpochMap, JournalMetadata};
+        use crate::protobuf_types::ConversionError;
         use anyhow::anyhow;
         use bytes::{Buf, Bytes};
         use bytestring::ByteString;
         use opentelemetry::trace::TraceState;
         use prost::Message;
-        use restate_storage_api::StorageError;
-        use restate_storage_api::invocation_status_table::{
-            CompletionRangeEpochMap, JournalMetadata,
-        };
         use restate_types::deployment::PinnedDeployment;
         use restate_types::errors::{IdDecodeError, InvocationError};
         use restate_types::identifiers::{
@@ -186,9 +183,7 @@ pub mod v1 {
         use std::collections::{HashMap, HashSet};
         use std::str::FromStr;
 
-        impl TryFrom<VirtualObjectStatus>
-            for restate_storage_api::service_status_table::VirtualObjectStatus
-        {
+        impl TryFrom<VirtualObjectStatus> for crate::service_status_table::VirtualObjectStatus {
             type Error = ConversionError;
 
             fn try_from(value: VirtualObjectStatus) -> Result<Self, ConversionError> {
@@ -198,7 +193,7 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("status"))?
                     {
                         virtual_object_status::Status::Locked(locked) => {
-                            restate_storage_api::service_status_table::VirtualObjectStatus::Locked(
+                            crate::service_status_table::VirtualObjectStatus::Locked(
                                 restate_types::identifiers::InvocationId::try_from(
                                     locked
                                         .invocation_id
@@ -211,19 +206,19 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_storage_api::service_status_table::VirtualObjectStatus> for VirtualObjectStatus {
-            fn from(value: restate_storage_api::service_status_table::VirtualObjectStatus) -> Self {
+        impl From<crate::service_status_table::VirtualObjectStatus> for VirtualObjectStatus {
+            fn from(value: crate::service_status_table::VirtualObjectStatus) -> Self {
                 match value {
-                    restate_storage_api::service_status_table::VirtualObjectStatus::Locked(
-                        invocation_id,
-                    ) => VirtualObjectStatus {
-                        status: Some(virtual_object_status::Status::Locked(
-                            virtual_object_status::Locked {
-                                invocation_id: Some(invocation_id.into()),
-                            },
-                        )),
-                    },
-                    restate_storage_api::service_status_table::VirtualObjectStatus::Unlocked => {
+                    crate::service_status_table::VirtualObjectStatus::Locked(invocation_id) => {
+                        VirtualObjectStatus {
+                            status: Some(virtual_object_status::Status::Locked(
+                                virtual_object_status::Locked {
+                                    invocation_id: Some(invocation_id.into()),
+                                },
+                            )),
+                        }
+                    }
+                    crate::service_status_table::VirtualObjectStatus::Unlocked => {
                         unreachable!("Nothing should be stored for unlocked")
                     }
                 }
@@ -347,25 +342,23 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_storage_api::promise_table::PromiseResult> for EntryResult {
-            fn from(value: restate_storage_api::promise_table::PromiseResult) -> Self {
+        impl From<crate::promise_table::PromiseResult> for EntryResult {
+            fn from(value: crate::promise_table::PromiseResult) -> Self {
                 match value {
-                    restate_storage_api::promise_table::PromiseResult::Success(s) => EntryResult {
+                    crate::promise_table::PromiseResult::Success(s) => EntryResult {
                         result: Some(entry_result::Result::Value(s)),
                     },
-                    restate_storage_api::promise_table::PromiseResult::Failure(code, message) => {
-                        EntryResult {
-                            result: Some(entry_result::Result::Failure(entry_result::Failure {
-                                error_code: code.into(),
-                                message: message.into_bytes(),
-                            })),
-                        }
-                    }
+                    crate::promise_table::PromiseResult::Failure(code, message) => EntryResult {
+                        result: Some(entry_result::Result::Failure(entry_result::Failure {
+                            error_code: code.into(),
+                            message: message.into_bytes(),
+                        })),
+                    },
                 }
             }
         }
 
-        impl TryFrom<EntryResult> for restate_storage_api::promise_table::PromiseResult {
+        impl TryFrom<EntryResult> for crate::promise_table::PromiseResult {
             type Error = ConversionError;
 
             fn try_from(value: EntryResult) -> Result<Self, ConversionError> {
@@ -375,12 +368,12 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("result"))?
                     {
                         entry_result::Result::Value(s) => {
-                            restate_storage_api::promise_table::PromiseResult::Success(s)
+                            crate::promise_table::PromiseResult::Success(s)
                         }
                         entry_result::Result::Failure(entry_result::Failure {
                             error_code,
                             message,
-                        }) => restate_storage_api::promise_table::PromiseResult::Failure(
+                        }) => crate::promise_table::PromiseResult::Failure(
                             error_code.into(),
                             ByteString::try_from(message).map_err(ConversionError::invalid_data)?,
                         ),
@@ -396,9 +389,7 @@ pub mod v1 {
             };
         }
 
-        impl TryFrom<InvocationStatusV2>
-            for restate_storage_api::invocation_status_table::InvocationStatus
-        {
+        impl TryFrom<InvocationStatusV2> for crate::invocation_status_table::InvocationStatus {
             type Error = ConversionError;
 
             fn try_from(value: InvocationStatusV2) -> Result<Self, ConversionError> {
@@ -438,15 +429,14 @@ pub mod v1 {
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
                 let created_using_restate_version =
                     restate_version_from_pb(created_using_restate_version);
-                let timestamps =
-                    restate_storage_api::invocation_status_table::StatusTimestamps::new(
-                        MillisSinceEpoch::new(creation_time),
-                        MillisSinceEpoch::new(modification_time),
-                        inboxed_transition_time.map(MillisSinceEpoch::new),
-                        scheduled_transition_time.map(MillisSinceEpoch::new),
-                        running_transition_time.map(MillisSinceEpoch::new),
-                        completed_transition_time.map(MillisSinceEpoch::new),
-                    );
+                let timestamps = crate::invocation_status_table::StatusTimestamps::new(
+                    MillisSinceEpoch::new(creation_time),
+                    MillisSinceEpoch::new(modification_time),
+                    inboxed_transition_time.map(MillisSinceEpoch::new),
+                    scheduled_transition_time.map(MillisSinceEpoch::new),
+                    running_transition_time.map(MillisSinceEpoch::new),
+                    completed_transition_time.map(MillisSinceEpoch::new),
+                );
                 let source = expect_or_fail!(source)?.try_into()?;
                 let response_sinks = response_sinks
                     .into_iter()
@@ -465,10 +455,10 @@ pub mod v1 {
 
                 match status.try_into().unwrap_or_default() {
                     invocation_status_v2::Status::Scheduled => {
-                        Ok(restate_storage_api::invocation_status_table::InvocationStatus::Scheduled(
-                            restate_storage_api::invocation_status_table::ScheduledInvocation {
+                        Ok(crate::invocation_status_table::InvocationStatus::Scheduled(
+                            crate::invocation_status_table::ScheduledInvocation {
                                 metadata:
-                                    restate_storage_api::invocation_status_table::PreFlightInvocationMetadata {
+                                    crate::invocation_status_table::PreFlightInvocationMetadata {
                                         response_sinks,
                                         timestamps,
                                         invocation_target,
@@ -482,8 +472,7 @@ pub mod v1 {
                                             completion_retention_duration
                                                 .unwrap_or_default()
                                                 .try_into()?,
-                                        journal_retention_duration:
-                                        journal_retention_duration
+                                        journal_retention_duration: journal_retention_duration
                                             .unwrap_or_default()
                                             .try_into()?,
                                         idempotency_key: idempotency_key.map(ByteString::from),
@@ -492,11 +481,11 @@ pub mod v1 {
                         ))
                     }
                     invocation_status_v2::Status::Inboxed => {
-                        Ok(restate_storage_api::invocation_status_table::InvocationStatus::Inboxed(
-                            restate_storage_api::invocation_status_table::InboxedInvocation {
+                        Ok(crate::invocation_status_table::InvocationStatus::Inboxed(
+                            crate::invocation_status_table::InboxedInvocation {
                                 inbox_sequence_number: expect_or_fail!(inbox_sequence_number)?,
                                 metadata:
-                                    restate_storage_api::invocation_status_table::PreFlightInvocationMetadata {
+                                    crate::invocation_status_table::PreFlightInvocationMetadata {
                                         response_sinks,
                                         timestamps,
                                         invocation_target,
@@ -510,8 +499,7 @@ pub mod v1 {
                                             completion_retention_duration
                                                 .unwrap_or_default()
                                                 .try_into()?,
-                                        journal_retention_duration:
-                                        journal_retention_duration
+                                        journal_retention_duration: journal_retention_duration
                                             .unwrap_or_default()
                                             .try_into()?,
                                         idempotency_key: idempotency_key.map(ByteString::from),
@@ -520,13 +508,13 @@ pub mod v1 {
                         ))
                     }
                     invocation_status_v2::Status::Invoked => {
-                        Ok(restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
-                            restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
+                        Ok(crate::invocation_status_table::InvocationStatus::Invoked(
+                            crate::invocation_status_table::InFlightInvocationMetadata {
                                 response_sinks,
                                 timestamps,
                                 invocation_target,
                                 created_using_restate_version,
-                                journal_metadata: restate_storage_api::invocation_status_table::JournalMetadata {
+                                journal_metadata: crate::invocation_status_table::JournalMetadata {
                                     length: journal_length,
                                     commands,
                                     span_context: expect_or_fail!(span_context)?.try_into()?,
@@ -540,27 +528,29 @@ pub mod v1 {
                                 completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
-                                journal_retention_duration:
-                                journal_retention_duration
+                                journal_retention_duration: journal_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 current_invocation_epoch,
-                                completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points(
-                                    trim_points.into_iter().map(|trim_point|(trim_point.completion_id, trim_point.invocation_epoch))
-                                ),
+                                completion_range_epoch_map:
+                                    CompletionRangeEpochMap::from_trim_points(
+                                        trim_points.into_iter().map(|trim_point| {
+                                            (trim_point.completion_id, trim_point.invocation_epoch)
+                                        }),
+                                    ),
                             },
                         ))
                     }
                     invocation_status_v2::Status::Suspended => Ok(
-                        restate_storage_api::invocation_status_table::InvocationStatus::Suspended {
-                            metadata: restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
+                        crate::invocation_status_table::InvocationStatus::Suspended {
+                            metadata: crate::invocation_status_table::InFlightInvocationMetadata {
                                 response_sinks,
                                 timestamps,
                                 invocation_target,
                                 created_using_restate_version,
-                                journal_metadata: restate_storage_api::invocation_status_table::JournalMetadata {
+                                journal_metadata: crate::invocation_status_table::JournalMetadata {
                                     length: journal_length,
                                     commands,
                                     span_context: expect_or_fail!(span_context)?.try_into()?,
@@ -574,16 +564,18 @@ pub mod v1 {
                                 completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
-                                journal_retention_duration:
-                                journal_retention_duration
+                                journal_retention_duration: journal_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 current_invocation_epoch,
-                                completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points(
-                                    trim_points.into_iter().map(|trim_point|(trim_point.completion_id, trim_point.invocation_epoch))
-                                ),
+                                completion_range_epoch_map:
+                                    CompletionRangeEpochMap::from_trim_points(
+                                        trim_points.into_iter().map(|trim_point| {
+                                            (trim_point.completion_id, trim_point.invocation_epoch)
+                                        }),
+                                    ),
                             },
                             waiting_for_notifications: waiting_for_completions
                                 .into_iter()
@@ -604,8 +596,8 @@ pub mod v1 {
                         },
                     ),
                     invocation_status_v2::Status::Completed => {
-                        Ok(restate_storage_api::invocation_status_table::InvocationStatus::Completed(
-                            restate_storage_api::invocation_status_table::CompletedInvocation {
+                        Ok(crate::invocation_status_table::InvocationStatus::Completed(
+                            crate::invocation_status_table::CompletedInvocation {
                                 timestamps,
                                 invocation_target,
                                 created_using_restate_version,
@@ -616,11 +608,10 @@ pub mod v1 {
                                 completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
-                                journal_retention_duration:
-                                journal_retention_duration
+                                journal_retention_duration: journal_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
-                                journal_metadata:  restate_storage_api::invocation_status_table::JournalMetadata {
+                                journal_metadata: crate::invocation_status_table::JournalMetadata {
                                     length: journal_length,
                                     commands,
                                     span_context: expect_or_fail!(span_context)?.try_into()?,
@@ -640,23 +631,25 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_storage_api::invocation_status_table::InvocationStatus> for InvocationStatusV2 {
-            fn from(value: restate_storage_api::invocation_status_table::InvocationStatus) -> Self {
+        impl From<crate::invocation_status_table::InvocationStatus> for InvocationStatusV2 {
+            fn from(value: crate::invocation_status_table::InvocationStatus) -> Self {
                 match value {
-                    restate_storage_api::invocation_status_table::InvocationStatus::Scheduled(
-                        restate_storage_api::invocation_status_table::ScheduledInvocation {
+                    crate::invocation_status_table::InvocationStatus::Scheduled(
+                        crate::invocation_status_table::ScheduledInvocation {
                             metadata:
-                                restate_storage_api::invocation_status_table::PreFlightInvocationMetadata {
+                                crate::invocation_status_table::PreFlightInvocationMetadata {
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
-                                    created_using_restate_version, argument,
+                                    created_using_restate_version,
+                                    argument,
                                     source,
                                     span_context,
                                     headers,
                                     execution_time,
                                     completion_retention_duration,
-                                    journal_retention_duration, idempotency_key,
+                                    journal_retention_duration,
+                                    idempotency_key,
                                 },
                         },
                     ) => InvocationStatusV2 {
@@ -703,20 +696,22 @@ pub mod v1 {
                         waiting_for_signal_names: vec![],
                         result: None,
                     },
-                    restate_storage_api::invocation_status_table::InvocationStatus::Inboxed(
-                        restate_storage_api::invocation_status_table::InboxedInvocation {
+                    crate::invocation_status_table::InvocationStatus::Inboxed(
+                        crate::invocation_status_table::InboxedInvocation {
                             metadata:
-                                restate_storage_api::invocation_status_table::PreFlightInvocationMetadata {
+                                crate::invocation_status_table::PreFlightInvocationMetadata {
                                     response_sinks,
                                     timestamps,
                                     invocation_target,
-                                    created_using_restate_version, argument,
+                                    created_using_restate_version,
+                                    argument,
                                     source,
                                     span_context,
                                     headers,
                                     execution_time,
                                     completion_retention_duration,
-                                    journal_retention_duration, idempotency_key,
+                                    journal_retention_duration,
+                                    idempotency_key,
                                 },
                             inbox_sequence_number,
                         },
@@ -748,7 +743,8 @@ pub mod v1 {
                         argument: Some(argument),
                         headers: headers.into_iter().map(Into::into).collect(),
                         execution_time: execution_time.map(|t| t.as_u64()),
-                        completion_retention_duration: Some(completion_retention_duration.into()),    journal_retention_duration: Some(journal_retention_duration.into()),
+                        completion_retention_duration: Some(completion_retention_duration.into()),
+                        journal_retention_duration: Some(journal_retention_duration.into()),
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: Some(inbox_sequence_number),
                         journal_length: 0,
@@ -763,10 +759,11 @@ pub mod v1 {
                         waiting_for_signal_names: vec![],
                         result: None,
                     },
-                    restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
-                        restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
+                    crate::invocation_status_table::InvocationStatus::Invoked(
+                        crate::invocation_status_table::InFlightInvocationMetadata {
                             invocation_target,
-                            created_using_restate_version, journal_metadata,
+                            created_using_restate_version,
+                            journal_metadata,
                             pinned_deployment,
                             response_sinks,
                             timestamps,
@@ -777,7 +774,7 @@ pub mod v1 {
                             idempotency_key,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             current_invocation_epoch,
-                            completion_range_epoch_map
+                            completion_range_epoch_map,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -795,9 +792,10 @@ pub mod v1 {
                             span_context: Some(journal_metadata.span_context.into()),
                             // SAFETY: We're only mapping data types here
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                            created_using_restate_version: created_using_restate_version.into_string(),
+                            created_using_restate_version: created_using_restate_version
+                                .into_string(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                       inboxed_transition_time: unsafe {
+                            inboxed_transition_time: unsafe {
                                 timestamps.inboxed_transition_time()
                             }
                             .map(|t| t.as_u64()),
@@ -822,7 +820,8 @@ pub mod v1 {
                             execution_time: execution_time.map(|t| t.as_u64()),
                             completion_retention_duration: Some(
                                 completion_retention_duration.into(),
-                            ),    journal_retention_duration: Some(journal_retention_duration.into()),
+                            ),
+                            journal_retention_duration: Some(journal_retention_duration.into()),
                             idempotency_key: idempotency_key.map(|key| key.to_string()),
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
@@ -835,17 +834,22 @@ pub mod v1 {
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             current_invocation_epoch,
-                            trim_points: completion_range_epoch_map.into_trim_points_iter().into_iter().map(|(completion_id, invocation_epoch)| JournalTrimPoint {
-                                completion_id,
-                                invocation_epoch,
-                            }).collect(),
+                            trim_points: completion_range_epoch_map
+                                .into_trim_points_iter()
+                                .into_iter()
+                                .map(|(completion_id, invocation_epoch)| JournalTrimPoint {
+                                    completion_id,
+                                    invocation_epoch,
+                                })
+                                .collect(),
                         }
                     }
-                    restate_storage_api::invocation_status_table::InvocationStatus::Suspended {
+                    crate::invocation_status_table::InvocationStatus::Suspended {
                         metadata:
-                            restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
+                            crate::invocation_status_table::InFlightInvocationMetadata {
                                 invocation_target,
-                                created_using_restate_version, journal_metadata,
+                                created_using_restate_version,
+                                journal_metadata,
                                 pinned_deployment,
                                 response_sinks,
                                 timestamps,
@@ -855,7 +859,8 @@ pub mod v1 {
                                 journal_retention_duration,
                                 idempotency_key,
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
-                                current_invocation_epoch, completion_range_epoch_map,
+                                current_invocation_epoch,
+                                completion_range_epoch_map,
                             },
                         waiting_for_notifications,
                     } => {
@@ -891,7 +896,8 @@ pub mod v1 {
                             span_context: Some(journal_metadata.span_context.into()),
                             // SAFETY: We're only mapping data types here
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                            created_using_restate_version: created_using_restate_version.into_string(),
+                            created_using_restate_version: created_using_restate_version
+                                .into_string(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                             inboxed_transition_time: unsafe {
                                 timestamps.inboxed_transition_time()
@@ -918,7 +924,8 @@ pub mod v1 {
                             execution_time: execution_time.map(|t| t.as_u64()),
                             completion_retention_duration: Some(
                                 completion_retention_duration.into(),
-                            ),    journal_retention_duration: Some(journal_retention_duration.into()),
+                            ),
+                            journal_retention_duration: Some(journal_retention_duration.into()),
                             idempotency_key: idempotency_key.map(|key| key.to_string()),
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
@@ -931,23 +938,29 @@ pub mod v1 {
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             current_invocation_epoch,
-                            trim_points: completion_range_epoch_map.into_trim_points_iter().into_iter().map(|(completion_id, invocation_epoch)| JournalTrimPoint {
-                                completion_id,
-                                invocation_epoch,
-                            }).collect(),
+                            trim_points: completion_range_epoch_map
+                                .into_trim_points_iter()
+                                .into_iter()
+                                .map(|(completion_id, invocation_epoch)| JournalTrimPoint {
+                                    completion_id,
+                                    invocation_epoch,
+                                })
+                                .collect(),
                         }
                     }
-                    restate_storage_api::invocation_status_table::InvocationStatus::Completed(
-                        restate_storage_api::invocation_status_table::CompletedInvocation {
+                    crate::invocation_status_table::InvocationStatus::Completed(
+                        crate::invocation_status_table::CompletedInvocation {
                             invocation_target,
                             created_using_restate_version,
                             source,
-                            execution_time, idempotency_key,
+                            execution_time,
+                            idempotency_key,
                             timestamps,
                             response_result,
                             completion_retention_duration,
-                            journal_retention_duration, journal_metadata,
-                            pinned_deployment
+                            journal_retention_duration,
+                            journal_metadata,
+                            pinned_deployment,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -965,16 +978,21 @@ pub mod v1 {
                             span_context: Some(journal_metadata.span_context.into()),
                             // SAFETY: We're only mapping data types here
                             creation_time: unsafe { timestamps.creation_time() }.as_u64(),
-                            created_using_restate_version: created_using_restate_version.into_string(),
+                            created_using_restate_version: created_using_restate_version
+                                .into_string(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
-                            inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
-                                .map(|t| t.as_u64()),
+                            inboxed_transition_time: unsafe {
+                                timestamps.inboxed_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
                             scheduled_transition_time: unsafe {
                                 timestamps.scheduled_transition_time()
                             }
                             .map(|t| t.as_u64()),
-                            running_transition_time: unsafe { timestamps.running_transition_time() }
-                                .map(|t| t.as_u64()),
+                            running_transition_time: unsafe {
+                                timestamps.running_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
                             completed_transition_time: unsafe {
                                 timestamps.completed_transition_time()
                             }
@@ -983,7 +1001,9 @@ pub mod v1 {
                             argument: None,
                             headers: vec![],
                             execution_time: execution_time.map(|t| t.as_u64()),
-                            completion_retention_duration: Some(completion_retention_duration.into()),
+                            completion_retention_duration: Some(
+                                completion_retention_duration.into(),
+                            ),
                             journal_retention_duration: Some(journal_retention_duration.into()),
                             idempotency_key: idempotency_key.map(|key| key.to_string()),
                             inbox_sequence_number: None,
@@ -999,9 +1019,11 @@ pub mod v1 {
                             waiting_for_signal_names: vec![],
                             result: Some(response_result.into()),
                         }
-                    },
-                    restate_storage_api::invocation_status_table::InvocationStatus::Free => {
-                        panic!("Unexpected serialization of Free status. This is a bug of the invocation status table")
+                    }
+                    crate::invocation_status_table::InvocationStatus::Free => {
+                        panic!(
+                            "Unexpected serialization of Free status. This is a bug of the invocation status table"
+                        )
                     }
                 }
             }
@@ -1020,25 +1042,25 @@ pub mod v1 {
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
                 let status = match status.try_into().unwrap_or_default() {
                     invocation_status_v2::Status::Scheduled => {
-                        restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Scheduled
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Scheduled
                     }
                     invocation_status_v2::Status::Inboxed => {
-                        restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Inboxed
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Inboxed
                     }
                     invocation_status_v2::Status::Invoked => {
-                        restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Invoked
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Invoked
                     }
                     invocation_status_v2::Status::Suspended => {
-                        restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Suspended
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Suspended
                     }
                     invocation_status_v2::Status::Completed => {
-                        restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Completed
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Completed
                     }
                     _ => {
                         return Err(ConversionError::unexpected_enum_variant(
                             "status",
                             value.status,
-                        ))
+                        ));
                     }
                 };
 
@@ -1068,23 +1090,23 @@ pub mod v1 {
                 {
                     invocation_status::Status::Inboxed(inboxed) => {
                         let invocation_metadata =
-                            restate_storage_api::invocation_status_table::InboxedInvocation::try_from(inboxed)?;
-                        restate_storage_api::invocation_status_table::InvocationStatus::Inboxed(
+                            crate::invocation_status_table::InboxedInvocation::try_from(inboxed)?;
+                        crate::invocation_status_table::InvocationStatus::Inboxed(
                             invocation_metadata,
                         )
                     }
                     invocation_status::Status::Invoked(invoked) => {
                         let invocation_metadata =
-                            restate_storage_api::invocation_status_table::InFlightInvocationMetadata::try_from(
+                            crate::invocation_status_table::InFlightInvocationMetadata::try_from(
                                 invoked,
                             )?;
-                        restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
+                        crate::invocation_status_table::InvocationStatus::Invoked(
                             invocation_metadata,
                         )
                     }
                     invocation_status::Status::Suspended(suspended) => {
                         let (metadata, waiting_for_completed_entries) = suspended.try_into()?;
-                        restate_storage_api::invocation_status_table::InvocationStatus::Suspended {
+                        crate::invocation_status_table::InvocationStatus::Suspended {
                             metadata,
                             waiting_for_notifications: waiting_for_completed_entries
                                 .into_iter()
@@ -1093,12 +1115,12 @@ pub mod v1 {
                         }
                     }
                     invocation_status::Status::Completed(completed) => {
-                        restate_storage_api::invocation_status_table::InvocationStatus::Completed(
+                        crate::invocation_status_table::InvocationStatus::Completed(
                             completed.try_into()?,
                         )
                     }
                     invocation_status::Status::Free(_) => {
-                        restate_storage_api::invocation_status_table::InvocationStatus::Free
+                        crate::invocation_status_table::InvocationStatus::Free
                     }
                 };
 
@@ -1106,7 +1128,7 @@ pub mod v1 {
             }
         }
 
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-util")))]
         impl From<crate::invocation_status_table::InvocationStatusV1> for InvocationStatus {
             fn from(_: crate::invocation_status_table::InvocationStatusV1) -> Self {
                 panic!(
@@ -1116,17 +1138,17 @@ pub mod v1 {
         }
 
         // We need this for the test_migration in invocation_status_table_test
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-util"))]
         impl From<crate::invocation_status_table::InvocationStatusV1> for InvocationStatus {
             fn from(value: crate::invocation_status_table::InvocationStatusV1) -> Self {
                 let status = match value.0 {
-                    restate_storage_api::invocation_status_table::InvocationStatus::Inboxed(
-                        inboxed_status,
-                    ) => invocation_status::Status::Inboxed(Inboxed::from(inboxed_status)),
-                    restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
-                        invoked_status,
-                    ) => invocation_status::Status::Invoked(Invoked::from(invoked_status)),
-                    restate_storage_api::invocation_status_table::InvocationStatus::Suspended {
+                    crate::invocation_status_table::InvocationStatus::Inboxed(inboxed_status) => {
+                        invocation_status::Status::Inboxed(Inboxed::from(inboxed_status))
+                    }
+                    crate::invocation_status_table::InvocationStatus::Invoked(invoked_status) => {
+                        invocation_status::Status::Invoked(Invoked::from(invoked_status))
+                    }
+                    crate::invocation_status_table::InvocationStatus::Suspended {
                         metadata,
                         waiting_for_notifications,
                     } => invocation_status::Status::Suspended(Suspended::from((
@@ -1141,15 +1163,13 @@ pub mod v1 {
                             })
                             .collect(),
                     ))),
-                    restate_storage_api::invocation_status_table::InvocationStatus::Completed(
-                        completed,
-                    ) => invocation_status::Status::Completed(Completed::from(completed)),
-                    restate_storage_api::invocation_status_table::InvocationStatus::Free => {
+                    crate::invocation_status_table::InvocationStatus::Completed(completed) => {
+                        invocation_status::Status::Completed(Completed::from(completed))
+                    }
+                    crate::invocation_status_table::InvocationStatus::Free => {
                         invocation_status::Status::Free(Free {})
                     }
-                    restate_storage_api::invocation_status_table::InvocationStatus::Scheduled(
-                        _,
-                    ) => {
+                    crate::invocation_status_table::InvocationStatus::Scheduled(_) => {
                         panic!(
                             "Unexpected conversion to old InvocationStatus when using Scheduled variant. This is a bug in the table implementation."
                         )
@@ -1191,7 +1211,7 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<Invoked> for restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
+        impl TryFrom<Invoked> for crate::invocation_status_table::InFlightInvocationMetadata {
             type Error = ConversionError;
 
             fn try_from(value: Invoked) -> Result<Self, ConversionError> {
@@ -1204,12 +1224,11 @@ pub mod v1 {
                 let pinned_deployment =
                     derive_pinned_deployment(value.deployment_id, value.service_protocol_version)?;
 
-                let journal_metadata =
-                    restate_storage_api::invocation_status_table::JournalMetadata::try_from(
-                        value
-                            .journal_meta
-                            .ok_or(ConversionError::missing_field("journal_meta"))?,
-                    )?;
+                let journal_metadata = crate::invocation_status_table::JournalMetadata::try_from(
+                    value
+                        .journal_meta
+                        .ok_or(ConversionError::missing_field("journal_meta"))?,
+                )?;
                 let response_sinks = value
                     .response_sinks
                     .into_iter()
@@ -1234,40 +1253,35 @@ pub mod v1 {
 
                 let idempotency_key = value.idempotency_key.map(ByteString::from);
 
-                Ok(
-                    restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
-                        invocation_target,
-                        journal_metadata,
-                        pinned_deployment,
-                        response_sinks,
-                        created_using_restate_version: restate_types::RestateVersion::unknown(),
-                        timestamps:
-                            restate_storage_api::invocation_status_table::StatusTimestamps::new(
-                                MillisSinceEpoch::new(value.creation_time),
-                                MillisSinceEpoch::new(value.modification_time),
-                                None,
-                                None,
-                                None,
-                                None,
-                            ),
-                        source,
-                        execution_time: None,
-                        completion_retention_duration: completion_retention_time,
-                        journal_retention_duration: Default::default(),
-                        idempotency_key,
-                        hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                        current_invocation_epoch: 0,
-                        completion_range_epoch_map: Default::default(),
-                    },
-                )
+                Ok(crate::invocation_status_table::InFlightInvocationMetadata {
+                    invocation_target,
+                    journal_metadata,
+                    pinned_deployment,
+                    response_sinks,
+                    created_using_restate_version: restate_types::RestateVersion::unknown(),
+                    timestamps: crate::invocation_status_table::StatusTimestamps::new(
+                        MillisSinceEpoch::new(value.creation_time),
+                        MillisSinceEpoch::new(value.modification_time),
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                    source,
+                    execution_time: None,
+                    completion_retention_duration: completion_retention_time,
+                    journal_retention_duration: Default::default(),
+                    idempotency_key,
+                    hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                    current_invocation_epoch: 0,
+                    completion_range_epoch_map: Default::default(),
+                })
             }
         }
 
-        impl From<restate_storage_api::invocation_status_table::InFlightInvocationMetadata> for Invoked {
-            fn from(
-                value: restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
-            ) -> Self {
-                let restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
+        impl From<crate::invocation_status_table::InFlightInvocationMetadata> for Invoked {
+            fn from(value: crate::invocation_status_table::InFlightInvocationMetadata) -> Self {
+                let crate::invocation_status_table::InFlightInvocationMetadata {
                     invocation_target,
                     pinned_deployment,
                     response_sinks,
@@ -1307,7 +1321,7 @@ pub mod v1 {
 
         impl TryFrom<Suspended>
             for (
-                restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
+                crate::invocation_status_table::InFlightInvocationMetadata,
                 HashSet<restate_types::identifiers::EntryIndex>,
             )
         {
@@ -1323,12 +1337,11 @@ pub mod v1 {
                 let pinned_deployment =
                     derive_pinned_deployment(value.deployment_id, value.service_protocol_version)?;
 
-                let journal_metadata =
-                    restate_storage_api::invocation_status_table::JournalMetadata::try_from(
-                        value
-                            .journal_meta
-                            .ok_or(ConversionError::missing_field("journal_meta"))?,
-                    )?;
+                let journal_metadata = crate::invocation_status_table::JournalMetadata::try_from(
+                    value
+                        .journal_meta
+                        .ok_or(ConversionError::missing_field("journal_meta"))?,
+                )?;
                 let response_sinks = value
                     .response_sinks
                     .into_iter()
@@ -1357,21 +1370,20 @@ pub mod v1 {
                 let idempotency_key = value.idempotency_key.map(ByteString::from);
 
                 Ok((
-                    restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
+                    crate::invocation_status_table::InFlightInvocationMetadata {
                         invocation_target,
                         created_using_restate_version: restate_types::RestateVersion::unknown(),
                         journal_metadata,
                         pinned_deployment,
                         response_sinks,
-                        timestamps:
-                            restate_storage_api::invocation_status_table::StatusTimestamps::new(
-                                MillisSinceEpoch::new(value.creation_time),
-                                MillisSinceEpoch::new(value.modification_time),
-                                None,
-                                None,
-                                None,
-                                None,
-                            ),
+                        timestamps: crate::invocation_status_table::StatusTimestamps::new(
+                            MillisSinceEpoch::new(value.creation_time),
+                            MillisSinceEpoch::new(value.modification_time),
+                            None,
+                            None,
+                            None,
+                            None,
+                        ),
                         source: caller,
                         execution_time: None,
                         completion_retention_duration: completion_retention_time,
@@ -1388,13 +1400,13 @@ pub mod v1 {
 
         impl
             From<(
-                restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
+                crate::invocation_status_table::InFlightInvocationMetadata,
                 HashSet<restate_types::identifiers::EntryIndex>,
             )> for Suspended
         {
             fn from(
                 (metadata, waiting_for_completed_entries): (
-                    restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
+                    crate::invocation_status_table::InFlightInvocationMetadata,
                     HashSet<restate_types::identifiers::EntryIndex>,
                 ),
             ) -> Self {
@@ -1432,7 +1444,7 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<Inboxed> for restate_storage_api::invocation_status_table::InboxedInvocation {
+        impl TryFrom<Inboxed> for crate::invocation_status_table::InboxedInvocation {
             type Error = ConversionError;
 
             fn try_from(value: Inboxed) -> Result<Self, ConversionError> {
@@ -1484,12 +1496,12 @@ pub mod v1 {
 
                 let idempotency_key = value.idempotency_key.map(ByteString::from);
 
-                Ok(restate_storage_api::invocation_status_table::InboxedInvocation {
+                Ok(crate::invocation_status_table::InboxedInvocation {
                     inbox_sequence_number: value.inbox_sequence_number,
-                    metadata: restate_storage_api::invocation_status_table::PreFlightInvocationMetadata {
-                        created_using_restate_version:   restate_types::RestateVersion::unknown(),
+                    metadata: crate::invocation_status_table::PreFlightInvocationMetadata {
+                        created_using_restate_version: restate_types::RestateVersion::unknown(),
                         response_sinks,
-                        timestamps: restate_storage_api::invocation_status_table::StatusTimestamps::new(
+                        timestamps: crate::invocation_status_table::StatusTimestamps::new(
                             MillisSinceEpoch::new(value.creation_time),
                             MillisSinceEpoch::new(value.modification_time),
                             None,
@@ -1511,13 +1523,11 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_storage_api::invocation_status_table::InboxedInvocation> for Inboxed {
-            fn from(
-                value: restate_storage_api::invocation_status_table::InboxedInvocation,
-            ) -> Self {
-                let restate_storage_api::invocation_status_table::InboxedInvocation {
+        impl From<crate::invocation_status_table::InboxedInvocation> for Inboxed {
+            fn from(value: crate::invocation_status_table::InboxedInvocation) -> Self {
+                let crate::invocation_status_table::InboxedInvocation {
                     metadata:
-                        restate_storage_api::invocation_status_table::PreFlightInvocationMetadata {
+                        crate::invocation_status_table::PreFlightInvocationMetadata {
                             response_sinks,
                             timestamps,
                             invocation_target,
@@ -1556,7 +1566,7 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<Completed> for restate_storage_api::invocation_status_table::CompletedInvocation {
+        impl TryFrom<Completed> for crate::invocation_status_table::CompletedInvocation {
             type Error = ConversionError;
 
             fn try_from(value: Completed) -> Result<Self, ConversionError> {
@@ -1574,42 +1584,37 @@ pub mod v1 {
 
                 let idempotency_key = value.idempotency_key.map(ByteString::from);
 
-                Ok(
-                    restate_storage_api::invocation_status_table::CompletedInvocation {
-                        invocation_target,
-                        created_using_restate_version: restate_types::RestateVersion::unknown(),
-                        source,
-                        timestamps:
-                            restate_storage_api::invocation_status_table::StatusTimestamps::new(
-                                MillisSinceEpoch::new(value.creation_time),
-                                MillisSinceEpoch::new(value.modification_time),
-                                None,
-                                None,
-                                None,
-                                None,
-                            ),
-                        response_result: value
-                            .result
-                            .ok_or(ConversionError::missing_field("result"))?
-                            .try_into()?,
-                        idempotency_key,
-                        // The value Duration::MAX here disables the new cleaner task business logic.
-                        // Look at crates/worker/src/partition/cleaner.rs for more details.
-                        completion_retention_duration: std::time::Duration::MAX,
-                        execution_time: None,
-                        journal_retention_duration: Default::default(),
-                        journal_metadata: JournalMetadata::empty(),
-                        pinned_deployment: None,
-                    },
-                )
+                Ok(crate::invocation_status_table::CompletedInvocation {
+                    invocation_target,
+                    created_using_restate_version: restate_types::RestateVersion::unknown(),
+                    source,
+                    timestamps: crate::invocation_status_table::StatusTimestamps::new(
+                        MillisSinceEpoch::new(value.creation_time),
+                        MillisSinceEpoch::new(value.modification_time),
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                    response_result: value
+                        .result
+                        .ok_or(ConversionError::missing_field("result"))?
+                        .try_into()?,
+                    idempotency_key,
+                    // The value Duration::MAX here disables the new cleaner task business logic.
+                    // Look at crates/worker/src/partition/cleaner.rs for more details.
+                    completion_retention_duration: std::time::Duration::MAX,
+                    execution_time: None,
+                    journal_retention_duration: Default::default(),
+                    journal_metadata: JournalMetadata::empty(),
+                    pinned_deployment: None,
+                })
             }
         }
 
-        impl From<restate_storage_api::invocation_status_table::CompletedInvocation> for Completed {
-            fn from(
-                value: restate_storage_api::invocation_status_table::CompletedInvocation,
-            ) -> Self {
-                let restate_storage_api::invocation_status_table::CompletedInvocation {
+        impl From<crate::invocation_status_table::CompletedInvocation> for Completed {
+            fn from(value: crate::invocation_status_table::CompletedInvocation) -> Self {
+                let crate::invocation_status_table::CompletedInvocation {
                     invocation_target,
                     created_using_restate_version: _,
                     source,
@@ -1637,7 +1642,7 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<JournalMeta> for restate_storage_api::invocation_status_table::JournalMetadata {
+        impl TryFrom<JournalMeta> for crate::invocation_status_table::JournalMetadata {
             type Error = ConversionError;
 
             fn try_from(value: JournalMeta) -> Result<Self, ConversionError> {
@@ -1648,19 +1653,17 @@ pub mod v1 {
                             .span_context
                             .ok_or(ConversionError::missing_field("span_context"))?,
                     )?;
-                Ok(
-                    restate_storage_api::invocation_status_table::JournalMetadata {
-                        length,
-                        commands: 0,
-                        span_context,
-                    },
-                )
+                Ok(crate::invocation_status_table::JournalMetadata {
+                    length,
+                    commands: 0,
+                    span_context,
+                })
             }
         }
 
-        impl From<restate_storage_api::invocation_status_table::JournalMetadata> for JournalMeta {
-            fn from(value: restate_storage_api::invocation_status_table::JournalMetadata) -> Self {
-                let restate_storage_api::invocation_status_table::JournalMetadata {
+        impl From<crate::invocation_status_table::JournalMetadata> for JournalMeta {
+            fn from(value: crate::invocation_status_table::JournalMetadata) -> Self {
+                let crate::invocation_status_table::JournalMetadata {
                     span_context,
                     length,
                     ..
@@ -1771,14 +1774,14 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<InboxEntry> for restate_storage_api::inbox_table::InboxEntry {
+        impl TryFrom<InboxEntry> for crate::inbox_table::InboxEntry {
             type Error = ConversionError;
 
             fn try_from(value: InboxEntry) -> Result<Self, ConversionError> {
                 Ok(
                     match value.entry.ok_or(ConversionError::missing_field("entry"))? {
                         inbox_entry::Entry::Invocation(invocation) => {
-                            restate_storage_api::inbox_table::InboxEntry::Invocation(
+                            crate::inbox_table::InboxEntry::Invocation(
                                 restate_types::identifiers::ServiceId::try_from(
                                     invocation
                                         .service_id
@@ -1792,7 +1795,7 @@ pub mod v1 {
                             )
                         }
                         inbox_entry::Entry::StateMutation(state_mutation) => {
-                            restate_storage_api::inbox_table::InboxEntry::StateMutation(
+                            crate::inbox_table::InboxEntry::StateMutation(
                                 restate_types::state_mut::ExternalStateMutation::try_from(
                                     state_mutation,
                                 )?,
@@ -1803,17 +1806,16 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_storage_api::inbox_table::InboxEntry> for InboxEntry {
-            fn from(inbox_entry: restate_storage_api::inbox_table::InboxEntry) -> Self {
+        impl From<crate::inbox_table::InboxEntry> for InboxEntry {
+            fn from(inbox_entry: crate::inbox_table::InboxEntry) -> Self {
                 let inbox_entry = match inbox_entry {
-                    restate_storage_api::inbox_table::InboxEntry::Invocation(
-                        service_id,
-                        invocation_id,
-                    ) => inbox_entry::Entry::Invocation(inbox_entry::Invocation {
-                        service_id: Some(service_id.into()),
-                        invocation_id: Some(InvocationId::from(invocation_id)),
-                    }),
-                    restate_storage_api::inbox_table::InboxEntry::StateMutation(state_mutation) => {
+                    crate::inbox_table::InboxEntry::Invocation(service_id, invocation_id) => {
+                        inbox_entry::Entry::Invocation(inbox_entry::Invocation {
+                            service_id: Some(service_id.into()),
+                            invocation_id: Some(InvocationId::from(invocation_id)),
+                        })
+                    }
+                    crate::inbox_table::InboxEntry::StateMutation(state_mutation) => {
                         inbox_entry::Entry::StateMutation(StateMutation::from(state_mutation))
                     }
                 };
@@ -2535,7 +2537,7 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<JournalEntry> for restate_storage_api::journal_table::JournalEntry {
+        impl TryFrom<JournalEntry> for crate::journal_table::JournalEntry {
             type Error = ConversionError;
 
             fn try_from(value: JournalEntry) -> Result<Self, ConversionError> {
@@ -2543,15 +2545,13 @@ pub mod v1 {
                     .kind
                     .ok_or(ConversionError::missing_field("kind"))?
                 {
-                    Kind::Entry(journal_entry) => {
-                        restate_storage_api::journal_table::JournalEntry::Entry(
-                            restate_types::journal::enriched::EnrichedRawEntry::try_from(
-                                journal_entry,
-                            )?,
-                        )
-                    }
+                    Kind::Entry(journal_entry) => crate::journal_table::JournalEntry::Entry(
+                        restate_types::journal::enriched::EnrichedRawEntry::try_from(
+                            journal_entry,
+                        )?,
+                    ),
                     Kind::CompletionResult(completion_result) => {
-                        restate_storage_api::journal_table::JournalEntry::Completion(
+                        crate::journal_table::JournalEntry::Completion(
                             restate_types::journal::CompletionResult::try_from(completion_result)?,
                         )
                     }
@@ -2561,13 +2561,11 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_storage_api::journal_table::JournalEntry> for JournalEntry {
-            fn from(value: restate_storage_api::journal_table::JournalEntry) -> Self {
+        impl From<crate::journal_table::JournalEntry> for JournalEntry {
+            fn from(value: crate::journal_table::JournalEntry) -> Self {
                 match value {
-                    restate_storage_api::journal_table::JournalEntry::Entry(entry) => {
-                        JournalEntry::from(entry)
-                    }
-                    restate_storage_api::journal_table::JournalEntry::Completion(completion) => {
+                    crate::journal_table::JournalEntry::Entry(entry) => JournalEntry::from(entry),
+                    crate::journal_table::JournalEntry::Completion(completion) => {
                         JournalEntry::from(completion)
                     }
                 }
@@ -3708,7 +3706,7 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<OutboxMessage> for restate_storage_api::outbox_table::OutboxMessage {
+        impl TryFrom<OutboxMessage> for crate::outbox_table::OutboxMessage {
             type Error = ConversionError;
 
             fn try_from(value: OutboxMessage) -> Result<Self, ConversionError> {
@@ -3717,21 +3715,21 @@ pub mod v1 {
                     .ok_or(ConversionError::missing_field("outbox_message"))?
                 {
                     outbox_message::OutboxMessage::ServiceInvocationCase(service_invocation) => {
-                        restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(
-                            Box::new(restate_types::invocation::ServiceInvocation::try_from(
+                        crate::outbox_table::OutboxMessage::ServiceInvocation(Box::new(
+                            restate_types::invocation::ServiceInvocation::try_from(
                                 service_invocation
                                     .service_invocation
                                     .ok_or(ConversionError::missing_field("service_invocation"))?,
-                            )?),
-                        )
+                            )?,
+                        ))
                     }
                     outbox_message::OutboxMessage::ServiceInvocationResponse(
                         invocation_response,
-                    ) => restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
+                    ) => crate::outbox_table::OutboxMessage::ServiceResponse(
                         invocation_response.try_into()?,
                     ),
                     outbox_message::OutboxMessage::Kill(outbox_kill) => {
-                        restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
+                        crate::outbox_table::OutboxMessage::InvocationTermination(
                             InvocationTermination {
                                 invocation_id: restate_types::identifiers::InvocationId::try_from(
                                     outbox_kill
@@ -3744,7 +3742,7 @@ pub mod v1 {
                         )
                     }
                     outbox_message::OutboxMessage::Cancel(outbox_cancel) => {
-                        restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
+                        crate::outbox_table::OutboxMessage::InvocationTermination(
                             InvocationTermination {
                                 invocation_id: restate_types::identifiers::InvocationId::try_from(
                                     outbox_cancel
@@ -3758,13 +3756,11 @@ pub mod v1 {
                     }
                     outbox_message::OutboxMessage::AttachInvocationRequest(
                         attach_invocation_request,
-                    ) => restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(
+                    ) => crate::outbox_table::OutboxMessage::AttachInvocation(
                         attach_invocation_request.try_into()?,
                     ),
                     outbox_message::OutboxMessage::NotifySignal(notify_signal) => {
-                        restate_storage_api::outbox_table::OutboxMessage::NotifySignal(
-                            notify_signal.try_into()?,
-                        )
+                        crate::outbox_table::OutboxMessage::NotifySignal(notify_signal.try_into()?)
                     }
                 };
 
@@ -3772,31 +3768,35 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_storage_api::outbox_table::OutboxMessage> for OutboxMessage {
-            fn from(value: restate_storage_api::outbox_table::OutboxMessage) -> Self {
+        impl From<crate::outbox_table::OutboxMessage> for OutboxMessage {
+            fn from(value: crate::outbox_table::OutboxMessage) -> Self {
                 let outbox_message = match value {
-                    restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(
-                        service_invocation,
-                    ) => outbox_message::OutboxMessage::ServiceInvocationCase(
-                        OutboxServiceInvocation {
-                            service_invocation: Some(ServiceInvocation::from(service_invocation)),
-                        },
-                    ),
-                    restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
-                        invocation_response,
-                    ) => outbox_message::OutboxMessage::ServiceInvocationResponse(
-                        OutboxServiceInvocationResponse {
-                            entry_index: invocation_response.target.caller_completion_id,
-                            invocation_id: Some(InvocationId::from(
-                                invocation_response.target.caller_id,
-                            )),
-                            response_result: Some(ResponseResult::from(invocation_response.result)),
-                            caller_invocation_epoch: invocation_response
-                                .target
-                                .caller_invocation_epoch,
-                        },
-                    ),
-                    restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
+                    crate::outbox_table::OutboxMessage::ServiceInvocation(service_invocation) => {
+                        outbox_message::OutboxMessage::ServiceInvocationCase(
+                            OutboxServiceInvocation {
+                                service_invocation: Some(ServiceInvocation::from(
+                                    service_invocation,
+                                )),
+                            },
+                        )
+                    }
+                    crate::outbox_table::OutboxMessage::ServiceResponse(invocation_response) => {
+                        outbox_message::OutboxMessage::ServiceInvocationResponse(
+                            OutboxServiceInvocationResponse {
+                                entry_index: invocation_response.target.caller_completion_id,
+                                invocation_id: Some(InvocationId::from(
+                                    invocation_response.target.caller_id,
+                                )),
+                                response_result: Some(ResponseResult::from(
+                                    invocation_response.result,
+                                )),
+                                caller_invocation_epoch: invocation_response
+                                    .target
+                                    .caller_invocation_epoch,
+                            },
+                        )
+                    }
+                    crate::outbox_table::OutboxMessage::InvocationTermination(
                         invocation_termination,
                     ) => {
                         debug_assert!(
@@ -3820,14 +3820,14 @@ pub mod v1 {
                             }
                         }
                     }
-                    restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(
+                    crate::outbox_table::OutboxMessage::AttachInvocation(
                         attach_invocation_request,
                     ) => outbox_message::OutboxMessage::AttachInvocationRequest(
                         attach_invocation_request.into(),
                     ),
-                    restate_storage_api::outbox_table::OutboxMessage::NotifySignal(
-                        notify_signal,
-                    ) => outbox_message::OutboxMessage::NotifySignal(notify_signal.into()),
+                    crate::outbox_table::OutboxMessage::NotifySignal(notify_signal) => {
+                        outbox_message::OutboxMessage::NotifySignal(notify_signal.into())
+                    }
                 };
 
                 OutboxMessage {
@@ -3884,14 +3884,14 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<Timer> for restate_storage_api::timer_table::Timer {
+        impl TryFrom<Timer> for crate::timer_table::Timer {
             type Error = ConversionError;
 
             fn try_from(value: Timer) -> Result<Self, ConversionError> {
                 Ok(
                     match value.value.ok_or(ConversionError::missing_field("value"))? {
                         timer::Value::CompleteSleepEntry(cse) => {
-                            restate_storage_api::timer_table::Timer::CompleteJournalEntry(
+                            crate::timer_table::Timer::CompleteJournalEntry(
                                 restate_types::identifiers::InvocationId::try_from(
                                     cse.invocation_id
                                         .ok_or(ConversionError::missing_field("invocation_id"))?,
@@ -3900,18 +3900,14 @@ pub mod v1 {
                                 cse.caller_invocation_epoch,
                             )
                         }
-                        timer::Value::Invoke(si) => {
-                            restate_storage_api::timer_table::Timer::Invoke(Box::new(
-                                restate_types::invocation::ServiceInvocation::try_from(si)?,
-                            ))
-                        }
-                        timer::Value::ScheduledInvoke(id) => {
-                            restate_storage_api::timer_table::Timer::NeoInvoke(
-                                restate_types::identifiers::InvocationId::try_from(id)?,
-                            )
-                        }
+                        timer::Value::Invoke(si) => crate::timer_table::Timer::Invoke(Box::new(
+                            restate_types::invocation::ServiceInvocation::try_from(si)?,
+                        )),
+                        timer::Value::ScheduledInvoke(id) => crate::timer_table::Timer::NeoInvoke(
+                            restate_types::identifiers::InvocationId::try_from(id)?,
+                        ),
                         timer::Value::CleanInvocationStatus(clean_invocation_status) => {
-                            restate_storage_api::timer_table::Timer::CleanInvocationStatus(
+                            crate::timer_table::Timer::CleanInvocationStatus(
                                 restate_types::identifiers::InvocationId::try_from(
                                     clean_invocation_status
                                         .invocation_id
@@ -3924,11 +3920,11 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_storage_api::timer_table::Timer> for Timer {
-            fn from(value: restate_storage_api::timer_table::Timer) -> Self {
+        impl From<crate::timer_table::Timer> for Timer {
+            fn from(value: crate::timer_table::Timer) -> Self {
                 Timer {
                     value: Some(match value {
-                        restate_storage_api::timer_table::Timer::CompleteJournalEntry(
+                        crate::timer_table::Timer::CompleteJournalEntry(
                             invocation_id,
                             entry_index,
                             caller_invocation_epoch,
@@ -3937,31 +3933,31 @@ pub mod v1 {
                             entry_index,
                             caller_invocation_epoch,
                         }),
-                        restate_storage_api::timer_table::Timer::NeoInvoke(invocation_id) => {
+                        crate::timer_table::Timer::NeoInvoke(invocation_id) => {
                             timer::Value::ScheduledInvoke(InvocationId::from(invocation_id))
                         }
-                        restate_storage_api::timer_table::Timer::Invoke(si) => {
+                        crate::timer_table::Timer::Invoke(si) => {
                             timer::Value::Invoke(ServiceInvocation::from(si))
                         }
-                        restate_storage_api::timer_table::Timer::CleanInvocationStatus(
-                            invocation_id,
-                        ) => timer::Value::CleanInvocationStatus(timer::CleanInvocationStatus {
-                            invocation_id: Some(InvocationId::from(invocation_id)),
-                        }),
+                        crate::timer_table::Timer::CleanInvocationStatus(invocation_id) => {
+                            timer::Value::CleanInvocationStatus(timer::CleanInvocationStatus {
+                                invocation_id: Some(InvocationId::from(invocation_id)),
+                            })
+                        }
                     }),
                 }
             }
         }
 
-        impl From<restate_storage_api::deduplication_table::DedupSequenceNumber> for DedupSequenceNumber {
-            fn from(value: restate_storage_api::deduplication_table::DedupSequenceNumber) -> Self {
+        impl From<crate::deduplication_table::DedupSequenceNumber> for DedupSequenceNumber {
+            fn from(value: crate::deduplication_table::DedupSequenceNumber) -> Self {
                 match value {
-                    restate_storage_api::deduplication_table::DedupSequenceNumber::Sn(sn) => {
+                    crate::deduplication_table::DedupSequenceNumber::Sn(sn) => {
                         DedupSequenceNumber {
                             variant: Some(Variant::SequenceNumber(sn)),
                         }
                     }
-                    restate_storage_api::deduplication_table::DedupSequenceNumber::Esn(esn) => {
+                    crate::deduplication_table::DedupSequenceNumber::Esn(esn) => {
                         DedupSequenceNumber {
                             variant: Some(Variant::EpochSequenceNumber(EpochSequenceNumber::from(
                                 esn,
@@ -3972,9 +3968,7 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<DedupSequenceNumber>
-            for restate_storage_api::deduplication_table::DedupSequenceNumber
-        {
+        impl TryFrom<DedupSequenceNumber> for crate::deduplication_table::DedupSequenceNumber {
             type Error = ConversionError;
 
             fn try_from(value: DedupSequenceNumber) -> Result<Self, ConversionError> {
@@ -3984,11 +3978,11 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("variant"))?
                     {
                         Variant::SequenceNumber(sn) => {
-                            restate_storage_api::deduplication_table::DedupSequenceNumber::Sn(sn)
+                            crate::deduplication_table::DedupSequenceNumber::Sn(sn)
                         }
                         Variant::EpochSequenceNumber(esn) => {
-                            restate_storage_api::deduplication_table::DedupSequenceNumber::Esn(
-                                restate_storage_api::deduplication_table::EpochSequenceNumber::try_from(esn)?,
+                            crate::deduplication_table::DedupSequenceNumber::Esn(
+                                crate::deduplication_table::EpochSequenceNumber::try_from(esn)?,
                             )
                         }
                     },
@@ -3996,8 +3990,8 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_storage_api::deduplication_table::EpochSequenceNumber> for EpochSequenceNumber {
-            fn from(value: restate_storage_api::deduplication_table::EpochSequenceNumber) -> Self {
+        impl From<crate::deduplication_table::EpochSequenceNumber> for EpochSequenceNumber {
+            fn from(value: crate::deduplication_table::EpochSequenceNumber) -> Self {
                 EpochSequenceNumber {
                     leader_epoch: value.leader_epoch.into(),
                     sequence_number: value.sequence_number,
@@ -4005,18 +3999,14 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<EpochSequenceNumber>
-            for restate_storage_api::deduplication_table::EpochSequenceNumber
-        {
+        impl TryFrom<EpochSequenceNumber> for crate::deduplication_table::EpochSequenceNumber {
             type Error = ConversionError;
 
             fn try_from(value: EpochSequenceNumber) -> Result<Self, ConversionError> {
-                Ok(
-                    restate_storage_api::deduplication_table::EpochSequenceNumber {
-                        leader_epoch: value.leader_epoch.into(),
-                        sequence_number: value.sequence_number,
-                    },
-                )
+                Ok(crate::deduplication_table::EpochSequenceNumber {
+                    leader_epoch: value.leader_epoch.into(),
+                    sequence_number: value.sequence_number,
+                })
             }
         }
 
@@ -4037,70 +4027,66 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_storage_api::idempotency_table::IdempotencyMetadata> for IdempotencyMetadata {
-            fn from(value: restate_storage_api::idempotency_table::IdempotencyMetadata) -> Self {
+        impl From<crate::idempotency_table::IdempotencyMetadata> for IdempotencyMetadata {
+            fn from(value: crate::idempotency_table::IdempotencyMetadata) -> Self {
                 IdempotencyMetadata {
                     invocation_id: Some(InvocationId::from(value.invocation_id)),
                 }
             }
         }
 
-        impl TryFrom<IdempotencyMetadata> for restate_storage_api::idempotency_table::IdempotencyMetadata {
+        impl TryFrom<IdempotencyMetadata> for crate::idempotency_table::IdempotencyMetadata {
             type Error = ConversionError;
 
             fn try_from(value: IdempotencyMetadata) -> Result<Self, ConversionError> {
-                Ok(
-                    restate_storage_api::idempotency_table::IdempotencyMetadata {
-                        invocation_id: restate_types::identifiers::InvocationId::try_from(
-                            value
-                                .invocation_id
-                                .ok_or(ConversionError::missing_field("invocation_id"))?,
-                        )
-                        .map_err(|e| ConversionError::invalid_data(e))?,
-                    },
-                )
+                Ok(crate::idempotency_table::IdempotencyMetadata {
+                    invocation_id: restate_types::identifiers::InvocationId::try_from(
+                        value
+                            .invocation_id
+                            .ok_or(ConversionError::missing_field("invocation_id"))?,
+                    )
+                    .map_err(|e| ConversionError::invalid_data(e))?,
+                })
             }
         }
 
-        impl From<restate_storage_api::promise_table::Promise> for Promise {
-            fn from(value: restate_storage_api::promise_table::Promise) -> Self {
+        impl From<crate::promise_table::Promise> for Promise {
+            fn from(value: crate::promise_table::Promise) -> Self {
                 match value.state {
-                    restate_storage_api::promise_table::PromiseState::Completed(e) => Promise {
+                    crate::promise_table::PromiseState::Completed(e) => Promise {
                         state: Some(promise::State::CompletedState(promise::CompletedState {
                             result: Some(e.into()),
                         })),
                     },
-                    restate_storage_api::promise_table::PromiseState::NotCompleted(listeners) => {
-                        Promise {
-                            state: Some(promise::State::NotCompletedState(
-                                promise::NotCompletedState {
-                                    listening_journal_entries: listeners
-                                        .into_iter()
-                                        .map(Into::into)
-                                        .collect(),
-                                },
-                            )),
-                        }
-                    }
+                    crate::promise_table::PromiseState::NotCompleted(listeners) => Promise {
+                        state: Some(promise::State::NotCompletedState(
+                            promise::NotCompletedState {
+                                listening_journal_entries: listeners
+                                    .into_iter()
+                                    .map(Into::into)
+                                    .collect(),
+                            },
+                        )),
+                    },
                 }
             }
         }
 
-        impl TryFrom<Promise> for restate_storage_api::promise_table::Promise {
+        impl TryFrom<Promise> for crate::promise_table::Promise {
             type Error = ConversionError;
 
             fn try_from(value: Promise) -> Result<Self, ConversionError> {
-                Ok(restate_storage_api::promise_table::Promise {
+                Ok(crate::promise_table::Promise {
                     state: match value.state.ok_or(ConversionError::missing_field("state"))? {
                         promise::State::CompletedState(s) => {
-                            restate_storage_api::promise_table::PromiseState::Completed(
+                            crate::promise_table::PromiseState::Completed(
                                 s.result
                                     .ok_or(ConversionError::missing_field("result"))?
                                     .try_into()?,
                             )
                         }
                         promise::State::NotCompletedState(s) => {
-                            restate_storage_api::promise_table::PromiseState::NotCompleted(
+                            crate::promise_table::PromiseState::NotCompleted(
                                 s.listening_journal_entries
                                     .into_iter()
                                     .map(TryInto::try_into)

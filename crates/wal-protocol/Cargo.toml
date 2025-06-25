@@ -14,9 +14,6 @@ serde = ["dep:serde", "enum-map/serde", "bytestring/serde", "restate-invoker-api
 [dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 restate-invoker-api = { workspace = true }
-# todo(azmy): Follow up https://github.com/restatedev/restate/pull/3261
-# remove dependency on restate-partition-store
-restate-partition-store = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 

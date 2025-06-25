@@ -12,9 +12,10 @@ use tracing::warn;
 use restate_storage_api::StorageError;
 use restate_types::{identifiers::PartitionId, logs::Lsn};
 
-use crate::fsm_table::{PartitionStateMachineKey, SequenceNumber, fsm_variable};
+use crate::fsm_table::{PartitionStateMachineKey, fsm_variable};
 use crate::keys::{KeyKind, TableKey};
-use crate::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::fsm_table::SequenceNumber;
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 
 const APPLIED_LSNS_PROPERTY_PREFIX: &str = "p:";
 
@@ -168,7 +169,7 @@ mod tests {
     use restate_types::storage::StorageCodec;
 
     use super::*;
-    use crate::protobuf_types::ProtobufStorageWrapper;
+    use restate_storage_api::protobuf_types::ProtobufStorageWrapper;
 
     #[test]
     fn test_extract_partition_applied_lsn() -> googletest::Result<()> {

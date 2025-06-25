@@ -18,14 +18,13 @@ use restate_rocksdb::Priority;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable, ScanIdempotencyTable,
 };
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{IdempotencyId, PartitionKey, WithPartitionKey};
 
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::scan::TableScan;
-use crate::{PartitionStore, TableKind};
-use crate::{PartitionStoreTransaction, StorageAccess};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
 
 define_table_key!(
     TableKind::Idempotency,
@@ -38,10 +37,6 @@ define_table_key!(
         idempotency_key: ByteString
     )
 );
-
-impl PartitionStoreProtobufValue for IdempotencyMetadata {
-    type ProtobufType = crate::protobuf_types::v1::IdempotencyMetadata;
-}
 
 fn create_key(idempotency_id: &IdempotencyId) -> IdempotencyKey {
     IdempotencyKey::default()

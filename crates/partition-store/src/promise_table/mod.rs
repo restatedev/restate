@@ -22,10 +22,11 @@ use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::scan::TableScan;
-use crate::{PartitionStore, TableKind, TableScanIterationDecision};
-use crate::{PartitionStoreTransaction, StorageAccess};
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, TableScanIterationDecision,
+};
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 
 define_table_key!(
     TableKind::Promise,
@@ -37,10 +38,6 @@ define_table_key!(
         key: ByteString
     )
 );
-
-impl PartitionStoreProtobufValue for Promise {
-    type ProtobufType = crate::protobuf_types::v1::Promise;
-}
 
 fn create_key(service_id: &ServiceId, key: &ByteString) -> PromiseKey {
     PromiseKey::default()

@@ -18,12 +18,12 @@ use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
     ReadOnlyDeduplicationTable,
 };
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
 
 use crate::TableKind::Deduplication;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::{
     PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision,
@@ -34,10 +34,6 @@ define_table_key!(
     KeyKind::Deduplication,
     DeduplicationKey(partition_id: PaddedPartitionId, producer_id: ProducerId)
 );
-
-impl PartitionStoreProtobufValue for DedupSequenceNumber {
-    type ProtobufType = crate::protobuf_types::v1::DedupSequenceNumber;
-}
 
 fn get_dedup_sequence_number<S: StorageAccess>(
     storage: &mut S,

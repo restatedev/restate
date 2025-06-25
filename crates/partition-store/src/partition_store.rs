@@ -28,8 +28,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::trace;
 
 use restate_core::{Metadata, ShutdownError};
-use restate_rocksdb::IterAction;
-use restate_rocksdb::{CfName, IoMode, Priority, RocksDb, RocksError};
+use restate_rocksdb::{CfName, IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::config::Configuration;
@@ -42,10 +41,10 @@ use rocksdb::table_properties::TablePropertiesExt;
 use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
-use crate::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::LocalPartitionSnapshot;
+use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 
 pub type DB = rocksdb::DB;
 

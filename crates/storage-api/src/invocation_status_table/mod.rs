@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
@@ -194,6 +195,10 @@ pub enum InvocationStatus {
     /// Service instance is currently not invoked
     #[default]
     Free,
+}
+
+impl PartitionStoreProtobufValue for InvocationStatus {
+    type ProtobufType = crate::protobuf_types::v1::InvocationStatusV2;
 }
 
 impl InvocationStatus {
@@ -870,6 +875,26 @@ mod test_util {
             }
         }
     }
+}
+
+/// Lite status of an invocation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct InvocationLite {
+    pub status: InvocationStatusDiscriminants,
+    pub invocation_target: InvocationTarget,
+    pub current_invocation_epoch: InvocationEpoch,
+}
+
+impl PartitionStoreProtobufValue for InvocationLite {
+    type ProtobufType = crate::protobuf_types::v1::InvocationV2Lite;
+}
+
+// TODO remove this once we remove the old InvocationStatus
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct InvocationStatusV1(pub InvocationStatus);
+
+impl PartitionStoreProtobufValue for InvocationStatusV1 {
+    type ProtobufType = crate::protobuf_types::v1::InvocationStatus;
 }
 
 #[cfg(test)]
