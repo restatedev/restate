@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::StorageError;
 use bytes::{Buf, BytesMut};
+
 use restate_types::SemanticRestateVersion;
 use restate_types::errors::IdDecodeError;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageDecodeError, StorageEncode};
+
+use crate::StorageError;
 
 /// Marker trait to specify the Protobuf equivalent of a user facing type
 pub trait PartitionStoreProtobufValue: Sized {
@@ -123,6 +125,34 @@ pub mod v1 {
     ));
 
     pub mod pb_conversion {
+        use std::collections::{HashMap, HashSet};
+        use std::str::FromStr;
+
+        use anyhow::anyhow;
+        use bytes::{Buf, Bytes};
+        use bytestring::ByteString;
+        use opentelemetry::trace::TraceState;
+        use prost::Message;
+
+        use restate_types::deployment::PinnedDeployment;
+        use restate_types::errors::{IdDecodeError, InvocationError};
+        use restate_types::identifiers::{
+            PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
+        };
+        use restate_types::invocation::{
+            IngressInvocationResponseSink, InvocationMutationResponseSink, InvocationTermination,
+            TerminationFlavor,
+        };
+        use restate_types::journal::enriched::AwakeableEnrichmentResult;
+        use restate_types::journal::raw::RawEntry;
+        use restate_types::journal_v2::{EntryMetadata, NotificationId, NotificationType};
+        use restate_types::service_protocol::ServiceProtocolVersion;
+        use restate_types::storage::{
+            StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+        };
+        use restate_types::time::MillisSinceEpoch;
+        use restate_types::{GenerationalNodeId, journal_v2};
+
         use super::dedup_sequence_number::Variant;
         use super::enriched_entry_header::{
             AttachInvocation, Awakeable, BackgroundCall, CancelInvocation, ClearAllState,
@@ -157,31 +187,6 @@ pub mod v1 {
         use crate::StorageError;
         use crate::invocation_status_table::{CompletionRangeEpochMap, JournalMetadata};
         use crate::protobuf_types::ConversionError;
-        use anyhow::anyhow;
-        use bytes::{Buf, Bytes};
-        use bytestring::ByteString;
-        use opentelemetry::trace::TraceState;
-        use prost::Message;
-        use restate_types::deployment::PinnedDeployment;
-        use restate_types::errors::{IdDecodeError, InvocationError};
-        use restate_types::identifiers::{
-            PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
-        };
-        use restate_types::invocation::{
-            IngressInvocationResponseSink, InvocationMutationResponseSink, InvocationTermination,
-            TerminationFlavor,
-        };
-        use restate_types::journal::enriched::AwakeableEnrichmentResult;
-        use restate_types::journal::raw::RawEntry;
-        use restate_types::journal_v2::{EntryMetadata, NotificationId, NotificationType};
-        use restate_types::service_protocol::ServiceProtocolVersion;
-        use restate_types::storage::{
-            StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
-        };
-        use restate_types::time::MillisSinceEpoch;
-        use restate_types::{GenerationalNodeId, journal_v2};
-        use std::collections::{HashMap, HashSet};
-        use std::str::FromStr;
 
         impl TryFrom<VirtualObjectStatus> for crate::service_status_table::VirtualObjectStatus {
             type Error = ConversionError;

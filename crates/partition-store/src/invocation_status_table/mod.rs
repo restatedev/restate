@@ -10,14 +10,10 @@
 
 use std::ops::RangeInclusive;
 
-use crate::TableScan::FullScanPartitionKeyRange;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
 use futures::Stream;
 use tokio_stream::StreamExt;
 use tracing::trace;
 
-use crate::scan::TableScan;
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
     InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
@@ -27,6 +23,11 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
+
+use crate::TableScan::FullScanPartitionKeyRange;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::scan::TableScan;
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
 
 // TODO remove this once we remove the old InvocationStatus
 define_table_key!(

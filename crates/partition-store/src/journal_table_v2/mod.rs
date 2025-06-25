@@ -12,16 +12,10 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
+use anyhow::anyhow;
 use futures::Stream;
 use futures_util::stream;
 
-use crate::TableKind::Journal;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::owned_iter::OwnedIterator;
-use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
-};
-use anyhow::anyhow;
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table_v2::{
     JournalEntryIndex, JournalTable, ReadOnlyJournalTable, ScanJournalTable, StoredEntry,
@@ -33,6 +27,13 @@ use restate_types::identifiers::{
 };
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryInner};
 use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
+
+use crate::TableKind::Journal;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::owned_iter::OwnedIterator;
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+};
 
 define_table_key!(
     Journal,

@@ -13,11 +13,12 @@ use std::ops::RangeInclusive;
 
 use futures::Stream;
 
-use crate::Result;
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
 use restate_types::journal_v2::raw::{RawCommand, RawEntry};
 use restate_types::journal_v2::{CompletionId, NotificationId};
+
+use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 
 pub trait ReadOnlyJournalTable {
     fn get_journal_entry(

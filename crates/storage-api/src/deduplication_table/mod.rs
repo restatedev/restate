@@ -10,13 +10,14 @@
 
 use std::cmp::Ordering;
 
-use crate::Result;
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use bytestring::ByteString;
 use futures::Stream;
 
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::message::MessageIndex;
+
+use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DedupInformation {

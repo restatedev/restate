@@ -14,12 +14,6 @@ use std::ops::RangeInclusive;
 use futures::Stream;
 use futures_util::stream;
 
-use crate::TableKind::Journal;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
-};
-
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table::{
     JournalEntry, JournalTable, ReadOnlyJournalTable, ScanJournalTable,
@@ -28,6 +22,12 @@ use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
+};
+
+use crate::TableKind::Journal;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
 };
 
 define_table_key!(
