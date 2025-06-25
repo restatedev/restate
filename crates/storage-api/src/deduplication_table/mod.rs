@@ -10,13 +10,13 @@
 
 use std::cmp::Ordering;
 
+use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use bytestring::ByteString;
 use futures::Stream;
 
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::message::MessageIndex;
-
-use crate::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DedupInformation {
@@ -71,6 +71,10 @@ pub enum DedupSequenceNumber {
     /// messages being produced during a given leader epoch and fence off messages coming from
     /// an older leader epoch.
     Esn(EpochSequenceNumber),
+}
+
+impl PartitionStoreProtobufValue for DedupSequenceNumber {
+    type ProtobufType = crate::protobuf_types::v1::DedupSequenceNumber;
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

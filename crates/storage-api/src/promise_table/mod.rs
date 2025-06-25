@@ -11,6 +11,7 @@
 use std::future::Future;
 use std::ops::RangeInclusive;
 
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
@@ -98,6 +99,10 @@ impl Default for PromiseState {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Promise {
     pub state: PromiseState,
+}
+
+impl PartitionStoreProtobufValue for Promise {
+    type ProtobufType = crate::protobuf_types::v1::Promise;
 }
 
 #[derive(Debug, Clone, PartialEq)]

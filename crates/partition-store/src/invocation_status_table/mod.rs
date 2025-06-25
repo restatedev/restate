@@ -10,25 +10,23 @@
 
 use std::ops::RangeInclusive;
 
+use crate::TableScan::FullScanPartitionKeyRange;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
 use futures::Stream;
 use tokio_stream::StreamExt;
 use tracing::trace;
 
+use crate::scan::TableScan;
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
-    InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable, ScanInvocationStatusTable,
+    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
+    InvocationStatusV1, InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable,
+    ScanInvocationStatusTable,
 };
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
-use restate_types::invocation::{InvocationEpoch, InvocationTarget};
-
-use crate::TableScan::FullScanPartitionKeyRange;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::scan::TableScan;
-use crate::{PartitionStore, TableKind};
-use crate::{PartitionStoreTransaction, StorageAccess};
 
 // TODO remove this once we remove the old InvocationStatus
 define_table_key!(
@@ -39,14 +37,6 @@ define_table_key!(
         invocation_uuid: InvocationUuid
     )
 );
-
-// TODO remove this once we remove the old InvocationStatus
-#[derive(Debug, Default, Clone, PartialEq)]
-pub(crate) struct InvocationStatusV1(pub(crate) InvocationStatus);
-
-impl PartitionStoreProtobufValue for InvocationStatusV1 {
-    type ProtobufType = crate::protobuf_types::v1::InvocationStatus;
-}
 
 // TODO remove this once we remove the old InvocationStatus
 fn create_invocation_status_key_v1(invocation_id: &InvocationId) -> InvocationStatusKeyV1 {
@@ -68,22 +58,6 @@ fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatu
     InvocationStatusKey::default()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid())
-}
-
-impl PartitionStoreProtobufValue for InvocationStatus {
-    type ProtobufType = crate::protobuf_types::v1::InvocationStatusV2;
-}
-
-/// Lite status of an invocation.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct InvocationLite {
-    pub status: InvocationStatusDiscriminants,
-    pub invocation_target: InvocationTarget,
-    pub current_invocation_epoch: InvocationEpoch,
-}
-
-impl PartitionStoreProtobufValue for InvocationLite {
-    type ProtobufType = crate::protobuf_types::v1::InvocationV2Lite;
 }
 
 // TODO remove this once we remove the old InvocationStatus

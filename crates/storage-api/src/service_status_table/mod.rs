@@ -8,19 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
+use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
+use std::future::Future;
 use std::ops::RangeInclusive;
 
 use futures::Stream;
-
-use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
-
-use crate::Result;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum VirtualObjectStatus {
     Locked(InvocationId),
     #[default]
     Unlocked,
+}
+
+impl PartitionStoreProtobufValue for VirtualObjectStatus {
+    type ProtobufType = crate::protobuf_types::v1::VirtualObjectStatus;
 }
 
 pub trait ReadOnlyVirtualObjectStatusTable {
