@@ -8,16 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashSet;
-use std::future::Future;
-use std::ops::RangeInclusive;
-use std::time::Duration;
-
+use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use rangemap::RangeInclusiveMap;
-
 use restate_types::RestateVersion;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionKey};
@@ -27,9 +23,10 @@ use restate_types::invocation::{
 };
 use restate_types::journal_v2::{CompletionId, EntryIndex, NotificationId};
 use restate_types::time::MillisSinceEpoch;
-
-use crate::Result;
-use crate::protobuf_types::PartitionStoreProtobufValue;
+use std::collections::HashSet;
+use std::future::Future;
+use std::ops::RangeInclusive;
+use std::time::Duration;
 
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]

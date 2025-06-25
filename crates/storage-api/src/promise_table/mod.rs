@@ -11,6 +11,7 @@
 use std::future::Future;
 use std::ops::RangeInclusive;
 
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
@@ -24,7 +25,6 @@ use restate_types::journal_v2::{
 };
 
 use super::Result;
-use crate::protobuf_types::PartitionStoreProtobufValue;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromiseResult {

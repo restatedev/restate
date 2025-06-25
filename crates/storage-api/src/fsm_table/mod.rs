@@ -10,12 +10,12 @@
 
 use std::future::Future;
 
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::SemanticRestateVersion;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 
 use crate::Result;
-use crate::protobuf_types::PartitionStoreProtobufValue;
 
 pub trait ReadOnlyFsmTable {
     fn get_inbox_seq_number(&mut self) -> impl Future<Output = Result<MessageIndex>> + Send + '_;

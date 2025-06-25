@@ -18,7 +18,6 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use codederror::CodedError;
 use enum_map::Enum;
-use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{
     BoundColumnFamily, DBCompressionType, DBPinnableSlice, DBRawIteratorWithThreadMode,
     PrefixRange, ReadOptions, SliceTransform, SnapshotWithThreadMode,
@@ -31,13 +30,13 @@ use tracing::trace;
 use restate_core::{Metadata, ShutdownError};
 use restate_rocksdb::{CfName, IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
 use restate_types::storage::StorageCodec;
+use rocksdb::table_properties::TablePropertiesExt;
 
 use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
 use crate::keys::KeyKind;
@@ -45,6 +44,7 @@ use crate::keys::TableKey;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::LocalPartitionSnapshot;
+use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 
 pub type DB = rocksdb::DB;
 

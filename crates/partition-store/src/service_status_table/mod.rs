@@ -13,6 +13,9 @@ use std::ops::RangeInclusive;
 use bytestring::ByteString;
 use futures::Stream;
 
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::scan::TableScan;
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::service_status_table::{
@@ -21,10 +24,6 @@ use restate_storage_api::service_status_table::{
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::scan::TableScan;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
 
 define_table_key!(
     TableKind::ServiceStatus,

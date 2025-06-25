@@ -10,12 +10,12 @@ use rocksdb::table_properties::{
 use tracing::warn;
 
 use restate_storage_api::StorageError;
-use restate_storage_api::fsm_table::SequenceNumber;
-use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::{identifiers::PartitionId, logs::Lsn};
 
 use crate::fsm_table::{PartitionStateMachineKey, fsm_variable};
 use crate::keys::{KeyKind, TableKey};
+use restate_storage_api::fsm_table::SequenceNumber;
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 
 const APPLIED_LSNS_PROPERTY_PREFIX: &str = "p:";
 

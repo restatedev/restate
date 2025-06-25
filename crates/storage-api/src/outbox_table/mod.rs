@@ -8,16 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
+use crate::Result;
+use crate::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationResponse, InvocationTermination, NotifySignalRequest,
     ServiceInvocation,
 };
-
-use crate::Result;
-use crate::protobuf_types::PartitionStoreProtobufValue;
+use std::ops::RangeInclusive;
 
 /// Types of outbox messages.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

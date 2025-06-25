@@ -18,7 +18,6 @@ use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::promise_table::{
     OwnedPromiseRow, Promise, PromiseTable, ReadOnlyPromiseTable, ScanPromiseTable,
 };
-use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
@@ -27,6 +26,7 @@ use crate::scan::TableScan;
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, TableScanIterationDecision,
 };
+use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 
 define_table_key!(
     TableKind::Promise,
