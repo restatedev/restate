@@ -18,7 +18,7 @@ bs58 = { version = "0.5.0" }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-hyper = { workspace = true }
+hyper = { workspace = true, features = ["server"]}
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true }
 jsonwebtoken = { version = "9.1.0" }
