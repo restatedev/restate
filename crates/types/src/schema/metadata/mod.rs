@@ -22,6 +22,7 @@ use arc_swap::ArcSwapOption;
 use restate_serde_util::MapAsVecItem;
 use serde_json::Value;
 use serde_with::serde_as;
+use std::cmp;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -254,7 +255,7 @@ impl ServiceRevision {
             } else {
                 None
             },
-            journal_retention: self.journal_retention,
+            journal_retention: clamp_journal_retention(self.journal_retention),
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
@@ -343,7 +344,7 @@ impl Handler {
             output_json_schema: self.output_rules.json_schema(),
             idempotency_retention: self.idempotency_retention,
             workflow_completion_retention: self.workflow_completion_retention,
-            journal_retention: self.journal_retention,
+            journal_retention: clamp_journal_retention(self.journal_retention),
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
@@ -433,12 +434,13 @@ impl InvocationTargetResolver for Schema {
                     .or(service_revision.idempotency_retention)
                     .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION)
             };
-        let journal_retention = Configuration::pinned()
-            .admin
-            .experimental_feature_force_journal_retention
-            .or(handler.journal_retention)
-            .or(service_revision.journal_retention)
-            .unwrap_or(Duration::ZERO);
+        let journal_retention = clamp_journal_retention(
+            handler
+                .journal_retention
+                .or(service_revision.journal_retention)
+                .or_else(|| Configuration::pinned().invocation.default_journal_retention),
+        )
+        .unwrap_or(Duration::ZERO);
 
         Some(InvocationTargetMetadata {
             public: handler.public.unwrap_or(service_revision.public),
@@ -526,6 +528,18 @@ impl SubscriptionResolver for Schema {
     }
 }
 
+fn clamp_journal_retention(requested: Option<Duration>) -> Option<Duration> {
+    let global_limit = Configuration::pinned().invocation.max_journal_retention;
+    match (requested, global_limit) {
+        (None, Some(_)) => None,
+        (None, None) => None,
+        (Some(requested_duration), None) => Some(requested_duration),
+        (Some(requested_duration), Some(global_limit)) => {
+            Some(cmp::min(requested_duration, global_limit))
+        }
+    }
+}
+
 // --- Mocks
 
 #[cfg(feature = "test-util")]
@@ -536,11 +550,12 @@ mod test_util {
     use super::service::ServiceMetadata;
     use super::service::ServiceMetadataResolver;
     use crate::identifiers::ServiceRevision;
+    use crate::schema::service::HandlerMetadata;
     use restate_test_util::assert_eq;
 
     impl Schema {
         #[track_caller]
-        pub fn assert_service_handler(
+        pub fn assert_invocation_target(
             &self,
             service_name: &str,
             handler_name: &str,
@@ -572,6 +587,16 @@ mod test_util {
         #[track_caller]
         pub fn assert_service(&self, service_name: &str) -> ServiceMetadata {
             self.resolve_latest_service(service_name).unwrap()
+        }
+
+        #[track_caller]
+        pub fn assert_handler(&self, service_name: &str, handler_name: &str) -> HandlerMetadata {
+            self.resolve_latest_service(service_name)
+                .unwrap()
+                .handlers
+                .get(handler_name)
+                .cloned()
+                .unwrap()
         }
     }
 }
