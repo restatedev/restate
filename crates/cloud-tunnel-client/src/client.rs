@@ -9,11 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::error::Error;
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
 use std::future::Future;
 
 use std::pin::pin;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::Duration;
 
@@ -26,7 +27,7 @@ use hyper::body::Incoming;
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 use hyper_util::client::legacy::connect::HttpConnector;
 use rustls::ClientConfig;
-use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tower::Service;
 use tracing::error;
@@ -41,7 +42,6 @@ pub static TLS_CLIENT_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
 });
 
 pub struct Handler<Notify, Client> {
-    status: HandlerStatus,
     https_connector: HttpsConnector<HttpConnector>,
     inner: Arc<HandlerInner<Notify, Client>>,
 }
@@ -77,7 +77,6 @@ impl<N, C> Handler<N, C> {
             .wrap_connector(http_connector);
 
         Ok(Handler {
-            status: HandlerStatus::AwaitingStart,
             https_connector,
             inner: Arc::new(HandlerInner {
                 tunnel_name: force_tunnel_name.map(OnceLock::from).unwrap_or_default(),
@@ -89,16 +88,11 @@ impl<N, C> Handler<N, C> {
             }),
         })
     }
-
-    fn tunnel_name(&self) -> Option<&str> {
-        self.inner.tunnel_name.get().map(String::as_str)
-    }
 }
 
 impl<N, C> Clone for Handler<N, C> {
     fn clone(&self) -> Self {
         Self {
-            status: HandlerStatus::AwaitingStart,
             https_connector: self.https_connector.clone(),
             inner: self.inner.clone(),
         }
@@ -106,7 +100,7 @@ impl<N, C> Clone for Handler<N, C> {
 }
 
 pub struct HandlerInner<Notify, GetClient> {
-    pub(super) tunnel_name: OnceLock<String>,
+    tunnel_name: OnceLock<String>,
     request_identity_key: jsonwebtoken::DecodingKey,
     environment_id: String,
     bearer_token: String,
@@ -156,9 +150,9 @@ pub enum ServeError {
     #[error("Failed to connect to tunnel server: {0}")]
     Connection(#[source] Box<dyn Error + Send + Sync>),
     #[error("Server closed connection while {0}")]
-    ServerClosed(String),
+    ServerClosed(&'static str),
     #[error("Client closed connection while {0}")]
-    ClientClosed(String),
+    ClientClosed(&'static str),
 }
 
 impl ServeError {
@@ -184,22 +178,6 @@ impl From<hyper::Error> for ServeError {
         } else {
             // generic hyper serving error; not sure how to hit this
             Self::Hyper(err)
-        }
-    }
-}
-
-pub(crate) enum HandlerStatus {
-    AwaitingStart,
-    Proxying,
-    Failed(StartError),
-}
-
-impl Display for HandlerStatus {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HandlerStatus::AwaitingStart => write!(f, "awaiting start"),
-            HandlerStatus::Failed(_) => write!(f, "failed"),
-            HandlerStatus::Proxying => write!(f, "proxying"),
         }
     }
 }
@@ -231,11 +209,13 @@ where
                  }
              }
              _ = token.cancelled() => {
-                 return ServeError::ClientClosed(self.status.to_string())
+                 return ServeError::ClientClosed("connecting to tunnel")
              }
         };
 
-        let this = Arc::new(RwLock::new(self));
+        let inner = self.inner.clone();
+        let started = Arc::new(AtomicBool::new(false));
+        let start_result = Arc::new(AsyncOnce::<Result<(), StartError>>::new());
 
         {
             let server =
@@ -243,31 +223,64 @@ where
                     .serve_connection(
                         io,
                         hyper::service::service_fn(|req| {
-                            let this = this.clone();
+                            let inner = inner.clone();
+                            let started = started.clone();
+                            let start_result = start_result.clone();
                             let token = token.clone();
                             async move {
-                                let guard = this.read().await;
-                                match &guard.status {
-                                    HandlerStatus::AwaitingStart => {
-                                        drop(guard);
-                                        let guard = this.write_owned().await;
-                                        match &guard.status {
-                                            // won the race; process start
-                                            HandlerStatus::AwaitingStart => {
-                                                Ok(Self::process_start(guard, req, token)?
-                                                    .map(http_body_util::Either::Left))
+                                if !started.swap(true, Ordering::Relaxed) {
+                                    // we are the first request
+
+                                    let body = req.into_body();
+
+                                    {
+                                        let inner = inner.clone();
+                                        tokio::task::spawn(async move {
+                                            match tokio::time::timeout(
+                                                Duration::from_secs(5),
+                                                inner.process_start_trailers(body),
+                                            )
+                                            .await
+                                            {
+                                                Ok(Ok(())) => {
+                                                    let _ = start_result.set(Ok(()));
+                                                }
+                                                Ok(Err(err)) => {
+                                                    let _ = start_result.set(Err(err));
+                                                    token.cancel();
+                                                }
+                                                Err(_timeout) => {
+                                                    let _ =
+                                                        start_result.set(Err(StartError::Timeout));
+                                                    token.cancel();
+                                                }
                                             }
-                                            // lost the race to someone that failed
-                                            HandlerStatus::Failed(err) => Err(err.clone()),
-                                            // lost the race but they succeeded; treat this as a normal proxy request
-                                            HandlerStatus::Proxying => {
-                                                let guard = guard.downgrade();
-                                                Ok(guard.proxy(req).await?)
-                                            }
-                                        }
-                                    }
-                                    HandlerStatus::Proxying => Ok(guard.proxy(req).await?),
-                                    HandlerStatus::Failed(err) => Err(err.clone()),
+                                        })
+                                    };
+
+                                    let resp = Response::builder()
+                                        .header(
+                                            "authorization",
+                                            format!("Bearer {}", inner.bearer_token),
+                                        )
+                                        .header("environment-id", &inner.environment_id);
+
+                                    let resp = if let Some(tunnel_name) = inner.tunnel_name.get() {
+                                        resp.header("tunnel-name", tunnel_name)
+                                    } else {
+                                        resp
+                                    };
+
+                                    return Ok(resp
+                                        .body(http_body_util::Either::Left(
+                                            http_body_util::Empty::new(),
+                                        ))
+                                        .unwrap());
+                                }
+
+                                match start_result.wait().await {
+                                    Ok(()) => inner.proxy(req).await,
+                                    Err(err) => Err(err.clone()),
                                 }
                             }
                         }),
@@ -289,114 +302,82 @@ where
             }
         }
 
-        let this = this.read().await;
-
-        if let HandlerStatus::Failed(err) = &this.status {
-            err.clone().into()
-        } else if token.is_cancelled() {
-            // if we are cancelled but not failed, someone higher up the call stack requested the cancellation
-            ServeError::ClientClosed(this.status.to_string())
-        } else {
-            // if we are not cancelled or failed, the tcp connection simply closed
-            ServeError::ServerClosed(this.status.to_string())
+        match start_result.wait().await {
+            Ok(()) if token.is_cancelled() => {
+                // if we are cancelled but not failed, someone higher up the call stack requested the cancellation
+                ServeError::ClientClosed("proxying")
+            }
+            Ok(()) => {
+                // if we are not cancelled or failed, the tcp connection simply closed
+                ServeError::ServerClosed("proxying")
+            }
+            Err(err) => err.clone().into(),
         }
     }
-
-    fn process_start(
-        mut this: OwnedRwLockWriteGuard<Self>,
-        req: Request<Incoming>,
-        token: CancellationToken,
-    ) -> Result<Response<http_body_util::Empty<bytes::Bytes>>, StartError> {
-        let body = req.into_body();
-
-        let resp = Response::builder()
-            .header(
-                "authorization",
-                format!("Bearer {}", this.inner.bearer_token),
-            )
-            .header("environment-id", &this.inner.environment_id);
-
-        let resp = if let Some(tunnel_name) = this.tunnel_name() {
-            resp.header("tunnel-name", tunnel_name)
-        } else {
-            resp
-        };
-
-        // keep holding the lock until this is complete; no other requests should be processed
-        tokio::task::spawn(async move {
-            match tokio::time::timeout(Duration::from_secs(5), this.process_start_trailers(body))
-                .await
-            {
-                Ok(Ok(())) => {
-                    this.status = HandlerStatus::Proxying;
-                }
-                Ok(Err(err)) => {
-                    this.status = HandlerStatus::Failed(err);
-                    token.cancel();
-                }
-                Err(_timeout) => {
-                    this.status = HandlerStatus::Failed(StartError::Timeout);
-                    token.cancel();
-                }
-            }
-        });
-
-        Ok(resp.body(http_body_util::Empty::new()).unwrap())
-    }
-
-    fn proxy(
+}
+impl<Notify, Client, ClientError, ClientFuture, ResponseBody> HandlerInner<Notify, Client>
+where
+    Notify: Fn(HandlerNotification) + Send + Sync + 'static,
+    Client: hyper::service::Service<
+            Request<Incoming>,
+            Error = ClientError,
+            Future = ClientFuture,
+            Response = Response<ResponseBody>,
+        > + Send
+        + Sync
+        + 'static,
+    ClientError: std::fmt::Display + Send + Sync + 'static,
+    ClientFuture:
+        Future<Output = Result<Response<ResponseBody>, ClientError>> + Send + Sync + 'static,
+    ResponseBody: hyper::body::Body<Data = bytes::Bytes> + Send + Sync + 'static,
+    ResponseBody::Error:
+        Display + Into<Box<dyn std::error::Error + Send + Sync + 'static>> + Send + Sync + 'static,
+{
+    async fn proxy(
         &self,
         req: Request<Incoming>,
-    ) -> impl Future<
-        Output = Result<
-            Response<http_body_util::Either<http_body_util::Empty<bytes::Bytes>, ResponseBody>>,
-            StartError,
-        >,
-    > + Send
-    + Sync
-    + 'static {
-        let inner = self.inner.clone();
-
+    ) -> Result<
+        Response<http_body_util::Either<http_body_util::Empty<bytes::Bytes>, ResponseBody>>,
+        StartError,
+    > {
         // tunnel server used to provide invalid paths that didn't start with /
         let req = fix_path(req);
 
-        async move {
-            if let Err(err) = super::request_identity::validate_request_identity(
-                &inner.request_identity_key,
-                req.headers(),
-                req.uri().path(),
-            ) {
-                error!(%err, path = req.uri().path(), "Failed to validate request identity");
+        if let Err(err) = super::request_identity::validate_request_identity(
+            &self.request_identity_key,
+            req.headers(),
+            req.uri().path(),
+        ) {
+            error!(%err, path = req.uri().path(), "Failed to validate request identity");
 
-                if let Some(notify) = inner.notify.as_ref() {
-                    (notify)(HandlerNotification::RequestIdentityError(err.to_string()));
+            if let Some(notify) = self.notify.as_ref() {
+                (notify)(HandlerNotification::RequestIdentityError(err.to_string()));
+            }
+
+            return Ok(Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(http_body_util::Either::Left(http_body_util::Empty::new()))
+                .unwrap());
+        }
+
+        let response = match self.client.call(req).await {
+            Ok(result) => result,
+            Err(err) => {
+                if let Some(notify) = self.notify.as_ref() {
+                    (notify)(HandlerNotification::Error(err.to_string()));
                 }
 
                 return Ok(Response::builder()
-                    .status(StatusCode::UNAUTHORIZED)
+                    .status(StatusCode::BAD_GATEWAY)
                     .body(http_body_util::Either::Left(http_body_util::Empty::new()))
                     .unwrap());
             }
-
-            let response = match inner.client.call(req).await {
-                Ok(result) => result,
-                Err(err) => {
-                    if let Some(notify) = inner.notify.as_ref() {
-                        (notify)(HandlerNotification::Error(err.to_string()));
-                    }
-
-                    return Ok(Response::builder()
-                        .status(StatusCode::BAD_GATEWAY)
-                        .body(http_body_util::Either::Left(http_body_util::Empty::new()))
-                        .unwrap());
-                }
-            };
-            if let Some(notify) = inner.notify.as_ref() {
-                (notify)(HandlerNotification::Request);
-            }
-
-            Ok(response.map(http_body_util::Either::Right))
+        };
+        if let Some(notify) = self.notify.as_ref() {
+            (notify)(HandlerNotification::Request);
         }
+
+        Ok(response.map(http_body_util::Either::Right))
     }
 
     async fn process_start_trailers(&self, body: Incoming) -> Result<(), StartError> {
@@ -449,11 +430,11 @@ where
         };
 
         // check that the server used the tunnel name we requested (if we requested one)
-        if self.inner.tunnel_name.get_or_init(|| tunnel_name.into()) != tunnel_name {
+        if self.tunnel_name.get_or_init(|| tunnel_name.into()) != tunnel_name {
             return Err(StartError::TunnelNameMismatch);
         }
 
-        if let Some(notify) = self.inner.notify.as_ref() {
+        if let Some(notify) = self.notify.as_ref() {
             (notify)(HandlerNotification::Started {
                 proxy_port,
                 tunnel_url: tunnel_url.into(),
@@ -462,6 +443,51 @@ where
         }
 
         Ok(())
+    }
+}
+
+/// A OnceLock wrapper that allows async waiting for initialization
+pub struct AsyncOnce<T> {
+    cell: OnceLock<T>,
+    notify: Notify,
+}
+
+impl<T> Default for AsyncOnce<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> AsyncOnce<T> {
+    pub fn new() -> Self {
+        Self {
+            cell: OnceLock::new(),
+            notify: Notify::new(),
+        }
+    }
+
+    pub async fn wait(&self) -> &T {
+        if let Some(value) = self.cell.get() {
+            return value;
+        }
+        loop {
+            let notified = self.notify.notified();
+            // check again in case it was set between the get() and notified() call
+            if let Some(value) = self.cell.get() {
+                return value;
+            }
+            notified.await
+        }
+    }
+
+    pub fn set(&self, value: T) -> Result<(), T> {
+        match self.cell.set(value) {
+            Ok(()) => {
+                self.notify.notify_waiters();
+                Ok(())
+            }
+            Err(value) => Err(value),
+        }
     }
 }
 
