@@ -13,6 +13,7 @@ use crate::schema_registry::error::{
 };
 use crate::schema_registry::{ModifyServiceChange, ServiceName};
 use http::{HeaderValue, Uri};
+use restate_types::config::Configuration;
 use restate_types::endpoint_manifest;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::{
@@ -75,6 +76,24 @@ impl ServiceLevelSettingsBehavior {
 pub struct SchemaUpdater {
     schema_information: Schema,
     modified: bool,
+}
+
+fn cap_journal_retention(requested: Option<Duration>) -> Option<Duration> {
+    let global_limit = Configuration::pinned()
+        .admin
+        .experimental_feature_max_journal_retention;
+    match (requested, global_limit) {
+        (None, Some(_)) => None,
+        (None, None) => None,
+        (Some(requested_duration), None) => Some(requested_duration),
+        (Some(requested_duration), Some(global_limit)) => {
+            if requested_duration <= global_limit {
+                Some(requested_duration)
+            } else {
+                Some(global_limit)
+            }
+        }
+    }
 }
 
 impl SchemaUpdater {
@@ -409,7 +428,7 @@ impl SchemaUpdater {
                 public,
                 idempotency_retention,
                 workflow_completion_retention,
-                journal_retention,
+                cap_journal_retention(journal_retention),
             );
 
             let removed_handlers: Vec<String> = existing_service
@@ -469,7 +488,7 @@ impl SchemaUpdater {
             service_schemas.service_openapi_cache = Default::default();
             service_schemas.documentation = service.documentation;
             service_schemas.metadata = service.metadata;
-            service_schemas.journal_retention = journal_retention;
+            service_schemas.journal_retention = cap_journal_retention(journal_retention);
             service_schemas.workflow_completion_retention = workflow_completion_retention;
             service_schemas.idempotency_retention = idempotency_retention;
             service_schemas.inactivity_timeout = inactivity_timeout;
@@ -482,7 +501,7 @@ impl SchemaUpdater {
                 .idempotency_retention_duration()
                 // TODO(slinydeveloper) Remove this in Restate 1.5, no need for this defaulting anymore!
                 .or(Some(DEFAULT_IDEMPOTENCY_RETENTION));
-            let journal_retention = service.journal_retention_duration();
+            let journal_retention = cap_journal_retention(service.journal_retention_duration());
             let workflow_completion_retention = if service_type == ServiceType::Workflow {
                 Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
             } else {
@@ -806,7 +825,7 @@ impl DiscoveredHandlerMetadata {
             ));
         }
 
-        let journal_retention = handler.journal_retention_duration();
+        let journal_retention = cap_journal_retention(handler.journal_retention_duration());
         let idempotency_retention = handler.idempotency_retention_duration();
         let workflow_completion_retention = handler.workflow_completion_retention_duration();
         let inactivity_timeout = handler.inactivity_timeout_duration();
@@ -977,10 +996,12 @@ impl DiscoveredHandlerMetadata {
                 //         Duration::ZERO
                 //      }
                 //     );
-                let journal_retention = handler
-                    .journal_retention
-                    .or(service_level_journal_retention)
-                    .unwrap_or(Duration::ZERO);
+                let journal_retention = cap_journal_retention(
+                    handler
+                        .journal_retention
+                        .or(service_level_journal_retention),
+                )
+                .unwrap_or(Duration::ZERO);
 
                 let public = if let Some(ingress_private) = handler.ingress_private {
                     !ingress_private
@@ -1001,7 +1022,7 @@ impl DiscoveredHandlerMetadata {
                         },
                         idempotency_retention: handler.idempotency_retention,
                         workflow_completion_retention: handler.workflow_completion_retention,
-                        journal_retention: handler.journal_retention,
+                        journal_retention: cap_journal_retention(handler.journal_retention),
                         inactivity_timeout: handler.inactivity_timeout,
                         abort_timeout: handler.abort_timeout,
                         enable_lazy_state: handler.enable_lazy_state,

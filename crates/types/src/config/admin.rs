@@ -77,6 +77,10 @@ pub struct AdminOptions {
     #[serde_as(as = "Option<restate_serde_util::DurationString>")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub experimental_feature_force_journal_retention: Option<Duration>,
+
+    #[serde_as(as = "Option<restate_serde_util::DurationString>")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub experimental_feature_max_journal_retention: Option<Duration>,
 }
 
 impl AdminOptions {
@@ -152,6 +156,7 @@ impl Default for AdminOptions {
             disable_cluster_controller: false,
             disable_web_ui: false,
             experimental_feature_force_journal_retention: None,
+            experimental_feature_max_journal_retention: None,
         }
     }
 }
