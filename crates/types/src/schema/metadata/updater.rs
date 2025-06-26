@@ -281,6 +281,24 @@ pub struct SchemaUpdater {
 }
 
 impl SchemaUpdater {
+    pub fn update<E>(
+        schema: Schema,
+        updater_fn: impl FnOnce(&mut SchemaUpdater) -> Result<(), E>,
+    ) -> Result<Schema, E> {
+        let mut schema_updater = SchemaUpdater::new(schema);
+        updater_fn(&mut schema_updater)?;
+        Ok(schema_updater.into_inner())
+    }
+
+    pub fn update_and_return<T, E>(
+        schema: Schema,
+        updater_fn: impl FnOnce(&mut SchemaUpdater) -> Result<T, E>,
+    ) -> Result<(T, Schema), E> {
+        let mut schema_updater = SchemaUpdater::new(schema);
+        let t = updater_fn(&mut schema_updater)?;
+        Ok((t, schema_updater.into_inner()))
+    }
+
     pub fn new(schema: Schema) -> Self {
         Self {
             schema,
@@ -908,6 +926,9 @@ impl SchemaUpdater {
                         }
                         svc.workflow_completion_retention = Some(new_workflow_completion_retention);
                     }
+                    ModifyServiceChange::JournalRetention(new_journal_retention) => {
+                        svc.journal_retention = Some(new_journal_retention);
+                    }
                     ModifyServiceChange::InactivityTimeout(inactivity_timeout) => {
                         svc.inactivity_timeout = Some(inactivity_timeout);
                     }
@@ -1308,7 +1329,7 @@ mod tests {
         assert!(initial_version < schema.version());
         schema.assert_service_revision(GREETER_SERVICE_NAME, 1);
         schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
-        schema.assert_service_handler(GREETER_SERVICE_NAME, "greet");
+        schema.assert_invocation_target(GREETER_SERVICE_NAME, "greet");
     }
 
     #[test]
@@ -1366,7 +1387,7 @@ mod tests {
         assert!(schemas.assert_service(GREETER_SERVICE_NAME).public);
         assert!(
             schemas
-                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .assert_invocation_target(GREETER_SERVICE_NAME, "greet")
                 .public
         );
 
@@ -1382,7 +1403,7 @@ mod tests {
         assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
         assert!(
             !schemas
-                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .assert_invocation_target(GREETER_SERVICE_NAME, "greet")
                 .public
         );
 
@@ -1394,7 +1415,7 @@ mod tests {
         assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
         assert!(
             !schemas
-                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .assert_invocation_target(GREETER_SERVICE_NAME, "greet")
                 .public
         );
 
@@ -2177,7 +2198,7 @@ mod tests {
         assert!(schemas.assert_service(GREETER_SERVICE_NAME).public);
         assert!(
             schemas
-                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .assert_invocation_target(GREETER_SERVICE_NAME, "greet")
                 .public
         );
 
@@ -2194,7 +2215,7 @@ mod tests {
         assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
         assert!(
             !schemas
-                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .assert_invocation_target(GREETER_SERVICE_NAME, "greet")
                 .public
         );
 
@@ -2210,7 +2231,7 @@ mod tests {
         assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
         assert!(
             !schemas
-                .assert_service_handler(GREETER_SERVICE_NAME, "greet")
+                .assert_invocation_target(GREETER_SERVICE_NAME, "greet")
                 .public
         );
 
@@ -2225,6 +2246,7 @@ mod tests {
         use crate::schema::deployment::Deployment;
         use crate::schema::invocation_target::InvocationTargetMetadata;
         use crate::schema::service::InvocationAttemptOptions;
+        use crate::schema::service::{HandlerMetadata, ServiceMetadata};
         use googletest::prelude::*;
         use std::time::Duration;
         use test_log::test;
@@ -2234,20 +2256,18 @@ mod tests {
             service_name: &str,
             handler_name: &str,
         ) -> InvocationTargetMetadata {
-            let schema_information = Schema::default();
-            let mut updater = SchemaUpdater::new(schema_information);
-
             let mut deployment = Deployment::mock();
-            deployment.id = updater
-                .add_deployment(deployment.metadata.clone(), vec![svc], false)
+            let (deployment_id, schema) =
+                SchemaUpdater::update_and_return(Schema::default(), move |updater| {
+                    updater.add_deployment(deployment.metadata.clone(), vec![svc], false)
+                })
                 .unwrap();
-
-            let schema = updater.into_inner();
+            deployment.id = deployment_id;
 
             schema.assert_service_revision(service_name, 1);
             schema.assert_service_deployment(service_name, deployment.id);
 
-            schema.assert_service_handler(service_name, handler_name)
+            schema.assert_invocation_target(service_name, handler_name)
         }
 
         #[test]
@@ -2265,38 +2285,36 @@ mod tests {
 
         #[test]
         fn public_service_with_private_handler() {
-            let schema_information = Schema::default();
-            let mut updater = SchemaUpdater::new(schema_information);
-            let mut deployment = Deployment::mock();
-            deployment.id = updater
-                .add_deployment(
-                    deployment.metadata.clone(),
-                    vec![endpoint_manifest::Service {
-                        // Mock two handlers, one explicitly private, the other just default settings
-                        handlers: vec![
-                            endpoint_manifest::Handler {
-                                ingress_private: Some(true),
-                                name: "my_private_handler".parse().unwrap(),
-                                ..greeter_service_greet_handler()
-                            },
-                            greeter_service_greet_handler(),
-                        ],
-                        ..greeter_service()
-                    }],
-                    false,
-                )
-                .unwrap();
-
-            let schema = updater.into_inner();
+            let schema = SchemaUpdater::update(Schema::default(), |updater| {
+                updater
+                    .add_deployment(
+                        Deployment::mock().metadata,
+                        vec![endpoint_manifest::Service {
+                            // Mock two handlers, one explicitly private, the other just default settings
+                            handlers: vec![
+                                endpoint_manifest::Handler {
+                                    ingress_private: Some(true),
+                                    name: "my_private_handler".parse().unwrap(),
+                                    ..greeter_service_greet_handler()
+                                },
+                                greeter_service_greet_handler(),
+                            ],
+                            ..greeter_service()
+                        }],
+                        false,
+                    )
+                    .map(|_| ())
+            })
+            .unwrap();
 
             // The explicitly private handler is private
             let private_handler_target =
-                schema.assert_service_handler(GREETER_SERVICE_NAME, "my_private_handler");
+                schema.assert_invocation_target(GREETER_SERVICE_NAME, "my_private_handler");
             assert_that!(private_handler_target.public, eq(false));
 
             // The other handler is by default public
             let public_handler_target =
-                schema.assert_service_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME);
+                schema.assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME);
             assert_that!(public_handler_target.public, eq(true));
         }
 
@@ -2483,10 +2501,9 @@ mod tests {
         }
 
         #[test]
-        fn journal_retention_global_override_is_respected() {
+        fn journal_retention_default_is_respected() {
             let mut config = Configuration::default();
-            config.admin.experimental_feature_force_journal_retention =
-                Some(Duration::from_secs(300));
+            config.invocation.default_journal_retention = Some(Duration::from_secs(300));
             crate::config::set_current_config(config);
 
             let target = init_discover_and_resolve_target(
@@ -2501,6 +2518,384 @@ mod tests {
                     journal_retention: Duration::from_secs(300),
                 })
             )
+        }
+
+        #[test]
+        fn journal_retention_default_is_overridden_by_discovery() {
+            let mut config = Configuration::default();
+            config.invocation.default_journal_retention = Some(Duration::from_secs(300));
+            crate::config::set_current_config(config);
+
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    journal_retention: Some(60 * 1000),
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(60),
+                    journal_retention: Duration::from_secs(60),
+                })
+            )
+        }
+
+        #[test]
+        fn journal_retention_last_one_wins_scenario() {
+            // 1. User configures journal retention A in SDK configuration, registers the service, now journal retention is A
+            crate::config::set_current_config(Configuration::default());
+
+            let mut deployment = Deployment::mock();
+            let (deployment_id, schema) =
+                SchemaUpdater::update_and_return(Schema::default(), move |updater| {
+                    updater.add_deployment(
+                        deployment.metadata.clone(),
+                        vec![endpoint_manifest::Service {
+                            journal_retention: Some(60 * 1000), // A = 60 seconds
+                            ..greeter_service()
+                        }],
+                        false,
+                    )
+                })
+                .unwrap();
+            deployment.id = deployment_id;
+
+            schema.assert_service_revision(GREETER_SERVICE_NAME, 1);
+            schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
+
+            assert_that!(
+                schema
+                    .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                    .compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(60),
+                    journal_retention: Duration::from_secs(60),
+                })
+            );
+            assert_that!(
+                schema.assert_service(GREETER_SERVICE_NAME),
+                pat!(ServiceMetadata {
+                    journal_retention: some(eq(Duration::from_secs(60))),
+                })
+            );
+
+            // 2. User updates journal retention to B in the UI, now journal retention is B
+            let schema = SchemaUpdater::update(schema, |updater| {
+                updater.modify_service(
+                    GREETER_SERVICE_NAME.to_string(),
+                    vec![ModifyServiceChange::JournalRetention(Duration::from_secs(
+                        120,
+                    ))], // B = 120 seconds
+                )
+            })
+            .unwrap();
+
+            assert_that!(
+                schema
+                    .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                    .compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(120),
+                    journal_retention: Duration::from_secs(120),
+                })
+            );
+            assert_that!(
+                schema.assert_service(GREETER_SERVICE_NAME),
+                pat!(ServiceMetadata {
+                    journal_retention: some(eq(Duration::from_secs(120))),
+                })
+            );
+
+            // 3. User registers a new revision of the service defining in the SDK journal retention A, now journal retention is again A
+            let mut deployment = Deployment::mock_with_uri("http://localhost:9081");
+            let (deployment_id, schema) =
+                SchemaUpdater::update_and_return(schema, move |updater| {
+                    updater.add_deployment(
+                        deployment.metadata.clone(),
+                        vec![endpoint_manifest::Service {
+                            journal_retention: Some(60 * 1000), // A = 60 seconds again
+                            ..greeter_service()
+                        }],
+                        false,
+                    )
+                })
+                .unwrap();
+            deployment.id = deployment_id;
+
+            schema.assert_service_revision(GREETER_SERVICE_NAME, 2); // Revision should be incremented
+            schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
+
+            assert_that!(
+                schema
+                    .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                    .compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(60),
+                    journal_retention: Duration::from_secs(60),
+                })
+            );
+            assert_that!(
+                schema.assert_service(GREETER_SERVICE_NAME),
+                pat!(ServiceMetadata {
+                    journal_retention: some(eq(Duration::from_secs(60))),
+                })
+            );
+
+            // 4. Operator updates RESTATE_DEFAULT_JOURNAL_RETENTION with value C, journal retention is still A
+            let mut config = Configuration::default();
+            config.invocation.default_journal_retention = Some(Duration::from_secs(180)); // C = 180 seconds
+            crate::config::set_current_config(config);
+
+            assert_that!(
+                schema
+                    .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                    .compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(60),
+                    journal_retention: Duration::from_secs(60),
+                })
+            );
+            assert_that!(
+                schema.assert_service(GREETER_SERVICE_NAME),
+                pat!(ServiceMetadata {
+                    journal_retention: some(eq(Duration::from_secs(60))),
+                })
+            );
+
+            // 5. Operator updates RESTATE_MAX_JOURNAL_RETENTION with value D, journal retention will be min(A, D)
+            let mut config = Configuration::default();
+            config.invocation.default_journal_retention = Some(Duration::from_secs(180)); // C = 180 seconds -> this should be ignored
+            config.invocation.max_journal_retention = Some(Duration::from_secs(30)); // D = 30 seconds
+            crate::config::set_current_config(config);
+
+            assert_that!(
+                schema
+                    .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                    .compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(30),
+                    journal_retention: Duration::from_secs(30),
+                })
+            );
+            assert_that!(
+                schema.assert_service(GREETER_SERVICE_NAME),
+                pat!(ServiceMetadata {
+                    journal_retention: some(eq(Duration::from_secs(30))),
+                })
+            );
+        }
+
+        #[test]
+        fn max_journal_retention_clamps_value_for_service() {
+            // Set max_journal_retention to 60 seconds
+            let mut config = Configuration::default();
+            config.invocation.max_journal_retention = Some(Duration::from_secs(60));
+            crate::config::set_current_config(config);
+
+            // Create a service with journal_retention of 120 seconds (higher than max)
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    journal_retention: Some(120 * 1000), // 120 seconds
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+
+            // Verify that the journal_retention is clamped to 60 seconds (the max)
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(60), // Clamped to max
+                    journal_retention: Duration::from_secs(60),    // Clamped to max
+                })
+            );
+        }
+        #[test]
+        fn max_journal_retention_higher_than_set_value() {
+            // Set max_journal_retention to 60 seconds
+            let mut config = Configuration::default();
+            config.invocation.max_journal_retention = Some(Duration::from_secs(60));
+            crate::config::set_current_config(config);
+
+            // Create a service with journal_retention of 30 seconds (lower than max)
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    journal_retention: Some(30 * 1000), // 30 seconds
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+
+            // Verify that the journal_retention is not affected (still 30 seconds)
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(30), // Not clamped
+                    journal_retention: Duration::from_secs(30),    // Not clamped
+                })
+            );
+        }
+
+        #[test]
+        fn max_journal_retention_clamps_value_for_handler() {
+            // Set max_journal_retention to 60 seconds
+            let mut config = Configuration::default();
+            config.invocation.max_journal_retention = Some(Duration::from_secs(60));
+            crate::config::set_current_config(config);
+
+            // Create a handler with journal_retention of 300 seconds (higher than max)
+            let mut deployment = Deployment::mock();
+            let (deployment_id, schema) =
+                SchemaUpdater::update_and_return(Schema::default(), move |updater| {
+                    updater.add_deployment(
+                        deployment.metadata.clone(),
+                        vec![endpoint_manifest::Service {
+                            journal_retention: Some(120 * 1000), // Service sets 120 seconds
+                            handlers: vec![endpoint_manifest::Handler {
+                                journal_retention: Some(300 * 1000), // 300 seconds
+                                ..greeter_service_greet_handler()
+                            }],
+                            ..greeter_service()
+                        }],
+                        false,
+                    )
+                })
+                .unwrap();
+            deployment.id = deployment_id;
+
+            // Verify that the journal_retention is clamped to 60 seconds (the max)
+            assert_that!(
+                schema
+                    .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                    .compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(60), // Clamped to max
+                    journal_retention: Duration::from_secs(60),    // Clamped to max
+                })
+            );
+            assert_that!(
+                schema.assert_service(GREETER_SERVICE_NAME),
+                pat!(ServiceMetadata {
+                    journal_retention: some(eq(Duration::from_secs(60))), // This was never set
+                })
+            );
+            assert_that!(
+                schema.assert_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME),
+                pat!(HandlerMetadata {
+                    journal_retention: some(eq(Duration::from_secs(60))), // Clamped to max
+                })
+            );
+
+            // Disable max
+            let mut config = Configuration::default();
+            config.invocation.max_journal_retention = None;
+            crate::config::set_current_config(config);
+
+            assert_that!(
+                schema
+                    .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                    .compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(300),
+                    journal_retention: Duration::from_secs(300),
+                })
+            );
+            assert_that!(
+                schema.assert_service(GREETER_SERVICE_NAME),
+                pat!(ServiceMetadata {
+                    journal_retention: some(eq(Duration::from_secs(120))), // The initial value set
+                })
+            );
+            assert_that!(
+                schema.assert_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME),
+                pat!(HandlerMetadata {
+                    journal_retention: some(eq(Duration::from_secs(300))), // The initial value set
+                })
+            );
+        }
+
+        #[test]
+        fn max_journal_retention_unset_means_no_limit() {
+            // Set default_journal_retention but leave max_journal_retention unset
+            let mut config = Configuration::default();
+            config.invocation.default_journal_retention = Some(Duration::from_secs(60));
+            config.invocation.max_journal_retention = None; // Explicitly unset
+            crate::config::set_current_config(config);
+
+            // Create a service with a very high journal_retention
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    journal_retention: Some(3600 * 1000), // 1 hour
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+
+            // Verify that the journal_retention is not clamped (no limit)
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(3600), // Not clamped
+                    journal_retention: Duration::from_secs(3600),    // Not clamped
+                })
+            );
+        }
+
+        #[test]
+        fn max_journal_retention_zero_disables_journal_retention() {
+            // Set max_journal_retention to 0 (always disabled)
+            let mut config = Configuration::default();
+            config.invocation.max_journal_retention = Some(Duration::from_secs(0));
+            crate::config::set_current_config(config);
+
+            // Create a service with journal_retention set
+            let target = init_discover_and_resolve_target(
+                endpoint_manifest::Service {
+                    journal_retention: Some(60 * 1000), // 60 seconds
+                    ..greeter_service()
+                },
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+
+            // Verify that the journal_retention is clamped to 0 (disabled)
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(0), // Clamped to 0
+                    journal_retention: Duration::from_secs(0),    // Clamped to 0
+                })
+            );
+        }
+
+        #[test]
+        fn max_journal_retention_zero_wins_over_default_and_set_values() {
+            // Create a service with default journal_retention
+            let mut config = Configuration::default();
+            config.invocation.default_journal_retention = Some(Duration::from_secs(300));
+            config.invocation.max_journal_retention = Some(Duration::from_secs(0));
+            crate::config::set_current_config(config);
+
+            let target = init_discover_and_resolve_target(
+                greeter_service(), // No explicit journal_retention
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME,
+            );
+
+            // Verify that the journal_retention is still 0 (disabled)
+            assert_that!(
+                target.compute_retention(false),
+                eq(InvocationRetention {
+                    completion_retention: Duration::from_secs(0), // Clamped to 0
+                    journal_retention: Duration::from_secs(0),    // Clamped to 0
+                })
+            );
         }
 
         fn init_discover_and_resolve_timeouts(

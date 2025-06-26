@@ -642,6 +642,11 @@ mod conversions {
 
         #[test]
         fn v2_to_v1_to_schema() {
+            let mut conf = Configuration::default();
+            conf.invocation.default_journal_retention = None;
+            conf.invocation.max_journal_retention = None;
+            crate::config::set_current_config(conf);
+
             let dp_1 = DeploymentId::new();
             let dp_2 = DeploymentId::new();
 
@@ -823,7 +828,7 @@ mod conversions {
             let schema: crate::schema::Schema = StorageCodec::decode(&mut buf.freeze()).unwrap();
 
             assert_that!(
-                schema.assert_service_handler("Greeter", "greet"),
+                schema.assert_invocation_target("Greeter", "greet"),
                 pat!(InvocationTargetMetadata {
                     public: eq(false),
                     target_ty: eq(InvocationTargetType::Service),
@@ -841,7 +846,7 @@ mod conversions {
             );
 
             assert_that!(
-                schema.assert_service_handler("AnotherGreeter", "greet"),
+                schema.assert_invocation_target("AnotherGreeter", "greet"),
                 pat!(InvocationTargetMetadata {
                     public: eq(true),
                     target_ty: eq(InvocationTargetType::VirtualObject(
@@ -852,7 +857,7 @@ mod conversions {
                 })
             );
             assert_that!(
-                schema.assert_service_handler("AnotherGreeter", "another_greet"),
+                schema.assert_invocation_target("AnotherGreeter", "another_greet"),
                 pat!(InvocationTargetMetadata {
                     public: eq(true),
                     target_ty: eq(InvocationTargetType::VirtualObject(
@@ -874,6 +879,11 @@ mod conversions {
 
         #[test]
         fn old_to_new() {
+            let mut conf = Configuration::default();
+            conf.invocation.default_journal_retention = None;
+            conf.invocation.max_journal_retention = None;
+            crate::config::set_current_config(conf);
+
             let dp_1 = DeploymentId::new();
             let dp_2 = DeploymentId::new();
 
@@ -1169,7 +1179,7 @@ mod conversions {
             let schema: crate::schema::Schema = StorageCodec::decode(&mut buf).unwrap();
 
             assert_that!(
-                schema.assert_service_handler("Greeter", "greet"),
+                schema.assert_invocation_target("Greeter", "greet"),
                 pat!(InvocationTargetMetadata {
                     public: eq(false),
                     target_ty: eq(InvocationTargetType::Service),
@@ -1188,7 +1198,7 @@ mod conversions {
             );
 
             assert_that!(
-                schema.assert_service_handler("AnotherGreeter", "greet"),
+                schema.assert_invocation_target("AnotherGreeter", "greet"),
                 pat!(InvocationTargetMetadata {
                     public: eq(true),
                     target_ty: eq(InvocationTargetType::VirtualObject(
@@ -1199,7 +1209,7 @@ mod conversions {
                 })
             );
             assert_that!(
-                schema.assert_service_handler("AnotherGreeter", "another_greet"),
+                schema.assert_invocation_target("AnotherGreeter", "another_greet"),
                 pat!(InvocationTargetMetadata {
                     public: eq(true),
                     target_ty: eq(InvocationTargetType::VirtualObject(

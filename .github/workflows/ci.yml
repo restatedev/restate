@@ -123,7 +123,7 @@ jobs:
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
 
-  sdk-java-journal-retention-and-events:
+  sdk-java-journal-events:
     name: Run SDK-Java integration tests with Journal retention and journal events
     permissions:
       contents: read
@@ -137,7 +137,6 @@ jobs:
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
       envVars: |
-        RESTATE_ADMIN__experimental_feature_force_journal_retention=365days
         RESTATE_WORKER__INVOKER__experimental_features_propose_events=true
       testArtifactOutput: sdk-java-journal-retention-and-events-integration-test-report
 
