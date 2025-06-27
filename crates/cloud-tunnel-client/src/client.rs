@@ -108,6 +108,13 @@ pub struct HandlerInner<Notify, GetClient> {
     notify: Option<Notify>,
 }
 
+struct ServeState {
+    started: AtomicBool,
+    start_result: AsyncOnce<Result<(), StartError>>,
+    request_drain: CancellationToken,
+    cancel: CancellationToken,
+}
+
 pub enum HandlerNotification {
     Started {
         proxy_port: u16,
@@ -200,7 +207,12 @@ where
     ResponseBody::Error:
         Display + Into<Box<dyn std::error::Error + Send + Sync + 'static>> + Send + Sync + 'static,
 {
-    pub async fn serve(mut self, tunnel_url: Uri, token: CancellationToken) -> ServeError {
+    pub async fn serve(
+        mut self,
+        tunnel_url: Uri,
+        cancel: CancellationToken,
+        request_drain: CancellationToken,
+    ) -> ServeError {
         let io = tokio::select! {
              io_result = self.https_connector.call(tunnel_url) => {
                  match io_result {
@@ -208,14 +220,18 @@ where
                      Err(err) => return ServeError::Connection(err),
                  }
              }
-             _ = token.cancelled() => {
+             _ = cancel.cancelled() => {
                  return ServeError::ClientClosed("connecting to tunnel")
              }
         };
 
         let inner = self.inner.clone();
-        let started = Arc::new(AtomicBool::new(false));
-        let start_result = Arc::new(AsyncOnce::<Result<(), StartError>>::new());
+        let serve_state = Arc::new(ServeState {
+            started: AtomicBool::new(false),
+            start_result: AsyncOnce::new(),
+            cancel: cancel.clone(),
+            request_drain,
+        });
 
         {
             let server =
@@ -224,11 +240,9 @@ where
                         io,
                         hyper::service::service_fn(|req| {
                             let inner = inner.clone();
-                            let started = started.clone();
-                            let start_result = start_result.clone();
-                            let token = token.clone();
+                            let serve_state = serve_state.clone();
                             async move {
-                                if !started.swap(true, Ordering::Relaxed) {
+                                if !serve_state.started.swap(true, Ordering::Relaxed) {
                                     // we are the first request
 
                                     let body = req.into_body();
@@ -243,16 +257,17 @@ where
                                             .await
                                             {
                                                 Ok(Ok(())) => {
-                                                    let _ = start_result.set(Ok(()));
+                                                    let _ = serve_state.start_result.set(Ok(()));
                                                 }
                                                 Ok(Err(err)) => {
-                                                    let _ = start_result.set(Err(err));
-                                                    token.cancel();
+                                                    let _ = serve_state.start_result.set(Err(err));
+                                                    serve_state.cancel.cancel();
                                                 }
                                                 Err(_timeout) => {
-                                                    let _ =
-                                                        start_result.set(Err(StartError::Timeout));
-                                                    token.cancel();
+                                                    let _ = serve_state
+                                                        .start_result
+                                                        .set(Err(StartError::Timeout));
+                                                    serve_state.cancel.cancel();
                                                 }
                                             }
                                         })
@@ -271,6 +286,8 @@ where
                                         resp
                                     };
 
+                                    let resp = resp.header("supports-drain", "true");
+
                                     return Ok(resp
                                         .body(http_body_util::Either::Left(
                                             http_body_util::Empty::new(),
@@ -278,8 +295,8 @@ where
                                         .unwrap());
                                 }
 
-                                match start_result.wait().await {
-                                    Ok(()) => inner.proxy(req).await,
+                                match serve_state.start_result.wait().await {
+                                    Ok(()) => inner.proxy(req, &serve_state.request_drain).await,
                                     Err(err) => Err(err.clone()),
                                 }
                             }
@@ -294,7 +311,7 @@ where
                         return err.into();
                     }
                 },
-                _ = token.cancelled() => {
+                _ = serve_state.cancel.cancelled() => {
                     hyper::server::conn::http2::Connection::graceful_shutdown(server.as_mut());
                     // let the server drain, ignoring any errors
                     let _ = server.await;
@@ -302,8 +319,8 @@ where
             }
         }
 
-        match start_result.wait().await {
-            Ok(()) if token.is_cancelled() => {
+        match serve_state.start_result.wait().await {
+            Ok(()) if serve_state.cancel.is_cancelled() => {
                 // if we are cancelled but not failed, someone higher up the call stack requested the cancellation
                 ServeError::ClientClosed("proxying")
             }
@@ -336,12 +353,30 @@ where
     async fn proxy(
         &self,
         req: Request<Incoming>,
+        request_drain: &CancellationToken,
     ) -> Result<
         Response<http_body_util::Either<http_body_util::Empty<bytes::Bytes>, ResponseBody>>,
         StartError,
     > {
         // tunnel server used to provide invalid paths that didn't start with /
         let req = fix_path(req);
+
+        // control message to allow health checks and load tests down the tunnel
+        if req.uri().path() == "/_/health" {
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body(http_body_util::Either::Left(http_body_util::Empty::new()))
+                .unwrap());
+        }
+
+        // control message intended to advise us that the tunnel server is going away
+        if req.uri().path() == "/_/drain-tunnel" {
+            request_drain.cancel();
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body(http_body_util::Either::Left(http_body_util::Empty::new()))
+                .unwrap());
+        }
 
         if let Err(err) = super::request_identity::validate_request_identity(
             &self.request_identity_key,
