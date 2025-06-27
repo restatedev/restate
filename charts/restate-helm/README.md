@@ -9,7 +9,8 @@ helm install restate oci://ghcr.io/restatedev/restate-helm --namespace restate -
 ```
 
 # Running a replicated cluster
-You can find example values for a 3-node replicated cluster in [replicated-values.yaml](./replicated-values.yaml)
+You can find example values for a 3-node replicated cluster in [replicated-values.yaml](./replicated-values.yaml). 
+Please ensure you use a version of that file (based on the git tag of the repo) which matches the version of the helm chart you are deploying.
 
 ```bash
 helm install restate oci://ghcr.io/restatedev/restate-helm --namespace restate --create-namespace -f replicated-values.yaml
