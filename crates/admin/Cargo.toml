@@ -16,7 +16,7 @@ metadata-api = []
 restate-web-ui = ["dep:restate-web-ui"]
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 restate-admin-rest-model = { workspace = true, features = ["schema"] }
 restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }

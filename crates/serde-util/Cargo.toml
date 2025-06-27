@@ -13,7 +13,7 @@ schema = ["dep:schemars"]
 proto = ["dep:prost", "dep:bytes"]
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 bytes = { workspace = true, optional = true }
 bytesize = { workspace = true }

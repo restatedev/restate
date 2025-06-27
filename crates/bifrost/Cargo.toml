@@ -15,7 +15,7 @@ memory-loglet = []
 test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util", "restate-core/test-util"]
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
