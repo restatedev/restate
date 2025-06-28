@@ -305,7 +305,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
             }
             store_tasks
                 .build_task()
-                .name(&format!("store-to-{}", node_id))
+                .name(&format!("store-to-{node_id}"))
                 .spawn({
                     let store_task = LogServerStoreTask {
                         node_id,
@@ -449,9 +449,9 @@ impl Display for PerNodeStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PerNodeStatus::NotAttempted => write!(f, ""),
-            PerNodeStatus::Failed { attempts } => write!(f, "ERROR({})", attempts),
+            PerNodeStatus::Failed { attempts } => write!(f, "ERROR({attempts})"),
             PerNodeStatus::Committed => write!(f, "COMMITTED"),
-            PerNodeStatus::Timeout { attempts } => write!(f, "TIMEDOUT({})", attempts),
+            PerNodeStatus::Timeout { attempts } => write!(f, "TIMEDOUT({attempts})"),
             PerNodeStatus::Sealed => write!(f, "SEALED"),
         }
     }

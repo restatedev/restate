@@ -158,7 +158,7 @@ impl NodeLocation {
         if prefix.ends_with(SCOPE_DELIMITER) {
             domain_str.starts_with(prefix)
         } else {
-            domain_str.starts_with(&format!("{}{}", prefix, SCOPE_DELIMITER))
+            domain_str.starts_with(&format!("{prefix}{SCOPE_DELIMITER}"))
         }
     }
 
@@ -197,7 +197,7 @@ impl std::fmt::Display for NodeLocation {
 
 impl std::fmt::Debug for NodeLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 
@@ -260,8 +260,7 @@ impl FromStr for NodeLocation {
         // if any of the remaining tokens are empty string, then we fail.
         if tokens.any(|s| !s.is_empty()) {
             return Err(InvalidNodeLocationError(format!(
-                "Non-empty label exists after an empty label in location string: '{}'",
-                s,
+                "Non-empty label exists after an empty label in location string: '{s}'",
             )));
         }
 
@@ -303,8 +302,7 @@ const fn effective_scopes(scope: LocationScope) -> usize {
 fn validate_token<'a>(input: &'a str, token: &'a str) -> Result<&'a str, InvalidNodeLocationError> {
     if token.contains(" ") || token.contains(":") {
         return Err(InvalidNodeLocationError(format!(
-            "Illegal character(s) in location string: '{}', in label '{}'",
-            input, token
+            "Illegal character(s) in location string: '{input}', in label '{token}'"
         )));
     }
     Ok(token)

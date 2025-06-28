@@ -50,7 +50,7 @@ pub(super) fn gen_loglet_info_table(
         } else {
             Styled(Style::Normal, "")
         };
-        format!("LogId={} at Segment={} {}", log_id, segment, note)
+        format!("LogId={log_id} at Segment={segment} {note}")
     });
     let sequencer = loglet.params.sequencer;
     let sequencer_note_style = Style::Warn;

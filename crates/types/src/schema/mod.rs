@@ -224,8 +224,7 @@ mod test_util {
             self.resolve_latest_invocation_target(service_name, handler_name)
                 .unwrap_or_else(|| {
                     panic!(
-                        "Invocation target for {}/{} must exists",
-                        service_name, handler_name
+                        "Invocation target for {service_name}/{handler_name} must exists"
                     )
                 })
         }

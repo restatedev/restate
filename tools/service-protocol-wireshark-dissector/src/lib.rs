@@ -64,7 +64,7 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
 fn format_message_type(msg_type: MessageType) -> String {
     match msg_type {
         mt @ MessageType::Custom(_) => {
-            format!("{:?}", mt)
+            format!("{mt:?}")
         }
         mt => {
             format!("{:?}({:#06X})", mt, u16::from(mt))
