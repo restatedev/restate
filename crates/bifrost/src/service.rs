@@ -100,7 +100,7 @@ impl BifrostService {
             let watchdog = self.watchdog.sender();
             tasks
                 .build_task()
-                .name(&format!("start-provider-{}", kind))
+                .name(&format!("start-provider-{kind}"))
                 .spawn(
                     async move {
                         trace!("Starting loglet provider {}", kind);

@@ -26,7 +26,7 @@ flexbuffers_storage_encode_decode!(DummyPayload);
 
 pub fn print_latencies(title: &str, histogram: Histogram<u64>) {
     let mut stdout = std::io::stdout().lock();
-    let _ = writeln!(&mut stdout, "Histogram of {}", title);
+    let _ = writeln!(&mut stdout, "Histogram of {title}");
     let _ = writeln!(
         &mut stdout,
         "P50: {:?}",
@@ -74,7 +74,7 @@ pub fn print_rocksdb_stats(db_name: &str) {
 
     let _ = writeln!(&mut stdout);
     let _ = writeln!(&mut stdout, "==========================");
-    let _ = writeln!(&mut stdout, "Rocksdb Stats of {}", db_name);
+    let _ = writeln!(&mut stdout, "Rocksdb Stats of {db_name}");
     let _ = writeln!(&mut stdout, "{}", stats.unwrap());
 
     let _ = writeln!(
@@ -102,14 +102,12 @@ pub fn print_rocksdb_stats(db_name: &str) {
 
     let _ = writeln!(
         &mut stdout,
-        "RocksDB total write buffers usage (from write buffers manager): {}",
-        total_wb_usage
+        "RocksDB total write buffers usage (from write buffers manager): {total_wb_usage}"
     );
 
     let _ = writeln!(
         &mut stdout,
-        "RocksDB total write buffers capacity (from write buffers manager): {}",
-        wb_capacity
+        "RocksDB total write buffers capacity (from write buffers manager): {wb_capacity}"
     );
 }
 
@@ -121,5 +119,5 @@ pub fn print_prometheus_stats(handle: &PrometheusHandle) {
     let metrics = handle.render();
 
     // print the metrics to the terminal.
-    let _ = writeln!(&mut stdout, "{}", metrics);
+    let _ = writeln!(&mut stdout, "{metrics}");
 }
