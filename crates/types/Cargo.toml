@@ -21,6 +21,7 @@ restate-base64-util = { workspace = true }
 restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-encoding = { workspace = true }
+restate-metrics = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-utoipa = { workspace = true }
 
