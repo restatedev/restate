@@ -662,8 +662,7 @@ pub mod v1 {
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
-                        // SAFETY: We're only mapping data types here
-                        creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                        creation_time: timestamps.creation_time().as_u64(),
                         created_using_restate_version: created_using_restate_version.into_string(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                         inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
@@ -725,8 +724,7 @@ pub mod v1 {
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
-                        // SAFETY: We're only mapping data types here
-                        creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                        creation_time: timestamps.creation_time().as_u64(),
                         created_using_restate_version: created_using_restate_version.into_string(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                         inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
@@ -795,8 +793,7 @@ pub mod v1 {
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
-                            // SAFETY: We're only mapping data types here
-                            creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                            creation_time: timestamps.creation_time().as_u64(),
                             created_using_restate_version: created_using_restate_version
                                 .into_string(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
@@ -899,8 +896,7 @@ pub mod v1 {
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
-                            // SAFETY: We're only mapping data types here
-                            creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                            creation_time: timestamps.creation_time().as_u64(),
                             created_using_restate_version: created_using_restate_version
                                 .into_string(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
@@ -981,8 +977,7 @@ pub mod v1 {
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
-                            // SAFETY: We're only mapping data types here
-                            creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                            creation_time: timestamps.creation_time().as_u64(),
                             created_using_restate_version: created_using_restate_version
                                 .into_string(),
                             modification_time: unsafe { timestamps.modification_time() }.as_u64(),
