@@ -11,7 +11,6 @@
 use std::cmp::Ordering;
 
 use bytestring::ByteString;
-use futures::Stream;
 
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::message::MessageIndex;
@@ -115,10 +114,6 @@ pub trait ReadOnlyDeduplicationTable {
         &mut self,
         producer_id: &ProducerId,
     ) -> impl Future<Output = Result<Option<DedupSequenceNumber>>> + Send;
-
-    fn get_all_sequence_numbers(
-        &mut self,
-    ) -> Result<impl Stream<Item = Result<DedupInformation>> + Send>;
 }
 
 pub trait DeduplicationTable: ReadOnlyDeduplicationTable {
