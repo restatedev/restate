@@ -1471,9 +1471,9 @@ mod tests {
             let node_id = GenerationalNodeId::new(i as u32, i as u32);
             nodes_config.upsert_node(
                 NodeConfig::builder()
-                    .name(format!("node-{}", i))
+                    .name(format!("node-{i}"))
                     .current_generation(node_id)
-                    .address(AdvertisedAddress::Uds(format!("{}.sock", i).into()))
+                    .address(AdvertisedAddress::Uds(format!("{i}.sock").into()))
                     .roles(Role::Admin | Role::Worker)
                     .build(),
             );

@@ -331,7 +331,7 @@ impl NodeRow {
             self.uptime = Some(Cell::new("n/a"));
         } else {
             let uptime = humantime::Duration::from(uptime);
-            self.uptime = Some(Cell::new(format!("{}", uptime)));
+            self.uptime = Some(Cell::new(format!("{uptime}")));
         }
         self
     }

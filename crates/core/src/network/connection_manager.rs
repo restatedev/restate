@@ -192,8 +192,7 @@ impl ConnectionManagerInner {
                 NodesConfigError::GenerationMismatch { expected, found } => {
                     if found.is_newer_than(expected) {
                         return Err(AcceptError::OldPeerGeneration(format!(
-                            "newer generation '{}' has been observed",
-                            found
+                            "newer generation '{found}' has been observed"
                         )));
                     }
                 }

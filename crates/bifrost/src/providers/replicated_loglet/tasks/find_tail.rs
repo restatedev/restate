@@ -474,7 +474,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                         };
                         inflight_tail_update_watches
                             .build_task()
-                            .name(&format!("wait-for-tail-on-{}", node))
+                            .name(&format!("wait-for-tail-on-{node}"))
                             .spawn({
                                 let networking = self.networking.clone();
                                 task.run(max_local_tail, networking).in_current_tc()

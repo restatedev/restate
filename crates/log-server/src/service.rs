@@ -298,10 +298,7 @@ impl LogServerService {
             )) => nodes_config,
             Err(err) => {
                 return Err(err).with_context(|| {
-                    format!(
-                        "failed to update this log-server's storage-state to {}",
-                        target_state
-                    )
+                    format!("failed to update this log-server's storage-state to {target_state}")
                 });
             }
         };

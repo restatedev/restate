@@ -137,9 +137,9 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
     let mut modified = false;
     for line in diff::lines(&current_config_string, &updated_config_string) {
         let (is_diff, cell) = match line {
-            diff::Result::Both(l, _) => (false, Cell::new(format!(" {}", l))),
-            diff::Result::Left(l) => (true, Cell::new(format!("-{}", l)).fg(Color::Red)),
-            diff::Result::Right(r) => (true, Cell::new(format!("+{}", r)).fg(Color::Green)),
+            diff::Result::Both(l, _) => (false, Cell::new(format!(" {l}"))),
+            diff::Result::Left(l) => (true, Cell::new(format!("-{l}")).fg(Color::Red)),
+            diff::Result::Right(r) => (true, Cell::new(format!("+{r}")).fg(Color::Green)),
         };
 
         diff_table.add_row(vec![cell]);

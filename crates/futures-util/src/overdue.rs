@@ -241,7 +241,7 @@ mod tests {
                 .count()
             {
                 0 => Ok(()),
-                n => Err(format!("Expected no matching logs, but found {}", n)),
+                n => Err(format!("Expected no matching logs, but found {n}")),
             }
         });
     }
@@ -265,7 +265,7 @@ mod tests {
                 .count()
             {
                 3 => Ok(()),
-                n => Err(format!("Expected 3 matching logs, but found {}", n)),
+                n => Err(format!("Expected 3 matching logs, but found {n}")),
             }
         });
     }
@@ -298,7 +298,7 @@ mod tests {
                 .count()
             {
                 6 => Ok(()),
-                n => Err(format!("Expected 6 matching logs, but found {}", n)),
+                n => Err(format!("Expected 6 matching logs, but found {n}")),
             }
         });
     }
@@ -335,7 +335,7 @@ mod tests {
                 .count()
             {
                 8 => Ok(()),
-                n => Err(format!("Expected 8 matching logs, but found {}", n)),
+                n => Err(format!("Expected 8 matching logs, but found {n}")),
             }
         });
     }

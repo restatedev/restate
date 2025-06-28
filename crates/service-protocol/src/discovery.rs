@@ -448,7 +448,7 @@ impl ServiceDiscovery {
                         .map(|b| {
                             String::from_utf8_lossy(b.to_bytes().to_vec().as_slice()).to_string()
                         })
-                        .unwrap_or_else(|err| format!("Failed to read body {}", err));
+                        .unwrap_or_else(|err| format!("Failed to read body {err}"));
                     return Err(DiscoveryError::BadStatusCode(
                         parts.status,
                         parts.headers,

@@ -124,7 +124,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         })
         .await
         {
-            panic!("Error running listener: {:?}", e);
+            panic!("Error running listener: {e:?}");
         }
     });
 

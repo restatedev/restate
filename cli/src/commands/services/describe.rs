@@ -101,8 +101,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             if service_match.len() > 1 {
                 progress.finish_and_clear();
                 panic!(
-                    "Deployment {} is hosting multiple revisions of the same service {}!",
-                    other_deployment_id, service_name
+                    "Deployment {other_deployment_id} is hosting multiple revisions of the same service {service_name}!"
                 );
             }
 
