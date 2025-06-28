@@ -98,7 +98,7 @@ use restate_types::message::MessageIndex;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
-use restate_types::time::MillisSinceEpoch;
+use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
@@ -228,6 +228,7 @@ impl StateMachine {
 
 pub(crate) struct StateMachineApplyContext<'a, S> {
     storage: &'a mut S,
+    record_created_at: NanosSinceEpoch,
     action_collector: &'a mut ActionCollector,
     inbox_seq_number: &'a mut MessageIndex,
     outbox_seq_number: &'a mut MessageIndex,
@@ -244,9 +245,14 @@ trait CommandHandler<CTX> {
 }
 
 impl StateMachine {
+    // todo(soli):
+    // - This should accept `LsnEnvelope` instead of `Command` to get access to created_at, header,
+    // and lsn.
+    // - Accept `LsnEnvelope` by reference.
     pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
         &mut self,
         command: Command,
+        record_created_at: NanosSinceEpoch,
         transaction: &mut TransactionType,
         action_collector: &mut ActionCollector,
         is_leader: bool,
@@ -258,6 +264,7 @@ impl StateMachine {
             let command_type = command.name();
             let res = StateMachineApplyContext {
                 storage: transaction,
+                record_created_at,
                 action_collector,
                 inbox_seq_number: &mut self.inbox_seq_number,
                 outbox_seq_number: &mut self.outbox_seq_number,
@@ -466,7 +473,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                 }
             }
             Command::Invoke(service_invocation) => {
-                self.on_service_invocation(service_invocation).await
+                self.on_service_invocation(self.record_created_at, service_invocation)
+                    .await
             }
             Command::InvocationResponse(InvocationResponse { target, result }) => {
                 let completion = Completion {
@@ -509,7 +517,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 *self.outbox_head_seq_number = Some(index + 1);
                 Ok(())
             }
-            Command::Timer(timer) => self.on_timer(timer).await,
+            Command::Timer(timer) => self.on_timer(self.record_created_at, timer).await,
             Command::TerminateInvocation(invocation_termination) => {
                 self.on_terminate_invocation(invocation_termination).await
             }
@@ -563,6 +571,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn on_service_invocation(
         &mut self,
+        created_at: NanosSinceEpoch,
         service_invocation: Box<ServiceInvocation>,
     ) -> Result<(), Error>
     where
@@ -604,7 +613,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
         let pre_flight_invocation_metadata =
-            PreFlightInvocationMetadata::from_service_invocation(*service_invocation);
+            PreFlightInvocationMetadata::from_service_invocation(created_at, *service_invocation);
 
         // 2. Check if we need to schedule it
         let execution_time = pre_flight_invocation_metadata.execution_time;
@@ -1657,7 +1666,11 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    async fn on_timer(&mut self, timer_value: TimerKeyValue) -> Result<(), Error>
+    async fn on_timer(
+        &mut self,
+        record_created_at: NanosSinceEpoch,
+        timer_value: TimerKeyValue,
+    ) -> Result<(), Error>
     where
         S: IdempotencyTable
             + InvocationStatusTable
@@ -1708,7 +1721,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 // ServiceInvocations scheduled with a timer are always owned by the same partition processor
                 // where the invocation should be executed
-                self.on_service_invocation(service_invocation).await
+                self.on_service_invocation(record_created_at, service_invocation)
+                    .await
             }
             Timer::CleanInvocationStatus(invocation_id) => {
                 lifecycle::OnPurgeCommand {
@@ -2022,8 +2036,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 invocation_id,
                 invocation_metadata.invocation_target.clone(),
                 invocation_metadata.journal_metadata.span_context.clone(),
-                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
-                unsafe { invocation_metadata.timestamps.creation_time() },
+                invocation_metadata.timestamps.creation_time(),
                 match &response_result {
                     ResponseResult::Success(_) => Ok(()),
                     ResponseResult::Failure(err) => Err((err.code(), err.message().to_owned())),
@@ -2050,8 +2063,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 invocation_id,
                 invocation_target.clone(),
                 invocation_metadata.journal_metadata.span_context.clone(),
-                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
-                unsafe { invocation_metadata.timestamps.creation_time() },
+                invocation_metadata.timestamps.creation_time(),
                 Ok(()),
             );
         }
