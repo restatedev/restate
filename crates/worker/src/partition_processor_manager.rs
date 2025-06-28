@@ -605,7 +605,7 @@ impl PartitionProcessorManager {
     ) {
         self.asynchronous_operations
             .build_task()
-            .name(&format!("runtime-result-{}", partition_id))
+            .name(&format!("runtime-result-{partition_id}"))
             .spawn(
                 async move {
                     let result = runtime_task_handle.await;
@@ -660,7 +660,7 @@ impl PartitionProcessorManager {
     ) {
         asynchronous_operations
             .build_task()
-            .name(&format!("obtain-leader-epoch-{}", partition_id))
+            .name(&format!("obtain-leader-epoch-{partition_id}"))
             .spawn(
                 Self::obtain_new_leader_epoch_task(
                     leader_epoch_token,
@@ -1077,7 +1077,7 @@ impl PartitionProcessorManager {
     ) {
         self.asynchronous_operations
             .build_task()
-            .name(&format!("update-archived-lsn-{}", partition_id))
+            .name(&format!("update-archived-lsn-{partition_id}"))
             .spawn(
                 async move {
                     let archived_lsn = snapshot_repository
@@ -1258,7 +1258,7 @@ impl PartitionProcessorManager {
 
         self.asynchronous_operations
             .build_task()
-            .name(&format!("start-pp-{}", partition_id))
+            .name(&format!("start-pp-{partition_id}"))
             .spawn(
                 async move {
                     let result = starting_task.run(delay);

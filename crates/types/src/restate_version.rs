@@ -237,7 +237,7 @@ mod tests {
         // same for semantic version
         let version = SemanticRestateVersion::from_str("1.66.2-dev").unwrap();
         let serialized = serde_json::to_string(&version).unwrap();
-        println!("{}", serialized);
+        println!("{serialized}");
         assert_that!(serialized, eq(r#""1.66.2-dev""#));
         let deserialized: SemanticRestateVersion = serde_json::from_str(&serialized).unwrap();
         assert_that!(version, eq(deserialized));

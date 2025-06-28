@@ -585,7 +585,7 @@ where
                 self.needs_indent = false;
             }
 
-            self.inner.write_fmt(format_args!("{}", line))?;
+            self.inner.write_fmt(format_args!("{line}"))?;
         }
 
         Ok(())
