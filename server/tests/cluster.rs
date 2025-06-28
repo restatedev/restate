@@ -135,7 +135,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
         .nodes
         .iter()
         .flat_map(|node| node.ingress_address().cloned())
-        .map(|socket_address| format!("http://{}/Counter/1/add", socket_address))
+        .map(|socket_address| format!("http://{socket_address}/Counter/1/add"))
         .collect();
     let admin_address = cluster
         .nodes
@@ -173,7 +173,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
         .expect("reqwest client should build");
 
     let discovery_response = client
-        .post(format!("http://{}/deployments", admin_address))
+        .post(format!("http://{admin_address}/deployments"))
         .header(CONTENT_TYPE, "application/json")
         .body(
             serde_json::json!({"uri": format!("http://{}", service_endpoint_address)}).to_string(),

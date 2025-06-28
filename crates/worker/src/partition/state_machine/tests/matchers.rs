@@ -39,8 +39,8 @@ pub mod storage {
                 .is_some_and(|jm| jm.length == journal_length)
         })
         .with_description(
-            format!("has journal length {}", journal_length),
-            format!("hasn't journal length {}", journal_length),
+            format!("has journal length {journal_length}"),
+            format!("hasn't journal length {journal_length}"),
         )
     }
 
@@ -50,8 +50,8 @@ pub mod storage {
                 .is_some_and(|jm| jm.commands == commands)
         })
         .with_description(
-            format!("has commands {}", commands),
-            format!("hasn't commands {}", commands),
+            format!("has commands {commands}"),
+            format!("hasn't commands {commands}"),
         )
     }
 

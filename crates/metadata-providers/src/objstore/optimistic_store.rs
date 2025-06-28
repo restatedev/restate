@@ -149,8 +149,7 @@ impl OptimisticLockingMetadataStore {
                 //
                 if current_version != version {
                     return Err(WriteError::FailedPrecondition(format!(
-                        "expected {} != got {}",
-                        version, current_version
+                        "expected {version} != got {current_version}"
                     )));
                 }
                 //

@@ -153,9 +153,8 @@ async fn query_sys_invocation() {
                 last_failure_related_entry_type,
                 last_attempt_server
             FROM sys_invocation
-            WHERE id = '{}'
-            LIMIT 1",
-            invocation_id
+            WHERE id = '{invocation_id}'
+            LIMIT 1"
         ))
         .await
         .unwrap()
