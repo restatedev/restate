@@ -13,7 +13,7 @@ clients = []
 test-util = []
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }

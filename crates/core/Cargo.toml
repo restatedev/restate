@@ -18,7 +18,7 @@ test-util = [
 options_schema = ["dep:schemars"]
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 restate-core-derive = { workspace = true, optional = true }
 restate-futures-util = { workspace = true }

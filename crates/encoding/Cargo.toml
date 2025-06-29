@@ -11,7 +11,7 @@ publish = false
 bilrost = { workspace = true }
 bytes = { workspace = true }
 restate-encoding-derive = { version = "0.1.0", path = "derive" }
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 bytestring = { workspace = true }
 
 [dev-dependencies]

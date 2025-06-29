@@ -13,7 +13,7 @@ entry-codec = ["dep:bytestring", "dep:assert2"]
 message-codec = ["dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:size", "dep:tracing", "dep:paste"]
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 restate-errors = { workspace = true, optional = true }
 restate-types = { workspace = true }

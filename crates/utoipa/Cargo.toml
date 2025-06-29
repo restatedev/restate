@@ -11,7 +11,7 @@ default = ["debug"]
 debug = []
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1063,6 +1063,7 @@ dependencies = [
  "restate-test-util",
  "restate-tracing-instrumentation",
  "restate-types",
+ "restate-workspace-hack",
  "rlimit",
  "rust-rocksdb",
  "serde",
@@ -1078,7 +1079,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "workspace-hack",
 ]
 
 [[package]]
@@ -1648,8 +1648,8 @@ name = "codederror"
 version = "1.4.2-dev"
 dependencies = [
  "codederror-derive",
+ "restate-workspace-hack",
  "thiserror 2.0.12",
- "workspace-hack",
 ]
 
 [[package]]
@@ -1658,8 +1658,8 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "restate-workspace-hack",
  "syn 1.0.109",
- "workspace-hack",
 ]
 
 [[package]]
@@ -4785,13 +4785,13 @@ dependencies = [
  "prost",
  "restate-service-protocol",
  "restate-types",
+ "restate-workspace-hack",
  "serde",
  "serde_json",
  "thiserror 2.0.12",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "workspace-hack",
 ]
 
 [[package]]
@@ -6645,6 +6645,7 @@ dependencies = [
  "restate-types",
  "restate-wal-protocol",
  "restate-web-ui",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -6655,7 +6656,6 @@ dependencies = [
  "tonic",
  "tower 0.5.2",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -6669,12 +6669,12 @@ dependencies = [
  "humantime",
  "restate-serde-util",
  "restate-types",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_with",
  "strum 0.27.1",
- "workspace-hack",
 ]
 
 [[package]]
@@ -6682,7 +6682,7 @@ name = "restate-base64-util"
 version = "1.4.2-dev"
 dependencies = [
  "base64 0.22.1",
- "workspace-hack",
+ "restate-workspace-hack",
 ]
 
 [[package]]
@@ -6703,13 +6703,13 @@ dependencies = [
  "restate-rocksdb",
  "restate-tracing-instrumentation",
  "restate-types",
+ "restate-workspace-hack",
  "rlimit",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "workspace-hack",
 ]
 
 [[package]]
@@ -6748,6 +6748,7 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-wal-protocol",
+ "restate-workspace-hack",
  "rlimit",
  "rust-rocksdb",
  "serde",
@@ -6765,7 +6766,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
- "workspace-hack",
  "xxhash-rust",
 ]
 
@@ -6808,6 +6808,7 @@ dependencies = [
  "restate-cloud-tunnel-client",
  "restate-serde-util",
  "restate-types",
+ "restate-workspace-hack",
  "rustls",
  "serde",
  "serde_json",
@@ -6824,7 +6825,6 @@ dependencies = [
  "url",
  "uuid",
  "vergen",
- "workspace-hack",
  "zip 0.6.6",
 ]
 
@@ -6845,13 +6845,13 @@ dependencies = [
  "dotenvy",
  "lambda_runtime",
  "restate-types",
+ "restate-workspace-hack",
  "serde",
  "tokio",
  "tracing",
  "tracing-log",
  "tracing-subscriber",
  "unicode-width 0.1.14",
- "workspace-hack",
 ]
 
 [[package]]
@@ -6867,6 +6867,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "jsonwebtoken",
+ "restate-workspace-hack",
  "rustls",
  "serde",
  "thiserror 2.0.12",
@@ -6874,7 +6875,6 @@ dependencies = [
  "tokio-util",
  "tower 0.5.2",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -6923,6 +6923,7 @@ dependencies = [
  "restate-object-store-util",
  "restate-test-util",
  "restate-types",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "serde_with",
@@ -6943,7 +6944,6 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "url",
- "workspace-hack",
  "xxhash-rust",
 ]
 
@@ -6953,8 +6953,8 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "restate-workspace-hack",
  "syn 2.0.101",
- "workspace-hack",
 ]
 
 [[package]]
@@ -6966,8 +6966,8 @@ dependencies = [
  "bytestring",
  "rand 0.9.1",
  "restate-encoding-derive",
+ "restate-workspace-hack",
  "static_assertions",
- "workspace-hack",
 ]
 
 [[package]]
@@ -6976,8 +6976,8 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "restate-workspace-hack",
  "syn 2.0.101",
- "workspace-hack",
 ]
 
 [[package]]
@@ -6986,21 +6986,21 @@ version = "1.4.2-dev"
 dependencies = [
  "codederror",
  "paste",
+ "restate-workspace-hack",
  "test-log",
  "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
- "workspace-hack",
 ]
 
 [[package]]
 name = "restate-fs-util"
 version = "1.4.2-dev"
 dependencies = [
+ "restate-workspace-hack",
  "tokio",
  "tracing",
  "uuid",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7012,13 +7012,13 @@ dependencies = [
  "pin-project",
  "pin-project-lite",
  "restate-test-util",
+ "restate-workspace-hack",
  "test-log",
  "thiserror 2.0.12",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "tracing-test",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7049,6 +7049,7 @@ dependencies = [
  "restate-test-util",
  "restate-tracing-instrumentation",
  "restate-types",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -7063,7 +7064,6 @@ dependencies = [
  "tracing-test",
  "url",
  "urlencoding",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7086,12 +7086,12 @@ dependencies = [
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-wal-protocol",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "thiserror 2.0.12",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7106,10 +7106,10 @@ dependencies = [
  "num-traits",
  "restate-errors",
  "restate-types",
+ "restate-workspace-hack",
  "serde",
  "thiserror 2.0.12",
  "tokio",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7140,6 +7140,7 @@ dependencies = [
  "restate-test-util",
  "restate-timer-queue",
  "restate-types",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -7150,7 +7151,6 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7175,6 +7175,7 @@ dependencies = [
  "restate-metadata-server-grpc",
  "restate-metadata-store",
  "restate-types",
+ "restate-workspace-hack",
  "rev_lines",
  "rlimit",
  "serde",
@@ -7187,7 +7188,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "typed-builder",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7218,6 +7218,7 @@ dependencies = [
  "restate-rocksdb",
  "restate-test-util",
  "restate-types",
+ "restate-workspace-hack",
  "rust-rocksdb",
  "serde",
  "serde_json",
@@ -7235,7 +7236,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
- "workspace-hack",
  "xxhash-rust",
 ]
 
@@ -7245,9 +7245,9 @@ version = "1.4.2-dev"
 dependencies = [
  "prost",
  "restate-types",
+ "restate-workspace-hack",
  "tonic",
  "tonic-build",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7270,6 +7270,7 @@ dependencies = [
  "restate-metadata-store",
  "restate-object-store-util",
  "restate-types",
+ "restate-workspace-hack",
  "serde",
  "serde_json",
  "test-log",
@@ -7278,7 +7279,6 @@ dependencies = [
  "tonic",
  "tracing",
  "url",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7314,6 +7314,7 @@ dependencies = [
  "restate-metadata-store",
  "restate-rocksdb",
  "restate-types",
+ "restate-workspace-hack",
  "rust-rocksdb",
  "serde",
  "serde_json",
@@ -7330,7 +7331,6 @@ dependencies = [
  "tracing",
  "tracing-slog",
  "ulid",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7344,6 +7344,7 @@ dependencies = [
  "prost",
  "prost-dto",
  "restate-types",
+ "restate-workspace-hack",
  "serde",
  "serde_json",
  "thiserror 2.0.12",
@@ -7352,7 +7353,6 @@ dependencies = [
  "tonic-build",
  "tracing",
  "ulid",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7366,13 +7366,13 @@ dependencies = [
  "metrics",
  "prost",
  "restate-types",
+ "restate-workspace-hack",
  "static_assertions",
  "thiserror 2.0.12",
  "tokio",
  "tonic",
  "tonic-build",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7415,6 +7415,7 @@ dependencies = [
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-worker",
+ "restate-workspace-hack",
  "rust-rocksdb",
  "schemars 0.8.22",
  "semver",
@@ -7428,7 +7429,6 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7444,9 +7444,9 @@ dependencies = [
  "futures",
  "object_store",
  "restate-types",
+ "restate-workspace-hack",
  "tracing",
  "url",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7479,6 +7479,7 @@ dependencies = [
  "restate-storage-api",
  "restate-test-util",
  "restate-types",
+ "restate-workspace-hack",
  "rust-rocksdb",
  "serde",
  "serde_json",
@@ -7491,7 +7492,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7502,10 +7502,10 @@ dependencies = [
  "criterion",
  "restate-fs-util",
  "restate-types",
+ "restate-workspace-hack",
  "serde",
  "tempfile",
  "tokio",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7527,6 +7527,7 @@ dependencies = [
  "restate-serde-util",
  "restate-test-util",
  "restate-types",
+ "restate-workspace-hack",
  "rust-rocksdb",
  "smartstring",
  "static_assertions",
@@ -7536,7 +7537,6 @@ dependencies = [
  "tikv-jemalloc-sys",
  "tokio",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7551,11 +7551,11 @@ dependencies = [
  "iso8601",
  "jiff",
  "prost",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_with",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7600,6 +7600,7 @@ dependencies = [
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-worker",
+ "restate-workspace-hack",
  "rlimit",
  "rust-rocksdb",
  "rustls",
@@ -7622,7 +7623,6 @@ dependencies = [
  "ulid",
  "url",
  "vergen",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7650,6 +7650,7 @@ dependencies = [
  "jsonwebtoken",
  "pem",
  "restate-types",
+ "restate-workspace-hack",
  "ring",
  "rustls",
  "schemars 0.8.22",
@@ -7661,7 +7662,6 @@ dependencies = [
  "tower 0.5.2",
  "tower-service",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7683,6 +7683,7 @@ dependencies = [
  "restate-service-protocol",
  "restate-test-util",
  "restate-types",
+ "restate-workspace-hack",
  "serde",
  "serde_json",
  "size",
@@ -7690,7 +7691,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7710,6 +7710,7 @@ dependencies = [
  "restate-errors",
  "restate-test-util",
  "restate-types",
+ "restate-workspace-hack",
  "serde",
  "serde_json",
  "size",
@@ -7717,7 +7718,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing",
  "typify 0.3.0",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7736,10 +7736,10 @@ dependencies = [
  "prost-types",
  "rangemap",
  "restate-types",
+ "restate-workspace-hack",
  "serde",
  "strum 0.27.1",
  "thiserror 2.0.12",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7770,6 +7770,7 @@ dependencies = [
  "restate-service-protocol-v4",
  "restate-storage-api",
  "restate-types",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -7778,7 +7779,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7803,13 +7803,13 @@ dependencies = [
  "restate-storage-api",
  "restate-storage-query-datafusion",
  "restate-types",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "thiserror 2.0.12",
  "tokio",
  "tracing",
  "uuid",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7821,7 +7821,7 @@ dependencies = [
  "pretty_assertions",
  "prost",
  "prost-types",
- "workspace-hack",
+ "restate-workspace-hack",
 ]
 
 [[package]]
@@ -7835,6 +7835,7 @@ dependencies = [
  "priority-queue",
  "restate-test-util",
  "restate-types",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "test-log",
@@ -7844,7 +7845,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7852,8 +7852,8 @@ name = "restate-timer-queue"
 version = "1.4.2-dev"
 dependencies = [
  "futures",
+ "restate-workspace-hack",
  "tokio",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7874,6 +7874,7 @@ dependencies = [
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "restate-types",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "thiserror 2.0.12",
@@ -7884,7 +7885,6 @@ dependencies = [
  "tracing-core",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7947,6 +7947,7 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-utoipa",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "semver",
  "serde",
@@ -7973,7 +7974,6 @@ dependencies = [
  "typed-builder",
  "typify 0.4.1",
  "ulid",
- "workspace-hack",
  "xxhash-rust",
 ]
 
@@ -7984,9 +7984,9 @@ dependencies = [
  "assert-json-diff",
  "indexmap 2.9.0",
  "restate-utoipa",
+ "restate-workspace-hack",
  "serde",
  "serde_json",
- "workspace-hack",
 ]
 
 [[package]]
@@ -8002,11 +8002,11 @@ dependencies = [
  "restate-invoker-api",
  "restate-storage-api",
  "restate-types",
+ "restate-workspace-hack",
  "serde",
  "strum 0.27.1",
  "thiserror 2.0.12",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -8065,6 +8065,7 @@ dependencies = [
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-wal-protocol",
+ "restate-workspace-hack",
  "rstest",
  "rust-rocksdb",
  "schemars 0.8.22",
@@ -8083,7 +8084,143 @@ dependencies = [
  "tracing-subscriber",
  "ulid",
  "url",
- "workspace-hack",
+]
+
+[[package]]
+name = "restate-workspace-hack"
+version = "0.0.1"
+dependencies = [
+ "ahash 0.8.11",
+ "arrayvec",
+ "arrow",
+ "arrow-array",
+ "arrow-cast",
+ "arrow-ipc",
+ "arrow-schema",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-sdk-sts",
+ "aws-sigv4",
+ "aws-smithy-http",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "axum",
+ "axum-core",
+ "base64 0.22.1",
+ "bilrost",
+ "bitflags 2.9.1",
+ "byteorder",
+ "bytes",
+ "bytestring",
+ "bzip2-sys",
+ "cc",
+ "chrono",
+ "clap",
+ "clap_builder",
+ "comfy-table",
+ "criterion",
+ "crossbeam-epoch",
+ "datafusion-common",
+ "digest",
+ "either",
+ "enum-map",
+ "enumset",
+ "enumset_derive",
+ "flate2",
+ "futures",
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+ "getrandom 0.2.15",
+ "getrandom 0.3.1",
+ "half",
+ "hashbrown 0.14.5",
+ "hashbrown 0.15.2",
+ "hdrhistogram",
+ "hex",
+ "hmac",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "idna",
+ "indexmap 1.9.3",
+ "indexmap 2.9.0",
+ "itertools 0.10.5",
+ "itertools 0.14.0",
+ "lexical-parse-float",
+ "lexical-parse-integer",
+ "lexical-util",
+ "libc",
+ "libz-sys",
+ "log",
+ "md-5",
+ "memchr",
+ "metrics-util",
+ "mio",
+ "nix 0.29.0",
+ "nom 7.1.3",
+ "num",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "object_store",
+ "opentelemetry_sdk",
+ "phf_shared",
+ "pprof",
+ "proc-macro2",
+ "prost",
+ "prost-types",
+ "protobuf",
+ "quanta",
+ "quote",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "regex",
+ "regex-automata 0.4.9",
+ "regex-syntax 0.8.5",
+ "reqwest",
+ "ring",
+ "rustix 0.38.44",
+ "rustix 1.0.7",
+ "rustls",
+ "rustls-webpki",
+ "schemars 0.8.22",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "smallvec",
+ "stable_deref_trait",
+ "syn 1.0.109",
+ "syn 2.0.101",
+ "sync_wrapper",
+ "time",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-util",
+ "toml_datetime",
+ "toml_edit 0.22.27",
+ "tonic",
+ "tower 0.4.13",
+ "tower 0.5.2",
+ "tower-http",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-subscriber",
+ "ulid",
+ "url",
+ "uuid",
+ "zerocopy 0.7.35",
+ "zeroize",
+ "zstd 0.13.2",
+ "zstd-safe 7.2.1",
+ "zstd-sys",
 ]
 
 [[package]]
@@ -8124,6 +8261,7 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-wal-protocol",
+ "restate-workspace-hack",
  "rlimit",
  "rustls",
  "serde",
@@ -8135,7 +8273,6 @@ dependencies = [
  "tonic",
  "tracing",
  "vergen",
- "workspace-hack",
 ]
 
 [[package]]
@@ -10617,143 +10754,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "workspace-hack"
-version = "0.1.0"
-dependencies = [
- "ahash 0.8.11",
- "arrayvec",
- "arrow",
- "arrow-array",
- "arrow-cast",
- "arrow-ipc",
- "arrow-schema",
- "aws-credential-types",
- "aws-runtime",
- "aws-sdk-sts",
- "aws-sigv4",
- "aws-smithy-http",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "axum",
- "axum-core",
- "base64 0.22.1",
- "bilrost",
- "bitflags 2.9.1",
- "byteorder",
- "bytes",
- "bytestring",
- "bzip2-sys",
- "cc",
- "chrono",
- "clap",
- "clap_builder",
- "comfy-table",
- "criterion",
- "crossbeam-epoch",
- "datafusion-common",
- "digest",
- "either",
- "enum-map",
- "enumset",
- "enumset_derive",
- "flate2",
- "futures",
- "futures-channel",
- "futures-core",
- "futures-executor",
- "futures-io",
- "futures-sink",
- "futures-task",
- "futures-util",
- "getrandom 0.2.15",
- "getrandom 0.3.1",
- "half",
- "hashbrown 0.14.5",
- "hashbrown 0.15.2",
- "hdrhistogram",
- "hex",
- "hmac",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "idna",
- "indexmap 1.9.3",
- "indexmap 2.9.0",
- "itertools 0.10.5",
- "itertools 0.14.0",
- "lexical-parse-float",
- "lexical-parse-integer",
- "lexical-util",
- "libc",
- "libz-sys",
- "log",
- "md-5",
- "memchr",
- "metrics-util",
- "mio",
- "nix 0.29.0",
- "nom 7.1.3",
- "num",
- "num-bigint",
- "num-integer",
- "num-traits",
- "object_store",
- "opentelemetry_sdk",
- "phf_shared",
- "pprof",
- "proc-macro2",
- "prost",
- "prost-types",
- "protobuf",
- "quanta",
- "quote",
- "rand 0.8.5",
- "rand_core 0.6.4",
- "regex",
- "regex-automata 0.4.9",
- "regex-syntax 0.8.5",
- "reqwest",
- "ring",
- "rustix 0.38.44",
- "rustix 1.0.7",
- "rustls",
- "rustls-webpki",
- "schemars 0.8.22",
- "semver",
- "serde",
- "serde_json",
- "serde_with",
- "smallvec",
- "stable_deref_trait",
- "syn 1.0.109",
- "syn 2.0.101",
- "sync_wrapper",
- "time",
- "tokio-rustls",
- "tokio-stream",
- "tokio-util",
- "toml_datetime",
- "toml_edit 0.22.27",
- "tonic",
- "tower 0.4.13",
- "tower 0.5.2",
- "tower-http",
- "tracing",
- "tracing-core",
- "tracing-log",
- "tracing-subscriber",
- "ulid",
- "url",
- "uuid",
- "zerocopy 0.7.35",
- "zeroize",
- "zstd 0.13.2",
- "zstd-safe 7.2.1",
- "zstd-sys",
-]
-
-[[package]]
 name = "write16"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10795,11 +10795,11 @@ dependencies = [
  "restate-storage-query-datafusion",
  "restate-types",
  "restate-worker",
+ "restate-workspace-hack",
  "schemars 0.8.22",
  "serde_json",
  "tokio",
  "tonic",
- "workspace-hack",
 ]
 
 [[package]]
