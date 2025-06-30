@@ -192,7 +192,6 @@ pub mod actions {
         let notification = notif
             .into()
             .encode::<ServiceProtocolV4Codec>()
-            .inner
             .try_as_notification()
             .unwrap();
         pat!(Action::ForwardNotification {

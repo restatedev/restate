@@ -11,6 +11,7 @@
 use super::*;
 
 use restate_types::journal::Completion;
+use restate_types::journal_v2::raw::RawEntry;
 use restate_types::retries;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use std::fmt;
@@ -323,7 +324,7 @@ impl InvocationStateMachine {
                 notifications_tx,
                 ..
             } => {
-                if let journal_v2::raw::RawEntryInner::Notification(notif) = &entry.inner {
+                if let journal_v2::raw::RawEntry::Notification(notif) = &entry {
                     journal_tracker.notify_acked_notification_from_partition_processor(notif.id());
                 }
 
@@ -332,7 +333,7 @@ impl InvocationStateMachine {
             InvocationState::WaitingRetry {
                 journal_tracker, ..
             } => {
-                if let journal_v2::raw::RawEntryInner::Notification(notif) = &entry.inner {
+                if let journal_v2::raw::RawEntry::Notification(notif) = &entry {
                     journal_tracker.notify_acked_notification_from_partition_processor(notif.id());
                 }
             }
@@ -603,14 +604,11 @@ mod tests {
         assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // Got signal 18
-        invocation_state_machine.notify_entry(RawEntry::new(
-            RawEntryHeader::default(),
-            RawNotification::new(
-                NotificationType::Signal,
-                NotificationId::SignalIndex(18),
-                Bytes::default(),
-            ),
-        ));
+        invocation_state_machine.notify_entry(RawEntry::Notification(RawNotification::new(
+            NotificationType::Signal,
+            NotificationId::SignalIndex(18),
+            Bytes::default(),
+        )));
 
         // Retry timer fired
         invocation_state_machine.notify_retry_timer_fired();
@@ -620,28 +618,22 @@ mod tests {
         assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // For whatever reason notification index 2
-        invocation_state_machine.notify_entry(RawEntry::new(
-            RawEntryHeader::default(),
-            RawNotification::new(
-                NotificationType::Completion(CompletionType::Run),
-                NotificationId::CompletionId(2),
-                Bytes::default(),
-            ),
-        ));
+        invocation_state_machine.notify_entry(RawEntry::Notification(RawNotification::new(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(2),
+            Bytes::default(),
+        )));
 
         // Still waiting completion id 1
         assert!(!invocation_state_machine.is_ready_to_retry());
         assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // Send notification index 1
-        invocation_state_machine.notify_entry(RawEntry::new(
-            RawEntryHeader::default(),
-            RawNotification::new(
-                NotificationType::Completion(CompletionType::Run),
-                NotificationId::CompletionId(1),
-                Bytes::default(),
-            ),
-        ));
+        invocation_state_machine.notify_entry(RawEntry::Notification(RawNotification::new(
+            NotificationType::Completion(CompletionType::Run),
+            NotificationId::CompletionId(1),
+            Bytes::default(),
+        )));
 
         // Ready to retry
         assert!(invocation_state_machine.is_ready_to_retry());

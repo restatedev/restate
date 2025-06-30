@@ -52,7 +52,6 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: ReadOnlyJournalTable>
             .entry
             .as_ref()
             .unwrap()
-            .inner
             .try_as_event_ref()
             .ok_or_else(|| Error::BadEntryVariant(EntryType::Event))?;
 
@@ -79,7 +78,7 @@ mod tests {
     use googletest::prelude::*;
     use restate_invoker_api::Effect;
     use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
-    use restate_types::journal_v2::raw::{RawEntryHeader, RawEvent};
+    use restate_types::journal_v2::raw::RawEvent;
     use restate_types::journal_v2::{Event, TransientErrorEvent};
     use restate_wal_protocol::Command;
 
@@ -98,22 +97,17 @@ mod tests {
             related_command_name: Some("my command".to_string()),
             related_command_type: None,
         };
-        let raw_entry = {
-            let deduplication_hash = transient_error_event.deduplication_hash();
-            let mut raw_event =
-                RawEvent::from(Event::TransientError(transient_error_event.clone()));
-            raw_event.set_deduplication_hash(deduplication_hash);
-            RawEntry::new(RawEntryHeader::new(), raw_event)
-        };
+
+        let deduplication_hash = transient_error_event.deduplication_hash();
+        let mut raw_event = RawEvent::from(Event::TransientError(transient_error_event.clone()));
+        raw_event.set_deduplication_hash(deduplication_hash);
+        let raw_entry = RawEntry::Event(raw_event);
 
         let _ = test_env
             .apply(Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
-                kind: InvokerEffectKind::JournalEntryV2 {
-                    entry: raw_entry.clone(),
-                    command_index_to_ack: None,
-                },
+                kind: InvokerEffectKind::journal_entry(raw_entry.clone(), None),
             })))
             .await;
 
@@ -128,10 +122,7 @@ mod tests {
             .apply(Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
-                kind: InvokerEffectKind::JournalEntryV2 {
-                    entry: raw_entry,
-                    command_index_to_ack: None,
-                },
+                kind: InvokerEffectKind::journal_entry(raw_entry, None),
             })))
             .await;
 
@@ -155,22 +146,17 @@ mod tests {
             related_command_name: Some("my command 2".to_string()),
             related_command_type: None,
         };
-        let another_raw_entry = {
-            let deduplication_hash = another_transient_error_event.deduplication_hash();
-            let mut raw_event =
-                RawEvent::from(Event::TransientError(another_transient_error_event.clone()));
-            raw_event.set_deduplication_hash(deduplication_hash);
-            RawEntry::new(RawEntryHeader::new(), raw_event)
-        };
+
+        let deduplication_hash = another_transient_error_event.deduplication_hash();
+        let mut another_raw_event =
+            RawEvent::from(Event::TransientError(another_transient_error_event.clone()));
+        another_raw_event.set_deduplication_hash(deduplication_hash);
 
         let _ = test_env
             .apply(Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
-                kind: InvokerEffectKind::JournalEntryV2 {
-                    entry: another_raw_entry,
-                    command_index_to_ack: None,
-                },
+                kind: InvokerEffectKind::journal_entry(RawEntry::Event(another_raw_event), None),
             })))
             .await;
 

@@ -23,6 +23,9 @@ use tracing::error;
 use restate_encoding::{BilrostAs, NetSerde};
 
 use crate::errors::GenericError;
+use crate::journal_v2::raw::{RawEntry, RawEntryError, TryFromEntry};
+use crate::journal_v2::{Decoder, EntryMetadata, EntryType};
+use crate::time::MillisSinceEpoch;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageEncodeError {
@@ -436,6 +439,58 @@ mod dto {
         fn from(value: PolyBytes) -> Self {
             Self::Bytes(value.inner)
         }
+    }
+}
+
+/// The stored raw entry headers are created when applying/storing the journal entry to capture
+/// metadata that can be derived deterministically when applying the raw journal entry.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StoredRawEntryHeader {
+    pub append_time: MillisSinceEpoch,
+}
+
+impl StoredRawEntryHeader {
+    pub fn new(append_time: MillisSinceEpoch) -> Self {
+        Self { append_time }
+    }
+}
+
+/// Container of the raw entry that is enriched with additional metadata derived from Bifrost before
+/// storing it in the partition processor storage.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StoredRawEntry {
+    header: StoredRawEntryHeader,
+    pub inner: RawEntry,
+}
+
+impl StoredRawEntry {
+    pub fn new(header: StoredRawEntryHeader, inner: impl Into<RawEntry>) -> Self {
+        Self {
+            header,
+            inner: inner.into(),
+        }
+    }
+
+    pub fn header(&self) -> &StoredRawEntryHeader {
+        &self.header
+    }
+
+    pub fn header_mut(&mut self) -> &mut StoredRawEntryHeader {
+        &mut self.header
+    }
+}
+
+impl StoredRawEntry {
+    pub fn decode<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
+        Ok(<T as TryFromEntry>::try_from(D::decode_entry(
+            &self.inner,
+        )?)?)
+    }
+}
+
+impl EntryMetadata for StoredRawEntry {
+    fn ty(&self) -> EntryType {
+        self.inner.ty()
     }
 }
 

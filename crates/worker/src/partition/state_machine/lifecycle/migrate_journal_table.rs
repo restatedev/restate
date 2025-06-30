@@ -18,6 +18,7 @@ use restate_types::identifiers::InvocationId;
 use restate_types::journal as journal_v1;
 use restate_types::journal_v2::Entry;
 use restate_types::journal_v2::command::InputCommand;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 pub struct VerifyOrMigrateJournalTableToV2Command<'e> {
     pub invocation_id: InvocationId,
@@ -55,16 +56,17 @@ where
                     name: Default::default(),
                 }
                 .into();
-                let mut new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
-                // Journal V1 hasn't append_time, so we set here as timestamp the invocation creation time.
-                new_raw_entry.header_mut().append_time = self.metadata.timestamps.creation_time();
+                let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
 
                 // Now write the entry in the new table, and remove it from the old one
                 journal_table_v2::JournalTable::put_journal_entry(
                     ctx.storage,
                     self.invocation_id,
                     0,
-                    &new_raw_entry,
+                    &StoredRawEntry::new(
+                        StoredRawEntryHeader::new(ctx.record_created_at),
+                        new_raw_entry,
+                    ),
                     &[],
                 )
                 .await?;

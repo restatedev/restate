@@ -22,8 +22,6 @@ use crate::journal_v2::{
     CommandType, Decoder, Entry, EntryMetadata, EntryType, Event, EventType, NotificationId,
     NotificationType,
 };
-use crate::time::MillisSinceEpoch;
-
 mod events;
 
 #[derive(Debug, thiserror::Error)]
@@ -54,68 +52,19 @@ pub enum RawEntryError {
     TryFromEntry(#[from] TryFromEntryError),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RawEntryHeader {
-    /// **NOTE: This is currently not agreed among leaders and followers!**
-    pub append_time: MillisSinceEpoch,
-}
-
-impl RawEntryHeader {
-    pub fn new() -> Self {
-        Self {
-            append_time: MillisSinceEpoch::now(),
-        }
-    }
-}
-
-impl Default for RawEntryHeader {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Container of the raw entry.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RawEntry {
-    header: RawEntryHeader,
-    pub inner: RawEntryInner,
-}
-
-impl RawEntry {
-    pub fn new(header: RawEntryHeader, inner: impl Into<RawEntryInner>) -> Self {
-        Self {
-            header,
-            inner: inner.into(),
-        }
-    }
-
-    pub fn header(&self) -> &RawEntryHeader {
-        &self.header
-    }
-
-    pub fn header_mut(&mut self) -> &mut RawEntryHeader {
-        &mut self.header
-    }
+/// The serialized journal entries with some additional metadata to discriminate them.
+#[enum_dispatch(EntryMetadata)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::EnumTryAs)]
+pub enum RawEntry {
+    Command(RawCommand),
+    Notification(RawNotification),
+    Event(RawEvent),
 }
 
 impl RawEntry {
     pub fn decode<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
         Ok(<T as TryFromEntry>::try_from(D::decode_entry(self)?)?)
     }
-}
-
-impl EntryMetadata for RawEntry {
-    fn ty(&self) -> EntryType {
-        self.inner.ty()
-    }
-}
-
-#[enum_dispatch(EntryMetadata)]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::EnumTryAs)]
-pub enum RawEntryInner {
-    Command(RawCommand),
-    Notification(RawNotification),
-    Event(RawEvent),
 }
 
 // -- Raw command
@@ -158,7 +107,7 @@ impl RawCommand {
 
     pub fn decode<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
         Ok(<T as TryFromEntry>::try_from(D::decode_entry(
-            &RawEntry::new(RawEntryHeader::new(), RawEntryInner::Command(self.clone())),
+            &RawEntry::Command(self.clone()),
         )?)?)
     }
 }
@@ -223,10 +172,7 @@ impl RawNotification {
 
     pub fn decode<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
         Ok(<T as TryFromEntry>::try_from(D::decode_entry(
-            &RawEntry::new(
-                RawEntryHeader::new(),
-                RawEntryInner::Notification(self.clone()),
-            ),
+            &RawEntry::Notification(self.clone()),
         )?)?)
     }
 }

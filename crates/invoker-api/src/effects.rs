@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::EffectKind::JournalEntryV2;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
@@ -16,6 +17,9 @@ use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_v2;
 use restate_types::journal_v2::CommandIndex;
+use restate_types::journal_v2::raw::RawEntry;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,9 +50,13 @@ pub enum EffectKind {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     JournalEntryV2 {
-        entry: journal_v2::raw::RawEntry,
+        // todo stop writing with v1.5.0 and remove once we no longer support Bifrost commands written by <= v1.4.0
+        // legacy field which will be superseded by raw_entry
+        entry: Option<restate_types::storage::StoredRawEntry>,
         /// This is used by the invoker to establish when it's safe to retry
         command_index_to_ack: Option<CommandIndex>,
+        // todo start writing with v1.5.0 and make non-optional once we no longer support Bifrost commands written by v1.4.0
+        raw_entry: Option<journal_v2::raw::RawEntry>,
     },
     SuspendedV2 {
         waiting_for_notifications: HashSet<journal_v2::NotificationId>,
@@ -57,4 +65,20 @@ pub enum EffectKind {
     End,
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
     Failed(InvocationError),
+}
+
+impl EffectKind {
+    pub fn journal_entry(
+        raw_entry: impl Into<RawEntry>,
+        command_index_to_ack: Option<CommandIndex>,
+    ) -> Self {
+        JournalEntryV2 {
+            entry: Some(StoredRawEntry::new(
+                StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                raw_entry.into(),
+            )),
+            command_index_to_ack,
+            raw_entry: None,
+        }
+    }
 }

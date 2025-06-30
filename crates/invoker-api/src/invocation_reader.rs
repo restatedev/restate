@@ -15,7 +15,7 @@ use restate_types::identifiers::{InvocationId, ServiceId};
 use restate_types::invocation::{InvocationEpoch, ServiceInvocationSpanContext};
 use restate_types::journal::EntryIndex;
 use restate_types::journal::raw::PlainRawEntry;
-use restate_types::journal_v2::raw::RawEntry;
+use restate_types::storage::StoredRawEntry;
 use restate_types::time::MillisSinceEpoch;
 use std::future::Future;
 
@@ -54,7 +54,7 @@ impl JournalMetadata {
 #[derive(Debug, Eq, PartialEq)]
 pub enum JournalEntry {
     JournalV1(PlainRawEntry),
-    JournalV2(RawEntry),
+    JournalV2(StoredRawEntry),
 }
 
 /// Read information about invocations from the underlying storage.

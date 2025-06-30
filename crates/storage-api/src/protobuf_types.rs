@@ -3326,9 +3326,8 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: Entry) -> Result<Self, Self::Error> {
-                let header = journal_v2::raw::RawEntryHeader {
-                    append_time: value.append_time.into(),
-                };
+                let header =
+                    restate_types::storage::StoredRawEntryHeader::new(value.append_time.into());
 
                 Ok(crate::journal_table_v2::StoredEntry(
                     match EntryType::try_from(value.ty)
@@ -3344,7 +3343,7 @@ pub mod v1 {
                             if let Some(deduplication_hash) = value.event_deduplication_hash {
                                 raw_event.set_deduplication_hash(deduplication_hash);
                             }
-                            journal_v2::raw::RawEntry::new(header, raw_event)
+                            restate_types::storage::StoredRawEntry::new(header, raw_event)
                         }
                         journal_v2::EntryType::Notification(notification_ty) => {
                             let notification_id = match value
@@ -3362,7 +3361,7 @@ pub mod v1 {
                                 }
                             };
 
-                            journal_v2::raw::RawEntry::new(
+                            restate_types::storage::StoredRawEntry::new(
                                 header,
                                 journal_v2::raw::RawNotification::new(
                                     notification_ty,
@@ -3374,7 +3373,7 @@ pub mod v1 {
                         journal_v2::EntryType::Command(ct @ journal_v2::CommandType::Call)
                         | journal_v2::EntryType::Command(
                             ct @ journal_v2::CommandType::OneWayCall,
-                        ) => journal_v2::raw::RawEntry::new(
+                        ) => restate_types::storage::StoredRawEntry::new(
                             header,
                             journal_v2::raw::RawCommand::new(ct, value.content)
                                 .with_command_specific_metadata(
@@ -3389,10 +3388,12 @@ pub mod v1 {
                                 )),
                             ),
                         ),
-                        journal_v2::EntryType::Command(ct) => journal_v2::raw::RawEntry::new(
-                            header,
-                            journal_v2::raw::RawCommand::new(ct, value.content),
-                        ),
+                        journal_v2::EntryType::Command(ct) => {
+                            restate_types::storage::StoredRawEntry::new(
+                                header,
+                                journal_v2::raw::RawCommand::new(ct, value.content),
+                            )
+                        }
                     },
                 ))
             }
@@ -3411,7 +3412,7 @@ pub mod v1 {
                     None;
                 let mut notification_id: Option<entry::NotificationId> = None;
                 let content = match raw_entry.inner {
-                    journal_v2::raw::RawEntryInner::Command(cmd) => {
+                    journal_v2::raw::RawEntry::Command(cmd) => {
                         match cmd.command_specific_metadata {
                             journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
                                 call_or_send_metadata,
@@ -3424,7 +3425,7 @@ pub mod v1 {
 
                         cmd.serialized_content
                     }
-                    journal_v2::raw::RawEntryInner::Notification(notification) => {
+                    journal_v2::raw::RawEntry::Notification(notification) => {
                         notification_id = Some(match notification.id() {
                             journal_v2::NotificationId::CompletionId(c) => {
                                 entry::NotificationId::CompletionIdx(c)
@@ -3439,7 +3440,7 @@ pub mod v1 {
 
                         notification.serialized_content()
                     }
-                    journal_v2::raw::RawEntryInner::Event(event) => {
+                    journal_v2::raw::RawEntry::Event(event) => {
                         let (ty, deduplication_hash, value) = event.into_inner();
                         event_type = ty.into();
                         event_deduplication_hash = deduplication_hash;

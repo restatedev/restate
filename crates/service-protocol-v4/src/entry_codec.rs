@@ -33,8 +33,7 @@ use restate_types::journal_v2::lite::{
     SignalResultLite, SleepCommandLite,
 };
 use restate_types::journal_v2::raw::{
-    CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawEntryHeader,
-    RawEntryInner, RawEvent, RawNotification,
+    CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawEvent, RawNotification,
 };
 use restate_types::journal_v2::*;
 
@@ -60,7 +59,7 @@ pub struct ServiceProtocolV4Codec;
 
 impl Encoder for ServiceProtocolV4Codec {
     fn encode_entry(entry: Entry) -> RawEntry {
-        let entry_inner: RawEntryInner = match entry {
+        match entry {
             Entry::Command(Command::Input(InputCommand {
                 headers,
                 payload,
@@ -579,8 +578,7 @@ impl Encoder for ServiceProtocolV4Codec {
             }
 
             Entry::Event(e) => RawEvent::from(e.clone()).into(),
-        };
-        RawEntry::new(RawEntryHeader::new(), entry_inner)
+        }
     }
 }
 
@@ -622,8 +620,8 @@ macro_rules! decode_or_bail {
 
 impl Decoder for ServiceProtocolV4Codec {
     fn decode_entry(entry: &RawEntry) -> Result<Entry, DecodingError> {
-        Ok(match &entry.inner {
-            RawEntryInner::Command(cmd) => match cmd.command_type() {
+        Ok(match &entry {
+            RawEntry::Command(cmd) => match cmd.command_type() {
                 CommandType::Input => {
                     let proto::InputCommandMessage {
                         headers,
@@ -903,7 +901,7 @@ impl Decoder for ServiceProtocolV4Codec {
                 }
             },
 
-            RawEntryInner::Notification(notif) => match notif.ty() {
+            RawEntry::Notification(notif) => match notif.ty() {
                 NotificationType::Completion(CompletionType::GetLazyState) => {
                     let proto::GetLazyStateCompletionNotificationMessage {
                         completion_id,
@@ -1072,15 +1070,15 @@ impl Decoder for ServiceProtocolV4Codec {
                 }
             },
 
-            RawEntryInner::Event(e) => Event::try_from(e.clone())
+            RawEntry::Event(e) => Event::try_from(e.clone())
                 .map_err(|e| DecodingError::from(GenericError::from(e)))?
                 .into(),
         })
     }
 
     fn decode_entry_lite(entry: &RawEntry) -> Result<EntryLite, DecodingError> {
-        Ok(match &entry.inner {
-            RawEntryInner::Command(cmd) => match cmd.command_type() {
+        Ok(match &entry {
+            RawEntry::Command(cmd) => match cmd.command_type() {
                 CommandType::Input => InputCommandLite {}.into(),
                 CommandType::Output => {
                     let proto::OutputCommandMessage { result, .. } =
@@ -1312,7 +1310,7 @@ impl Decoder for ServiceProtocolV4Codec {
                 }
             },
 
-            RawEntryInner::Notification(notif) => {
+            RawEntry::Notification(notif) => {
                 let proto::NotificationTemplate { result, .. } =
                     decode_or_bail!(notif.serialized_content(), NotificationTemplate);
 
@@ -1335,7 +1333,7 @@ impl Decoder for ServiceProtocolV4Codec {
                 })
             }
 
-            RawEntryInner::Event(e) => Event::try_from(e.clone())
+            RawEntry::Event(e) => Event::try_from(e.clone())
                 .map_err(|e| DecodingError::from(GenericError::from(e)))?
                 .into(),
         })

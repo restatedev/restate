@@ -21,7 +21,7 @@ use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::journal_table::ScanJournalTable;
 use restate_storage_api::journal_table_v2::ScanJournalTable as ScanJournalTableV2;
 use restate_types::identifiers::{JournalEntryId, PartitionKey};
-use restate_types::journal_v2::raw::RawEntry;
+use restate_types::storage::StoredRawEntry;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::journal::row::{append_journal_row, append_journal_row_v2};
@@ -59,7 +59,7 @@ pub(crate) fn register_self(
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum ScannedEntry {
     V1(JournalEntry),
-    V2(RawEntry),
+    V2(StoredRawEntry),
 }
 
 #[derive(Debug, Clone)]

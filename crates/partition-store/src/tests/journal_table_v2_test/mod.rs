@@ -28,6 +28,8 @@ use restate_types::journal_v2::{
     EntryType, Event, NotificationId, NotificationType, OneWayCallCommand, SleepCommand,
     SleepCompletion, TransientErrorEvent,
 };
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+use restate_types::time::MillisSinceEpoch;
 
 const MOCK_INVOCATION_ID_1: InvocationId =
     InvocationId::from_parts(1, InvocationUuid::from_u128(12345678900001));
@@ -94,7 +96,10 @@ async fn populate_sleep_journal<T: JournalTable>(txn: &mut T) {
         txn.put_journal_entry(
             MOCK_INVOCATION_ID_1,
             i,
-            &mock_sleep_command(i).encode::<ServiceProtocolV4Codec>(),
+            &StoredRawEntry::new(
+                StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                mock_sleep_command(i).encode::<ServiceProtocolV4Codec>(),
+            ),
             &[i],
         )
         .await
@@ -104,7 +109,10 @@ async fn populate_sleep_journal<T: JournalTable>(txn: &mut T) {
         txn.put_journal_entry(
             MOCK_INVOCATION_ID_1,
             i,
-            &mock_sleep_completion(i - 5).encode::<ServiceProtocolV4Codec>(),
+            &StoredRawEntry::new(
+                StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                mock_sleep_completion(i - 5).encode::<ServiceProtocolV4Codec>(),
+            ),
             &[],
         )
         .await
@@ -245,7 +253,10 @@ async fn test_call_journal() {
     txn.put_journal_entry(
         MOCK_INVOCATION_ID_1,
         0,
-        &mock_call_command(0, 1).encode::<ServiceProtocolV4Codec>(),
+        &StoredRawEntry::new(
+            StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            mock_call_command(0, 1).encode::<ServiceProtocolV4Codec>(),
+        ),
         &[0, 1],
     )
     .await
@@ -253,7 +264,10 @@ async fn test_call_journal() {
     txn.put_journal_entry(
         MOCK_INVOCATION_ID_1,
         1,
-        &mock_one_way_call_command(2).encode::<ServiceProtocolV4Codec>(),
+        &StoredRawEntry::new(
+            StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            mock_one_way_call_command(2).encode::<ServiceProtocolV4Codec>(),
+        ),
         &[2],
     )
     .await
@@ -321,7 +335,10 @@ async fn test_event() {
     txn.put_journal_entry(
         MOCK_INVOCATION_ID_1,
         0,
-        &Entry::Event(event.clone()).encode::<ServiceProtocolV4Codec>(),
+        &StoredRawEntry::new(
+            StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            Entry::Event(event.clone()).encode::<ServiceProtocolV4Codec>(),
+        ),
         &[],
     )
     .await

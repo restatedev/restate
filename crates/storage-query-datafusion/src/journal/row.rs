@@ -20,8 +20,8 @@ use restate_types::journal::enriched::EnrichedEntryHeader;
 use restate_types::journal::{CompletePromiseEntry, GetPromiseEntry, PeekPromiseEntry};
 use restate_types::journal_v2;
 use restate_types::journal_v2::EntryMetadata;
-use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{CommandMetadata, Decoder};
+use restate_types::storage::StoredRawEntry;
 
 #[inline]
 pub(crate) fn append_journal_row(
@@ -144,7 +144,7 @@ pub(crate) fn append_journal_row_v2(
     builder: &mut SysJournalBuilder,
     output: &mut String,
     journal_entry_id: JournalEntryId,
-    raw_entry: RawEntry,
+    raw_entry: StoredRawEntry,
 ) {
     let mut row = builder.row();
     row.version(2);
@@ -163,7 +163,7 @@ pub(crate) fn append_journal_row_v2(
 
     if row.is_entry_lite_json_defined() {
         // We need to parse the entry
-        let Ok(entry_lite) = ServiceProtocolV4Codec::decode_entry_lite(&raw_entry) else {
+        let Ok(entry_lite) = ServiceProtocolV4Codec::decode_entry_lite(&raw_entry.inner) else {
             log_data_corruption_error!(
                 "sys_journal",
                 &journal_entry_id.invocation_id(),

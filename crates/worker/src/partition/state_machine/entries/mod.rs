@@ -60,6 +60,7 @@ use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
     Command, CommandMetadata, Completion, Entry, EntryMetadata, EntryType,
 };
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use std::collections::VecDeque;
 use tracing::debug;
 
@@ -312,7 +313,6 @@ where
                         invocation_id: self.invocation_id,
                         invocation_status: &mut self.invocation_status,
                         entry: entry
-                            .inner
                             .try_as_notification_ref()
                             .ok_or(Error::BadEntryVariant(et))?,
                     }
@@ -357,27 +357,25 @@ where
                 entry.ty()
             );
 
-            // Make sure that a deterministic append time is set based on Bifrost's record creation
-            // time. This ensures that the append time does not depend on the application time of
-            // the record and ensures that subsequent journal entries have monotonically increasing
-            // append times.
-            entry.header_mut().append_time = ctx.record_created_at;
+            // Update journal length
+            journal_meta.length += 1;
+            if matches!(entry.ty(), EntryType::Command(_)) {
+                journal_meta.commands += 1;
+            }
 
             // Store journal entry
             JournalTable::put_journal_entry(
                 ctx.storage,
                 self.invocation_id,
                 entry_index,
-                &entry,
+                // Make sure that a deterministic append time is set based on Bifrost's record creation
+                // time. This ensures that the append time does not depend on the application time of
+                // the record and ensures that subsequent journal entries have monotonically increasing
+                // append times.
+                &StoredRawEntry::new(StoredRawEntryHeader::new(ctx.record_created_at), entry),
                 &related_completion_ids,
             )
             .await?;
-
-            // Update journal length
-            journal_meta.length += 1;
-            if matches!(entry.ty(), EntryType::Command(_)) {
-                journal_meta.commands += 1;
-            }
         }
 
         // Update timestamps

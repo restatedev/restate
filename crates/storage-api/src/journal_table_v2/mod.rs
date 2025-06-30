@@ -13,25 +13,25 @@ use std::ops::RangeInclusive;
 
 use futures::Stream;
 
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
-use restate_types::journal_v2::raw::{RawCommand, RawEntry};
-use restate_types::journal_v2::{CompletionId, NotificationId};
-
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
+use restate_types::journal_v2::raw::RawCommand;
+use restate_types::journal_v2::{CompletionId, NotificationId};
+use restate_types::storage::StoredRawEntry;
 
 pub trait ReadOnlyJournalTable {
     fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
         index: u32,
-    ) -> impl Future<Output = Result<Option<RawEntry>>> + Send;
+    ) -> impl Future<Output = Result<Option<StoredRawEntry>>> + Send;
 
     fn get_journal(
         &mut self,
         invocation_id: InvocationId,
         length: EntryIndex,
-    ) -> Result<impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send>;
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredRawEntry)>> + Send>;
 
     fn get_notifications_index(
         &mut self,
@@ -50,7 +50,7 @@ pub trait ScanJournalTable {
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<
-        impl Stream<Item = Result<(restate_types::identifiers::JournalEntryId, RawEntry)>> + Send,
+        impl Stream<Item = Result<(restate_types::identifiers::JournalEntryId, StoredRawEntry)>> + Send,
     >;
 }
 
@@ -60,7 +60,7 @@ pub trait JournalTable: ReadOnlyJournalTable {
         &mut self,
         invocation_id: InvocationId,
         index: u32,
-        entry: &RawEntry,
+        entry: &StoredRawEntry,
         related_completion_ids: &[CompletionId],
     ) -> impl Future<Output = Result<()>> + Send;
 
@@ -73,7 +73,7 @@ pub trait JournalTable: ReadOnlyJournalTable {
 }
 
 #[derive(Debug, Clone)]
-pub struct StoredEntry(pub RawEntry);
+pub struct StoredEntry(pub StoredRawEntry);
 
 impl PartitionStoreProtobufValue for StoredEntry {
     type ProtobufType = crate::protobuf_types::v1::Entry;

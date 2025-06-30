@@ -16,6 +16,12 @@ use anyhow::anyhow;
 use futures::Stream;
 use futures_util::stream;
 
+use crate::TableKind::Journal;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::owned_iter::OwnedIterator;
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table_v2::{
     JournalEntryIndex, JournalTable, ReadOnlyJournalTable, ScanJournalTable, StoredEntry,
@@ -25,15 +31,9 @@ use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryInner};
+use restate_types::journal_v2::raw::{RawCommand, RawEntry};
 use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
-
-use crate::TableKind::Journal;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::owned_iter::OwnedIterator;
-use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
-};
+use restate_types::storage::StoredRawEntry;
 
 define_table_key!(
     Journal,
@@ -76,10 +76,10 @@ fn put_journal_entry<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journal_index: u32,
-    journal_entry: &RawEntry,
+    journal_entry: &StoredRawEntry,
     related_completion_ids: &[CompletionId],
 ) -> Result<()> {
-    if let RawEntryInner::Notification(notification) = &journal_entry.inner {
+    if let RawEntry::Notification(notification) = &journal_entry.inner {
         storage.put_kv(
             JournalNotificationIdToNotificationIndexKey::default()
                 .partition_key(invocation_id.partition_key())
@@ -87,7 +87,7 @@ fn put_journal_entry<S: StorageAccess>(
                 .notification_id(notification.id()),
             &JournalEntryIndex(journal_index),
         )?;
-    } else if let RawEntryInner::Command(_) = &journal_entry.inner {
+    } else if let RawEntry::Command(_) = &journal_entry.inner {
         for completion_id in related_completion_ids {
             storage.put_kv(
                 JournalCompletionIdToCommandIndexKey::default()
@@ -109,7 +109,7 @@ fn get_journal_entry<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journal_index: u32,
-) -> Result<Option<RawEntry>> {
+) -> Result<Option<StoredRawEntry>> {
     let key = write_journal_entry_key(invocation_id, journal_index);
     let opt: Option<StoredEntry> = storage.get_value(key)?;
     Ok(opt.map(|e| e.0))
@@ -119,7 +119,7 @@ fn get_journal<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journal_length: EntryIndex,
-) -> Result<Vec<Result<(EntryIndex, RawEntry)>>> {
+) -> Result<Vec<Result<(EntryIndex, StoredRawEntry)>>> {
     let _x = RocksDbPerfGuard::new("get-journal");
     let key = JournalKey::default()
         .partition_key(invocation_id.partition_key())
@@ -277,7 +277,7 @@ impl ReadOnlyJournalTable for PartitionStore {
         &mut self,
         invocation_id: InvocationId,
         journal_index: u32,
-    ) -> Result<Option<RawEntry>> {
+    ) -> Result<Option<StoredRawEntry>> {
         self.assert_partition_key(&invocation_id)?;
         let _x = RocksDbPerfGuard::new("get-journal-entry");
         get_journal_entry(self, &invocation_id, journal_index)
@@ -287,7 +287,7 @@ impl ReadOnlyJournalTable for PartitionStore {
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-    ) -> Result<impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredRawEntry)>> + Send> {
         self.assert_partition_key(&invocation_id)?;
         Ok(stream::iter(get_journal(
             self,
@@ -317,7 +317,7 @@ impl ScanJournalTable for PartitionStore {
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> Result<
-        impl Stream<Item = Result<(restate_types::identifiers::JournalEntryId, RawEntry)>> + Send,
+        impl Stream<Item = Result<(restate_types::identifiers::JournalEntryId, StoredRawEntry)>> + Send,
     > {
         self.run_iterator(
             "df-v2-journal",
@@ -349,7 +349,7 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
         &mut self,
         invocation_id: InvocationId,
         journal_index: u32,
-    ) -> Result<Option<RawEntry>> {
+    ) -> Result<Option<StoredRawEntry>> {
         self.assert_partition_key(&invocation_id)?;
         let _x = RocksDbPerfGuard::new("get-journal-entry");
         get_journal_entry(self, &invocation_id, journal_index)
@@ -359,7 +359,7 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-    ) -> Result<impl Stream<Item = Result<(EntryIndex, RawEntry)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredRawEntry)>> + Send> {
         self.assert_partition_key(&invocation_id)?;
         Ok(stream::iter(get_journal(
             self,
@@ -389,7 +389,7 @@ impl JournalTable for PartitionStoreTransaction<'_> {
         &mut self,
         invocation_id: InvocationId,
         index: u32,
-        entry: &RawEntry,
+        entry: &StoredRawEntry,
         related_completion_ids: &[CompletionId],
     ) -> Result<()> {
         self.assert_partition_key(&invocation_id)?;

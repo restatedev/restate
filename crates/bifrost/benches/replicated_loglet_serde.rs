@@ -32,7 +32,7 @@ use restate_types::invocation::{
     InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext,
 };
 use restate_types::journal_v2::CommandType;
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryHeader, RawEntryInner};
+use restate_types::journal_v2::raw::{RawCommand, RawEntry};
 use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
 use restate_types::net::codec::{WireDecode, WireEncode};
 use restate_types::net::log_server::{LogServerRequestHeader, Store, StoreFlags};
@@ -113,16 +113,13 @@ fn invoker_effect_cmd() -> Command {
             Some(&idempotency_key),
         ),
         invocation_epoch: random(),
-        kind: EffectKind::JournalEntryV2 {
-            entry: RawEntry::new(
-                RawEntryHeader::new(),
-                RawEntryInner::Command(RawCommand::new(
-                    CommandType::SetState,
-                    Bytes::copy_from_slice(&data),
-                )),
-            ),
-            command_index_to_ack: Some(random()),
-        },
+        kind: EffectKind::journal_entry(
+            RawEntry::Command(RawCommand::new(
+                CommandType::SetState,
+                Bytes::copy_from_slice(&data),
+            )),
+            Some(random()),
+        ),
     }))
 }
 

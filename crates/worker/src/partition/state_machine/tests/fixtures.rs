@@ -88,10 +88,10 @@ pub fn invoker_entry_effect_for_epoch(
     Command::InvokerEffect(Box::new(Effect {
         invocation_id,
         invocation_epoch,
-        kind: InvokerEffectKind::JournalEntryV2 {
-            entry: entry.into().encode::<ServiceProtocolV4Codec>(),
-            command_index_to_ack: None,
-        },
+        kind: InvokerEffectKind::journal_entry(
+            entry.into().encode::<ServiceProtocolV4Codec>(),
+            None,
+        ),
     }))
 }
 

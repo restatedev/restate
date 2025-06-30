@@ -64,9 +64,7 @@ use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal_v2;
-use restate_types::journal_v2::raw::{
-    RawCommand, RawEntry, RawEntryHeader, RawEvent, RawNotification,
-};
+use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEvent, RawNotification};
 use restate_types::journal_v2::{
     CommandIndex, EntryMetadata, Event, NotificationId, TransientErrorEvent,
 };
@@ -816,10 +814,7 @@ where
                 .send(Box::new(Effect {
                     invocation_id,
                     invocation_epoch: ism.invocation_epoch,
-                    kind: EffectKind::JournalEntryV2 {
-                        command_index_to_ack: None,
-                        entry: RawEntry::new(RawEntryHeader::new(), notification),
-                    },
+                    kind: EffectKind::journal_entry(notification, None),
                 }))
                 .await;
         } else {
@@ -871,10 +866,7 @@ where
                 .send(Box::new(Effect {
                     invocation_id,
                     invocation_epoch: ism.invocation_epoch,
-                    kind: EffectKind::JournalEntryV2 {
-                        command_index_to_ack: Some(command_index),
-                        entry: RawEntry::new(RawEntryHeader::new(), command),
-                    },
+                    kind: EffectKind::journal_entry(command, Some(command_index)),
                 }))
                 .await;
         } else {
@@ -936,7 +928,7 @@ where
                 "Sending entry"
             );
 
-            ism.notify_entry(RawEntry::new(RawEntryHeader::default(), notification));
+            ism.notify_entry(RawEntry::Notification(notification));
         });
     }
 
@@ -1257,10 +1249,7 @@ where
                         .send(Box::new(Effect {
                             invocation_id,
                             invocation_epoch: ism.invocation_epoch,
-                            kind: EffectKind::JournalEntryV2 {
-                                entry: RawEntry::new(RawEntryHeader::new(), raw_event),
-                                command_index_to_ack: None,
-                            },
+                            kind: EffectKind::journal_entry(raw_event, None),
                         }))
                         .await;
                 }
@@ -2028,7 +2017,6 @@ mod tests {
                         name: Default::default(),
                     },
                 )))
-                .inner
                 .try_as_command()
                 .unwrap(),
                 false,
@@ -2052,7 +2040,6 @@ mod tests {
                         name: Default::default(),
                     },
                 )))
-                .inner
                 .try_as_command()
                 .unwrap(),
                 false,

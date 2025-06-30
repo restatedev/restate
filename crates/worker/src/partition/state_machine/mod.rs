@@ -1874,7 +1874,15 @@ impl<S> StateMachineApplyContext<'_, S> {
             InvokerEffectKind::JournalEntryV2 {
                 command_index_to_ack,
                 entry,
+                raw_entry,
             } => {
+                // Starting from v1.5.0 the system is populating the raw_entry field instead of the
+                // entry field. For backwards compatibility we fall back to entry if raw_entry is
+                // not set.
+                let entry = raw_entry
+                    .or(entry.map(|entry| entry.inner))
+                    .expect("Either the raw_entry field or the legacy entry field must be set");
+
                 entries::OnJournalEntryCommand::from_raw_entry(
                     effect.invocation_id,
                     invocation_status,

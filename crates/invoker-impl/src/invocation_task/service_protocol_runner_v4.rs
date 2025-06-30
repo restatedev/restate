@@ -44,7 +44,7 @@ use restate_types::journal;
 use restate_types::journal_v2::command::{
     CallCommand, CallRequest, InputCommand, OneWayCallCommand,
 };
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEntryInner, RawNotification};
+use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
 use restate_types::journal_v2::{
     CommandIndex, CommandType, Entry, EntryType, NotificationId, RunCompletion, RunResult, SignalId,
 };
@@ -319,7 +319,7 @@ where
                 opt_je = journal_stream.next() => {
                     match opt_je {
                         Some(JournalEntry::JournalV2(entry)) => {
-                            crate::shortcircuit!(self.write_entry(http_stream_tx, entry).await);
+                            crate::shortcircuit!(self.write_entry(http_stream_tx, entry.inner).await);
 
                         }
                         Some(JournalEntry::JournalV1(old_entry)) => {
@@ -460,8 +460,8 @@ where
         entry: RawEntry,
     ) -> Result<(), InvokerError> {
         // TODO(slinkydeveloper) could this code be improved a tad bit more introducing something to our magic macro in message_codec?
-        match entry.inner {
-            RawEntryInner::Command(cmd) => {
+        match entry {
+            RawEntry::Command(cmd) => {
                 self.write_raw(
                     http_stream_tx,
                     cmd.command_type().into(),
@@ -470,7 +470,7 @@ where
                 .await?;
                 self.command_index += 1;
             }
-            RawEntryInner::Notification(notif) => {
+            RawEntry::Notification(notif) => {
                 self.write_raw(
                     http_stream_tx,
                     notif.ty().into(),
@@ -478,7 +478,7 @@ where
                 )
                 .await?;
             }
-            RawEntryInner::Event(_) => {
+            RawEntry::Event(_) => {
                 // We don't send these
             }
         }
@@ -644,7 +644,6 @@ where
 
                 let raw_notification: RawNotification = notification
                     .encode::<ServiceProtocolV4Codec>()
-                    .inner
                     .try_into()
                     .expect("a raw notification");
 
@@ -727,7 +726,6 @@ where
                     mh,
                     entry
                         .encode::<ServiceProtocolV4Codec>()
-                        .inner
                         .try_into()
                         .expect("a raw command"),
                 );
@@ -763,7 +761,6 @@ where
                     mh,
                     entry
                         .encode::<ServiceProtocolV4Codec>()
-                        .inner
                         .try_into()
                         .expect("a raw command"),
                 );
