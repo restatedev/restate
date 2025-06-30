@@ -26,7 +26,7 @@ use restate_types::invocation::{
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal_v2::{CompletionId, EntryIndex, NotificationId};
-use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
+use restate_types::time::MillisSinceEpoch;
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -45,13 +45,12 @@ pub struct StatusTimestamps {
 
 impl StatusTimestamps {
     /// Create a new StatusTimestamps data structure using the system time.
-    pub fn init(created_at: NanosSinceEpoch) -> Self {
+    pub fn init(created_at: MillisSinceEpoch) -> Self {
         // typically, created_at is the timestamp of the command entry in bifrost that
         // creates this invocation.
-        let creation_time = MillisSinceEpoch::from(created_at);
         Self {
-            creation_time,
-            modification_time: creation_time,
+            creation_time: created_at,
+            modification_time: created_at,
             inboxed_transition_time: None,
             scheduled_transition_time: None,
             running_transition_time: None,
@@ -59,7 +58,7 @@ impl StatusTimestamps {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    // #[allow(clippy::too_many_arguments)]
     pub fn new(
         creation_time: MillisSinceEpoch,
         modification_time: MillisSinceEpoch,
@@ -79,51 +78,31 @@ impl StatusTimestamps {
     }
 
     /// Update the statistics with an updated [`Self::modification_time()`].
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub fn update(&mut self) {
-        self.modification_time = MillisSinceEpoch::now();
+    pub fn update(&mut self, timestamp: MillisSinceEpoch) {
+        self.modification_time = self.modification_time.max(timestamp);
     }
 
     /// Update the statistics with an updated [`Self::inboxed_transition_time()`].
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    fn record_inboxed_transition_time(&mut self) {
-        self.update();
+    fn record_inboxed_transition_time(&mut self, timestamp: MillisSinceEpoch) {
+        self.update(timestamp);
         self.inboxed_transition_time = Some(self.modification_time)
     }
 
     /// Update the statistics with an updated [`Self::scheduled_transition_time()`].
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    fn record_scheduled_transition_time(&mut self) {
-        self.update();
+    fn record_scheduled_transition_time(&mut self, timestamp: MillisSinceEpoch) {
+        self.update(timestamp);
         self.scheduled_transition_time = Some(self.modification_time)
     }
 
     /// Update the statistics with an updated [`Self::running_transition_time()`].
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    fn record_running_transition_time(&mut self) {
-        self.update();
+    fn record_running_transition_time(&mut self, timestamp: MillisSinceEpoch) {
+        self.update(timestamp);
         self.running_transition_time = Some(self.modification_time)
     }
 
     /// Update the statistics with an updated [`Self::completed_transition_time()`].
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    fn record_completed_transition_time(&mut self) {
-        self.update();
+    fn record_completed_transition_time(&mut self, timestamp: MillisSinceEpoch) {
+        self.update(timestamp);
         self.completed_transition_time = Some(self.modification_time)
     }
 
@@ -133,47 +112,27 @@ impl StatusTimestamps {
     }
 
     /// Modification time of the [`InvocationStatus`].
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub unsafe fn modification_time(&self) -> MillisSinceEpoch {
+    pub fn modification_time(&self) -> MillisSinceEpoch {
         self.modification_time
     }
 
     /// Inboxed transition time of the [`InvocationStatus`], if any.
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub unsafe fn inboxed_transition_time(&self) -> Option<MillisSinceEpoch> {
+    pub fn inboxed_transition_time(&self) -> Option<MillisSinceEpoch> {
         self.inboxed_transition_time
     }
 
     /// Scheduled transition time of the [`InvocationStatus`], if any.
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub unsafe fn scheduled_transition_time(&self) -> Option<MillisSinceEpoch> {
+    pub fn scheduled_transition_time(&self) -> Option<MillisSinceEpoch> {
         self.scheduled_transition_time
     }
 
     /// First transition to Running time of the [`InvocationStatus`], if any.
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub unsafe fn running_transition_time(&self) -> Option<MillisSinceEpoch> {
+    pub fn running_transition_time(&self) -> Option<MillisSinceEpoch> {
         self.running_transition_time
     }
 
     /// Completed transition time of the [`InvocationStatus`], if any.
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub unsafe fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
+    pub fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
         self.completed_transition_time
     }
 }
@@ -471,8 +430,13 @@ pub struct ScheduledInvocation {
 }
 
 impl ScheduledInvocation {
-    pub fn from_pre_flight_invocation_metadata(mut metadata: PreFlightInvocationMetadata) -> Self {
-        metadata.timestamps.record_scheduled_transition_time();
+    pub fn from_pre_flight_invocation_metadata(
+        mut metadata: PreFlightInvocationMetadata,
+        timestamp: MillisSinceEpoch,
+    ) -> Self {
+        metadata
+            .timestamps
+            .record_scheduled_transition_time(timestamp);
 
         Self { metadata }
     }
@@ -480,7 +444,7 @@ impl ScheduledInvocation {
 
 impl PreFlightInvocationMetadata {
     pub fn from_service_invocation(
-        created_at: NanosSinceEpoch,
+        created_at: MillisSinceEpoch,
         service_invocation: ServiceInvocation,
     ) -> Self {
         Self {
@@ -512,8 +476,11 @@ impl InboxedInvocation {
     pub fn from_pre_flight_invocation_metadata(
         mut metadata: PreFlightInvocationMetadata,
         inbox_sequence_number: u64,
+        timestamp: MillisSinceEpoch,
     ) -> Self {
-        metadata.timestamps.record_inboxed_transition_time();
+        metadata
+            .timestamps
+            .record_inboxed_transition_time(timestamp);
 
         Self {
             inbox_sequence_number,
@@ -524,10 +491,12 @@ impl InboxedInvocation {
     pub fn from_scheduled_invocation(
         scheduled_invocation: ScheduledInvocation,
         inbox_sequence_number: u64,
+        timestamp: MillisSinceEpoch,
     ) -> Self {
         Self::from_pre_flight_invocation_metadata(
             scheduled_invocation.metadata,
             inbox_sequence_number,
+            timestamp,
         )
     }
 }
@@ -630,10 +599,11 @@ pub struct InFlightInvocationMetadata {
 impl InFlightInvocationMetadata {
     pub fn from_pre_flight_invocation_metadata(
         mut pre_flight_invocation_metadata: PreFlightInvocationMetadata,
+        timestamp: MillisSinceEpoch,
     ) -> (Self, InvocationInput) {
         pre_flight_invocation_metadata
             .timestamps
-            .record_running_transition_time();
+            .record_running_transition_time(timestamp);
 
         (
             Self {
@@ -666,17 +636,22 @@ impl InFlightInvocationMetadata {
 
     pub fn from_inboxed_invocation(
         inboxed_invocation: InboxedInvocation,
+        timestamp: MillisSinceEpoch,
     ) -> (Self, InvocationInput) {
-        Self::from_pre_flight_invocation_metadata(inboxed_invocation.metadata)
+        Self::from_pre_flight_invocation_metadata(inboxed_invocation.metadata, timestamp)
     }
 
-    pub fn set_pinned_deployment(&mut self, pinned_deployment: PinnedDeployment) {
+    pub fn set_pinned_deployment(
+        &mut self,
+        pinned_deployment: PinnedDeployment,
+        timestamp: MillisSinceEpoch,
+    ) {
         debug_assert_eq!(
             self.pinned_deployment, None,
             "No deployment should be chosen for the current invocation"
         );
         self.pinned_deployment = Some(pinned_deployment);
-        self.timestamps.update();
+        self.timestamps.update(timestamp);
     }
 }
 
@@ -714,10 +689,11 @@ impl CompletedInvocation {
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         journal_retention_policy: JournalRetentionPolicy,
         response_result: ResponseResult,
+        timestamp: MillisSinceEpoch,
     ) -> Self {
         in_flight_invocation_metadata
             .timestamps
-            .record_completed_transition_time();
+            .record_completed_transition_time(timestamp);
 
         Self {
             invocation_target: in_flight_invocation_metadata.invocation_target,
@@ -741,12 +717,9 @@ impl CompletedInvocation {
     }
 
     /// Expiration time of the [`InvocationStatus::Completed`], if any.
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub unsafe fn completion_expiry_time(&self) -> Option<MillisSinceEpoch> {
-        unsafe { self.timestamps.completed_transition_time() }
+    pub fn completion_expiry_time(&self) -> Option<MillisSinceEpoch> {
+        self.timestamps
+            .completed_transition_time()
             .map(|base| base + self.completion_retention_duration)
     }
 }
@@ -798,7 +771,7 @@ mod test_util {
 
     impl StatusTimestamps {
         pub fn mock() -> Self {
-            Self::init(NanosSinceEpoch::now())
+            Self::init(MillisSinceEpoch::now())
         }
     }
 
@@ -831,8 +804,9 @@ mod test_util {
     impl CompletedInvocation {
         pub fn mock_neo() -> Self {
             let mut timestamps = StatusTimestamps::mock();
-            timestamps.record_running_transition_time();
-            timestamps.record_completed_transition_time();
+            let now = MillisSinceEpoch::now();
+            timestamps.record_running_transition_time(now);
+            timestamps.record_completed_transition_time(now);
 
             CompletedInvocation {
                 invocation_target: InvocationTarget::virtual_object(

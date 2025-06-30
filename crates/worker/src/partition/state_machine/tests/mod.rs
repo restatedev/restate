@@ -155,7 +155,7 @@ impl TestEnv {
         self.state_machine
             .apply(
                 command,
-                NanosSinceEpoch::now(),
+                MillisSinceEpoch::now(),
                 &mut transaction,
                 &mut action_collector,
                 true,
@@ -174,7 +174,7 @@ impl TestEnv {
         self.state_machine
             .apply(
                 command,
-                NanosSinceEpoch::now(),
+                MillisSinceEpoch::now(),
                 &mut transaction,
                 &mut action_collector,
                 true,

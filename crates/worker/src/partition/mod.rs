@@ -877,8 +877,7 @@ where
                 Ok(PartitionProcessorRpcResponse::NotSupported)
             }
             InvocationStatus::Completed(completed) => {
-                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
-                let completion_expiry_time = unsafe { completed.completion_expiry_time() };
+                let completion_expiry_time = completed.completion_expiry_time();
                 Ok(PartitionProcessorRpcResponse::Output(InvocationOutput {
                     request_id,
                     response: match completed.response_result.clone() {
@@ -952,7 +951,7 @@ where
                 self.state_machine
                     .apply(
                         envelope.command,
-                        record_created_at,
+                        record_created_at.into(),
                         transaction,
                         action_collector,
                         self.leadership_state.is_leader(),

@@ -98,7 +98,7 @@ use restate_types::message::MessageIndex;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
-use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
+use restate_types::time::MillisSinceEpoch;
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
@@ -228,7 +228,7 @@ impl StateMachine {
 
 pub(crate) struct StateMachineApplyContext<'a, S> {
     storage: &'a mut S,
-    record_created_at: NanosSinceEpoch,
+    record_created_at: MillisSinceEpoch,
     action_collector: &'a mut ActionCollector,
     inbox_seq_number: &'a mut MessageIndex,
     outbox_seq_number: &'a mut MessageIndex,
@@ -252,7 +252,7 @@ impl StateMachine {
     pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
         &mut self,
         command: Command,
-        record_created_at: NanosSinceEpoch,
+        record_created_at: MillisSinceEpoch,
         transaction: &mut TransactionType,
         action_collector: &mut ActionCollector,
         is_leader: bool,
@@ -473,8 +473,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 }
             }
             Command::Invoke(service_invocation) => {
-                self.on_service_invocation(self.record_created_at, service_invocation)
-                    .await
+                self.on_service_invocation(service_invocation).await
             }
             Command::InvocationResponse(InvocationResponse { target, result }) => {
                 let completion = Completion {
@@ -517,7 +516,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 *self.outbox_head_seq_number = Some(index + 1);
                 Ok(())
             }
-            Command::Timer(timer) => self.on_timer(self.record_created_at, timer).await,
+            Command::Timer(timer) => self.on_timer(timer).await,
             Command::TerminateInvocation(invocation_termination) => {
                 self.on_terminate_invocation(invocation_termination).await
             }
@@ -571,7 +570,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn on_service_invocation(
         &mut self,
-        created_at: NanosSinceEpoch,
         service_invocation: Box<ServiceInvocation>,
     ) -> Result<(), Error>
     where
@@ -594,8 +592,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.partition_key_range
         );
 
-        Span::current().record_invocation_id(&invocation_id);
-        Span::current().record_invocation_target(&service_invocation.invocation_target);
+        let invocation_span = Span::current();
+        invocation_span.record_invocation_id(&invocation_id);
+        invocation_span.record_invocation_target(&service_invocation.invocation_target);
         // Phases of an invocation
         // 1. Try deduplicate it first
         // 2. Check if we need to schedule it
@@ -612,8 +611,10 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // Prepare PreFlightInvocationMetadata structure
         let submit_notification_sink = service_invocation.submit_notification_sink.take();
-        let pre_flight_invocation_metadata =
-            PreFlightInvocationMetadata::from_service_invocation(created_at, *service_invocation);
+        let pre_flight_invocation_metadata = PreFlightInvocationMetadata::from_service_invocation(
+            self.record_created_at,
+            *service_invocation,
+        );
 
         // 2. Check if we need to schedule it
         let execution_time = pre_flight_invocation_metadata.execution_time;
@@ -661,6 +662,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         let (in_flight_invocation_metadata, invocation_input) =
             InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
                 pre_flight_invocation_metadata,
+                self.record_created_at,
             );
 
         self.init_journal_and_invoke(
@@ -796,8 +798,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 }
             }
             InvocationStatus::Completed(completed) => {
-                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
-                let completion_expiry_time = unsafe { completed.completion_expiry_time() };
+                let completion_expiry_time = completed.completion_expiry_time();
                 self.send_response_to_sinks(
                     service_invocation.response_sink.take().into_iter(),
                     completed.response_result,
@@ -838,7 +839,10 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .put_invocation_status(
                     &invocation_id.clone(),
                     &InvocationStatus::Scheduled(
-                        ScheduledInvocation::from_pre_flight_invocation_metadata(metadata),
+                        ScheduledInvocation::from_pre_flight_invocation_metadata(
+                            metadata,
+                            self.record_created_at,
+                        ),
                     ),
                 )
                 .await
@@ -889,6 +893,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                             InboxedInvocation::from_pre_flight_invocation_metadata(
                                 metadata,
                                 inbox_seq_number,
+                                self.record_created_at,
                             ),
                         ),
                     )
@@ -1666,11 +1671,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    async fn on_timer(
-        &mut self,
-        record_created_at: NanosSinceEpoch,
-        timer_value: TimerKeyValue,
-    ) -> Result<(), Error>
+    async fn on_timer(&mut self, timer_value: TimerKeyValue) -> Result<(), Error>
     where
         S: IdempotencyTable
             + InvocationStatusTable
@@ -1721,8 +1722,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 // ServiceInvocations scheduled with a timer are always owned by the same partition processor
                 // where the invocation should be executed
-                self.on_service_invocation(record_created_at, service_invocation)
-                    .await
+                self.on_service_invocation(service_invocation).await
             }
             Timer::CleanInvocationStatus(invocation_id) => {
                 lifecycle::OnPurgeCommand {
@@ -1778,6 +1778,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         let (in_flight_invocation_metadata, invocation_input) =
             InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
                 pre_flight_invocation_metadata,
+                self.record_created_at,
             );
 
         self.init_journal_and_invoke(
@@ -2053,6 +2054,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         JournalRetentionPolicy::Retain
                     },
                     response_result,
+                    self.record_created_at,
                 );
                 self.do_store_completed_invocation(invocation_id, completed_invocation)
                     .await?;
@@ -2186,7 +2188,10 @@ impl<S> StateMachineApplyContext<'_, S> {
                             .map_err(Error::Storage)?;
 
                         let (in_flight_invocation_meta, invocation_input) =
-                            InFlightInvocationMetadata::from_inboxed_invocation(inboxed_invocation);
+                            InFlightInvocationMetadata::from_inboxed_invocation(
+                                inboxed_invocation,
+                                self.record_created_at,
+                            );
                         self.init_journal_and_invoke(
                             invocation_id,
                             in_flight_invocation_meta,
@@ -3360,8 +3365,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 }
             }
             InvocationStatus::Completed(completed) => {
-                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
-                let completion_expiry_time = unsafe { completed.completion_expiry_time() };
+                let completion_expiry_time = completed.completion_expiry_time();
                 self.send_response_to_sinks(
                     vec![attach_invocation_request.response_sink],
                     completed.response_result,
@@ -3543,7 +3547,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         let current_invocation_epoch = metadata.current_invocation_epoch;
 
-        metadata.timestamps.update();
+        metadata.timestamps.update(self.record_created_at);
         let invocation_target = metadata.invocation_target.clone();
         self.storage
             .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
@@ -3585,7 +3589,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             waiting_for_completed_entries
         );
 
-        metadata.timestamps.update();
+        metadata.timestamps.update(self.record_created_at);
         self.storage
             .put_invocation_status(
                 &invocation_id,
@@ -3922,7 +3926,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // Update timestamps
         if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
-            timestamps.update();
+            timestamps.update(self.record_created_at);
         }
 
         // Store invocation status
@@ -4102,7 +4106,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             .expect("No response sinks available")
             .insert(additional_response_sink);
         if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
-            timestamps.update();
+            timestamps.update(self.record_created_at);
         }
 
         self.storage

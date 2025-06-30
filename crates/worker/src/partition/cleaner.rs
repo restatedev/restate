@@ -119,10 +119,7 @@ where
                 continue;
             };
 
-            // SAFETY: it's ok to use the completed_transition_time here,
-            //  because only the leader runs this cleaner code, so there's no need to use an agreed time.
-            let Some(completed_time) =
-                (unsafe { completed_invocation.timestamps.completed_transition_time() })
+            let Some(completed_time) = completed_invocation.timestamps.completed_transition_time()
             else {
                 // If completed time is unavailable, the invocation is on the old invocation table,
                 //  thus it will be cleaned up with the old timer.
