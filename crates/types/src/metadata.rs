@@ -27,10 +27,12 @@ pub trait GlobalMetadata: Versioned + StorageEncode + StorageDecode {
     fn into_container(self: Arc<Self>) -> MetadataContainer;
 }
 
-#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 pub struct VersionedValue {
+    #[bilrost(1)]
     pub version: Version,
     #[debug(skip)]
+    #[bilrost(2)]
     pub value: Bytes,
 }
 
