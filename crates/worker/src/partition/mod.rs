@@ -64,7 +64,7 @@ use restate_types::net::partition_processor::{
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::storage::StorageDecodeError;
-use restate_types::time::MillisSinceEpoch;
+use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion, invocation};
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
@@ -283,7 +283,11 @@ pub enum ProcessorError {
     Other(#[from] anyhow::Error),
 }
 
-type LsnEnvelope = (Lsn, Envelope);
+struct LsnEnvelope {
+    pub lsn: Lsn,
+    pub created_at: NanosSinceEpoch,
+    pub envelope: Arc<Envelope>,
+}
 
 impl<InvokerSender> PartitionProcessor<InvokerSender>
 where
@@ -423,7 +427,8 @@ where
 
         // Telemetry setup
         let partition_id_str = SharedString::from(self.partition_id.to_string());
-        let record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => partition_id_str.clone());
+        let leader_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => partition_id_str.clone(), "leader" => "1");
+        let follower_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => partition_id_str.clone(), "leader" => "0");
         let command_read_count =
             counter!(PARTITION_RECORD_READ_COUNT, PARTITION_LABEL => partition_id_str.clone());
         // Start reading after the last applied lsn
@@ -437,13 +442,14 @@ where
                     trace!(?entry, "Read entry");
                     let lsn = entry.sequence_number();
                     if entry.is_data_record() {
-                        entry.as_record().inspect(|record| {
-                            record_write_to_read_latency.record(record.created_at().elapsed());
-                        });
-                        entry
-                            .try_decode::<Envelope>()
-                            .map(|envelope| Ok((lsn, envelope?)))
-                            .expect("data record is present")
+                        let record = entry.into_record().unwrap();
+                        let created_at = record.created_at();
+                        let envelope = record.decode_arc()?;
+                        Ok(LsnEnvelope {
+                            lsn,
+                            created_at,
+                            envelope,
+                        })
                     } else {
                         Err(ProcessorError::TrimGapEncountered {
                             trim_gap_end: entry
@@ -455,13 +461,13 @@ where
                 }
                 Err(err) => Err(ProcessorError::from(err)),
             })
-            .try_take_while(|(_, envelope)| {
+            .try_take_while(|record| {
                 // a catch-all safety net if all lower layers didn't filter this record out. This
                 // could happen for old records that didn't store `Keys` in the log store.
                 //
                 // At some point, we should remove this and trust that stored records have Keys
                 // stored correctly.
-                std::future::ready(Ok(envelope.matches_key_query(&key_query)))
+                std::future::ready(Ok(record.envelope.matches_key_query(&key_query)))
             });
 
         // avoid synchronized timers.
@@ -525,12 +531,16 @@ where
                     // clear buffers used when applying the next record
                     action_collector.clear();
 
-                    for (lsn, envelope) in command_buffer.drain(..) {
-                        trace!(%lsn, "Processing bifrost record for '{}': {:?}", envelope.command.name(), envelope.header);
+                    for record in command_buffer.drain(..) {
+                        trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.command.name(), record.envelope.header);
 
+                        if self.leadership_state.is_leader() {
+                            leader_record_write_to_read_latency.record(record.created_at.elapsed());
+                        } else {
+                            follower_record_write_to_read_latency.record(record.created_at.elapsed());
+                        }
                         let leadership_change = self.apply_record(
-                            lsn,
-                            envelope,
+                            record,
                             &mut transaction,
                             &mut action_collector).await?;
 
@@ -867,8 +877,7 @@ where
                 Ok(PartitionProcessorRpcResponse::NotSupported)
             }
             InvocationStatus::Completed(completed) => {
-                // SAFETY: We use this field to send back the notification to ingress, and not as part of the PP deterministic logic.
-                let completion_expiry_time = unsafe { completed.completion_expiry_time() };
+                let completion_expiry_time = completed.completion_expiry_time();
                 Ok(PartitionProcessorRpcResponse::Output(InvocationOutput {
                     request_id,
                     response: match completed.response_result.clone() {
@@ -889,22 +898,21 @@ where
 
     async fn apply_record<'a, 'b: 'a>(
         &mut self,
-        lsn: Lsn,
-        envelope: Envelope,
+        record: LsnEnvelope,
         transaction: &mut PartitionStoreTransaction<'b>,
         action_collector: &mut ActionCollector,
     ) -> Result<Option<(Header, Box<AnnounceLeader>)>, state_machine::Error> {
-        transaction.put_applied_lsn(lsn).await?;
+        transaction.put_applied_lsn(record.lsn).await?;
 
         // Update replay status
-        self.status.last_applied_log_lsn = Some(lsn);
+        self.status.last_applied_log_lsn = Some(record.lsn);
         self.status.last_record_applied_at = Some(MillisSinceEpoch::now());
         match self.status.replay_status {
             ReplayStatus::CatchingUp
                 if self
                     .status
                     .target_tail_lsn
-                    .is_some_and(|tail| lsn.next() >= tail) =>
+                    .is_some_and(|tail| record.lsn.next() >= tail) =>
             {
                 // finished catching up
                 self.status.replay_status = ReplayStatus::Active;
@@ -913,13 +921,13 @@ where
             _ => {}
         };
 
-        if let Some(dedup_information) = self.is_targeted_to_me(&envelope.header) {
+        if let Some(dedup_information) = self.is_targeted_to_me(&record.envelope.header) {
             // deduplicate if deduplication information has been provided
             if let Some(dedup_information) = dedup_information {
                 if Self::is_outdated_or_duplicate(dedup_information, transaction).await? {
                     debug!(
                         "Ignoring outdated or duplicate message: {:?}",
-                        envelope.header
+                        record.envelope.header
                     );
                     return Ok(None);
                 }
@@ -932,6 +940,10 @@ where
                     .map_err(state_machine::Error::Storage)?;
             }
 
+            // todo: redesign to pass the arc (or reference) further down
+            let record_created_at = record.created_at;
+            let envelope = Arc::unwrap_or_clone(record.envelope);
+
             if let Command::AnnounceLeader(announce_leader) = envelope.command {
                 // leadership change detected, let's finish our transaction here
                 return Ok(Some((envelope.header, announce_leader)));
@@ -939,6 +951,7 @@ where
                 self.state_machine
                     .apply(
                         envelope.command,
+                        record_created_at.into(),
                         transaction,
                         action_collector,
                         self.leadership_state.is_leader(),
@@ -949,7 +962,7 @@ where
             self.status.num_skipped_records += 1;
             trace!(
                 "Ignore message which is not targeted to me: {:?}",
-                envelope.header
+                record.envelope.header
             );
         }
 

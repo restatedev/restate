@@ -73,7 +73,9 @@ where
                 self.waiting_for_notifications
             );
 
-            in_flight_invocation_metadata.timestamps.update();
+            in_flight_invocation_metadata
+                .timestamps
+                .update(ctx.record_created_at);
             invocation_status = InvocationStatus::Suspended {
                 metadata: in_flight_invocation_metadata,
                 waiting_for_notifications: self.waiting_for_notifications,
