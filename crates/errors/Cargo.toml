@@ -12,7 +12,7 @@ default = []
 include_doc = []
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 codederror = { workspace = true }
 paste = { workspace = true }

@@ -12,7 +12,7 @@ default = ["serde"]
 serde = ["dep:serde", "enum-map/serde", "bytestring/serde", "restate-invoker-api/serde"]
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }

@@ -13,7 +13,7 @@ test-util = ["restate-types/test-util"]
 serde = ["dep:serde"]
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 restate-errors = { workspace = true }
 restate-types = { workspace = true }

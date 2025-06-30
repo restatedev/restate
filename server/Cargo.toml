@@ -74,7 +74,7 @@ tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
 ulid = { workspace = true }
 url = { version = "2.5.4", features = [] }
-workspace-hack = { version = "0.1", path = "../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }

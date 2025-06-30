@@ -15,7 +15,7 @@ unsafe-mutable-config = []
 test-util = ["unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util"]
 
 [dependencies]
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+restate-workspace-hack = { workspace = true }
 
 restate-base64-util = { workspace = true }
 restate-errors = { workspace = true }
