@@ -202,6 +202,12 @@ impl From<prost_types::Timestamp> for NanosSinceEpoch {
     }
 }
 
+impl From<NanosSinceEpoch> for MillisSinceEpoch {
+    fn from(value: NanosSinceEpoch) -> Self {
+        Self(value.0 / 1_000_000)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

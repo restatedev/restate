@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_types::identifiers::InvocationId;
+
+use crate::debug_if_leader;
+use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
 pub struct ResumeInvocationCommand<'e> {
     pub invocation_id: InvocationId,
@@ -35,7 +36,7 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContex
         );
         let invocation_target = metadata.invocation_target.clone();
 
-        metadata.timestamps.update();
+        metadata.timestamps.update(ctx.record_created_at);
         *self.invocation_status = InvocationStatus::Invoked(metadata.clone());
 
         ctx.action_collector.push(Action::Invoke {
