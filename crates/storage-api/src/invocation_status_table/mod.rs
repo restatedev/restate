@@ -26,7 +26,7 @@ use restate_types::invocation::{
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal_v2::{CompletionId, EntryIndex, NotificationId};
-use restate_types::time::MillisSinceEpoch;
+use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -45,12 +45,10 @@ pub struct StatusTimestamps {
 
 impl StatusTimestamps {
     /// Create a new StatusTimestamps data structure using the system time.
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub fn init() -> Self {
-        let creation_time = MillisSinceEpoch::now();
+    pub fn init(created_at: NanosSinceEpoch) -> Self {
+        // typically, created_at is the timestamp of the command entry in bifrost that
+        // creates this invocation.
+        let creation_time = MillisSinceEpoch::from(created_at);
         Self {
             creation_time,
             modification_time: creation_time,
@@ -130,11 +128,7 @@ impl StatusTimestamps {
     }
 
     /// Creation time of the [`InvocationStatus`].
-    ///
-    /// # Safety
-    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub unsafe fn creation_time(&self) -> MillisSinceEpoch {
+    pub fn creation_time(&self) -> MillisSinceEpoch {
         self.creation_time
     }
 
@@ -485,10 +479,13 @@ impl ScheduledInvocation {
 }
 
 impl PreFlightInvocationMetadata {
-    pub fn from_service_invocation(service_invocation: ServiceInvocation) -> Self {
+    pub fn from_service_invocation(
+        created_at: NanosSinceEpoch,
+        service_invocation: ServiceInvocation,
+    ) -> Self {
         Self {
             response_sinks: service_invocation.response_sink.into_iter().collect(),
-            timestamps: StatusTimestamps::init(),
+            timestamps: StatusTimestamps::init(created_at),
             invocation_target: service_invocation.invocation_target,
             argument: service_invocation.argument,
             source: service_invocation.source,
@@ -801,7 +798,7 @@ mod test_util {
 
     impl StatusTimestamps {
         pub fn mock() -> Self {
-            Self::init()
+            Self::init(NanosSinceEpoch::now())
         }
     }
 
