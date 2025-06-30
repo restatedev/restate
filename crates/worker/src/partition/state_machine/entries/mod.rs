@@ -357,6 +357,12 @@ where
                 entry.ty()
             );
 
+            // Make sure that a deterministic append time is set based on Bifrost's record creation
+            // time. This ensures that the append time does not depend on the application time of
+            // the record and ensures that subsequent journal entries have monotonically increasing
+            // append times.
+            entry.header_mut().append_time = ctx.record_created_at;
+
             // Store journal entry
             JournalTable::put_journal_entry(
                 ctx.storage,
