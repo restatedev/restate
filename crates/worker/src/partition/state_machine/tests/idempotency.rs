@@ -205,7 +205,12 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
         completed_invocation.response_result,
         ResponseResult::Success(response_bytes)
     );
-    assert!(unsafe { completed_invocation.timestamps.completed_transition_time() }.is_some());
+    assert!(
+        completed_invocation
+            .timestamps
+            .completed_transition_time()
+            .is_some()
+    );
     assert_eq!(
         completed_invocation.completion_retention_duration,
         retention
