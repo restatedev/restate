@@ -376,7 +376,7 @@ where
 
         // Update timestamps
         if let Some(timestamps) = self.invocation_status.get_timestamps_mut() {
-            timestamps.update();
+            timestamps.update(ctx.record_created_at);
         }
 
         // Store invocation status

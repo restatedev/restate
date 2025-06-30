@@ -153,7 +153,13 @@ impl TestEnv {
         let mut transaction = self.storage.transaction();
         let mut action_collector = ActionCollector::default();
         self.state_machine
-            .apply(command, &mut transaction, &mut action_collector, true)
+            .apply(
+                command,
+                MillisSinceEpoch::now(),
+                &mut transaction,
+                &mut action_collector,
+                true,
+            )
             .await
             .unwrap();
 
@@ -166,7 +172,13 @@ impl TestEnv {
         let mut transaction = self.storage.transaction();
         let mut action_collector = ActionCollector::default();
         self.state_machine
-            .apply(command, &mut transaction, &mut action_collector, true)
+            .apply(
+                command,
+                MillisSinceEpoch::now(),
+                &mut transaction,
+                &mut action_collector,
+                true,
+            )
             .await?;
 
         transaction.commit().await?;

@@ -73,7 +73,9 @@ where
             restate.deployment.service_protocol_version = %self.pinned_deployment.service_protocol_version.as_repr(),
             "Store chosen deployment to storage"
         );
-        in_flight_invocation_metadata.set_pinned_deployment(self.pinned_deployment);
+        in_flight_invocation_metadata
+            .set_pinned_deployment(self.pinned_deployment, ctx.record_created_at);
+
         // We recreate the InvocationStatus in Invoked state as the invoker can notify the
         // chosen deployment_id only when the invocation is in-flight.
         ctx.storage
