@@ -7256,6 +7256,7 @@ version = "1.4.2-dev"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bilrost",
  "bytes",
  "bytestring",
  "ciborium",
