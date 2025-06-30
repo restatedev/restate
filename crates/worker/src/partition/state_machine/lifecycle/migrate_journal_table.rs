@@ -57,9 +57,7 @@ where
                 .into();
                 let mut new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
                 // Journal V1 hasn't append_time, so we set here as timestamp the invocation creation time.
-                // SAFETY: this timestamp is used only for observability, it's fine if it's not agreed among followers.
-                new_raw_entry.header_mut().append_time =
-                    unsafe { self.metadata.timestamps.creation_time() };
+                new_raw_entry.header_mut().append_time = self.metadata.timestamps.creation_time();
 
                 // Now write the entry in the new table, and remove it from the old one
                 journal_table_v2::JournalTable::put_journal_entry(
