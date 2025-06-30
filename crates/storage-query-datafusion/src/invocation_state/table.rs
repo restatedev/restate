@@ -25,7 +25,7 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::invocation_state::row::append_invocation_state_row;
-use crate::invocation_state::schema::SysInvocationStateBuilder;
+use crate::invocation_state::schema::{SysInvocationStateBuilder, sys_invocation_state_sort_order};
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -59,7 +59,7 @@ pub(crate) fn register_self(
     let status_table = PartitionedTableProvider::new(
         partition_selector,
         SysInvocationStateBuilder::schema(),
-        vec![],
+        sys_invocation_state_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_partition_scanner),
         FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
     );
@@ -97,7 +97,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
         let status = self.status_handle.clone();
         let partition_store_manager = self.partition_store_manager.clone();
         let schema = projection.clone();
-        let mut stream_builder = RecordBatchReceiverStream::builder(projection, 2);
+        let mut stream_builder = RecordBatchReceiverStream::builder(projection, 1);
         let tx = stream_builder.tx();
 
         let background_task = async move {
