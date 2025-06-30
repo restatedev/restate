@@ -213,7 +213,8 @@ impl StatusHandle for ChannelStatusReader {
             return itertools::Either::Left(std::iter::empty::<InvocationStatusReport>());
         }
 
-        if let Ok(status_vec) = rx.await {
+        if let Ok(mut status_vec) = rx.await {
+            status_vec.sort_by(|a, b| a.invocation_id().cmp(b.invocation_id()));
             itertools::Either::Right(status_vec.into_iter())
         } else {
             itertools::Either::Left(std::iter::empty::<InvocationStatusReport>())
