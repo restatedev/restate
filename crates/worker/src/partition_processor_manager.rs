@@ -166,13 +166,17 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
         for (range, reader) in self.readers.read().iter() {
             if keys.start() <= range.end() && keys.end() >= range.start() {
                 // if this partition is actually overlapping with the search range
-                overlapping_partitions.push(reader.clone())
+                overlapping_partitions.push((range.clone(), reader.clone()))
             }
         }
+        // although we never have a single scans that cross partitions (thus overlapping_partitions.len() == 1),
+        // we can make this code path abit more future resilent cheaply, by ordering the partitions by their start key.
+        // (this uniquely defines the order between the partitions)
+        overlapping_partitions.sort_by(|(a, _), (b, _)| a.start().cmp(b.start()));
 
         let mut result = Vec::with_capacity(overlapping_partitions.len());
 
-        for reader in overlapping_partitions {
+        for (_, reader) in overlapping_partitions {
             result.push(reader.read_status(keys.clone()).await);
         }
 
