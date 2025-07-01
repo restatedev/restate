@@ -8,26 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::io::Cursor;
-
-use futures::Stream;
-use futures_util::stream;
-
 use restate_rocksdb::RocksDbPerfGuard;
+use restate_storage_api::Result;
 use restate_storage_api::deduplication_table::{
-    DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
-    ReadOnlyDeduplicationTable,
+    DedupSequenceNumber, DeduplicationTable, ProducerId, ReadOnlyDeduplicationTable,
 };
-use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
-use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
 
 use crate::TableKind::Deduplication;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::{
-    PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
-    TableScanIterationDecision,
-};
+use crate::keys::{KeyKind, define_table_key};
+use crate::{PaddedPartitionId, PartitionStore, PartitionStoreTransaction, StorageAccess};
 
 define_table_key!(
     Deduplication,
@@ -48,41 +38,12 @@ fn get_dedup_sequence_number<S: StorageAccess>(
     storage.get_value(key)
 }
 
-fn get_all_sequence_numbers<S: StorageAccess>(
-    storage: &mut S,
-    partition_id: PartitionId,
-) -> Result<impl Stream<Item = Result<DedupInformation>> + Send> {
-    Ok(stream::iter(storage.for_each_key_value_in_place(
-        TableScan::SinglePartition::<DeduplicationKey>(partition_id),
-        move |k, mut v| {
-            let key =
-                DeduplicationKey::deserialize_from(&mut Cursor::new(k)).map(|key| key.producer_id);
-
-            let res = if let Ok(Some(producer_id)) = key {
-                DedupSequenceNumber::decode(&mut v).map(|sequence_number| DedupInformation {
-                    producer_id,
-                    sequence_number,
-                })
-            } else {
-                Err(StorageError::DataIntegrityError)
-            };
-            TableScanIterationDecision::Emit(res)
-        },
-    )?))
-}
-
 impl ReadOnlyDeduplicationTable for PartitionStore {
     async fn get_dedup_sequence_number(
         &mut self,
         producer_id: &ProducerId,
     ) -> Result<Option<DedupSequenceNumber>> {
         get_dedup_sequence_number(self, self.partition_id(), producer_id)
-    }
-
-    fn get_all_sequence_numbers(
-        &mut self,
-    ) -> Result<impl Stream<Item = Result<DedupInformation>> + Send> {
-        get_all_sequence_numbers(self, self.partition_id())
     }
 }
 
@@ -92,12 +53,6 @@ impl ReadOnlyDeduplicationTable for PartitionStoreTransaction<'_> {
         producer_id: &ProducerId,
     ) -> Result<Option<DedupSequenceNumber>> {
         get_dedup_sequence_number(self, self.partition_id(), producer_id)
-    }
-
-    fn get_all_sequence_numbers(
-        &mut self,
-    ) -> Result<impl Stream<Item = Result<DedupInformation>> + Send> {
-        get_all_sequence_numbers(self, self.partition_id())
     }
 }
 
