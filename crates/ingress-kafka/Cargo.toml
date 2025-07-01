@@ -30,7 +30,8 @@ metrics = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 parking_lot = { workspace = true }
-rdkafka = { git = "https://github.com/restatedev/rust-rdkafka", rev = "4b5946309bdb669eb0c884cd9b7ad05578a0f6c6", features = ["libz-static", "cmake-build", "ssl-vendored"] }
+# 0.38 was not released yet at the time of writing, so when this happens, remove the pin.
+rdkafka = { version = "0.38", git = "https://github.com/fede1024/rust-rdkafka.git", rev = "47d86d71e340896491b65521594bbf081186201e", features = ["libz-static", "cmake-build", "ssl-vendored"] }
 schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt"] }
