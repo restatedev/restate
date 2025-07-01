@@ -15,6 +15,7 @@ objstore = [
   "restate-object-store-util",
   "object_store",
   "ciborium",
+  "bilrost",
   "serde",
   "url",
   "rand"
@@ -40,6 +41,7 @@ restate-metadata-server-grpc = { workspace = true, optional = true, features = [
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bilrost = { workspace = true, optional = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 thiserror = { workspace = true }

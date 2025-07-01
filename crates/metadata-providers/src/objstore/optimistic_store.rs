@@ -8,10 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{BufMut, Bytes, BytesMut};
+use std::borrow::Cow;
+
+use anyhow::Context;
+use bilrost::{Message, OwnedMessage};
+use bytes::{BufMut, BytesMut};
 use bytestring::ByteString;
 use rand::random;
-use std::borrow::Cow;
 
 use restate_metadata_store::{ReadError, WriteError};
 use restate_types::Version;
@@ -20,6 +23,7 @@ use restate_types::metadata::{Precondition, VersionedValue};
 
 use super::version_repository::VersionRepositoryError::PreconditionFailed;
 use super::version_repository::{TaggedValue, VersionRepository, VersionRepositoryError};
+use crate::objstore::version_repository::{Content, Tag, ValueEncoding};
 
 pub(crate) struct OptimisticLockingMetadataStoreBuilder {
     pub(crate) version_repository: Box<dyn VersionRepository>,
@@ -46,11 +50,33 @@ enum OnDiskValue<'a> {
     V1(Cow<'a, VersionedValue>, u64),
 }
 
-fn tagged_value_to_versioned_value(tagged_value: &TaggedValue) -> anyhow::Result<VersionedValue> {
-    let on_disk: OnDiskValue<'static> = ciborium::from_reader(tagged_value.bytes.as_ref())?;
-    match on_disk {
-        OnDiskValue::V1(cow, _) => Ok(cow.into_owned()),
-    }
+// similar to OnDiskValue, but without serde support.
+// and will be used for bilrost encoding.
+#[derive(Debug, Clone, bilrost::Message)]
+struct SaltedVersionedValue {
+    #[bilrost(1)]
+    salt: u64,
+    #[bilrost(2)]
+    value: VersionedValue,
+}
+
+fn tagged_value_to_versioned_value(
+    tagged_value: TaggedValue,
+) -> anyhow::Result<(Tag, VersionedValue)> {
+    let tag = tagged_value.tag;
+    let versioned_value = match tagged_value.content.encoding {
+        ValueEncoding::Cbor => {
+            let on_disk: OnDiskValue<'static> =
+                ciborium::from_reader(tagged_value.content.bytes.as_ref())?;
+            match on_disk {
+                OnDiskValue::V1(cow, _) => Ok(cow.into_owned()),
+            }
+        }
+        ValueEncoding::Bilrost => SaltedVersionedValue::decode(tagged_value.content.bytes.as_ref())
+            .context("failed to decode bilrost")
+            .map(|v| v.value),
+    }?;
+    Ok((tag, versioned_value))
 }
 
 impl OptimisticLockingMetadataStore {
@@ -67,8 +93,8 @@ impl OptimisticLockingMetadataStore {
     ) -> Result<Option<VersionedValue>, ReadError> {
         match self.version_repository.get(key).await {
             Ok(res) => {
-                let d = tagged_value_to_versioned_value(&res)
-                    .map_err(|e| ReadError::Codec(e.into()))?;
+                let (_, d) =
+                    tagged_value_to_versioned_value(res).map_err(|e| ReadError::Codec(e.into()))?;
                 Ok(Some(d))
             }
             Err(VersionRepositoryError::NotFound) => Ok(None),
@@ -89,15 +115,34 @@ impl OptimisticLockingMetadataStore {
 
     fn serialize_versioned_value(
         &mut self,
-        versioned_value: &VersionedValue,
-        cookie: u64,
-    ) -> Result<Bytes, WriteError> {
-        self.arena.clear();
-        let writer = (&mut self.arena).writer();
-        let on_disk = OnDiskValue::V1(Cow::Borrowed(versioned_value), cookie);
-        ciborium::into_writer(&on_disk, writer)
-            .map(|_| self.arena.split().freeze())
-            .map_err(|e| WriteError::Codec(e.into()))
+        encoding: ValueEncoding,
+        versioned_value: VersionedValue,
+        salt: u64,
+    ) -> Result<Content, WriteError> {
+        match encoding {
+            ValueEncoding::Cbor => {
+                self.arena.clear();
+                let writer = (&mut self.arena).writer();
+                let on_disk = OnDiskValue::V1(Cow::Owned(versioned_value), salt);
+                ciborium::into_writer(&on_disk, writer)
+                    .map(|_| self.arena.split().freeze())
+                    .map_err(|e| WriteError::Codec(e.into()))
+            }
+            ValueEncoding::Bilrost => {
+                self.arena.clear();
+                let salted = SaltedVersionedValue {
+                    salt,
+                    value: versioned_value,
+                };
+
+                self.arena.reserve(salted.encoded_len());
+                salted
+                    .encode(&mut self.arena)
+                    .map_err(|err| WriteError::Codec(err.into()))?;
+                Ok(self.arena.split().freeze())
+            }
+        }
+        .map(|bytes| Content { encoding, bytes })
     }
 
     pub(crate) async fn put(
@@ -106,24 +151,28 @@ impl OptimisticLockingMetadataStore {
         value: VersionedValue,
         precondition: Precondition,
     ) -> Result<(), WriteError> {
-        // create a random cookie
-        let cookie = random::<u64>();
-        let buf = self.serialize_versioned_value(&value, cookie)?;
+        // The salt is a random value to break CAS ties. S3 CAS works by comparing ETags (body hashes).
+        // We want to avoid two writers thinking they both succeeded if they happen to write identical bodies.
+        let salt = random::<u64>();
+
+        let content = self.serialize_versioned_value(ValueEncoding::default(), value, salt)?;
         match precondition {
             Precondition::None => {
                 self.version_repository
-                    .put(key, buf)
+                    .put(key, content)
                     .await
                     .map_err(WriteError::retryable)?;
                 Ok(())
             }
-            Precondition::DoesNotExist => match self.version_repository.create(key, buf).await {
-                Ok(_) => Ok(()),
-                Err(VersionRepositoryError::AlreadyExists) => {
-                    Err(WriteError::FailedPrecondition("already exists".to_string()))
+            Precondition::DoesNotExist => {
+                match self.version_repository.create(key, content).await {
+                    Ok(_) => Ok(()),
+                    Err(VersionRepositoryError::AlreadyExists) => {
+                        Err(WriteError::FailedPrecondition("already exists".to_string()))
+                    }
+                    Err(e) => Err(WriteError::retryable(e)),
                 }
-                Err(e) => Err(WriteError::retryable(e)),
-            },
+            }
             Precondition::MatchesVersion(version) => {
                 // we need to get the current version here, because the version provided by the API does not
                 // match the version provided by the object store (ETag vs logical version)
@@ -133,9 +182,9 @@ impl OptimisticLockingMetadataStore {
                 let (current_tag, current_version) =
                     match self.version_repository.get(key.clone()).await {
                         Ok(tagged) => {
-                            let versioned_value = tagged_value_to_versioned_value(&tagged)
+                            let (tag, versioned_value) = tagged_value_to_versioned_value(tagged)
                                 .map_err(|e| WriteError::Codec(e.into()))?;
-                            (tagged.tag, versioned_value.version)
+                            (tag, versioned_value.version)
                         }
                         Err(VersionRepositoryError::NotFound) => {
                             return Err(WriteError::FailedPrecondition(
@@ -158,7 +207,7 @@ impl OptimisticLockingMetadataStore {
                 //
                 match self
                     .version_repository
-                    .put_if_tag_matches(key, current_tag, buf)
+                    .put_if_tag_matches(key, current_tag, content)
                     .await
                 {
                     Ok(_) => Ok(()),
@@ -186,10 +235,9 @@ impl OptimisticLockingMetadataStore {
                 // we need to convert a version into a tag, this mean we need to do a read first.
                 let (tag, current_version) = match self.version_repository.get(key.clone()).await {
                     Ok(res) => {
-                        let tag = res.tag.clone();
-                        let d = tagged_value_to_versioned_value(&res)
+                        let (tag, versioned_value) = tagged_value_to_versioned_value(res)
                             .map_err(|e| WriteError::Codec(e.into()))?;
-                        (tag, d.version)
+                        (tag, versioned_value.version)
                     }
                     Err(VersionRepositoryError::NotFound) => {
                         return Err(WriteError::FailedPrecondition(
@@ -230,7 +278,10 @@ mod tests {
     use restate_types::metadata::{Precondition, VersionedValue};
 
     use crate::objstore::object_store_version_repository::ObjectStoreVersionRepository;
-    use crate::objstore::optimistic_store::OptimisticLockingMetadataStore;
+    use crate::objstore::optimistic_store::{
+        OptimisticLockingMetadataStore, tagged_value_to_versioned_value,
+    };
+    use crate::objstore::version_repository::{Content, Tag, TaggedValue, ValueEncoding};
 
     const KEY_1: ByteString = ByteString::from_static("1");
     const HELLO: Bytes = Bytes::from_static(b"hello");
@@ -323,6 +374,49 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn test_encoding() {
+        let mut store = OptimisticLockingMetadataStore::new(Box::new(
+            ObjectStoreVersionRepository::new_for_testing(),
+        ));
+
+        let value = VersionedValue::new(Version::MIN.next(), HELLO);
+
+        let buf = store
+            .serialize_versioned_value(ValueEncoding::Cbor, value, 0)
+            .unwrap();
+
+        let tagged_value = TaggedValue {
+            tag: Tag::from("test".to_string()),
+            content: Content {
+                encoding: buf.encoding,
+                bytes: buf.bytes,
+            },
+        };
+
+        let (tag, versioned_value) = tagged_value_to_versioned_value(tagged_value).unwrap();
+        assert_eq!(tag, Tag::from("test".to_string()));
+        assert_eq!(versioned_value.value, HELLO);
+
+        let value = VersionedValue::new(Version::MIN.next(), HELLO);
+
+        let buf = store
+            .serialize_versioned_value(ValueEncoding::Bilrost, value, 0)
+            .unwrap();
+
+        let tagged_value = TaggedValue {
+            tag: Tag::from("test".to_string()),
+            content: Content {
+                encoding: buf.encoding,
+                bytes: buf.bytes,
+            },
+        };
+
+        let (tag, versioned_value) = tagged_value_to_versioned_value(tagged_value).unwrap();
+        assert_eq!(tag, Tag::from("test".to_string()));
+        assert_eq!(versioned_value.value, HELLO);
     }
 }
 

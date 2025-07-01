@@ -8,8 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::str::FromStr;
+
 use bytes::Bytes;
 use bytestring::ByteString;
+use object_store::AttributeValue;
 
 use restate_types::errors::GenericError;
 
@@ -25,6 +28,8 @@ pub enum VersionRepositoryError {
     Network(GenericError),
     #[error("Unexpected condition {0}")]
     UnexpectedCondition(String),
+    #[error("Encoding error")]
+    Encoding(#[from] EncodingError),
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
@@ -42,22 +47,67 @@ impl Tag {
     }
 }
 
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum EncodingError {
+    #[error("Unknown encoding '{0}'")]
+    UnknownEncoding(String),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ValueEncoding {
+    #[default]
+    Cbor,
+    // TODO: Switch default to bilrost in v1.6.0
+    // Bilrost V1
+    Bilrost,
+}
+
+impl FromStr for ValueEncoding {
+    type Err = EncodingError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "binary/bilrost+v1" => Ok(Self::Bilrost),
+            "binary/cbor" => Ok(Self::Cbor),
+            _ => Err(EncodingError::UnknownEncoding(s.to_owned())),
+        }
+    }
+}
+
+impl From<ValueEncoding> for AttributeValue {
+    fn from(value: ValueEncoding) -> Self {
+        match value {
+            ValueEncoding::Bilrost => AttributeValue::from("binary/bilrost+v1"),
+            ValueEncoding::Cbor => AttributeValue::from("binary/cbor"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TaggedValue {
     pub tag: Tag,
-    pub bytes: Bytes,
+    pub content: Content,
 }
 
 impl TaggedValue {
     #[cfg(test)]
-    pub(crate) fn into_inner(self) -> (Tag, Bytes) {
-        (self.tag, self.bytes)
+    pub(crate) fn into_inner(self) -> (Tag, Content) {
+        (self.tag, self.content)
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Content {
+    pub encoding: ValueEncoding,
+    pub bytes: Bytes,
 }
 
 #[async_trait::async_trait]
 pub(crate) trait VersionRepository: Sync + Send + 'static {
-    async fn create(&self, key: ByteString, content: Bytes) -> Result<Tag, VersionRepositoryError>;
+    async fn create(
+        &self,
+        key: ByteString,
+        content: Content,
+    ) -> Result<Tag, VersionRepositoryError>;
 
     async fn get(&self, key: ByteString) -> Result<TaggedValue, VersionRepositoryError>;
 
@@ -65,11 +115,10 @@ pub(crate) trait VersionRepository: Sync + Send + 'static {
         &self,
         key: ByteString,
         expected: Tag,
-        new_content: Bytes,
+        content: Content,
     ) -> Result<Tag, VersionRepositoryError>;
 
-    async fn put(&self, key: ByteString, new_content: Bytes)
-    -> Result<Tag, VersionRepositoryError>;
+    async fn put(&self, key: ByteString, content: Content) -> Result<Tag, VersionRepositoryError>;
 
     async fn delete(&self, key: ByteString) -> Result<(), VersionRepositoryError>;
 
