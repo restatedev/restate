@@ -117,7 +117,7 @@ impl ConfigLoader {
             .merge(
                 Env::raw()
                     .only(&["MEMORY_LIMIT"])
-                    .map(|_| "rocksdb-total-memory-limit".into()),
+                    .map(|_| "rocksdb-total-memory-size".into()),
             );
 
         let fig = match Env::var("DO_NOT_TRACK").as_deref() {
