@@ -12,7 +12,7 @@
  * by the Apache License, Version 2.0.
  */
 
-import { spawnSync } from "child_process";
+import { spawn } from "child_process";
 import os from "node:os";
 
 function getExePath() {
@@ -32,8 +32,22 @@ function getExePath() {
 
 function run() {
   const args = process.argv.slice(2);
-  const processResult = spawnSync(getExePath(), args, { stdio: "inherit" });
-  process.exit(processResult.status ?? 0);
+  const child = spawn(getExePath(), args, { stdio: "inherit" });
+  child.on("close", (code) => {
+    process.exit(code ?? 0);
+  });
+
+  const handleSignal = (signal: NodeJS.Signals) =>
+    process.on(signal, () => {
+      if (child.exitCode !== null) {
+        return;
+      }
+      child.kill(signal);
+    });
+
+  (["SIGINT", "SIGTERM", "SIGUSR1", "SIGUSR2"] as NodeJS.Signals[]).forEach(
+    (signal) => handleSignal(signal),
+  );
 }
 
 run();
