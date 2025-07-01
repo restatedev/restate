@@ -18,7 +18,9 @@ use base64::Engine;
 use bytes::Bytes;
 use metrics::counter;
 use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
-use rdkafka::consumer::{CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer};
+use rdkafka::consumer::{
+    BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer,
+};
 use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::topic_partition_list::TopicPartitionListElem;
@@ -343,7 +345,7 @@ impl ClientContext for RebalanceContext {}
 // that they are not polled again after the assign. Then there will be a further rebalance callback after the revoke
 // and we will set up new split partition streams before the assign.
 impl ConsumerContext for RebalanceContext {
-    fn pre_rebalance(&self, rebalance: &Rebalance<'_>) {
+    fn pre_rebalance(&self, _base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         let mut topic_partition_tasks = self.topic_partition_tasks.lock();
         let consumer = self
             .consumer
