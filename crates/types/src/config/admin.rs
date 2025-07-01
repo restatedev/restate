@@ -74,8 +74,15 @@ pub struct AdminOptions {
     #[cfg(any(test, feature = "test-util"))]
     pub disable_cluster_controller: bool,
 
+    /// # [EXPERIMENTAL] Force journal retention
+    ///
+    /// This experimental flag forces the journal retention for every invocation (service, VO,
+    /// workflow) for the configured duration. This enables the server to display a detailed view
+    /// of the actions and steps an invocation has taken during its execution. Care should be taken
+    /// when enabling this feature as it will increase the storage footprint, and it might increase
+    /// latency in some operations.
     #[serde_as(as = "Option<restate_serde_util::DurationString>")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub experimental_feature_force_journal_retention: Option<Duration>,
 }
 
