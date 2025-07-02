@@ -228,6 +228,14 @@ impl TrimMode {
             TrimMode::DurableLsn {
                 partition_status, ..
             } => {
+                // FREEZE BLOCK:
+                // - full review of trim and snapshot logic
+                // - see if we can pull snapshots from peers using a new grpc end-point or through
+                // message fabric
+                // - how can we trim only after N minutes of the last snapshot or durable LSN. we
+                // need to know the LSN -> timestamp mapping. Should we add a new API to Bifrost to
+                // estimate the timestamp?
+
                 // If no partitions are reporting archived LSN, we fall back to using the
                 // min(durable_lsn) across the board as the safe trim point. Note that at this point
                 // we know that there are no known dead nodes, so it's safe to take the min of all
