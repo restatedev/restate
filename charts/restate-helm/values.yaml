@@ -59,6 +59,9 @@ storage:
 
 extraInitContainers: []
 
+extraVolumes: []
+extraVolumeMounts: []
+
 identityPrivateKey:
   enabled: false
   secretName: ""
