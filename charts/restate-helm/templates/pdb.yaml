@@ -1,0 +1,13 @@
+{{- if .Values.podDisruptionBudget }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "restate.fullname" . }}
+  labels:
+    {{- include "restate.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "restate.selectorLabels" . | nindent 6 }}
+  {{- toYaml .Values.podDisruptionBudget | nindent 2 }}
+{{- end }}

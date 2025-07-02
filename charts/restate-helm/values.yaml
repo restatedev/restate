@@ -74,3 +74,8 @@ topologySpreadConstraints:
   maxSkew: 1
   topologyKey: topology.kubernetes.io/zone
   whenUnsatisfiable: ScheduleAnyway
+
+# https://kubernetes.io/docs/tasks/run-application/configure-pdb/
+# podDisruptionBudget:
+#   maxUnavailable: 1
+
