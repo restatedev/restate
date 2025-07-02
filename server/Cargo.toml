@@ -23,7 +23,6 @@ console = [
 ]
 options_schema = [
     "dep:schemars",
-    "restate-core/options_schema",
     "restate-node/options_schema",
     "restate-tracing-instrumentation/options_schema",
     "restate-types/schemars",
