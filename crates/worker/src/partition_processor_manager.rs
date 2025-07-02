@@ -49,10 +49,7 @@ use restate_bifrost::loglet::FindTailOptions;
 use restate_core::network::{
     BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver, Verdict,
 };
-use restate_core::worker_api::{
-    ProcessorsManagerCommand, ProcessorsManagerHandle, SnapshotCreated, SnapshotError,
-    SnapshotErrorKind, SnapshotResult,
-};
+use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{
     Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt, TaskHandle, TaskKind,
     cancellation_watcher, my_node_id,
@@ -63,7 +60,9 @@ use restate_invoker_impl::{BuildError, ChannelStatusReader};
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
-use restate_partition_store::snapshots::PartitionSnapshotMetadata;
+use restate_partition_store::snapshots::{
+    PartitionSnapshotMetadata, SnapshotCreated, SnapshotError, SnapshotErrorKind,
+};
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
@@ -120,12 +119,13 @@ pub struct PartitionProcessorManager {
     wait_for_partition_table_update: bool,
 }
 
+type SnapshotResult = Result<SnapshotCreated, SnapshotError>;
+type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
+
 struct PendingSnapshotTask {
     snapshot_id: SnapshotId,
     sender: Option<oneshot::Sender<SnapshotResult>>,
 }
-
-type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -766,13 +766,6 @@ impl PartitionProcessorManager {
         match command {
             ProcessorsManagerCommand::GetState(sender) => {
                 let _ = sender.send(self.get_state());
-            }
-            ProcessorsManagerCommand::CreateSnapshot {
-                partition_id,
-                min_target_lsn,
-                tx,
-            } => {
-                self.on_create_snapshot(partition_id, min_target_lsn, tx);
             }
         }
     }

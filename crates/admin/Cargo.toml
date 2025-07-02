@@ -20,7 +20,7 @@ restate-workspace-hack = { workspace = true }
 
 restate-admin-rest-model = { workspace = true, features = ["schema"] }
 restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }
-restate-core = { workspace = true, features = ["options_schema"] }
+restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-metadata-store = { workspace = true }

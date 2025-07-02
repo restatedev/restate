@@ -15,14 +15,12 @@ test-util = [
   "restate-types/test-util",
   "tokio/test-util"
 ]
-options_schema = ["dep:schemars"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
 restate-core-derive = { workspace = true, optional = true }
 restate-futures-util = { workspace = true }
-restate-object-store-util = { workspace = true }
 restate-types = { workspace = true }
 restate-metadata-store = { workspace = true }
 
@@ -34,7 +32,6 @@ async-trait = { workspace = true }
 axum = { workspace = true, default-features = false }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-ciborium = { workspace = true}
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
@@ -54,13 +51,11 @@ itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
-object_store = { workspace = true, features = ["aws"] }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
 static_assertions = { workspace = true }
@@ -75,8 +70,6 @@ tower = { workspace = true }
 tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
-url = { workspace = true }
-xxhash-rust = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }
