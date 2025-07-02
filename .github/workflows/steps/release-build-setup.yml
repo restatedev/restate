@@ -29,5 +29,10 @@
 
 # cargo-dist isn't currently able to take these from .cargo/config.toml
 # https://github.com/axodotdev/cargo-dist/issues/1571
-- name: Set up RUSTFLAGS
+- name: Set up RUSTFLAGS (macOS)
+  if: ${{ runner.os == 'macOS' }}
   run: echo RUSTFLAGS="-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable" >> "$GITHUB_ENV"
+
+- name: Set up RUSTFLAGS (Linux)
+  if: ${{ runner.os == 'Linux' }}
+  run: echo RUSTFLAGS="-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable --cfg tokio_taskdump" >> "$GITHUB_ENV"

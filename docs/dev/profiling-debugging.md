@@ -17,3 +17,9 @@ When using GDB on a process that comes from a release docker image you can set
 `DEBUGINFOD_URLS=https://4bafe29d-dd3e-4c65-ba1d-54be833b2b69.debuginfod.polarsignals.com,https://debuginfod.elfutils.org/`.
 For other tools, obtain the debug symbols by finding the build ID with `readelf -n restate-server` and then get the symbols with
 `curl -sL https://4bafe29d-dd3e-4c65-ba1d-54be833b2b69.debuginfod.polarsignals.com/buildid/$BUILD_ID/debuginfo -o restate-server`.
+
+Alternatively, inside release docker images, debug symbols can be downloaded (to `/usr/local/bin/.debug/restate-server.debug`) using `download-restate-debug-symbols.sh`.
+
+## Dumping tokio tasks
+A backtrace of all tokio tasks can be obtained with `kill -usr2 <restate-pid>`.
+If in a release docker image, it is strongly recommended to first run `download-restate-debug-symbols.sh`, the backtraces should pick up the debug symbols and be much more useful.
