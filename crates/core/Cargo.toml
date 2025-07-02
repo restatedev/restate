@@ -84,3 +84,6 @@ googletest = { workspace = true }
 test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_taskdump)'] }
