@@ -6911,7 +6911,6 @@ dependencies = [
  "axum",
  "bytes",
  "bytestring",
- "ciborium",
  "dashmap",
  "derive_builder",
  "derive_more",
@@ -6929,7 +6928,6 @@ dependencies = [
  "hyper-util",
  "itertools 0.14.0",
  "metrics",
- "object_store",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",
@@ -6942,11 +6940,9 @@ dependencies = [
  "restate-core-derive",
  "restate-futures-util",
  "restate-metadata-store",
- "restate-object-store-util",
  "restate-test-util",
  "restate-types",
  "restate-workspace-hack",
- "schemars 0.8.22",
  "serde",
  "serde_with",
  "static_assertions",
@@ -6965,8 +6961,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "tracing-test",
- "url",
- "xxhash-rust",
 ]
 
 [[package]]

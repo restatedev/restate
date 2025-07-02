@@ -18,7 +18,6 @@ use rocksdb::event_listener::EventListenerExt;
 use tokio::sync::{RwLock, RwLockWriteGuard, Semaphore};
 use tracing::{debug, info, warn};
 
-use restate_core::worker_api::{SnapshotError, SnapshotErrorKind};
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
@@ -33,7 +32,7 @@ use restate_types::logs::SequenceNumber;
 use crate::PartitionStore;
 use crate::cf_options;
 use crate::durable_lsn_tracking::{DurableLsnEventListener, DurableLsnLookup};
-use crate::snapshots::LocalPartitionSnapshot;
+use crate::snapshots::{LocalPartitionSnapshot, SnapshotError, SnapshotErrorKind};
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
