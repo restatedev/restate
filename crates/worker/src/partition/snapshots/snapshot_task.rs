@@ -11,16 +11,16 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use restate_types::nodes_config::ClusterFingerprint;
 use tracing::{debug, info, instrument, warn};
 
-use restate_core::worker_api::{SnapshotError, SnapshotErrorKind};
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::{
-    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
+    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotError, SnapshotErrorKind,
+    SnapshotFormatVersion,
 };
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
+use restate_types::nodes_config::ClusterFingerprint;
 
 use crate::partition::snapshots::SnapshotRepository;
 
