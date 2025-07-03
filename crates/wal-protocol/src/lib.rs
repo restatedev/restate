@@ -23,6 +23,8 @@ use restate_types::{PlainNodeId, Version, logs};
 use crate::control::{AnnounceLeader, VersionBarrier};
 use crate::timer::TimerKeyValue;
 
+use self::control::PartitionDurability;
+
 pub mod control;
 pub mod timer;
 
@@ -128,6 +130,11 @@ pub enum Destination {
 #[strum_discriminants(derive(strum::IntoStaticStr))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Command {
+    /// Updates the `PARTITION_DURABILITY` FSM variable to the given value.
+    /// See [`PartitionDurability`] for more details.
+    ///
+    /// *Since v1.4.2*
+    UpdatePartitionDurability(PartitionDurability),
     /// A version barrier to fence off state machine changes that require a certain minimum
     /// version of restate server.
     /// *Since v1.4.0*
@@ -192,6 +199,12 @@ impl WithPartitionKey for Envelope {
 impl HasRecordKeys for Envelope {
     fn record_keys(&self) -> logs::Keys {
         match &self.command {
+            // the partition_key is used as key here since the command targets the partition by ID.
+            // Partitions will ignore this message at read time if the paritition ID (in body)
+            // doesn not match. Alternatively, we could use the partition key range or `Keys::None`
+            // but this would just be a waste of effort for readers after a partition has been
+            // split or if the log is shared between multiple partitions.
+            Command::UpdatePartitionDurability(_) => Keys::Single(self.partition_key()),
             Command::VersionBarrier(barrier) => barrier.partition_key_range.clone(),
             Command::AnnounceLeader(announce) => {
                 if let Some(range) = &announce.partition_key_range {
@@ -321,6 +334,7 @@ mod envelope {
         NotifySignal = 14,                      // protobuf
         PurgeJournal = 15,                      // flexbuffers
         VersionBarrier = 16,                    // bilrost
+        UpdatePartitionDurability = 17,         // bilrost
     }
 
     #[derive(bilrost::Message)]
@@ -426,6 +440,10 @@ mod envelope {
     pub fn encode(envelope: &super::Envelope) -> Result<Bytes, StorageEncodeError> {
         // todo(azmy): avoid clone? this will require change to `From` implementation
         let (command_kind, command) = match &envelope.command {
+            Command::UpdatePartitionDurability(value) => (
+                CommandKind::UpdatePartitionDurability,
+                Field::encode_bilrost(value),
+            ),
             Command::VersionBarrier(value) => {
                 (CommandKind::VersionBarrier, Field::encode_bilrost(value))
             }
@@ -517,6 +535,10 @@ mod envelope {
 
         let command = match envelope.command_kind {
             CommandKind::Unknown => return Err(DecodeError::UnknownCommandKind.into()),
+            CommandKind::UpdatePartitionDurability => {
+                codec_or_error!(envelope.command, StorageCodecKind::Bilrost);
+                Command::UpdatePartitionDurability(envelope.command.decode_bilrost()?)
+            }
             CommandKind::VersionBarrier => {
                 codec_or_error!(envelope.command, StorageCodecKind::Bilrost);
                 Command::VersionBarrier(envelope.command.decode_bilrost()?)
