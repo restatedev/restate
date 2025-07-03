@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod leader_state;
+pub mod log_trimming;
 mod self_proposer;
 
 use std::cmp::Ordering;
@@ -19,6 +20,7 @@ use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
 use restate_types::cluster::cluster_state::RunMode;
+use restate_types::config::Configuration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
@@ -57,6 +59,8 @@ use crate::partition::shuffle;
 use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
+
+use self::log_trimming::TrimQueue;
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
@@ -156,11 +160,10 @@ pub(crate) struct LeadershipState<I> {
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
     partition_processor_metadata: PartitionProcessorMetadata,
-    num_timers_in_memory_limit: Option<usize>,
-    cleanup_interval: Duration,
-    channel_size: usize,
     invoker_tx: I,
     bifrost: Bifrost,
+    #[allow(unused)]
+    trim_queue: TrimQueue,
 }
 
 impl<I> LeadershipState<I>
@@ -170,22 +173,18 @@ where
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         partition_processor_metadata: PartitionProcessorMetadata,
-        num_timers_in_memory_limit: Option<usize>,
-        cleanup_interval: Duration,
-        channel_size: usize,
         invoker_tx: I,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
+        trim_queue: TrimQueue,
     ) -> Self {
         Self {
             state: State::Follower,
             partition_processor_metadata,
-            num_timers_in_memory_limit,
-            cleanup_interval,
-            channel_size,
             invoker_tx,
             bifrost,
             last_seen_leader_epoch,
+            trim_queue,
         }
     }
 
@@ -304,6 +303,7 @@ where
         &mut self,
         announce_leader: &AnnounceLeader,
         partition_store: &mut PartitionStore,
+        config: &Configuration,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
 
@@ -319,7 +319,7 @@ where
                     }
                     Ordering::Equal => {
                         debug!("Won the leadership campaign. Becoming the strong leader now.");
-                        self.become_leader(partition_store).await?
+                        self.become_leader(partition_store, config).await?
                     }
                     Ordering::Greater => {
                         debug!(
@@ -355,7 +355,11 @@ where
         Ok(self.is_leader())
     }
 
-    async fn become_leader(&mut self, partition_store: &mut PartitionStore) -> Result<(), Error> {
+    async fn become_leader(
+        &mut self,
+        partition_store: &mut PartitionStore,
+        config: &Configuration,
+    ) -> Result<(), Error> {
         if let State::Candidate {
             leader_epoch,
             self_proposer,
@@ -371,17 +375,17 @@ where
                     .partition_key_range
                     .clone(),
                 partition_store,
-                self.channel_size,
+                config.worker.internal_queue_length(),
             )
             .await?;
 
             let timer_service = TimerService::new(
                 TokioClock,
-                self.num_timers_in_memory_limit,
+                config.worker.num_timers_in_memory_limit(),
                 TimerReader::from(partition_store.clone()),
             );
 
-            let (shuffle_tx, shuffle_rx) = mpsc::channel(self.channel_size);
+            let (shuffle_tx, shuffle_rx) = mpsc::channel(config.worker.internal_queue_length());
 
             let shuffle = Shuffle::new(
                 ShuffleMetadata::new(
@@ -390,7 +394,7 @@ where
                 ),
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
-                self.channel_size,
+                config.worker.internal_queue_length(),
                 self.bifrost.clone(),
             );
 
@@ -407,7 +411,7 @@ where
                 self.partition_processor_metadata
                     .partition_key_range
                     .clone(),
-                self.cleanup_interval,
+                config.worker.cleanup_interval(),
             );
 
             let cleaner_task_id =
@@ -653,6 +657,7 @@ pub(crate) enum TaskError {
 
 #[cfg(test)]
 mod tests {
+    use crate::partition::leadership::log_trimming::TrimQueue;
     use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
@@ -661,14 +666,13 @@ mod tests {
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
     use restate_types::GenerationalNodeId;
-    use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
+    use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StorageOptions};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
     use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
     use std::ops::RangeInclusive;
-    use std::time::Duration;
     use test_log::test;
     use tokio_stream::StreamExt;
 
@@ -696,12 +700,10 @@ mod tests {
         let invoker_tx = MockInvokerHandle::default();
         let mut state = LeadershipState::new(
             PARTITION_PROCESSOR_METADATA,
-            None,
-            Duration::from_secs(60 * 60),
-            42,
             invoker_tx,
             bifrost.clone(),
             None,
+            TrimQueue::new(),
         );
 
         assert!(matches!(state.state, State::Follower));
@@ -739,7 +741,11 @@ mod tests {
             )
             .await?;
         state
-            .on_announce_leader(&announce_leader, &mut partition_store)
+            .on_announce_leader(
+                &announce_leader,
+                &mut partition_store,
+                &Configuration::pinned(),
+            )
             .await?;
 
         assert!(matches!(state.state, State::Leader(_)));
