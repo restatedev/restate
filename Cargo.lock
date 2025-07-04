@@ -7770,6 +7770,7 @@ dependencies = [
  "bytestring",
  "chrono",
  "codederror",
+ "dashmap",
  "datafusion",
  "datafusion-functions-json",
  "derive_more",

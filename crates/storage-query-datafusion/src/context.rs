@@ -155,6 +155,7 @@ where
     D: DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
 {
     async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
+        TaskCenter::current();
         // ----- non partitioned tables -----
         crate::deployment::register_self(ctx, self.schemas.clone())?;
         crate::service::register_self(ctx, self.schemas.clone())?;

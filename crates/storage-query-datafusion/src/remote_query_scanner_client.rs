@@ -17,16 +17,15 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use tracing::warn;
+use tracing::{debug, info};
 
 use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, task_center};
 use restate_types::NodeId;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::net::remote_query_scanner::{
-    RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
-    RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened, ScannerBatch,
-    ScannerFailure,
+    RemoteQueryScannerClose, RemoteQueryScannerNext, RemoteQueryScannerNextResult,
+    RemoteQueryScannerOpen, RemoteQueryScannerOpened, ScannerBatch, ScannerFailure, ScannerId,
 };
 
 use crate::{decode_record_batch, encode_schema};
@@ -47,11 +46,7 @@ pub trait RemoteScannerService: Send + Sync + Debug + 'static {
         req: RemoteQueryScannerNext,
     ) -> Result<RemoteQueryScannerNextResult, DataFusionError>;
 
-    async fn close(
-        &self,
-        peer: NodeId,
-        req: RemoteQueryScannerClose,
-    ) -> Result<RemoteQueryScannerClosed, DataFusionError>;
+    fn close(&self, peer: NodeId, req: RemoteQueryScannerClose);
 }
 
 // ----- service proxy -----
@@ -65,6 +60,30 @@ pub fn create_remote_scanner_service<T: TransportConnect>(
 }
 
 // ----- datafusion remote scan -----
+
+struct RemoteScannerDropGuard {
+    target_node_id: NodeId,
+    scanner_id: ScannerId,
+    closer: Option<Arc<dyn RemoteScannerService>>,
+}
+
+impl RemoteScannerDropGuard {
+    /// The guard will not close the remote scanner
+    pub fn forget(&mut self) {
+        self.closer.take();
+    }
+}
+
+impl Drop for RemoteScannerDropGuard {
+    fn drop(&mut self) {
+        if let Some(closer) = self.closer.take() {
+            let target_node_id = self.target_node_id;
+            let scanner_id = self.scanner_id;
+            debug!("Closing remote scanner {scanner_id}");
+            closer.close(target_node_id, RemoteQueryScannerClose { scanner_id });
+        }
+    }
+}
 
 /// Given an implementation of a remote ScannerService, this function
 /// creates a DataFusion [[SendableRecordBatchStream]] that transports
@@ -102,28 +121,20 @@ pub fn remote_scan_as_datafusion_stream(
             ))?
         };
 
-        let closer = service.clone();
-        let close_fn = move || async move {
-            if let Err(close_err) = closer
-                .close(target_node_id, RemoteQueryScannerClose { scanner_id })
-                .await
-            {
-                warn!(
-                    "Unable to close the scanner {} at {} due to {}",
-                    scanner_id, target_node_id, close_err
-                );
-            }
+        // a drop guard to close the remote scanner
+        let mut close_guard = RemoteScannerDropGuard {
+            scanner_id,
+            target_node_id,
+            closer: Some(service.clone()),
         };
-
         //
         // loop while we have record_batch coming in
         //
         loop {
             let req = RemoteQueryScannerNext { scanner_id };
+            info!("fetching next batch from scanner {scanner_id} {target_node_id}");
             let batch = match service.next_batch(target_node_id, req).await {
                 Err(e) => {
-                    // RPC error. let's try to close the scanner.
-                    close_fn().await;
                     return Err(e);
                 }
                 Ok(RemoteQueryScannerNextResult::Unknown) => {
@@ -136,13 +147,16 @@ pub fn remote_scan_as_datafusion_stream(
                 })) => decode_record_batch(&record_batch)?,
                 Ok(RemoteQueryScannerNextResult::Failure(ScannerFailure { message, .. })) => {
                     // assume server closed the scanner before responding
+                    close_guard.forget();
                     return Err(DataFusionError::Internal(message));
                 }
                 Ok(RemoteQueryScannerNextResult::NoMoreRecords(_)) => {
                     // assume server closed the scanner before responding
+                    close_guard.forget();
                     return Ok(());
                 }
                 Ok(RemoteQueryScannerNextResult::NoSuchScanner(_)) => {
+                    close_guard.forget();
                     return Err(DataFusionError::Internal("No such scanner. It could have expired due to a long period of inactivity.".to_string()));
                 }
             };
@@ -151,11 +165,6 @@ pub fn remote_scan_as_datafusion_stream(
             if res.is_ok() {
                 continue;
             }
-            // tx is closed. which means datafusion is not interested in our records anymore
-            // let us be good citizens and also close the remote scanner.
-            // TODO(igal) consider spawning close in the background.
-            close_fn().await;
-
             return res
                 .map(|_| ())
                 .map_err(|e| DataFusionError::External(e.into()));
@@ -223,19 +232,26 @@ impl<T: TransportConnect> RemoteScannerService for RemoteScannerServiceProxy<T> 
             .map_err(|e| DataFusionError::External(e.into()))
     }
 
-    async fn close(
-        &self,
-        peer: NodeId,
-        req: RemoteQueryScannerClose,
-    ) -> Result<RemoteQueryScannerClosed, DataFusionError> {
-        self.networking
-            .call_rpc(peer, Swimlane::default(), req, None, None)
-            .in_tc_as_task(
-                &self.task_center,
-                TaskKind::InPlace,
-                "RemoteScannerServiceProxy::close",
-            )
-            .await
-            .map_err(|e| DataFusionError::External(e.into()))
+    fn close(&self, peer: NodeId, req: RemoteQueryScannerClose) {
+        // why not spawn_unmanaged? because spawn_unmanaged will reject spawns
+        // if we are shutting down. Yet, we still want to close the remote scanner
+        // if we can. If we already have a connection, we _might_ be able to send
+        // the request still.
+        let scanner_id = req.scanner_id;
+        let target_node_id = peer;
+        let networking = self.networking.clone();
+        tokio::spawn(
+            async move {
+                if let Err(e) = networking
+                    .call_rpc(peer, Swimlane::default(), req, None, None)
+                    .await
+                {
+                    info!(
+                        "Unable to close the scanner {scanner_id} at {target_node_id} due to {e}",
+                    );
+                }
+            }
+            .in_tc_as_task(&self.task_center, TaskKind::Disposable, "df-remote-close"),
+        );
     }
 }

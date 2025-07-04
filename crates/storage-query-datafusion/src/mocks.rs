@@ -36,8 +36,8 @@ use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, Servic
 use restate_types::invocation::ServiceType;
 use restate_types::live::{Constant, Live};
 use restate_types::net::remote_query_scanner::{
-    RemoteQueryScannerClose, RemoteQueryScannerClosed, RemoteQueryScannerNext,
-    RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerOpened,
+    RemoteQueryScannerClose, RemoteQueryScannerNext, RemoteQueryScannerNextResult,
+    RemoteQueryScannerOpen, RemoteQueryScannerOpened,
 };
 use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
@@ -143,11 +143,7 @@ impl RemoteScannerService for NoopSvc {
         panic!("remote service should not be used")
     }
 
-    async fn close(
-        &self,
-        _peer: NodeId,
-        _req: RemoteQueryScannerClose,
-    ) -> Result<RemoteQueryScannerClosed, DataFusionError> {
+    fn close(&self, _peer: NodeId, _req: RemoteQueryScannerClose) {
         panic!("remote service should not be used")
     }
 }

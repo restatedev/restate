@@ -90,6 +90,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
     fn scan_partition(
         &self,
         partition_id: PartitionId,
+        // todo: why is this not used
         _range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
         limit: Option<usize>,
