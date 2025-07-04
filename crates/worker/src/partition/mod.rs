@@ -947,6 +947,22 @@ where
             if let Command::AnnounceLeader(announce_leader) = envelope.command {
                 // leadership change detected, let's finish our transaction here
                 return Ok(Some((envelope.header, announce_leader)));
+            } else if let Command::UpdatePartitionDurability(partition_durability) =
+                envelope.command
+            {
+                if partition_durability.partition_id != self.partition_id {
+                    self.status.num_skipped_records += 1;
+                    trace!(
+                        "Ignore update-partition-durability message which is not targeted to me. Message is for {} but I'm {}",
+                        partition_durability.partition_id, self.partition_id
+                    );
+                    return Ok(None);
+                }
+                // todos:
+                // - call put_partition_durability after validating that durability point is
+                // monotonically increasing. `transaction.put_partition_durability(durability)`
+                // - inform the leadership state machine about the new durability point, the leader
+                // state will schedule the trim if/when necessary.
             } else {
                 self.state_machine
                     .apply(

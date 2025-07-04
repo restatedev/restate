@@ -9,7 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::Result;
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable, SequenceNumber};
+use restate_storage_api::fsm_table::{
+    FsmTable, PartitionDurability, ReadOnlyFsmTable, SequenceNumber,
+};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
@@ -32,6 +34,7 @@ pub(crate) mod fsm_variable {
 
     pub(crate) const APPLIED_LSN: u64 = 2;
     pub(crate) const RESTATE_VERSION_BARRIER: u64 = 3;
+    pub(crate) const PARTITION_DURABILITY: u64 = 4;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -84,6 +87,14 @@ impl ReadOnlyFsmTable for PartitionStore {
         )
         .map(|opt| opt.unwrap_or_default())
     }
+
+    async fn get_partition_durability(&mut self) -> Result<Option<PartitionDurability>> {
+        get::<PartitionDurability, _>(
+            self,
+            self.partition_id(),
+            fsm_variable::PARTITION_DURABILITY,
+        )
+    }
 }
 
 impl ReadOnlyFsmTable for PartitionStoreTransaction<'_> {
@@ -109,6 +120,14 @@ impl ReadOnlyFsmTable for PartitionStoreTransaction<'_> {
             fsm_variable::RESTATE_VERSION_BARRIER,
         )
         .map(|opt| opt.unwrap_or_default())
+    }
+
+    async fn get_partition_durability(&mut self) -> Result<Option<PartitionDurability>> {
+        get::<PartitionDurability, _>(
+            self,
+            self.partition_id(),
+            fsm_variable::PARTITION_DURABILITY,
+        )
     }
 }
 
@@ -146,6 +165,15 @@ impl FsmTable for PartitionStoreTransaction<'_> {
             self.partition_id(),
             fsm_variable::RESTATE_VERSION_BARRIER,
             version,
+        )
+    }
+
+    async fn put_partition_durability(&mut self, durability: &PartitionDurability) -> Result<()> {
+        put(
+            self,
+            self.partition_id(),
+            fsm_variable::PARTITION_DURABILITY,
+            durability,
         )
     }
 }
