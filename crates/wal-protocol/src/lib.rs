@@ -271,7 +271,7 @@ mod envelope {
         }
 
         fn default_codec(&self) -> StorageCodecKind {
-            // TODO(azmy): Change to `Custom` in v1.4
+            // TODO(azmy): Change to `Custom` in v1.5
             StorageCodecKind::FlexbuffersSerde
         }
     }

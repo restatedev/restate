@@ -30,6 +30,7 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 chrono = { workspace = true }
 codederror = { workspace = true }
+dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-functions-json = { version = "0.48.0" }
 derive_more = { workspace = true }
