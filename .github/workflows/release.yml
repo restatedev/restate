@@ -150,8 +150,12 @@ jobs:
       - name: "Set up MACOSX_DEPLOYMENT_TARGET"
         if: "${{ runner.os == 'macOS' }}"
         run: "echo MACOSX_DEPLOYMENT_TARGET=\"10.14.0\" >> \"$GITHUB_ENV\""
-      - name: "Set up RUSTFLAGS"
+      - name: "Set up RUSTFLAGS (macOS)"
+        if: "${{ runner.os == 'macOS' }}"
         run: "echo RUSTFLAGS=\"-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable\" >> \"$GITHUB_ENV\""
+      - name: "Set up RUSTFLAGS (Linux)"
+        if: "${{ runner.os == 'Linux' }}"
+        run: "echo RUSTFLAGS=\"-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable --cfg tokio_taskdump\" >> \"$GITHUB_ENV\""
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

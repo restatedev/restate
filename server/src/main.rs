@@ -273,8 +273,9 @@ fn main() {
                     _ = config_update_watcher.changed() => {
                         tracing_guard.on_config_update();
                     },
+                    _ = signal::sighup_compact() => {},
                     _ = signal::sigusr1_dump_config() => {},
-                    _ = signal::sighusr2_compact() => {},
+                    _ = signal::sigusr2_tokio_dump() => {},
                     _ = task_center_watch.cancelled() => {
                         shutdown = true;
                         // Shutdown was requested by task center and it has completed.

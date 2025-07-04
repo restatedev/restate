@@ -225,6 +225,10 @@ impl Handle {
         self.inner.shutdown_managed_runtimes()
     }
 
+    pub async fn dump_tasks(&self, writer: impl std::io::Write) {
+        self.inner.dump_tasks(writer).await
+    }
+
     /// Triggers a shutdown of the system. All running tasks will be asked gracefully
     /// to cancel but we will only wait for tasks with a TaskKind that has the property
     /// "OnCancel" set to "wait".
