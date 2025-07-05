@@ -23,7 +23,44 @@ use restate_types::metadata::{Precondition, VersionedValue};
 
 use super::version_repository::VersionRepositoryError::PreconditionFailed;
 use super::version_repository::{TaggedValue, VersionRepository, VersionRepositoryError};
-use crate::objstore::version_repository::{Content, Tag, ValueEncoding};
+use crate::objstore::version_repository::{Content, Tag};
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum EncodingError {
+    #[error("Unknown encoding '{0}'")]
+    UnknownEncoding(String),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ValueEncoding {
+    #[default]
+    Cbor,
+    // TODO: Switch default to bilrost in v1.6.0
+    // Bilrost V1
+    Bilrost,
+}
+
+impl TryFrom<Option<&str>> for ValueEncoding {
+    type Error = EncodingError;
+
+    fn try_from(value: Option<&str>) -> Result<Self, Self::Error> {
+        match value {
+            Some("binary/bilrost+v1") => Ok(Self::Bilrost),
+            Some("binary/cbor") => Ok(Self::Cbor),
+            Some(s) => Err(EncodingError::UnknownEncoding(s.to_owned())),
+            None => Ok(Self::Cbor),
+        }
+    }
+}
+
+impl From<ValueEncoding> for Option<String> {
+    fn from(value: ValueEncoding) -> Self {
+        match value {
+            ValueEncoding::Bilrost => Some("binary/bilrost+v1".to_string()),
+            ValueEncoding::Cbor => Some("binary/cbor".to_string()),
+        }
+    }
+}
 
 pub(crate) struct OptimisticLockingMetadataStoreBuilder {
     pub(crate) version_repository: Box<dyn VersionRepository>,
@@ -64,7 +101,9 @@ fn tagged_value_to_versioned_value(
     tagged_value: TaggedValue,
 ) -> anyhow::Result<(Tag, VersionedValue)> {
     let tag = tagged_value.tag;
-    let versioned_value = match tagged_value.content.encoding {
+    let encoding: ValueEncoding = tagged_value.content.encoding.as_deref().try_into()?;
+
+    let versioned_value = match encoding {
         ValueEncoding::Cbor => {
             let on_disk: OnDiskValue<'static> =
                 ciborium::from_reader(tagged_value.content.bytes.as_ref())?;
@@ -142,7 +181,10 @@ impl OptimisticLockingMetadataStore {
                 Ok(self.arena.split().freeze())
             }
         }
-        .map(|bytes| Content { encoding, bytes })
+        .map(|bytes| Content {
+            encoding: encoding.into(),
+            bytes,
+        })
     }
 
     pub(crate) async fn put(
@@ -279,9 +321,9 @@ mod tests {
 
     use crate::objstore::object_store_version_repository::ObjectStoreVersionRepository;
     use crate::objstore::optimistic_store::{
-        OptimisticLockingMetadataStore, tagged_value_to_versioned_value,
+        OptimisticLockingMetadataStore, ValueEncoding, tagged_value_to_versioned_value,
     };
-    use crate::objstore::version_repository::{Content, Tag, TaggedValue, ValueEncoding};
+    use crate::objstore::version_repository::{Content, Tag, TaggedValue};
 
     const KEY_1: ByteString = ByteString::from_static("1");
     const HELLO: Bytes = Bytes::from_static(b"hello");

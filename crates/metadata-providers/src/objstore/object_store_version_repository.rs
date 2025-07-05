@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::str::FromStr;
-
 use anyhow::Context;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -22,7 +20,7 @@ use restate_object_store_util::create_object_store_client;
 use restate_types::config::MetadataClientKind;
 
 use super::version_repository::{Tag, TaggedValue, VersionRepository, VersionRepositoryError};
-use crate::objstore::version_repository::{Content, ValueEncoding};
+use crate::objstore::version_repository::Content;
 
 #[derive(Debug)]
 pub(crate) struct ObjectStoreVersionRepository {
@@ -99,8 +97,10 @@ impl VersionRepository for ObjectStoreVersionRepository {
             ..Default::default()
         };
 
-        opts.attributes
-            .insert(Attribute::ContentEncoding, content.encoding.into());
+        if let Some(encoding) = content.encoding.as_ref() {
+            opts.attributes
+                .insert(Attribute::ContentEncoding, encoding.to_string().into());
+        }
 
         let payload = PutPayload::from_iter([EXISTS_HEADER, content.bytes.clone()]);
 
@@ -147,9 +147,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
                 let encoding = res
                     .attributes
                     .get(&Attribute::ContentEncoding)
-                    .map(|value| ValueEncoding::from_str(value))
-                    .transpose()?
-                    .unwrap_or(ValueEncoding::Cbor);
+                    .map(|value| value.to_string());
 
                 let etag = res.meta.e_tag.as_ref().ok_or_else(|| {
                     VersionRepositoryError::UnexpectedCondition(
@@ -190,9 +188,12 @@ impl VersionRepository for ObjectStoreVersionRepository {
 
         let path = self.path(&key);
         let mut put_options = PutOptions::from(PutMode::Update(update_version));
-        put_options
-            .attributes
-            .insert(Attribute::ContentEncoding, new_content.encoding.into());
+
+        if let Some(encoding) = new_content.encoding {
+            put_options
+                .attributes
+                .insert(Attribute::ContentEncoding, encoding.into());
+        };
 
         match self
             .object_store
@@ -222,9 +223,12 @@ impl VersionRepository for ObjectStoreVersionRepository {
     ) -> Result<Tag, VersionRepositoryError> {
         let path = self.path(&key);
         let mut put_options = PutOptions::default();
-        put_options
-            .attributes
-            .insert(Attribute::ContentEncoding, new_content.encoding.into());
+
+        if let Some(encoding) = new_content.encoding {
+            put_options
+                .attributes
+                .insert(Attribute::ContentEncoding, encoding.into());
+        };
 
         match self
             .object_store
@@ -312,7 +316,7 @@ mod tests {
             .create(
                 KEY_1,
                 Content {
-                    encoding: ValueEncoding::Bilrost,
+                    encoding: Some("text".to_string()),
                     bytes: HELLO_WORLD,
                 },
             )
@@ -323,7 +327,7 @@ mod tests {
 
         assert_eq!(tagged_value.tag, tag);
         assert_eq!(tagged_value.content.bytes, HELLO_WORLD);
-        assert_eq!(tagged_value.content.encoding, ValueEncoding::Bilrost);
+        assert_eq!(tagged_value.content.encoding, Some("text".to_string()));
     }
 
     #[tokio::test]
@@ -348,7 +352,7 @@ mod tests {
             .create(
                 KEY_1,
                 Content {
-                    encoding: ValueEncoding::default(),
+                    encoding: Default::default(),
                     bytes: HELLO_WORLD,
                 },
             )
@@ -359,7 +363,7 @@ mod tests {
             .create(
                 KEY_1,
                 Content {
-                    encoding: ValueEncoding::default(),
+                    encoding: Default::default(),
                     bytes: HELLO_WORLD,
                 },
             )
@@ -382,7 +386,7 @@ mod tests {
             .create(
                 KEY_1,
                 Content {
-                    encoding: ValueEncoding::default(),
+                    encoding: Default::default(),
                     bytes: HELLO_WORLD,
                 },
             )
@@ -409,7 +413,7 @@ mod tests {
             .create(
                 KEY_1,
                 Content {
-                    encoding: ValueEncoding::default(),
+                    encoding: Default::default(),
                     bytes: HELLO_WORLD,
                 },
             )
@@ -423,7 +427,7 @@ mod tests {
             .create(
                 KEY_1,
                 Content {
-                    encoding: ValueEncoding::Bilrost,
+                    encoding: Default::default(),
                     bytes: WORLD,
                 },
             )
@@ -433,7 +437,7 @@ mod tests {
         let tv = store.get(KEY_1).await.unwrap();
 
         assert_eq!(tv.content.bytes, WORLD);
-        assert_eq!(tv.content.encoding, ValueEncoding::Bilrost);
+        assert_eq!(tv.content.encoding, Default::default());
     }
 
     #[tokio::test]
@@ -444,7 +448,7 @@ mod tests {
             .create(
                 KEY_1,
                 Content {
-                    encoding: ValueEncoding::default(),
+                    encoding: Default::default(),
                     bytes: HELLO_WORLD,
                 },
             )
@@ -456,7 +460,7 @@ mod tests {
                 KEY_1,
                 tag,
                 Content {
-                    encoding: ValueEncoding::default(),
+                    encoding: Default::default(),
                     bytes: WORLD,
                 },
             )
@@ -476,7 +480,7 @@ mod tests {
             .create(
                 KEY_1,
                 Content {
-                    encoding: ValueEncoding::default(),
+                    encoding: Default::default(),
                     bytes: HELLO_WORLD,
                 },
             )
@@ -488,7 +492,7 @@ mod tests {
                 KEY_1,
                 tag.clone(),
                 Content {
-                    encoding: ValueEncoding::default(),
+                    encoding: Default::default(),
                     bytes: HELLO,
                 },
             )
@@ -500,7 +504,7 @@ mod tests {
                 KEY_1,
                 tag.clone(),
                 Content {
-                    encoding: ValueEncoding::default(),
+                    encoding: Default::default(),
                     bytes: WORLD,
                 },
             )
@@ -521,7 +525,7 @@ mod tests {
             .create(
                 KEY_1,
                 Content {
-                    encoding: ValueEncoding::default(),
+                    encoding: Default::default(),
                     bytes: Bytes::copy_from_slice(&0u64.to_be_bytes()),
                 },
             )
@@ -549,7 +553,7 @@ mod tests {
                             KEY_1.clone(),
                             tag,
                             Content {
-                                encoding: ValueEncoding::default(),
+                                encoding: Default::default(),
                                 bytes: Bytes::copy_from_slice(&n.to_be_bytes()),
                             },
                         )
