@@ -27,6 +27,7 @@ mod partition_replica_set;
 mod partition_state;
 mod partition_store_scanner;
 mod promise;
+mod scanner_task;
 mod service;
 mod state;
 #[cfg(feature = "table_docs")]

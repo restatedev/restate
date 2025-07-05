@@ -10,14 +10,9 @@
 
 use std::pin;
 use std::sync::Arc;
-use std::time::Duration;
 
-use ahash::HashMap;
-use anyhow::Context;
-use datafusion::error::DataFusionError;
-use datafusion::execution::SendableRecordBatchStream;
-use tokio::time;
-use tokio::time::Instant;
+use dashmap::DashMap;
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::warn;
 
@@ -29,68 +24,27 @@ use restate_types::net::RpcRequest;
 use restate_types::net::remote_query_scanner::{
     RemoteDataFusionService, RemoteQueryScannerClose, RemoteQueryScannerClosed,
     RemoteQueryScannerNext, RemoteQueryScannerNextResult, RemoteQueryScannerOpen,
-    RemoteQueryScannerOpened, ScannerBatch, ScannerFailure, ScannerId,
+    RemoteQueryScannerOpened, ScannerId,
 };
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
-use crate::{decode_schema, encode_record_batch};
+use crate::scanner_task::{ScannerHandle, ScannerTask};
 
-struct Scanner {
-    stream: SendableRecordBatchStream,
-    last_accessed: Instant,
-}
-
-impl Scanner {
-    fn new(
-        remote_scanner_manager: RemoteScannerManager,
-        request: RemoteQueryScannerOpen,
-    ) -> anyhow::Result<Self> {
-        let scanner = remote_scanner_manager
-            .local_partition_scanner(&request.table)
-            .context("not registered scanner for a table")?;
-        let schema = decode_schema(&request.projection_schema_bytes).context("bad schema bytes")?;
-        let stream = scanner.scan_partition(
-            request.partition_id,
-            request.range.clone(),
-            Arc::new(schema),
-            request
-                .limit
-                .map(|limit| usize::try_from(limit).expect("limit to fit in a usize")),
-        )?;
-        Ok(Self {
-            stream,
-            last_accessed: Instant::now(),
-        })
-    }
-
-    async fn next_batch(&mut self) -> Result<Option<Vec<u8>>, DataFusionError> {
-        self.last_accessed = Instant::now();
-        if let Some(res) = self.stream.next().await {
-            let record_batch = res?;
-            let buf = encode_record_batch(&self.stream.schema(), record_batch)?;
-            Ok(Some(buf))
-        } else {
-            Ok(None)
-        }
-    }
-}
+pub(super) type ScannerMap = DashMap<ScannerId, ScannerHandle, ahash::RandomState>;
 
 pub struct RemoteQueryScannerServer {
-    expire_old_scanners_after: Duration,
     remote_scanner_manager: RemoteScannerManager,
     network_rx: ServiceReceiver<RemoteDataFusionService>,
 }
 
 impl RemoteQueryScannerServer {
     pub fn new(
-        expire_old_scanners_after: Duration,
         remote_scanner_manager: RemoteScannerManager,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         let network_rx = router_builder.register_service(64, BackPressureMode::PushBack);
 
         Self {
-            expire_old_scanners_after,
             remote_scanner_manager,
             network_rx,
         }
@@ -98,124 +52,94 @@ impl RemoteQueryScannerServer {
 
     pub async fn run(self) -> anyhow::Result<()> {
         let RemoteQueryScannerServer {
-            expire_old_scanners_after,
             remote_scanner_manager,
             network_rx,
         } = self;
 
         let mut shutdown = pin::pin!(cancellation_watcher());
         let mut next_scanner_id = 1u64;
-        let mut scanners: HashMap<ScannerId, Scanner> = Default::default();
-        let mut interval = time::interval(expire_old_scanners_after);
+        let scanners: Arc<ScannerMap> = Default::default();
         let mut network_rx = network_rx.start();
 
         loop {
             tokio::select! {
-                        biased;
-                        _ = &mut shutdown => {
-                            // stop accepting messages
-                            return Ok(());
-                        },
-                        Some(msg) = network_rx.next() => {
-                            match msg {
-                                ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerOpen::TYPE => {
-                                    let scan_req = msg.into_typed::<RemoteQueryScannerOpen>();
-                                    next_scanner_id += 1;
-                                    let scanner_id = ScannerId(my_node_id(), next_scanner_id);
-                                    Self::on_open(scanner_id, scan_req, &mut scanners, remote_scanner_manager.clone()).await;
-                                }
-                                ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerNext::TYPE => {
-                                    let next_req = msg.into_typed::<RemoteQueryScannerNext>();
-                                    let (reciprocal, req) = next_req.split();
-                                    let res = Self::on_next(&mut scanners, req).await;
-                                    reciprocal.send(res);
-                                }
-                                ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerClose::TYPE => {
-                                    let close_req = msg.into_typed::<RemoteQueryScannerClose>();
-                                    let (reciprocal, close_req) = close_req.split();
-                                    scanners.remove(&close_req.scanner_id);
-                                    let res = RemoteQueryScannerClosed {
-                                        scanner_id: close_req.scanner_id,
-                                    };
-                                    reciprocal.send(res);
-                                }
-                                msg => { msg.fail(Verdict::MessageUnrecognized); }
-                            }
-                        },
-                       now = interval.tick() => {
-                           Self::try_expire_scanners(&now,  expire_old_scanners_after ,&mut scanners);
-                       }
+                biased;
+                _ = &mut shutdown => {
+                    // stop accepting messages
+                    return Ok(());
+                },
+                Some(msg) = network_rx.next() => {
+                    match msg {
+                        ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerOpen::TYPE => {
+                            let scan_req = msg.into_typed::<RemoteQueryScannerOpen>();
+                            next_scanner_id += 1;
+                            let scanner_id = ScannerId(my_node_id(), next_scanner_id);
+                            Self::on_open(scanner_id, scan_req, &scanners, &remote_scanner_manager);
+                        }
+                        ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerNext::TYPE => {
+                            Self::on_next(
+                                &scanners,
+                                msg.into_typed::<RemoteQueryScannerNext>()
+                            );
+                        }
+                        ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerClose::TYPE => {
+                            let close_req = msg.into_typed::<RemoteQueryScannerClose>();
+                            let (reciprocal, close_req) = close_req.split();
+                            scanners.remove(&close_req.scanner_id);
+                            let res = RemoteQueryScannerClosed {
+                                scanner_id: close_req.scanner_id,
+                            };
+                            reciprocal.send(res);
+                        }
+                        msg => { msg.fail(Verdict::MessageUnrecognized); }
+                    }
+                },
             }
         }
     }
 
-    async fn on_open(
+    fn on_open(
         scanner_id: ScannerId,
         scan_req: Incoming<Rpc<RemoteQueryScannerOpen>>,
-        scanners: &mut HashMap<ScannerId, Scanner>,
-        remote_scanner_manager: RemoteScannerManager,
+        scanners: &Arc<ScannerMap>,
+        remote_scanner_manager: &RemoteScannerManager,
     ) {
+        let peer = scan_req.peer();
         let (reciprocal, body) = scan_req.split();
-        let maybe_scanner = Scanner::new(remote_scanner_manager, body);
-        let Ok(scanner) = maybe_scanner else {
-            warn!(
-                "Unable to create a scanner {}",
-                maybe_scanner.err().unwrap()
-            );
+        let partition_id = body.partition_id;
+
+        if let Err(e) = ScannerTask::spawn(scanner_id, remote_scanner_manager, peer, scanners, body)
+        {
+            warn!("Unable to create a scanner in partition {partition_id}:  {e}");
             let response = RemoteQueryScannerOpened::Failure;
             reciprocal.send(response);
             return;
-        };
-        scanners.insert(scanner_id, scanner);
+        }
+
         let response = RemoteQueryScannerOpened::Success { scanner_id };
         reciprocal.send(response);
     }
 
-    async fn on_next(
-        scanners: &mut HashMap<ScannerId, Scanner>,
-        req: RemoteQueryScannerNext,
-    ) -> RemoteQueryScannerNextResult {
+    fn on_next(scanners: &ScannerMap, req: Incoming<Rpc<RemoteQueryScannerNext>>) {
+        let (reciprocal, req) = req.split();
         let scanner_id = req.scanner_id;
-        let Some(scanner) = scanners.get_mut(&scanner_id) else {
+        let Some(scanner) = scanners.get(&scanner_id) else {
+            tracing::info!(
+                "No such scanner {}. This could be an expired scanner due to a slow scan, no activity, or it's a scanner that was closed.",
+                scanner_id
+            );
+            reciprocal.send(RemoteQueryScannerNextResult::NoSuchScanner(scanner_id));
+            return;
+        };
+        // Note: we trust that the task will remove the scanner from the map on Drop and will not try to
+        // that again here. If we do, we might end up dead-locking the map because we are holding a
+        // reference into it (scanner).
+        if let Err(mpsc::error::SendError(reciprocal)) = scanner.send(reciprocal) {
             tracing::info!(
                 "No such scanner {}. This could be an expired scanner due to a slow scan with no activity.",
                 scanner_id
             );
-            return RemoteQueryScannerNextResult::NoSuchScanner(scanner_id);
-        };
-        match scanner.next_batch().await {
-            Ok(Some(record_batch)) => RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
-                scanner_id,
-                record_batch,
-            }),
-            Ok(None) => {
-                scanners.remove(&scanner_id);
-                RemoteQueryScannerNextResult::NoMoreRecords(scanner_id)
-            }
-            Err(e) => {
-                scanners.remove(&scanner_id);
-                warn!("Error while scanning {}: {}", scanner_id, e);
-
-                RemoteQueryScannerNextResult::Failure(ScannerFailure {
-                    scanner_id,
-                    message: format!("{e}"),
-                })
-            }
+            reciprocal.send(RemoteQueryScannerNextResult::NoSuchScanner(scanner_id));
         }
-    }
-
-    fn try_expire_scanners(
-        now: &Instant,
-        duration: Duration,
-        scanners: &mut HashMap<ScannerId, Scanner>,
-    ) {
-        scanners.retain(|id, scanner| {
-            let elapsed = now.saturating_duration_since(scanner.last_accessed);
-            let should_retain = elapsed < duration;
-            if !should_retain {
-                warn!("Removing scanner due to a long inactivity {}", id)
-            }
-            should_retain
-        });
     }
 }
