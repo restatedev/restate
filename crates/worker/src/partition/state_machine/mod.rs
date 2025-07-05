@@ -429,6 +429,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::JournalTable,
     {
         match command {
+            Command::UpdatePartitionDurability(_) => {
+                // no-op :-)
+                //
+                // This is a partition-level command that doesn't impact the state machine.
+                // Handling of this command should have happened without entering the state machine
+                // on_apply() method.
+                Ok(())
+            }
             Command::VersionBarrier(barrier) => {
                 // We have versions in play:
                 // - Our binary's version (this process)

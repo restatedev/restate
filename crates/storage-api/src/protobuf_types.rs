@@ -139,6 +139,7 @@ pub mod v1 {
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::journal_v2::{EntryMetadata, NotificationId};
+        use restate_types::logs::Lsn;
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
         use restate_types::{GenerationalNodeId, journal_v2};
@@ -164,14 +165,14 @@ pub mod v1 {
             Entry, EntryResult, EpochSequenceNumber, Header, IdempotencyId, IdempotencyMetadata,
             InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
             InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
-            JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage, Promise,
-            ResponseResult, RestateVersion, SequenceNumber, ServiceId, ServiceInvocation,
-            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
-            SubmitNotificationSink, Timer, VirtualObjectStatus, enriched_entry_header, entry,
-            entry_result, inbox_entry, invocation_resolution_result, invocation_status,
-            invocation_status_v2, invocation_target, journal_entry, outbox_message, promise,
-            response_result, source, span_relation, submit_notification_sink, timer,
-            virtual_object_status,
+            JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage,
+            PartitionDurability, Promise, ResponseResult, RestateVersion, SequenceNumber,
+            ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
+            SpanRelation, StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
+            enriched_entry_header, entry, entry_result, inbox_entry, invocation_resolution_result,
+            invocation_status, invocation_status_v2, invocation_target, journal_entry,
+            outbox_message, promise, response_result, source, span_relation,
+            submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{CompletionRangeEpochMap, JournalMetadata};
         use crate::protobuf_types::ConversionError;
@@ -4100,6 +4101,28 @@ pub mod v1 {
         impl From<SequenceNumber> for crate::fsm_table::SequenceNumber {
             fn from(value: SequenceNumber) -> Self {
                 Self::from(value.sequence_number)
+            }
+        }
+
+        impl From<crate::fsm_table::PartitionDurability> for PartitionDurability {
+            fn from(value: crate::fsm_table::PartitionDurability) -> Self {
+                PartitionDurability {
+                    durable_point: Some(SequenceNumber {
+                        sequence_number: value.durable_point.as_u64(),
+                    }),
+                    modification_time: value.modification_time.as_u64(),
+                }
+            }
+        }
+
+        impl From<PartitionDurability> for crate::fsm_table::PartitionDurability {
+            fn from(value: PartitionDurability) -> Self {
+                crate::fsm_table::PartitionDurability {
+                    durable_point: Lsn::from(
+                        value.durable_point.unwrap_or_default().sequence_number,
+                    ),
+                    modification_time: MillisSinceEpoch::new(value.modification_time),
+                }
             }
         }
 

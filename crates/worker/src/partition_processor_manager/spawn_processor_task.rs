@@ -123,13 +123,12 @@ impl SpawnPartitionProcessorTask {
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());
 
-        let options = &configuration.pinned().worker;
+        let options = &config.worker;
 
         let pp_builder = PartitionProcessorBuilder::new(
             partition_id,
             key_range.clone(),
             status,
-            options,
             control_rx,
             net_rx,
             watch_tx,
