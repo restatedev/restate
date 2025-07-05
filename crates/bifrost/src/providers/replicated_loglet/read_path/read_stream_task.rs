@@ -17,7 +17,7 @@ use tracing::{info, trace};
 use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, my_node_id};
 use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, ReplicatedLogletOptions};
 use restate_types::logs::{
     KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber, TailOffsetWatch,
 };
@@ -134,19 +134,17 @@ impl ReadStreamTask {
         networking: Networking<T>,
     ) -> Result<(), OperationError> {
         let mut nodes_config = Metadata::with_current(|m| m.updateable_nodes_config());
-        let records_rpc_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
+        let mut configuration = Configuration::live();
+        let my_node = my_node_id();
         // Channel size. This is the largest number of records we will try to readahead, if we can
         // acquire the capacity for it.
-        //
         let readahead_max = self.tx.max_capacity();
         debug_assert!(readahead_max <= u16::MAX.into());
         // This is automatically capped. This is the minimum number of slots that needs to be
         // available in order to trigger fetching a new batch.
         let readahead_trigger = {
-            let ratio = Configuration::pinned()
+            let ratio = configuration
+                .live_load()
                 .bifrost
                 .replicated_loglet
                 .readahead_trigger_ratio
@@ -300,7 +298,7 @@ impl ReadStreamTask {
             let effective_nodeset =
                 EffectiveNodeSet::new(self.my_params.nodeset.clone(), nodes_config.live_load());
             // Order the nodeset such that our node is the first one to attempt
-            let mut mutable_effective_nodeset = effective_nodeset.shuffle_for_reads(my_node_id());
+            let mut mutable_effective_nodeset = effective_nodeset.shuffle_for_reads(my_node);
 
             if mutable_effective_nodeset.is_empty() {
                 // if nodeset is all disabled, no readable nodes. impossible situation to resolve,
@@ -348,7 +346,7 @@ impl ReadStreamTask {
                 }
 
                 let to_offset = self.calculate_read_ahead_to_offset(permits.len());
-                // If we are in the nodeset, we'll be the first to try
+                // If we (my node) are in the nodeset, we'll be the first to try
                 let Some(server) = mutable_effective_nodeset.pop() else {
                     // no more servers to try. Going back and retrying the main loop to start over.
                     info!(
@@ -361,8 +359,16 @@ impl ReadStreamTask {
                     continue 'main;
                 };
 
-                let ServerReadResult::Records(records) = self
-                    .readahead_from_server(server, to_offset, &networking, records_rpc_timeout)
+                let ServerReadResult::Records {
+                    records,
+                    next_offset,
+                } = self
+                    .readahead_from_server(
+                        server,
+                        to_offset,
+                        &networking,
+                        &configuration.live_load().bifrost.replicated_loglet,
+                    )
                     .await?
                 else {
                     // move to the next server
@@ -421,6 +427,11 @@ impl ReadStreamTask {
                             }
                         }
                     }
+                }
+                // we should try the last server again if the new read_pointer is the next_offset this server can supply.
+                if next_offset.is_some_and(|next_offset| next_offset == self.read_pointer) {
+                    // this server has more to send us, let's use it in the next attempt
+                    mutable_effective_nodeset.push(server);
                 }
             }
         }
@@ -507,14 +518,14 @@ impl ReadStreamTask {
         server: PlainNodeId,
         to_offset: LogletOffset,
         networking: &Networking<T>,
-        timeout: Duration,
+        options: &ReplicatedLogletOptions,
     ) -> Result<ServerReadResult, OperationError> {
         let request = GetRecords {
             header: LogServerRequestHeader::new(
                 self.my_params.loglet_id,
                 self.global_tail_watch.latest_offset(),
             ),
-            total_limit_in_bytes: None,
+            total_limit_in_bytes: Some(options.read_batch_size.as_usize()),
             filter: self.filter.clone(),
             from_offset: self.read_pointer,
             to_offset,
@@ -533,15 +544,31 @@ impl ReadStreamTask {
                 Swimlane::BifrostData,
                 request,
                 Some(self.my_params.loglet_id.into()),
-                Some(timeout),
+                Some(*options.log_server_rpc_timeout),
             )
             .await;
 
         match maybe_records {
             Ok(records) => {
+                trace!(
+                    loglet_id = %self.my_params.loglet_id,
+                    from_offset = %self.read_pointer,
+                    %to_offset,
+                    peer_next_offset = %records.next_offset,
+                    "Received {} records from {}",
+                    records.records.len(),
+                    server,
+                );
                 self.global_tail_watch
                     .notify_offset_update(records.known_global_tail);
-                Ok(ServerReadResult::Records(records.records))
+                // note: next_offset == read_pointer(aka. from_offset) if the server has no results
+                // for us within the requested range.
+                let next_offset =
+                    (records.next_offset > self.read_pointer).then_some(records.next_offset);
+                Ok(ServerReadResult::Records {
+                    records: records.records,
+                    next_offset,
+                })
             }
             Err(e) => {
                 trace!(
@@ -570,7 +597,11 @@ enum CacheReadResult {
 
 enum ServerReadResult {
     /// Maybe got some records for you
-    Records(Vec<(LogletOffset, MaybeRecord)>),
+    Records {
+        records: Vec<(LogletOffset, MaybeRecord)>,
+        /// if the server can send us more records within the requested offset range.
+        next_offset: Option<LogletOffset>,
+    },
     /// Unreachable or failing node, skip and try another
     Skip,
 }
