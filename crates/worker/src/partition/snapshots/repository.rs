@@ -35,6 +35,7 @@ use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::nodes_config::ClusterFingerprint;
+use restate_object_store_util::log_object_store_error;
 
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
@@ -628,8 +629,19 @@ impl PutSnapshotError {
     where
         E: Into<anyhow::Error>,
     {
+        let err: anyhow::Error = error.into();
+
+        // If root cause is an object_store::Error, log the detailed chain.
+        if let Some(store_err) = err.root_cause().downcast_ref::<object_store::Error>() {
+            log_object_store_error(
+                "snapshot-upload",
+                &progress.snapshot_complete_path,
+                store_err,
+            );
+        }
+
         PutSnapshotError {
-            error: error.into(),
+            error: err,
             full_snapshot_path: progress.snapshot_complete_path,
             uploaded_files: progress.uploaded_files,
         }

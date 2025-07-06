@@ -17,6 +17,7 @@ use object_store::path::{Path, PathPart};
 use object_store::{Attribute, Error, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
 use tracing::info;
 use url::Url;
+use restate_object_store_util::log_object_store_error;
 
 use restate_object_store_util::create_object_store_client;
 use restate_types::config::MetadataClientKind;
@@ -136,7 +137,10 @@ impl VersionRepository for ObjectStoreVersionRepository {
                 assert_eq!(bytes, DELETED_HEADER);
                 self.put_if_tag_matches(key, tag, content).await
             }
-            Err(e) => Err(VersionRepositoryError::Network(e.into())),
+            Err(e) => {
+                log_object_store_error("create", &path, &e);
+                Err(VersionRepositoryError::Network(e.into()))
+            },
         }
     }
 
@@ -172,7 +176,10 @@ impl VersionRepository for ObjectStoreVersionRepository {
                 }
             }
             Err(Error::NotFound { .. }) => Err(VersionRepositoryError::NotFound),
-            Err(e) => Err(VersionRepositoryError::Network(e.into())),
+            Err(e) => {
+                log_object_store_error("get", &path, &e);
+                Err(VersionRepositoryError::Network(e.into()))
+            },
         }
     }
 

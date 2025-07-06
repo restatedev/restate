@@ -25,6 +25,8 @@ use tracing::debug;
 use url::Url;
 
 use restate_types::retries::RetryPolicy;
+use tracing::error;
+use std::error::Error as StdError;
 
 pub async fn create_object_store_client(
     destination: Url,
@@ -299,4 +301,34 @@ impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
         }
         .boxed()
     }
+}
+
+/// Emit a detailed single-line log containing the full error chain of an `object_store::Error`.
+///
+/// By default the `Display` implementation of the error only shows the outer wrapper (e.g.
+/// `HTTP error: error sending request`).  Transport / TLS problems are nested deeper (hyper,
+/// rustls, io::Error, …).  This helper walks the `source()` chain and concatenates the messages
+/// so that operators can immediately see the real cause.
+///
+/// It is intended for *best-effort* diagnostics – it should never panic.
+pub fn log_object_store_error<P>(action: &str, path: &P, err: &object_store::Error)
+where
+    P: std::fmt::Display + ?Sized,
+{
+    // Build a `msg1 -> msg2 -> msg3` string of causes.
+    let mut chain = err.to_string();
+    let mut current: Option<&dyn StdError> = err.source();
+    while let Some(src) = current {
+        chain.push_str(" -> ");
+        chain.push_str(&src.to_string());
+        current = src.source();
+    }
+
+    error!(
+        action = %action,
+        path = %path,
+        error_chain = %chain,
+        error = ?err,
+        "Object store operation failed"
+    );
 }
