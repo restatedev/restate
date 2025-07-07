@@ -229,8 +229,7 @@ impl RocksDbStorage {
         // safety check to respect internal/reserved keys
         if key == SEALED_KEY {
             return Err(RequestError::InvalidArgument(format!(
-                "Cannot store values under key {} as it is a reserved key",
-                key
+                "Cannot store values under key {key} as it is a reserved key"
             )));
         }
 

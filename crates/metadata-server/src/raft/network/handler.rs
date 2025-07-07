@@ -71,8 +71,7 @@ where
                     .metadata()
                     .get(PEER_METADATA_KEY)
                     .ok_or(Status::invalid_argument(format!(
-                        "'{}' is missing",
-                        PEER_METADATA_KEY
+                        "'{PEER_METADATA_KEY}' is missing"
                     )))?;
             let peer = PlainNodeId::from_str(
                 peer_metadata
