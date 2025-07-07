@@ -45,14 +45,13 @@ pub(super) async fn sigusr1_dump_config() {
     }
 }
 
-/// Trigger rocksdb flush+compaction on SIGUSR2
-pub(super) async fn sighusr2_compact() {
-    let mut stream =
-        signal(SignalKind::user_defined2()).expect("failed to register handler for SIGUSR2");
+/// Trigger rocksdb flush+compaction on SIGHUP
+pub(super) async fn sighup_compact() {
+    let mut stream = signal(SignalKind::hangup()).expect("failed to register handler for SIGHUP");
 
     loop {
         stream.recv().await;
-        warn!("Received SIGUSR2, flushing and compacting all databases");
+        warn!("Received SIGHUP, flushing and compacting all databases");
         let manager = RocksDbManager::get();
         for db in manager.get_all_dbs() {
             let _ = match db.flush_all().await {
@@ -70,6 +69,23 @@ pub(super) async fn sighusr2_compact() {
                 db.name
             );
         }
+    }
+}
+
+pub(super) async fn sigusr2_tokio_dump() {
+    let mut stream =
+        signal(SignalKind::user_defined2()).expect("failed to register handler for SIGHUP");
+
+    let tc = restate_core::TaskCenter::current();
+
+    loop {
+        stream.recv().await;
+        warn!("Received SIGUSR2, dumping tokio task backtraces");
+
+        let _ = tc.spawn_unmanaged(restate_core::TaskKind::Disposable, "tokio-task-dump", {
+            let tc = tc.clone();
+            async move { tc.dump_tasks(std::io::stderr()).await }
+        });
     }
 }
 

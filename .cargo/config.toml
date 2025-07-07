@@ -12,11 +12,21 @@ rustflags = [
     "--cfg", "tokio_unstable", # Enable unstable tokio
 ]
 
+[target.x86_64-unknown-linux-gnu]
+# when changing these please also change .github/workflows/steps/release-build-setup.yml
+rustflags = [
+    "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
+    "--cfg", "uuid_unstable", # Enable unstable Uuid
+    "--cfg", "tokio_unstable", # Enable unstable tokio
+    "--cfg", "tokio_taskdump", # Enable unstable tokio taskdump
+]
+
 [target.aarch64-unknown-linux-gnu]
 rustflags = [
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
+    "--cfg", "tokio_taskdump", # Enable unstable tokio taskdump
     "-C" , "force-frame-pointers=yes", # Enable frame pointers to support Parca (https://github.com/parca-dev/parca-agent/pull/1805)
 ]
 
@@ -25,6 +35,7 @@ rustflags = [
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
+    "--cfg", "tokio_taskdump", # Enable unstable tokio taskdump
     "-C", "link-self-contained=yes", # Link statically
 ]
 
@@ -33,6 +44,7 @@ rustflags = [
     "-C", "force-unwind-tables", # Include full unwind tables when aborting on panic
     "--cfg", "uuid_unstable", # Enable unstable Uuid
     "--cfg", "tokio_unstable", # Enable unstable tokio
+    "--cfg", "tokio_taskdump", # Enable unstable tokio taskdump
     "-C", "force-frame-pointers=yes", # Enable frame pointers to support Parca (https://github.com/parca-dev/parca-agent/pull/1805)
     "-C", "link-self-contained=yes", # Link statically
 ]

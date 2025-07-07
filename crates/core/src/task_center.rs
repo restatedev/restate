@@ -648,6 +648,70 @@ impl TaskCenterInner {
         }
     }
 
+    #[cfg(not(tokio_taskdump))]
+    async fn dump_tasks(self: &Arc<Self>, _: impl std::io::Write) {
+        warn!("Cannot dump tokio tasks; tokio_taskdump was not set at compile time")
+    }
+
+    #[cfg(tokio_taskdump)]
+    async fn dump_tasks(self: &Arc<Self>, mut writer: impl std::io::Write) {
+        let managed_tasks: HashMap<_, _> = self
+            .managed_tasks
+            .lock()
+            .iter()
+            .filter_map(|(task_id, task)| {
+                Some((
+                    task.handle.lock().as_ref()?.inner_handle.id(),
+                    (*task_id, task.name().to_string()),
+                ))
+            })
+            .collect();
+
+        let mut managed_runtimes: Vec<_> = self
+            .managed_runtimes
+            .lock()
+            .iter()
+            .map(|(name, handle)| (name.to_string(), handle.runtime_handle().clone()))
+            .collect();
+        managed_runtimes.sort_by(|(left_name, _), (right_name, _)| left_name.cmp(right_name));
+
+        let mut dump = async |name: &str, handle: &tokio::runtime::Handle| {
+            if let Ok(Ok(dump)) = tokio::time::timeout(
+                // The future produced by Handle::dump may never produce Ready if another runtime worker is blocked for more than 250ms
+                std::time::Duration::from_secs(2),
+                // It is a requirement for current thread runtimes that the dump is executed *inside* the runtime
+                handle.spawn({
+                    let handle = handle.clone();
+                    async move { handle.dump().await }
+                }),
+            )
+            .await
+            {
+                let _ = writeln!(writer, "Tokio dump (runtime_name = {name}):");
+
+                for task in dump.tasks().iter() {
+                    let id = task.id();
+                    let trace = task.trace();
+                    if let Some((managed_task_id, task_name)) = managed_tasks.get(&id) {
+                        let _ = writeln!(
+                            writer,
+                            "tokio_task_id = {id} task_center_name = {task_name} task_center_task_id = {managed_task_id}:"
+                        );
+                    } else {
+                        let _ = writeln!(writer, "tokio_task_id = {id}:");
+                    }
+                    let _ = writeln!(writer, "{trace}\n");
+                }
+            }
+        };
+
+        dump("default", &self.default_runtime_handle).await;
+        dump("ingress", &self.ingress_runtime_handle).await;
+        for (name, handle) in managed_runtimes {
+            dump(&name, &handle).await;
+        }
+    }
+
     fn with_task_context<F, R>(&self, f: F) -> R
     where
         F: Fn(&TaskContext) -> R,
