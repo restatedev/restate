@@ -2,7 +2,7 @@ apiVersion: v2
 name: restate-helm
 description: Deploy a Restate cluster on Kubernetes
 type: application
-version: "1.4.1"
+version: "1.4.2"
 home: https://restate.dev
 sources:
   - https://github.com/restatedev/restate
