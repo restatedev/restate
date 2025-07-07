@@ -212,7 +212,7 @@ flowchart LR
 | `crates/worker/` | Partition processors & state machines | Business-logic execution |
 | `crates/ingress-http/` | HTTP ingress | Endpoint for receiving HTTP requests |
 | `crates/ingress-kafka/` | Kafka ingress connector | Kafka ingress connector |
-| `crates/partition-store/` | RocksDB backed state store | State snapshots & compaction |
+| `crates/partition-store/` | RocksDB backed state store | State of the partition processors (materialized view of log) |
 
 *(See `workspace-hack/` for dependency graph workarounds, and `tools/` for misc utilities.)*
 
