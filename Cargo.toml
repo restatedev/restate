@@ -25,7 +25,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.4.2"
+version = "1.4.3-dev"
 authors = ["restate.dev"]
 edition = "2024"
 rust-version = "1.88.0"
@@ -239,6 +239,7 @@ path = "workspace-hack"
 
 [profile.release]
 opt-level = 3
+debug = 1
 lto = "thin"
 codegen-units = 1
 # Let's be defensive and abort on every panic
