@@ -131,8 +131,8 @@ impl RemoteQueryScannerServer {
             reciprocal.send(RemoteQueryScannerNextResult::NoSuchScanner(scanner_id));
             return;
         };
-        // Note: we trust that the task will remove the scanner from the map on Drop and will not try to
-        // that again here. If we do, we might end up dead-locking the map because we are holding a
+        // Note: we trust that the task will remove the scanner from the map on Drop and we will not try to
+        // do that again here. If we do, we might end up dead-locking the map because we are holding a
         // reference into it (scanner).
         if let Err(mpsc::error::SendError(reciprocal)) = scanner.send(reciprocal) {
             tracing::info!(
