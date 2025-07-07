@@ -250,7 +250,7 @@ impl fmt::Display for FormatHyperError<'_> {
         write!(f, "{}", self.0)?;
         let mut source = self.0.source();
         while let Some(err) = source {
-            write!(f, " caused by: {}", err)?;
+            write!(f, " caused by: {err}")?;
             source = err.source();
         }
 

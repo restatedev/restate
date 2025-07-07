@@ -172,7 +172,7 @@ pub fn list_nodes_lite(
                 ident
                     .node_id
                     .and_then(|id| id.generation)
-                    .map(|generation| format!("{}", generation))
+                    .map(|generation| format!("{generation}"))
                     .unwrap_or("".to_owned()),
             ),
             Cell::new("-"),

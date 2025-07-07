@@ -231,7 +231,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         .await
         .unwrap();
 
-    println!("{}", res);
+    println!("{res}");
 
     Ok(())
 }
