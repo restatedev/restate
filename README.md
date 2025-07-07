@@ -210,7 +210,7 @@ flowchart LR
 | `crates/bifrost/` | Virtual-consensus distributed log | Control plane & clients for interacting with Bifrost |
 | `crates/log-server/` | Log segment persistence (RocksDB, object-store) | Durability and replication tuning |
 | `crates/worker/` | Partition processors & state machines | Business-logic execution |
-| `crates/ingress-http/` | HTTP ingress & gRPC gateway | API surface & protocol details |
+| `crates/ingress-http/` | HTTP ingress | Endpoint for receiving HTTP requests |
 | `crates/ingress-kafka/` | Kafka ingress connector | Event-driven pipelines |
 | `crates/partition-store/` | RocksDB backed state store | State snapshots & compaction |
 
