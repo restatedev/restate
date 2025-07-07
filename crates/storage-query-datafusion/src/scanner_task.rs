@@ -117,8 +117,10 @@ impl ScannerTask {
             };
 
             // connection/request has been closed, don't bother with driving the stream.
+            // The scanner will be dropped because we want to make sure that we don't get supurious
+            // next messages from the client after.
             if reciprocal.is_closed() {
-                continue;
+                return;
             }
 
             let record_batch = match self.stream.next().await {
