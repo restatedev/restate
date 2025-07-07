@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, bail};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
+
 use restate_core::Metadata;
 use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;

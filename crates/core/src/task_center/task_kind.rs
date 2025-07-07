@@ -152,6 +152,8 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort"))]
     // -- Log-server tasks
     LogletWriter,
+    // - Datafusion
+    DfScanner,
 }
 
 impl TaskKind {

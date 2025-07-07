@@ -19,8 +19,6 @@ mod partition_processor_manager;
 mod subscription_controller;
 mod subscription_integration;
 
-use std::time::Duration;
-
 use codederror::CodedError;
 
 use restate_bifrost::Bifrost;
@@ -190,11 +188,8 @@ impl Worker {
             None => None,
         };
 
-        let datafusion_remote_scanner = RemoteQueryScannerServer::new(
-            Duration::from_secs(60),
-            remote_scanner_manager,
-            router_builder,
-        );
+        let datafusion_remote_scanner =
+            RemoteQueryScannerServer::new(remote_scanner_manager, router_builder);
 
         Ok(Self {
             live_config,
