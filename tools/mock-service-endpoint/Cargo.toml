@@ -8,16 +8,18 @@ license.workspace = true
 publish = false
 
 [dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-service-protocol = { workspace = true, features = ["message", "codec"] }
+restate-types = { workspace = true }
+
 assert2 = { workspace = true }
 async-stream = "0.3.5"
 bytes = { workspace = true }
 futures = { workspace = true }
-http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["server"] }
 hyper-util = { workspace = true, features = ["full"] }
-restate-service-protocol = { workspace = true, features = ["message", "codec"] }
-restate-types = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -25,7 +27,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
-restate-workspace-hack = { workspace = true }
 
 [lib]
 path = "src/lib.rs"

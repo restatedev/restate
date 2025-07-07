@@ -23,19 +23,12 @@ restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-bytes = { workspace = true }
-bytestring = { workspace = true }
-chrono = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
-derive_builder = { workspace = true }
 futures = { workspace = true }
-paste = { workspace = true }
 pgwire = { version = "0.28.0", default-features = false, features = ["server-api-ring"] }
 prost = { workspace = true }
 schemars = { workspace = true, optional = true }
-serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-uuid = { workspace = true }

@@ -33,47 +33,36 @@ no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"
 metadata-api = ["restate-admin/metadata-api"]
 
 [dependencies]
-restate-admin = { workspace = true }
+restate-workspace-hack = { workspace = true }
+
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
-restate-fs-util = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio", "prometheus"] }
 restate-types = { workspace = true, features = ["clap"] }
-restate-worker = { workspace = true }
+restate-admin = { workspace = true }
 
-arc-swap = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "color", "help", "wrap_help", "usage", "suggestions", "error-context", "std"] }
 codederror = { workspace = true }
-derive_builder = { workspace = true }
 enumset = { workspace = true }
 futures-util = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-humantime = { workspace = true }
-jiff = { workspace = true }
 octocrab = { version = "0.44.0", features = ["stream"] }
-pin-project = { workspace = true }
 regex = "1.10.4"
 rlimit = { workspace = true }
-rocksdb = { workspace = true }
 rustls = { workspace = true, features = ["aws-lc-rs"] }
 schemars = { workspace = true, optional = true }
-serde = { workspace = true }
-serde_with = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
 ulid = { workspace = true }
 url = { version = "2.5.4", features = [] }
-restate-workspace-hack = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }

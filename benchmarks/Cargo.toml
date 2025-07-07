@@ -13,6 +13,8 @@ frame-pointer = ["pprof/frame-pointer"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
 [dependencies]
+restate-workspace-hack = { workspace = true }
+
 mock-service-endpoint = { workspace = true }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-node = { workspace = true, features = ["memory-loglet"] }
@@ -21,7 +23,6 @@ restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio", "p
 restate-types = { workspace = true, features = ["clap"] }
 
 anyhow = { workspace = true }
-futures = { workspace = true }
 futures-util = { workspace = true }
 http = { workspace = true }
 pprof = { version = "0.15", features = ["criterion", "flamegraph"] }
@@ -32,7 +33,6 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
-restate-workspace-hack = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

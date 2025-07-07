@@ -25,9 +25,7 @@ itertools = { workspace = true }
 prost = { workspace = true }
 prost-dto = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
 tonic = { workspace = true, features = ["codegen", "prost"] }
 tracing = { workspace = true }
 ulid = { workspace = true, features = ["serde"] }

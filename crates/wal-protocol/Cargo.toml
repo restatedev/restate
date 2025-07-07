@@ -13,6 +13,7 @@ serde = ["dep:serde", "enum-map/serde", "bytestring/serde", "restate-invoker-api
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
+
 restate-invoker-api = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
@@ -27,6 +28,5 @@ strum = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-
 
 [dev-dependencies]

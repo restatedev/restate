@@ -13,11 +13,12 @@ grpc-client = ["tonic/channel", "tonic/zstd", "tonic/gzip"]
 grpc-server = ["tonic/server"]
 
 [dependencies]
+restate-workspace-hack = { workspace = true }
+
 restate-types = { workspace = true }
 
 prost = { workspace = true }
 tonic = { workspace = true, features = ["codegen", "prost"] }
-restate-workspace-hack = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

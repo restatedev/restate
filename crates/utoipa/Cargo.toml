@@ -18,8 +18,9 @@ serde_json = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
-assert-json-diff = "2"
 restate-utoipa = { path = ".", features = ["debug"] }
+
+assert-json-diff = "2"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(doc_cfg)'] }

@@ -30,12 +30,9 @@ chrono = { workspace = true }
 derive_more = { workspace = true }
 flexbuffers = { workspace = true }
 futures = { workspace = true }
-http = { workspace = true }
 humantime = { workspace = true }
-indexmap = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
-parking_lot = { workspace = true}
 prost = { workspace = true }
 prost-dto = { workspace = true }
 protobuf = "2.28.0"
@@ -46,7 +43,6 @@ raft-proto = { git = "https://github.com/tikv/raft-rs", rev = "2fbeee5b89b22c392
 rand = { workspace = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 serde_with = { workspace = true }
 slog = { version = "2.7.0" }
 static_assertions = { workspace = true }

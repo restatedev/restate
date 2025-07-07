@@ -14,4 +14,5 @@ proc-macro = true
 proc-macro2 = "1.0"
 quote = "1"
 syn = { version = "2.0", features = ["full"] }
+
 restate-workspace-hack = { workspace = true }

@@ -19,8 +19,6 @@ bytes = { workspace = true, optional = true }
 bytesize = { workspace = true }
 http = { workspace = true }
 http-serde = { workspace = true }
-humantime = { workspace = true }
-iso8601 = "0.6.1"
 prost = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }

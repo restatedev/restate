@@ -22,6 +22,8 @@ cloud = []
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
 [dependencies]
+restate-workspace-hack = { workspace = true }
+
 restate-admin-rest-model = { workspace = true }
 restate-cli-util = { workspace = true }
 restate-cloud-tunnel-client = { workspace = true }
@@ -74,7 +76,6 @@ typify = "0.1.0"
 url = { workspace = true }
 uuid = { workspace = true }
 zip = "0.6"
-restate-workspace-hack = { workspace = true }
 
 [dev-dependencies]
 restate-cli-util = { workspace = true, features = ["test-util"] }

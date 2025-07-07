@@ -31,12 +31,10 @@ bytestring = { workspace = true }
 codederror = { workspace = true }
 futures = { workspace = true }
 humantime = { workspace = true }
-
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 tokio-stream = { workspace = true }
-
 itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }

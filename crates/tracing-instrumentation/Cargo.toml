@@ -32,7 +32,6 @@ restate-types = { workspace = true }
 
 arc-swap = { workspace = true }
 console-subscriber = { version = "0.4.1", features = [ "parking_lot", ], optional = true }
-derive_builder = { workspace = true }
 futures = { workspace = true }
 metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }
@@ -44,7 +43,6 @@ opentelemetry-otlp = { workspace = true, features = ["tls", "tls-roots"] }
 opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 schemars = { workspace = true, optional = true }
-serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
 tonic = { workspace = true }

@@ -16,6 +16,8 @@ console = [
 ]
 
 [dependencies]
+restate-workspace-hack = { workspace = true }
+
 restate-bifrost = { workspace = true, features = ["memory-loglet", "local-loglet"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-errors = { workspace = true }
@@ -27,7 +29,6 @@ restate-types = { workspace = true, features = ["test-util", "clap"] }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
-bytestring = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env", "color", "help", "wrap_help", "usage", "suggestions", "error-context", "std"] }
 codederror = { workspace = true }
 figment = { version = "0.10.8", features = ["env", "toml"] }
@@ -50,7 +51,6 @@ tokio-stream = { workspace = true }
 toml = { version = "0.8" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-restate-workspace-hack = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }

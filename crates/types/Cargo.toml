@@ -9,7 +9,6 @@ publish = false
 
 [features]
 default = []
-
 schemars = ["dep:schemars", "restate-serde-util/schema"]
 unsafe-mutable-config = []
 test-util = ["unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util"]
@@ -49,7 +48,6 @@ figment = { version = "0.10.8", features = ["env", "toml"] }
 flexbuffers = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
-http-serde = { workspace = true }
 humantime = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
@@ -87,7 +85,6 @@ tokio-stream = { workspace = true, features = ["sync"] }
 toml = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
-tracing-opentelemetry = { workspace = true }
 typed-builder = { workspace = true }
 ulid = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }

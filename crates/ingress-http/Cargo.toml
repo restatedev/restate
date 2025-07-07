@@ -13,6 +13,7 @@ options_schema = ["dep:schemars"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
+
 # Restate
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
@@ -57,8 +58,6 @@ restate-types = { workspace = true, features = ["test-util"] }
 mockall = "0.13.0"
 hyper = { workspace = true, features = ["full"] }
 hyper-util = { workspace = true, features = ["full"] }
-
 tracing-test = { workspace = true }
 tracing-subscriber = { workspace = true }
-
 googletest = { workspace = true }

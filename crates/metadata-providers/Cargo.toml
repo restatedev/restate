@@ -38,6 +38,9 @@ restate-workspace-hack = { workspace = true }
 restate-metadata-store = { workspace = true, features = ["grpc-client"] }
 restate-types = { workspace = true }
 restate-metadata-server-grpc = { workspace = true, optional = true, features = ["grpc-client"] }
+# Deps for objstore
+restate-core = { workspace = true, optional = true }
+restate-object-store-util = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -47,20 +50,13 @@ bytestring = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-
 # Deps for etcd
 etcd-client = { workspace = true, optional = true }
-
-# Deps for objstore
-restate-core = { workspace = true, optional = true }
-restate-object-store-util = { workspace = true, optional = true }
-
 ciborium = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true, features = ["aws"] }
 rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
-
 # Deps for replicated metadata client
 indexmap = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }

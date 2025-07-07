@@ -8,6 +8,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+restate-workspace-hack = { workspace = true }
+
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
@@ -20,5 +22,3 @@ futures = { workspace = true }
 object_store = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
-
-restate-workspace-hack = { workspace = true }

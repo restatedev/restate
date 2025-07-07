@@ -13,13 +13,18 @@ default = []
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-core = { workspace = true }
+restate-errors = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-storage-api = { workspace = true }
+restate-types = { workspace = true }
+
 ahash = { workspace = true }
 anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 dashmap = { workspace = true }
-derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 futures = { workspace = true }
@@ -27,23 +32,16 @@ futures-util = { workspace = true }
 humantime = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }
-restate-core = { workspace = true }
-restate-errors = { workspace = true }
-restate-rocksdb = { workspace = true }
-restate-storage-api = { workspace = true }
-restate-types = { workspace = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }
 static_assertions = { workspace = true }
 strum = { workspace = true }
-sync_wrapper = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
-opentelemetry = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
@@ -59,7 +57,6 @@ num-bigint = "0.4"
 rand = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-
 
 [[bench]]
 name = "basic_benchmark"

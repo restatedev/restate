@@ -14,6 +14,8 @@ options_schema = ["dep:schemars", "restate-types/schemars"]
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-types = { workspace = true }
+
 arc-swap = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
@@ -33,7 +35,6 @@ hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = ["client-legacy"] }
 jsonwebtoken = { version = "9.1.0" }
 pem = { version = "3.0.3" }
-restate-types = { workspace = true }
 ring = { version = "0.17.8" }
 rustls = { workspace = true }
 schemars = { workspace = true, optional = true }

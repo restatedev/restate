@@ -8,10 +8,12 @@ license.workspace = true
 publish = false
 
 [dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-encoding-derive = { version = "0.1.0", path = "derive" }
+
 bilrost = { workspace = true }
 bytes = { workspace = true }
-restate-encoding-derive = { version = "0.1.0", path = "derive" }
-restate-workspace-hack = { workspace = true }
 bytestring = { workspace = true }
 
 [dev-dependencies]
