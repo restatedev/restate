@@ -1055,8 +1055,7 @@ impl Member {
 
         if self.is_member_plain_node_id(joining_member_id.node_id) {
             let warning = format!(
-                "Node '{}' has registered before with a different storage id. This indicates that this node has lost its disk. Rejecting the join attempt.",
-                joining_member_id
+                "Node '{joining_member_id}' has registered before with a different storage id. This indicates that this node has lost its disk. Rejecting the join attempt."
             );
             warn!(warning);
             let _ = response_tx.send(Err(JoinClusterError::Internal(warning)));
@@ -1388,15 +1387,14 @@ impl Member {
                     // check whether joining node still exists
                     let Ok(joining_node_config) = nodes_config.find_node_by_id(joining_node_id)
                     else {
-                        config_change_rejections.push(format!("cannot add node '{}' because it is not part of the nodes configuration", joining_node_id));
+                        config_change_rejections.push(format!("cannot add node '{joining_node_id}' because it is not part of the nodes configuration"));
                         continue;
                     };
 
                     // check whether the joining node actually runs the metadata server role
                     if !joining_node_config.has_role(Role::MetadataServer) {
                         config_change_rejections.push(format!(
-                            "cannot add node '{}' because it does not run the metadata-server role",
-                            joining_node_id
+                            "cannot add node '{joining_node_id}' because it does not run the metadata-server role"
                         ));
                     }
                 }
@@ -1460,8 +1458,7 @@ impl Member {
                 self.configuration
                     .members
                     .contains_key(&to_plain_node_id(voter)),
-                "voter '{}' in Raft configuration not found in MetadataServerConfiguration",
-                voter
+                "voter '{voter}' in Raft configuration not found in MetadataServerConfiguration"
             );
         }
     }
@@ -1596,8 +1593,7 @@ impl Member {
             } else {
                 // latest reconfiguration didn't include this node, fail it so that caller can retry
                 let _ = response_tx.send(Err(JoinClusterError::Internal(format!(
-                    "failed to include node '{}' in new configuration",
-                    member_id
+                    "failed to include node '{member_id}' in new configuration"
                 ))));
             }
         }
@@ -1630,8 +1626,7 @@ impl Member {
             if self.is_member(member_id) {
                 let _ = response_tx.send(Err(MetadataCommandError::RemoveNode(
                     RemoveNodeError::Internal(format!(
-                        "failed to remove node '{}' from new configuration",
-                        member_id
+                        "failed to remove node '{member_id}' from new configuration"
                     )),
                 )));
             } else {
@@ -1811,8 +1806,7 @@ impl Member {
             }
             Err(err) => {
                 let _ = response_tx.send(Err(MetadataCommandError::Internal(format!(
-                    "failed to propose conf change: {}",
-                    err
+                    "failed to propose conf change: {err}"
                 ))));
             }
         }

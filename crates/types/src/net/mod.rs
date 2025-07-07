@@ -81,7 +81,7 @@ fn parse_http(s: &str) -> Result<AdvertisedAddress, Error> {
         if let Some(authority) = &parts.authority {
             if authority.port().is_none() {
                 // can not update just the port in place
-                parts.authority = Some(format!("{}:5122", authority).parse()?);
+                parts.authority = Some(format!("{authority}:5122").parse()?);
             }
         }
         parts.scheme = Some(http::uri::Scheme::HTTP);

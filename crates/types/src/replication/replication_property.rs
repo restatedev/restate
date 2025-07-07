@@ -159,7 +159,7 @@ impl ReplicationProperty {
 
 impl std::fmt::Debug for ReplicationProperty {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 

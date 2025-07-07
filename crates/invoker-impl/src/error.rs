@@ -370,17 +370,17 @@ pub(crate) struct InvocationErrorRelatedEntry {
 impl fmt::Display for InvocationErrorRelatedEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(t) = self.related_entry_type {
-            write!(f, "{}", t)?;
+            write!(f, "{t}")?;
         } else {
             write!(f, "Unknown")?;
         }
         if let Some(n) = &self.related_entry_name {
             if !n.is_empty() {
-                write!(f, "(\"{}\")", n)?;
+                write!(f, "(\"{n}\")")?;
             }
         }
         if let Some(i) = self.related_entry_index {
-            write!(f, "[index {}]", i)?;
+            write!(f, "[index {i}]")?;
         }
         Ok(())
     }
@@ -507,17 +507,17 @@ impl InvocationErrorRelatedCommandV2 {
 impl fmt::Display for InvocationErrorRelatedCommandV2 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(t) = self.related_entry_type {
-            write!(f, "{}", t)?;
+            write!(f, "{t}")?;
         } else {
             write!(f, "Unknown")?;
         }
         if let Some(n) = &self.related_command_name {
             if !n.is_empty() {
-                write!(f, "(named \"{}\")", n)?;
+                write!(f, "(named \"{n}\")")?;
             }
         }
         if let Some(i) = self.related_command_index {
-            write!(f, "[command index {}]", i)?;
+            write!(f, "[command index {i}]")?;
         }
         Ok(())
     }

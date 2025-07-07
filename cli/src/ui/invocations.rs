@@ -393,14 +393,14 @@ fn format_entry_type_v2_details(entry: &Option<Entry>) -> String {
             format!("{} {}", request.invocation_target, request.invocation_id)
         }
         Entry::Command(Command::CompleteAwakeable(CompleteAwakeableCommand { id, .. })) => {
-            format!("id {}", id)
+            format!("id {id}")
         }
         Entry::Command(Command::SendSignal(SendSignalCommand {
             target_invocation_id,
             signal_id,
             ..
         })) => {
-            format!("signal {} to {}", signal_id, target_invocation_id)
+            format!("signal {signal_id} to {target_invocation_id}")
         }
         Entry::Command(Command::GetLazyState(GetLazyStateCommand { key, .. }))
         | Entry::Command(Command::GetEagerState(GetEagerStateCommand { key, .. }))

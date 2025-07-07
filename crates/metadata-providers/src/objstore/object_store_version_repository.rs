@@ -562,7 +562,7 @@ mod tests {
                             continue;
                         }
                         Err(e) => {
-                            panic!("should not happened: {}", e);
+                            panic!("should not happened: {e}");
                         }
                     }
                 }

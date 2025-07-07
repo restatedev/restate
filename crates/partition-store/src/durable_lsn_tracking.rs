@@ -61,7 +61,7 @@ impl TablePropertiesCollector for AppliedLsnCollector {
     fn finish(&mut self) -> Result<impl IntoIterator<Item = &(CString, CString)>, CollectorError> {
         for (partition_id, lsn) in &self.applied_lsns {
             self.properties.push((
-                CString::new(format!("{}{}", APPLIED_LSNS_PROPERTY_PREFIX, partition_id)).unwrap(),
+                CString::new(format!("{APPLIED_LSNS_PROPERTY_PREFIX}{partition_id}")).unwrap(),
                 CString::new(lsn.to_string()).unwrap(),
             ));
         }

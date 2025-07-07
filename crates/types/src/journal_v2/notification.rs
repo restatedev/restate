@@ -335,12 +335,12 @@ impl fmt::Display for SignalId {
         match self {
             SignalId::Index(idx) => {
                 if let Some(built_in_signal) = BuiltInSignal::from_repr(*idx) {
-                    write!(f, "{:?}", built_in_signal)
+                    write!(f, "{built_in_signal:?}")
                 } else {
-                    write!(f, "index {}", idx)
+                    write!(f, "index {idx}")
                 }
             }
-            SignalId::Name(name) => write!(f, "{}", name),
+            SignalId::Name(name) => write!(f, "{name}"),
         }
     }
 }
