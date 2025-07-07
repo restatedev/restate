@@ -211,7 +211,7 @@ flowchart LR
 | `crates/log-server/` | Log segment persistence (RocksDB, object-store) | Durability and replication tuning |
 | `crates/worker/` | Partition processors & state machines | Business-logic execution |
 | `crates/ingress-http/` | HTTP ingress | Endpoint for receiving HTTP requests |
-| `crates/ingress-kafka/` | Kafka ingress connector | Event-driven pipelines |
+| `crates/ingress-kafka/` | Kafka ingress connector | Kafka ingress connector |
 | `crates/partition-store/` | RocksDB backed state store | State snapshots & compaction |
 
 *(See `workspace-hack/` for dependency graph workarounds, and `tools/` for misc utilities.)*
