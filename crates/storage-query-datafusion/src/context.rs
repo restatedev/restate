@@ -343,7 +343,9 @@ impl QueryContext {
         // build the session
         //
         let mut session_config = SessionConfig::new();
-        session_config = session_config.with_target_partitions(default_parallelism.unwrap_or(2));
+        if let Some(target_partitions) = default_parallelism {
+            session_config = session_config.with_target_partitions(target_partitions);
+        }
 
         session_config = session_config
             .with_information_schema(true)

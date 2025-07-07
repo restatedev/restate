@@ -39,7 +39,7 @@ pub struct QueryEngineOptions {
 
     /// # Default query parallelism
     ///
-    /// The number of parallel partitions to use for a query execution
+    /// The degree of parallelism to use for query execution (Defaults to the number of available cores).
     query_parallelism: Option<NonZeroUsize>,
 
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
