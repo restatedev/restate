@@ -61,6 +61,14 @@ message SequenceNumber { uint64 sequence_number = 1; }
 
 message RestateVersion { string version = 1; }
 
+message PartitionDurability {
+  // The partition has applied this LSN durably to the replica-set and/or has been
+  // persisted in a snapshot in the snapshot repository.
+  SequenceNumber durable_point = 1;
+  // Timestamp which the durability point was updated
+  uint64 modification_time = 2;
+}
+
 message JournalEntryIndex { uint32 entry_index = 1; }
 
 // Target of a completion sent from another Partition Processor.
