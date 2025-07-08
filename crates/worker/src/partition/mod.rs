@@ -31,7 +31,7 @@ use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
     ReadOnlyDeduplicationTable,
 };
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
+use restate_storage_api::fsm_table::{FsmTable, PartitionDurability, ReadOnlyFsmTable};
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
@@ -77,6 +77,8 @@ use crate::metric_definitions::{
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, StateMachine};
+
+use self::leadership::trim_queue::TrimQueue;
 
 mod cleaner;
 pub mod invoker_storage_reader;
@@ -147,6 +149,11 @@ where
         let state_machine =
             Self::create_state_machine(&mut partition_store, partition.key_range.clone()).await?;
 
+        let trim_queue = TrimQueue::default();
+        if let Some(ref partition_durability) = partition_store.get_partition_durability().await? {
+            trim_queue.push(partition_durability);
+        }
+
         let last_seen_leader_epoch = partition_store
             .get_dedup_sequence_number(&ProducerId::self_producer())
             .await?
@@ -174,6 +181,7 @@ where
             invoker_tx,
             bifrost.clone(),
             last_seen_leader_epoch,
+            trim_queue.clone(),
         );
 
         Ok(PartitionProcessor {
@@ -187,6 +195,7 @@ where
             status_watch_tx,
             status,
             replica_set_states,
+            trim_queue,
         })
     }
 
@@ -234,6 +243,7 @@ pub struct PartitionProcessor<InvokerSender> {
     replica_set_states: PartitionReplicaSetStates,
 
     partition_store: PartitionStore,
+    trim_queue: TrimQueue,
 }
 
 #[derive(Debug, derive_more::Display, thiserror::Error)]
@@ -441,9 +451,9 @@ where
             });
 
         // avoid synchronized timers.
-        let mut status_update_timer =
+        let mut internal_bookkeeping_timer =
             tokio::time::interval(with_jitter(Duration::from_millis(500), 0.5));
-        status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        internal_bookkeeping_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut action_collector = ActionCollector::default();
         let mut command_buffer =
@@ -455,6 +465,11 @@ where
         info!("Partition {} started", partition_id);
 
         loop {
+            if self.leadership_state.is_leader() {
+                // do we have an in-flight trim? if yes, do nothing.
+                // do we need to trim? yes, spawn the task
+                // no, nothing to do.
+            }
             let config = live_config.live_load();
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
@@ -484,7 +499,7 @@ where
                         msg => { msg.fail(Verdict::MessageUnrecognized); }
                     }
                 }
-                _ = status_update_timer.tick() => {
+                _ = internal_bookkeeping_timer.tick() => {
                     self.status_watch_tx.send_modify(|old| {
                         old.clone_from(&self.status);
                         old.updated_at = MillisSinceEpoch::now();
@@ -929,11 +944,17 @@ where
                     );
                     return Ok(None);
                 }
-                // todos:
-                // - call put_partition_durability after validating that durability point is
-                // monotonically increasing. `transaction.put_partition_durability(durability)`
-                // - inform the leadership state machine about the new durability point, the leader
-                // state will schedule the trim if/when necessary.
+
+                let partition_durability = PartitionDurability {
+                    modification_time: partition_durability.modification_time,
+                    durable_point: partition_durability.durable_point,
+                };
+                // Validating that durability point is monotonically increasing.
+                if self.trim_queue.push(&partition_durability) {
+                    transaction
+                        .put_partition_durability(&partition_durability)
+                        .await?;
+                }
             } else {
                 self.state_machine
                     .apply(
