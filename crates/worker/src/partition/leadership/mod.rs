@@ -18,7 +18,6 @@ use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
-use restate_types::cluster::cluster_state::RunMode;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
@@ -37,13 +36,16 @@ use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::timer_table::{TimerKey, TimerTable};
 use restate_timer::TokioClock;
 use restate_types::GenerationalNodeId;
+use restate_types::cluster::cluster_state::RunMode;
+use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
+use restate_types::identifiers::{LeaderEpoch, PartitionLeaderEpoch};
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
+use restate_types::partitions::Partition;
 use restate_types::storage::StorageEncodeError;
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::AnnounceLeader;
@@ -134,31 +136,11 @@ impl State {
     }
 }
 
-pub struct PartitionProcessorMetadata {
-    partition_id: PartitionId,
-    partition_key_range: RangeInclusive<PartitionKey>,
-}
-
-impl PartitionProcessorMetadata {
-    pub const fn new(
-        partition_id: PartitionId,
-        partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> Self {
-        Self {
-            partition_id,
-            partition_key_range,
-        }
-    }
-}
-
 pub(crate) struct LeadershipState<I> {
     state: State,
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
-    partition_processor_metadata: PartitionProcessorMetadata,
-    num_timers_in_memory_limit: Option<usize>,
-    cleanup_interval: Duration,
-    channel_size: usize,
+    partition: Partition,
     invoker_tx: I,
     bifrost: Bifrost,
 }
@@ -169,20 +151,14 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        partition_processor_metadata: PartitionProcessorMetadata,
-        num_timers_in_memory_limit: Option<usize>,
-        cleanup_interval: Duration,
-        channel_size: usize,
+        partition: Partition,
         invoker_tx: I,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
     ) -> Self {
         Self {
             state: State::Follower,
-            partition_processor_metadata,
-            num_timers_in_memory_limit,
-            cleanup_interval,
-            channel_size,
+            partition,
             invoker_tx,
             bifrost,
             last_seen_leader_epoch,
@@ -229,27 +205,17 @@ where
             //  with the next release.
             node_id: Some(my_node_id()),
             leader_epoch,
-            partition_key_range: Some(
-                self.partition_processor_metadata
-                    .partition_key_range
-                    .clone(),
-            ),
+            partition_key_range: Some(self.partition.key_range.clone()),
         }));
 
         let mut self_proposer = SelfProposer::new(
-            self.partition_processor_metadata.partition_id,
+            self.partition.partition_id,
             EpochSequenceNumber::new(leader_epoch),
             &self.bifrost,
         )?;
 
         self_proposer
-            .propose(
-                *self
-                    .partition_processor_metadata
-                    .partition_key_range
-                    .start(),
-                announce_leader,
-            )
+            .propose(*self.partition.key_range.start(), announce_leader)
             .await?;
 
         self.state = State::Candidate {
@@ -304,6 +270,7 @@ where
         &mut self,
         announce_leader: &AnnounceLeader,
         partition_store: &mut PartitionStore,
+        config: &Configuration,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
 
@@ -319,7 +286,7 @@ where
                     }
                     Ordering::Equal => {
                         debug!("Won the leadership campaign. Becoming the strong leader now.");
-                        self.become_leader(partition_store).await?
+                        self.become_leader(partition_store, config).await?
                     }
                     Ordering::Greater => {
                         debug!(
@@ -355,7 +322,11 @@ where
         Ok(self.is_leader())
     }
 
-    async fn become_leader(&mut self, partition_store: &mut PartitionStore) -> Result<(), Error> {
+    async fn become_leader(
+        &mut self,
+        partition_store: &mut PartitionStore,
+        config: &Configuration,
+    ) -> Result<(), Error> {
         if let State::Candidate {
             leader_epoch,
             self_proposer,
@@ -363,34 +334,26 @@ where
         {
             let invoker_rx = Self::resume_invoked_invocations(
                 &mut self.invoker_tx,
-                (
-                    self.partition_processor_metadata.partition_id,
-                    *leader_epoch,
-                ),
-                self.partition_processor_metadata
-                    .partition_key_range
-                    .clone(),
+                (self.partition.partition_id, *leader_epoch),
+                self.partition.key_range.clone(),
                 partition_store,
-                self.channel_size,
+                config.worker.internal_queue_length(),
             )
             .await?;
 
             let timer_service = TimerService::new(
                 TokioClock,
-                self.num_timers_in_memory_limit,
+                config.worker.num_timers_in_memory_limit(),
                 TimerReader::from(partition_store.clone()),
             );
 
-            let (shuffle_tx, shuffle_rx) = mpsc::channel(self.channel_size);
+            let (shuffle_tx, shuffle_rx) = mpsc::channel(config.worker.internal_queue_length());
 
             let shuffle = Shuffle::new(
-                ShuffleMetadata::new(
-                    self.partition_processor_metadata.partition_id,
-                    *leader_epoch,
-                ),
+                ShuffleMetadata::new(self.partition.partition_id, *leader_epoch),
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
-                self.channel_size,
+                config.worker.internal_queue_length(),
                 self.bifrost.clone(),
             );
 
@@ -400,14 +363,12 @@ where
                 TaskCenter::spawn_unmanaged(TaskKind::Shuffle, "shuffle", shuffle.run())?;
 
             let cleaner = Cleaner::new(
-                self.partition_processor_metadata.partition_id,
+                self.partition.partition_id,
                 *leader_epoch,
                 partition_store.clone(),
                 self.bifrost.clone(),
-                self.partition_processor_metadata
-                    .partition_key_range
-                    .clone(),
-                self.cleanup_interval,
+                self.partition.key_range.clone(),
+                config.worker.cleanup_interval(),
             );
 
             let cleaner_task_id =
@@ -417,12 +378,9 @@ where
             self_proposer.mark_as_leader().await;
 
             self.state = State::Leader(LeaderState::new(
-                self.partition_processor_metadata.partition_id,
+                self.partition.partition_id,
                 *leader_epoch,
-                *self
-                    .partition_processor_metadata
-                    .partition_key_range
-                    .start(),
+                *self.partition.key_range.start(),
                 shuffle_task_handle,
                 cleaner_task_id,
                 shuffle_hint_tx,
@@ -569,7 +527,7 @@ where
             State::Follower | State::Candidate { .. } => {
                 // Just fail the rpc
                 reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
-                    self.partition_processor_metadata.partition_id,
+                    self.partition.partition_id,
                 )))
             }
             State::Leader(leader_state) => {
@@ -590,11 +548,9 @@ where
         >,
     ) {
         match &mut self.state {
-            State::Follower | State::Candidate { .. } => {
-                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(
-                    self.partition_processor_metadata.partition_id,
-                )))
-            }
+            State::Follower | State::Candidate { .. } => reciprocal.send(Err(
+                PartitionProcessorRpcError::NotLeader(self.partition.partition_id),
+            )),
             State::Leader(leader_state) => {
                 leader_state
                     .self_propose_and_respond_asynchronously(partition_key, cmd, reciprocal)
@@ -653,7 +609,7 @@ pub(crate) enum TaskError {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata, State};
+    use crate::partition::leadership::{LeadershipState, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
     use restate_core::{TaskCenter, TestCoreEnv};
@@ -661,22 +617,21 @@ mod tests {
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
     use restate_types::GenerationalNodeId;
-    use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
+    use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StorageOptions};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
     use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
+    use restate_types::partitions::Partition;
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
     use std::ops::RangeInclusive;
-    use std::time::Duration;
     use test_log::test;
     use tokio_stream::StreamExt;
 
     const PARTITION_ID: PartitionId = PartitionId::MIN;
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
     const PARTITION_KEY_RANGE: RangeInclusive<PartitionKey> = PartitionKey::MIN..=PartitionKey::MAX;
-    const PARTITION_PROCESSOR_METADATA: PartitionProcessorMetadata =
-        PartitionProcessorMetadata::new(PARTITION_ID, PARTITION_KEY_RANGE);
+    const PARTITION: Partition = Partition::new(PARTITION_ID, PARTITION_KEY_RANGE);
 
     #[test(restate_core::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
@@ -694,15 +649,7 @@ mod tests {
         .await?;
 
         let invoker_tx = MockInvokerHandle::default();
-        let mut state = LeadershipState::new(
-            PARTITION_PROCESSOR_METADATA,
-            None,
-            Duration::from_secs(60 * 60),
-            42,
-            invoker_tx,
-            bifrost.clone(),
-            None,
-        );
+        let mut state = LeadershipState::new(PARTITION, invoker_tx, bifrost.clone(), None);
 
         assert!(matches!(state.state, State::Follower));
 
@@ -739,7 +686,11 @@ mod tests {
             )
             .await?;
         state
-            .on_announce_leader(&announce_leader, &mut partition_store)
+            .on_announce_leader(
+                &announce_leader,
+                &mut partition_store,
+                &Configuration::pinned(),
+            )
             .await?;
 
         assert!(matches!(state.state, State::Leader(_)));

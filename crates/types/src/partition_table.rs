@@ -254,7 +254,7 @@ pub struct Partition {
 }
 
 impl Partition {
-    pub fn new(partition_id: PartitionId, key_range: RangeInclusive<PartitionKey>) -> Self {
+    pub const fn new(partition_id: PartitionId, key_range: RangeInclusive<PartitionKey>) -> Self {
         Self {
             partition_id,
             key_range,

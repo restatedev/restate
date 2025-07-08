@@ -1219,12 +1219,7 @@ impl PartitionProcessorManager {
 
     #[instrument(level = "info", skip_all, fields(partition_id = %partition_id))]
     fn start_partition_processor(&mut self, partition_id: PartitionId, delay: Option<Duration>) {
-        let Some(partition_key_range) = self
-            .partition_table
-            .live_load()
-            .get(&partition_id)
-            .map(|partition| partition.key_range.clone())
-        else {
+        let Some(partition) = self.partition_table.live_load().get(&partition_id).cloned() else {
             debug!(
                 "Cannot start partition processor because it is not contained in the partition table. Waiting for a partition table update."
             );
@@ -1243,8 +1238,7 @@ impl PartitionProcessorManager {
 
         let starting_task = SpawnPartitionProcessorTask::new(
             task_name.clone(),
-            partition_id,
-            partition_key_range,
+            partition,
             self.updateable_config.clone(),
             self.bifrost.clone(),
             self.replica_set_states.clone(),
