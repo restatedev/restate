@@ -34,7 +34,7 @@ pub trait ReadOnlyFsmTable {
     ) -> impl Future<Output = Result<Option<PartitionDurability>>> + Send + '_;
 }
 
-pub trait FsmTable: ReadOnlyFsmTable {
+pub trait FsmTable {
     fn put_applied_lsn(&mut self, lsn: Lsn) -> impl Future<Output = Result<()>> + Send;
 
     fn put_inbox_seq_number(
