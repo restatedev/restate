@@ -98,7 +98,7 @@ async-trait = "0.1.88"
 axum = { version = "0.7.9", default-features = false }
 aws-config = "1.8.0"
 aws-credential-types = "1.2.2"
-aws-smithy-async = {version = "1.2.5", default-features = false}
+aws-smithy-async = { version = "1.2.5", default-features = false }
 aws-smithy-runtime-api = "1.7.4"
 aws-smithy-types = "1.3.0"
 base64 = "0.22"
@@ -115,6 +115,7 @@ comfy-table = { version = "7.1" }
 chrono-humanize = { version = "0.2.3" }
 clap = { version = "4", default-features = false }
 clap-verbosity-flag = { version = "3.0.2" }
+clap_complete = { version = "4.5" }
 cling = { version = "0.1.3", default-features = false, features = ["derive"] }
 criterion = "0.5"
 crossterm = { version = "0.29.0" }
@@ -185,13 +186,20 @@ rangemap = "1.5.1"
 rayon = { version = "1.10" }
 regex = { version = "1.11" }
 regress = { version = "0.10" }
-reqwest = { version = "0.12.5", default-features = false, features = ["json", "rustls-tls", "stream", ] }
+reqwest = { version = "0.12.5", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "stream",
+] }
 rlimit = { version = "0.10.1" }
-rocksdb = { version = "0.41.0", package = "rust-rocksdb", features = ["multi-threaded-cf", "jemalloc"], git = "https://github.com/restatedev/rust-rocksdb", rev = "309f749c033731c21a520f5b47773fe31deafd79" }
+rocksdb = { version = "0.41.0", package = "rust-rocksdb", features = [
+    "multi-threaded-cf",
+    "jemalloc",
+], git = "https://github.com/restatedev/rust-rocksdb", rev = "309f749c033731c21a520f5b47773fe31deafd79" }
 rstest = "0.24.0"
 rustls = { version = "0.23.26", default-features = false, features = ["ring"] }
 schemars = { version = "0.8", features = ["bytes", "enumset"] }
-semver = {  version = "1.0", features = ["serde"] }
+semver = { version = "1.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_with = "3.8"
@@ -206,7 +214,10 @@ tempfile = "3.6.0"
 test-log = { version = "0.2.11", default-features = false, features = [
     "trace",
 ] }
-tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms", "profiling"] }
+tikv-jemallocator = { version = "0.6", features = [
+    "unprefixed_malloc_on_supported_platforms",
+    "profiling",
+] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling"] }
 thiserror = "2.0"
 tokio = { version = "1.45.0", default-features = false, features = [
@@ -226,7 +237,11 @@ tower = "0.5.2"
 tower-http = { version = "0.6.2", default-features = false }
 tracing = { version = "0.1" }
 tracing-opentelemetry = { version = "0.28.0" }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "parking_lot"] }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "fmt",
+    "parking_lot",
+] }
 tracing-test = { version = "0.2.5" }
 typed-builder = "0.21.0"
 ulid = { version = "1.2.0" }

@@ -10,6 +10,7 @@
 
 #[cfg(feature = "cloud")]
 pub mod cloud;
+pub mod completions;
 pub mod config;
 pub mod deployments;
 pub mod examples;
