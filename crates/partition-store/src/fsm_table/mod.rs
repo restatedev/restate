@@ -51,6 +51,21 @@ where
     storage.get_value(key)
 }
 
+/// Forces a read from persistent storage, bypassing memtables and block cache.
+fn get_durable<T: PartitionStoreProtobufValue, S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    state_id: u64,
+) -> Result<Option<T>>
+where
+    <<T as PartitionStoreProtobufValue>::ProtobufType as TryInto<T>>::Error: Into<anyhow::Error>,
+{
+    let key = PartitionStateMachineKey::default()
+        .partition_id(partition_id.into())
+        .state_id(state_id);
+    storage.get_durable_value(key)
+}
+
 fn put<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
@@ -76,6 +91,16 @@ impl ReadOnlyFsmTable for PartitionStore {
 
     async fn get_applied_lsn(&mut self) -> Result<Option<Lsn>> {
         get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::APPLIED_LSN)
+            .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
+    }
+
+    /// Returns the durably persisted applied LSN, if any.
+    ///
+    /// Note that this will force a read from persistent storage. It's perferred to use
+    /// [`crate::PartitionStoreManager::get_durable_lsn()`] unless you are operating
+    /// on a partition store before it's opened.
+    async fn get_locally_durable_lsn(&mut self) -> Result<Option<Lsn>> {
+        get_durable::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::APPLIED_LSN)
             .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
     }
 
