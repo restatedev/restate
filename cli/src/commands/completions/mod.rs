@@ -40,12 +40,17 @@ fn get_shell_or_detect(shell: Option<Shell>) -> Shell {
     shell.unwrap_or_else(|| detect_shell().unwrap_or(Shell::Bash))
 }
 
+/// Get the binary name for completion generation
+fn get_binary_name() -> String {
+    CliApp::command().get_bin_name().unwrap_or("restate").to_string()
+}
+
 pub async fn run_generate(State(_env): State<CliEnv>, opts: &Generate) -> Result<()> {
     let detected_shell = get_shell_or_detect(opts.shell);
 
     let mut cmd = CliApp::command();
-    let cmd_name = cmd.get_name().to_string();
-    generate(detected_shell, &mut cmd, &cmd_name, &mut io::stdout());
+    let binary_name = get_binary_name();
+    generate(detected_shell, &mut cmd, &binary_name, &mut io::stdout());
 
     Ok(())
 }
@@ -127,7 +132,7 @@ fn get_zsh_completion_dir(home: &str) -> PathBuf {
 
 fn install_completions(shell: Shell) -> Result<()> {
     let mut cmd = CliApp::command();
-    let name = cmd.get_bin_name().unwrap_or("restate").to_string();
+    let name = get_binary_name();
 
     match shell {
         Shell::Bash => {
@@ -199,8 +204,18 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    fn get_expected_package_name() -> String {
-        env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "restate-cli".to_string())
+    fn get_expected_binary_name() -> String {
+        "restate".to_string()
+    }
+
+    #[test]
+    fn test_get_binary_name() {
+        // Test that get_binary_name returns the expected binary name
+        let binary_name = get_binary_name();
+        assert_eq!(binary_name, "restate");
+        
+        // Also verify it matches our test helper
+        assert_eq!(binary_name, get_expected_binary_name());
     }
 
     #[test]
@@ -254,10 +269,10 @@ mod tests {
         assert!(!completion_dir.exists());
 
         // Test that the expected path is constructed correctly
-        let package_name = get_expected_package_name();
-        let expected_file = completion_dir.join(&package_name);
+        let binary_name = get_expected_binary_name();
+        let expected_file = completion_dir.join(&binary_name);
         assert_eq!(expected_file.extension(), None);
-        assert_eq!(expected_file.file_name().unwrap(), package_name.as_str());
+        assert_eq!(expected_file.file_name().unwrap(), binary_name.as_str());
     }
 
     #[test]
@@ -269,12 +284,12 @@ mod tests {
         unsafe { env::set_var("HOME", home_dir) };
 
         let completion_dir = PathBuf::from(home_dir).join(".local/share/zsh/site-functions");
-        let package_name = get_expected_package_name();
-        let expected_file = completion_dir.join(format!("_{package_name}"));
+        let binary_name = get_expected_binary_name();
+        let expected_file = completion_dir.join(format!("_{binary_name}"));
 
         assert_eq!(
             expected_file.file_name().unwrap(),
-            format!("_{package_name}").as_str()
+            format!("_{binary_name}").as_str()
         );
         assert!(expected_file.to_str().unwrap().contains("site-functions"));
     }
@@ -288,11 +303,11 @@ mod tests {
         unsafe { env::set_var("HOME", home_dir) };
 
         let completion_dir = PathBuf::from(home_dir).join(".config/fish/completions");
-        let package_name = get_expected_package_name();
-        let expected_file = completion_dir.join(format!("{package_name}.fish"));
+        let binary_name = get_expected_binary_name();
+        let expected_file = completion_dir.join(format!("{binary_name}.fish"));
 
         assert_eq!(expected_file.extension().unwrap(), "fish");
-        assert_eq!(expected_file.file_stem().unwrap(), package_name.as_str());
+        assert_eq!(expected_file.file_stem().unwrap(), binary_name.as_str());
     }
 
     #[test]
@@ -381,5 +396,41 @@ mod tests {
 
         // PowerShell installation should always succeed (it just prints to stdout)
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_generate_uses_correct_binary_name() {
+        // Test that generate function uses the correct binary name
+        let mut cmd = CliApp::command();
+        let mut output = Vec::new();
+        let binary_name = get_binary_name();
+        
+        // Generate bash completions
+        generate(Shell::Bash, &mut cmd, &binary_name, &mut output);
+        
+        let content = String::from_utf8(output).unwrap();
+        
+        // Check that the generated content contains the binary name
+        assert!(content.contains("restate"));
+        assert!(!content.contains("restate-cli"));
+    }
+
+    #[test]
+    fn test_completion_files_use_binary_name() {
+        // This test verifies that all shell completion files use the binary name
+        // not the package name
+        let binary_name = get_binary_name();
+        
+        // Test bash
+        let bash_file = binary_name.to_string();
+        assert_eq!(bash_file, "restate");
+        
+        // Test zsh
+        let zsh_file = format!("_{binary_name}");
+        assert_eq!(zsh_file, "_restate");
+        
+        // Test fish
+        let fish_file = format!("{binary_name}.fish");
+        assert_eq!(fish_file, "restate.fish");
     }
 }
