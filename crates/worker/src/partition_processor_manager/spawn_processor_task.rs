@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind, my_node_id};
+use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind};
 use restate_invoker_impl::Service as InvokerService;
 use restate_partition_store::snapshots::LocalPartitionSnapshot;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
@@ -152,16 +152,6 @@ impl SpawnPartitionProcessorTask {
                         &options,
                     )
                     .await?;
-
-                    if let Some(durable_lsn) =
-                        partition_store_manager.get_durable_lsn(partition.partition_id)
-                    {
-                        replica_set_states.note_durable_lsn(
-                            partition.partition_id,
-                            my_node_id().as_plain(),
-                            durable_lsn,
-                        );
-                    }
 
                     // invoker needs to outlive the partition processor when shutdown signal is
                     // received. This is why it's not spawned as a "child".
