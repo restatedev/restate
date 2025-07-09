@@ -25,6 +25,9 @@ pub trait ReadOnlyFsmTable {
 
     fn get_applied_lsn(&mut self) -> impl Future<Output = Result<Option<Lsn>>> + Send + '_;
 
+    /// Returns the locally durable applied LSN, if any.
+    fn get_locally_durable_lsn(&mut self) -> impl Future<Output = Result<Option<Lsn>>> + Send + '_;
+
     fn get_min_restate_version(
         &mut self,
     ) -> impl Future<Output = Result<SemanticRestateVersion>> + Send + '_;
