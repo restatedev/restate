@@ -2,13 +2,16 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use clap_complete::{Shell, generate};
 use cling::prelude::*;
-use std::env;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 
 use crate::CliApp;
 use crate::cli_env::CliEnv;
+use restate_cli_util::{c_println, c_success};
+
+mod config;
+use config::{CompletionConfig, PowerShellMessages, ShellConfig, UnsupportedShellMessages};
 
 /// Generate shell completions for the Restate CLI
 #[derive(Run, Subcommand, Clone)]
@@ -42,7 +45,10 @@ fn get_shell_or_detect(shell: Option<Shell>) -> Shell {
 
 /// Get the binary name for completion generation
 fn get_binary_name() -> String {
-    CliApp::command().get_bin_name().unwrap_or("restate").to_string()
+    CliApp::command()
+        .get_bin_name()
+        .unwrap_or("restate")
+        .to_string()
 }
 
 pub async fn run_generate(State(_env): State<CliEnv>, opts: &Generate) -> Result<()> {
@@ -62,32 +68,24 @@ pub async fn run_install(State(_env): State<CliEnv>, opts: &Install) -> Result<(
 }
 
 fn detect_shell() -> Result<Shell> {
-    // Try to detect shell from environment variables
-    if let Ok(shell_path) = env::var("SHELL") {
-        let shell_name = shell_path.rsplit('/').next().unwrap_or(&shell_path);
-        match shell_name {
-            "bash" => return Ok(Shell::Bash),
-            "zsh" => return Ok(Shell::Zsh),
-            "fish" => return Ok(Shell::Fish),
-            _ => {}
-        }
-    }
+    // Use clap_complete's built-in shell detection
+    let detected = Shell::from_env()
+        .or_else(|| {
+            // Fallback to parsing SHELL variable with from_shell_path
+            std::env::var("SHELL")
+                .ok()
+                .and_then(|path| Shell::from_shell_path(&path))
+        })
+        .unwrap_or_else(|| {
+            // Platform-specific defaults
+            if cfg!(target_os = "windows") {
+                Shell::PowerShell
+            } else {
+                Shell::Bash
+            }
+        });
 
-    // Try PowerShell on Windows
-    if cfg!(target_os = "windows") {
-        Ok(Shell::PowerShell)
-    } else {
-        Ok(Shell::Bash)
-    }
-}
-
-/// Configuration for shell completion installation
-struct CompletionConfig<'a> {
-    shell: Shell,
-    name: &'a str,
-    completion_dir: PathBuf,
-    file_name: String,
-    post_install_message: &'a str,
+    Ok(detected)
 }
 
 /// Generate and write completion file
@@ -98,30 +96,30 @@ fn write_completion_file(cmd: &mut clap::Command, config: &CompletionConfig) -> 
 
     let completion_file = config.completion_dir.join(&config.file_name);
 
-    // Generate completions with pre-allocated buffer
-    let mut output = Vec::with_capacity(8192);
+    // Generate completions to buffer
+    let mut output = Vec::new();
     generate(config.shell, cmd, config.name.to_string(), &mut output);
 
     // Write to completion file
     fs::write(&completion_file, &output)
         .with_context(|| format!("Failed to write {} completion file", config.shell))?;
 
-    println!(
+    c_success!(
         "{} completions installed to: {}",
         config.shell,
         completion_file.display()
     );
-    println!("{}", config.post_install_message);
+    c_println!("{}", config.post_install_message);
 
     Ok(())
 }
 
-fn get_zsh_completion_dir(home: &str) -> PathBuf {
+fn get_zsh_completion_dir(home: &PathBuf) -> PathBuf {
     // Try common zsh completion directories
-    let completion_dirs = [
-        PathBuf::from(home).join(".local/share/zsh/site-functions"),
-        PathBuf::from(home).join(".zsh/completions"),
-    ];
+    let completion_dirs: Vec<PathBuf> = ShellConfig::get_zsh_paths()
+        .iter()
+        .map(|path| home.join(path))
+        .collect();
 
     completion_dirs
         .iter()
@@ -130,69 +128,71 @@ fn get_zsh_completion_dir(home: &str) -> PathBuf {
         .unwrap_or_else(|| completion_dirs[0].clone())
 }
 
+/// Install completions for standard shells (Bash, Zsh, Fish)
+fn install_standard_shell_completions(
+    shell: Shell,
+    cmd: &mut clap::Command,
+    name: &str,
+) -> Result<()> {
+    let home = dirs::home_dir().context("Could not detect the home directory")?;
+
+    let (completion_dir, file_name) = match shell {
+        Shell::Bash => (
+            home.join(ShellConfig::BASH.completion_path),
+            name.to_string(),
+        ),
+        Shell::Zsh => (get_zsh_completion_dir(&home), format!("_{name}")),
+        Shell::Fish => (
+            home.join(ShellConfig::FISH.completion_path),
+            format!("{name}{}", ShellConfig::FISH.file_extension),
+        ),
+        _ => unreachable!("This function only handles Bash, Zsh, and Fish"),
+    };
+
+    let shell_config = match shell {
+        Shell::Bash => &ShellConfig::BASH,
+        Shell::Zsh => &ShellConfig::ZSH,
+        Shell::Fish => &ShellConfig::FISH,
+        _ => unreachable!("This function only handles Bash, Zsh, and Fish"),
+    };
+
+    let config = CompletionConfig {
+        shell,
+        name,
+        completion_dir,
+        file_name,
+        post_install_message: shell_config.post_install_message,
+    };
+
+    write_completion_file(cmd, &config)
+}
+
 fn install_completions(shell: Shell) -> Result<()> {
     let mut cmd = CliApp::command();
     let name = get_binary_name();
 
     match shell {
-        Shell::Bash => {
-            let home = env::var("HOME").context("HOME environment variable not set")?;
-            let config = CompletionConfig {
-                shell: Shell::Bash,
-                name: &name,
-                completion_dir: PathBuf::from(&home)
-                    .join(".local/share/bash-completion/completions"),
-                file_name: name.to_string(),
-                post_install_message: "You may need to restart your shell or source your ~/.bashrc",
-            };
-            write_completion_file(&mut cmd, &config)
-        }
-        Shell::Zsh => {
-            let home = env::var("HOME").context("HOME environment variable not set")?;
-            let config = CompletionConfig {
-                shell: Shell::Zsh,
-                name: &name,
-                completion_dir: get_zsh_completion_dir(&home),
-                file_name: format!("_{name}"),
-                post_install_message: "You may need to restart your shell or run: autoload -U compinit && compinit",
-            };
-            write_completion_file(&mut cmd, &config)
-        }
-        Shell::Fish => {
-            let home = env::var("HOME").context("HOME environment variable not set")?;
-            let config = CompletionConfig {
-                shell: Shell::Fish,
-                name: &name,
-                completion_dir: PathBuf::from(&home).join(".config/fish/completions"),
-                file_name: format!("{name}.fish"),
-                post_install_message: "Completions should be available immediately in new fish sessions",
-            };
-            write_completion_file(&mut cmd, &config)
+        Shell::Bash | Shell::Zsh | Shell::Fish => {
+            install_standard_shell_completions(shell, &mut cmd, &name)
         }
         Shell::PowerShell => {
             // PowerShell is special - just print to stdout
-            let mut output = Vec::with_capacity(8192);
+            let mut output = Vec::new();
             generate(Shell::PowerShell, &mut cmd, name.to_string(), &mut output);
 
             let completion_script = String::from_utf8(output)
                 .context("Failed to convert PowerShell completions to string")?;
 
-            println!(
-                "PowerShell completions generated. To install, add the following to your PowerShell profile:"
-            );
-            println!("You can find your profile location by running: echo $PROFILE");
-            println!("\n{completion_script}");
+            c_println!("{}", PowerShellMessages::INSTALL_HINT);
+            c_println!("{}", PowerShellMessages::PROFILE_HINT);
+            c_println!("\n{completion_script}");
             Ok(())
         }
         Shell::Elvish => {
-            anyhow::bail!(
-                "Automatic installation for Elvish is not supported yet. Please use 'generate' command and manually install the completions."
-            );
+            anyhow::bail!(UnsupportedShellMessages::ELVISH);
         }
         _ => {
-            anyhow::bail!(
-                "Automatic installation for this shell is not supported yet. Please use 'generate' command and manually install the completions."
-            );
+            anyhow::bail!(UnsupportedShellMessages::GENERIC);
         }
     }
 }
@@ -213,7 +213,7 @@ mod tests {
         // Test that get_binary_name returns the expected binary name
         let binary_name = get_binary_name();
         assert_eq!(binary_name, "restate");
-        
+
         // Also verify it matches our test helper
         assert_eq!(binary_name, get_expected_binary_name());
     }
@@ -404,12 +404,12 @@ mod tests {
         let mut cmd = CliApp::command();
         let mut output = Vec::new();
         let binary_name = get_binary_name();
-        
+
         // Generate bash completions
         generate(Shell::Bash, &mut cmd, &binary_name, &mut output);
-        
+
         let content = String::from_utf8(output).unwrap();
-        
+
         // Check that the generated content contains the binary name
         assert!(content.contains("restate"));
         assert!(!content.contains("restate-cli"));
@@ -420,15 +420,15 @@ mod tests {
         // This test verifies that all shell completion files use the binary name
         // not the package name
         let binary_name = get_binary_name();
-        
+
         // Test bash
         let bash_file = binary_name.to_string();
         assert_eq!(bash_file, "restate");
-        
+
         // Test zsh
         let zsh_file = format!("_{binary_name}");
         assert_eq!(zsh_file, "_restate");
-        
+
         // Test fish
         let fish_file = format!("{binary_name}.fish");
         assert_eq!(fish_file, "restate.fish");
