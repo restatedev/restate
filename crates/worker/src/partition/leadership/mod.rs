@@ -10,6 +10,7 @@
 
 mod leader_state;
 mod self_proposer;
+pub mod trim_queue;
 
 use std::cmp::Ordering;
 use std::fmt::Debug;
@@ -59,6 +60,8 @@ use crate::partition::shuffle;
 use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
+
+use self::trim_queue::{LogTrimmer, TrimQueue};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
@@ -143,6 +146,8 @@ pub(crate) struct LeadershipState<I> {
     partition: Partition,
     invoker_tx: I,
     bifrost: Bifrost,
+    #[allow(unused)]
+    trim_queue: TrimQueue,
 }
 
 impl<I> LeadershipState<I>
@@ -155,6 +160,7 @@ where
         invoker_tx: I,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
+        trim_queue: TrimQueue,
     ) -> Self {
         Self {
             state: State::Follower,
@@ -162,6 +168,7 @@ where
             invoker_tx,
             bifrost,
             last_seen_leader_epoch,
+            trim_queue,
         }
     }
 
@@ -374,6 +381,12 @@ where
             let cleaner_task_id =
                 TaskCenter::spawn_child(TaskKind::Cleaner, "cleaner", cleaner.run())?;
 
+            let trimmer_task_id = LogTrimmer::spawn(
+                self.bifrost.clone(),
+                self.partition.log_id(),
+                self.trim_queue.clone(),
+            )?;
+
             let mut self_proposer = self_proposer.take().expect("must be present");
             self_proposer.mark_as_leader().await;
 
@@ -383,6 +396,7 @@ where
                 *self.partition.key_range.start(),
                 shuffle_task_handle,
                 cleaner_task_id,
+                trimmer_task_id,
                 shuffle_hint_tx,
                 timer_service,
                 self_proposer,
@@ -609,6 +623,7 @@ pub(crate) enum TaskError {
 
 #[cfg(test)]
 mod tests {
+    use crate::partition::leadership::trim_queue::TrimQueue;
     use crate::partition::leadership::{LeadershipState, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
@@ -649,7 +664,13 @@ mod tests {
         .await?;
 
         let invoker_tx = MockInvokerHandle::default();
-        let mut state = LeadershipState::new(PARTITION, invoker_tx, bifrost.clone(), None);
+        let mut state = LeadershipState::new(
+            PARTITION,
+            invoker_tx,
+            bifrost.clone(),
+            None,
+            TrimQueue::default(),
+        );
 
         assert!(matches!(state.state, State::Follower));
 

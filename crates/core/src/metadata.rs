@@ -13,6 +13,8 @@ mod metadata_client_wrapper;
 mod update_task;
 
 use ahash::HashMap;
+use restate_types::identifiers::PartitionId;
+use restate_types::logs::LogId;
 use tokio::time::Instant;
 
 use std::sync::{Arc, OnceLock};
@@ -97,6 +99,15 @@ impl Metadata {
         F: FnOnce(&Metadata) -> R,
     {
         TaskCenter::with_metadata(|m| f(m)).expect("called outside task-center scope")
+    }
+
+    #[track_caller]
+    pub fn get_log_id(partition_id: &PartitionId) -> Option<LogId> {
+        Metadata::with_current(|m| {
+            m.partition_table_ref()
+                .get(partition_id)
+                .map(|p| p.log_id())
+        })
     }
 
     #[track_caller]
