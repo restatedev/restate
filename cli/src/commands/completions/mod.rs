@@ -4,7 +4,7 @@ use clap_complete::{Shell, generate};
 use cling::prelude::*;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::CliApp;
 use crate::cli_env::CliEnv;
@@ -76,7 +76,7 @@ fn detect_shell() -> Result<Shell> {
                 .ok()
                 .and_then(|path| Shell::from_shell_path(&path))
         })
-        .unwrap_or_else(|| {
+        .unwrap_or({
             // Platform-specific defaults
             if cfg!(target_os = "windows") {
                 Shell::PowerShell
@@ -114,7 +114,7 @@ fn write_completion_file(cmd: &mut clap::Command, config: &CompletionConfig) -> 
     Ok(())
 }
 
-fn get_zsh_completion_dir(home: &PathBuf) -> PathBuf {
+fn get_zsh_completion_dir(home: &Path) -> PathBuf {
     // Try common zsh completion directories
     let completion_dirs: Vec<PathBuf> = ShellConfig::get_zsh_paths()
         .iter()
