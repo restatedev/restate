@@ -33,7 +33,7 @@ use tracing::{Span, debug, error, info, instrument, trace, warn};
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
 use restate_core::network::{Oneshot, Reciprocal, ServiceMessage, Verdict};
-use restate_core::{ShutdownError, cancellation_watcher};
+use restate_core::{ShutdownError, cancellation_watcher, my_node_id};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -328,10 +328,18 @@ where
             .await?
             .unwrap_or(Lsn::INVALID);
 
-        self.status.last_applied_log_lsn = Some(last_applied_lsn);
-
         let log_id = self.partition.log_id();
         let partition_id = self.partition.partition_id;
+        let my_node = my_node_id().as_plain();
+
+        self.status.last_applied_log_lsn = Some(last_applied_lsn);
+        let mut durable_lsn_watch = self.partition_store.get_durable_lsn().await?;
+        let durable_lsn = durable_lsn_watch
+            .borrow_and_update()
+            .unwrap_or(Lsn::INVALID);
+        self.status.last_persisted_log_lsn = Some(durable_lsn);
+        self.replica_set_states
+            .note_durable_lsn(partition_id, my_node, durable_lsn);
 
         // If the underlying log is not provisioned, now is the time to provision it.
         // We'll retry a few times before giving back control to PPM
@@ -494,6 +502,17 @@ where
                     }
                 }
                 _ = status_update_timer.tick() => {
+                    if durable_lsn_watch.has_changed().map_err(|e| ProcessorError::Other(e.into()))? {
+                        let durable_lsn = durable_lsn_watch
+                                .borrow_and_update()
+                                .unwrap_or(Lsn::INVALID);
+                        self.status.last_persisted_log_lsn = Some(durable_lsn);
+                        self.replica_set_states.note_durable_lsn(
+                            partition_id,
+                            my_node,
+                            durable_lsn,
+                        );
+                    }
                     self.status_watch_tx.send_modify(|old| {
                         old.clone_from(&self.status);
                         old.updated_at = MillisSinceEpoch::now();
