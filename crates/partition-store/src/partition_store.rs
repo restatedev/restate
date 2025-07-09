@@ -659,6 +659,22 @@ impl StorageAccess for PartitionStore {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
+    fn get_durable<K: AsRef<[u8]>>(
+        &self,
+        table: TableKind,
+        key: K,
+    ) -> Result<Option<DBPinnableSlice>> {
+        let table = self.table_handle(table)?;
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_read_tier(rocksdb::ReadTier::Persisted);
+
+        self.rocksdb
+            .inner()
+            .as_raw_db()
+            .get_pinned_cf_opt(&table, key, &read_opts)
+            .map_err(|error| StorageError::Generic(error.into()))
+    }
+
     #[inline]
     fn put_cf(
         &mut self,
@@ -896,6 +912,14 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
+    fn get_durable<K: AsRef<[u8]>>(
+        &self,
+        _table: TableKind,
+        _key: K,
+    ) -> Result<Option<DBPinnableSlice>> {
+        unreachable!("ReadTier::Persisted is not meant to be used in WBI");
+    }
+
     #[inline]
     fn put_cf(
         &mut self,
@@ -931,6 +955,16 @@ pub(crate) trait StorageAccess {
     fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>>;
+
+    /// Forces a read from persistent storage, bypassing memtables and block cache.
+    ///
+    /// This means that that you might not get the latest value, but the value that was persisted
+    /// (flushed) at the time of the call.
+    fn get_durable<K: AsRef<[u8]>>(
+        &self,
+        table: TableKind,
+        key: K,
+    ) -> Result<Option<DBPinnableSlice>>;
 
     fn put_cf(
         &mut self,
@@ -993,6 +1027,35 @@ pub(crate) trait StorageAccess {
         let buf = buf.split();
 
         match self.get(K::TABLE, &buf) {
+            Ok(value) => {
+                let slice = value.as_ref().map(|v| v.as_ref());
+
+                if let Some(mut slice) = slice {
+                    Ok(Some(V::decode(&mut slice)?))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Forces a read rom persistent storage, bypassing memtables and block cache.
+    /// This means that that you might not get the latest value, but the value that was
+    /// persisted (flushed) at the time of the call.
+    #[inline]
+    fn get_durable_value<K, V>(&mut self, key: K) -> Result<Option<V>>
+    where
+        K: TableKey,
+        V: PartitionStoreProtobufValue,
+        <<V as PartitionStoreProtobufValue>::ProtobufType as TryInto<V>>::Error:
+            Into<anyhow::Error>,
+    {
+        let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(&mut buf);
+        let buf = buf.split();
+
+        match self.get_durable(K::TABLE, &buf) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
 
