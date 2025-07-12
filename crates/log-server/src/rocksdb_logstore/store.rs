@@ -141,7 +141,7 @@ impl LogStore for RocksDbLogStore {
         let oldest_key = DataRecordKey::new(loglet_id, LogletOffset::INVALID);
         let max_legal_record = DataRecordKey::new(loglet_id, LogletOffset::MAX);
         let upper_bound = DataRecordKey::exclusive_upper_bound(loglet_id);
-        readopts.fill_cache(true);
+        readopts.fill_cache(false);
         readopts.set_total_order_seek(false);
         readopts.set_prefix_same_as_start(true);
         readopts.set_iterate_lower_bound(oldest_key.to_bytes());
@@ -269,6 +269,10 @@ impl LogStore for RocksDbLogStore {
         readopts.set_ignore_range_deletions(true);
         readopts.set_prefix_same_as_start(true);
         readopts.set_total_order_seek(false);
+        // don't fill up the cache as the reader we often don't read the same record multiple times
+        // from disk. It still can happen if multiple nodes are back-filling from disk, and in that
+        // case we'd still want to favor the most recent data.
+        readopts.fill_cache(false);
         readopts.set_async_io(true);
         let oldest_key_bytes = oldest_key.to_bytes();
         readopts.set_iterate_lower_bound(oldest_key_bytes.clone());
@@ -406,6 +410,9 @@ impl LogStore for RocksDbLogStore {
         readopts.set_ignore_range_deletions(true);
         readopts.set_prefix_same_as_start(true);
         readopts.set_total_order_seek(false);
+        // don't fill up the cache as the reader might actually end up reading very few records and
+        // we don't want to evict more important records from the cache.
+        readopts.fill_cache(false);
         readopts.set_async_io(true);
         let oldest_key_bytes = oldest_key.to_bytes();
         readopts.set_iterate_lower_bound(oldest_key_bytes.clone());
