@@ -2,11 +2,11 @@ use std::ffi::{CStr, CString};
 use std::sync::Arc;
 
 use ahash::HashMap;
-use dashmap::DashMap;
 use rocksdb::event_listener::{EventListener, FlushJobInfo};
 use rocksdb::table_properties::{
     CollectorError, EntryType, TablePropertiesCollector, TablePropertiesCollectorFactory,
 };
+use tokio::sync::watch;
 use tracing::warn;
 
 use restate_storage_api::StorageError;
@@ -16,6 +16,39 @@ use restate_types::{identifiers::PartitionId, logs::Lsn};
 
 use crate::fsm_table::{PartitionStateMachineKey, fsm_variable};
 use crate::keys::{KeyKind, TableKey};
+
+type DashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
+
+#[derive(Default, Clone)]
+pub struct DurableLsnTracker(Arc<DashMap<PartitionId, watch::Sender<Option<Lsn>>>>);
+
+impl DurableLsnTracker {
+    pub fn insert_partition(&self, partition_id: PartitionId) {
+        if let Some(old_watch) = self.0.insert(partition_id, Default::default()) {
+            old_watch.send_replace(None);
+        }
+    }
+
+    pub(crate) fn get_sender(&self, partition_id: PartitionId) -> watch::Sender<Option<Lsn>> {
+        self.0.entry(partition_id).or_default().value().clone()
+    }
+
+    /// Note: we only modify entries, never insert, from the event listener. If we don't find
+    /// an existing entry for the partition, that means that the PartitionStoreManager has
+    /// already closed or dropped it.
+    pub fn note_durable_lsn(&self, partition_id: PartitionId, durable_lsn: Lsn) {
+        self.0.entry(partition_id).and_modify(|sender| {
+            sender.send_replace(Some(durable_lsn));
+        });
+    }
+
+    pub fn close_partition(&self, partition_id: PartitionId) {
+        let old_watch = self.0.remove(&partition_id);
+        if let Some((_, old_watch)) = old_watch {
+            old_watch.send_replace(None);
+        }
+    }
+}
 
 const APPLIED_LSNS_PROPERTY_PREFIX: &str = "p:";
 
@@ -95,8 +128,6 @@ impl TablePropertiesCollectorFactory for AppliedLsnCollectorFactory {
     }
 }
 
-pub type DurableLsnLookup = DashMap<PartitionId, Lsn>;
-
 /// Event listener tracking durable LSNs across
 ///
 /// This listener works in conjunction with the [`AppliedLsnCollector`] to track the high watermark
@@ -104,7 +135,7 @@ pub type DurableLsnLookup = DashMap<PartitionId, Lsn>;
 /// partitions for which there are already entries in the [`durable_lsns`] map.
 #[derive(Default)]
 pub(crate) struct DurableLsnEventListener {
-    pub(crate) durable_lsns: Arc<DurableLsnLookup>,
+    pub(crate) durable_lsns: DurableLsnTracker,
 }
 
 impl EventListener for DurableLsnEventListener {
@@ -121,14 +152,7 @@ impl EventListener for DurableLsnEventListener {
                 .transpose();
 
             if let (Ok(ref partition_id), Ok(Some(ref lsn))) = (partition_id, lsn) {
-                // Note: we only modify entries, never insert, from the event listener. If we don't find
-                // an existing entry for the partition, that means that the PartitionStoreManager has
-                // already closed or dropped it.
-                self.durable_lsns
-                    .entry(*partition_id)
-                    .and_modify(|durable_lsn| {
-                        *durable_lsn = *lsn;
-                    });
+                self.durable_lsns.note_durable_lsn(*partition_id, *lsn);
             } else {
                 warn!(
                     cf_name = flush_job_info.cf_name,

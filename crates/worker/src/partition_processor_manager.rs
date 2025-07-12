@@ -718,20 +718,7 @@ impl PartitionProcessorManager {
 
                 // it is a bit unfortunate that we share PartitionProcessorStatus between the
                 // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
-                status.last_persisted_log_lsn = self.partition_store_manager.get_durable_lsn(*partition_id);
                 status.last_archived_log_lsn = self.archived_lsns.get(partition_id).cloned();
-
-                // todo: this will need to be moved to a place where PPM updates it regularly, or
-                // to be directly integrated into durable lsn tracking so we update it immediately
-                // after flush.
-                if let Some(durable_lsn) = status.last_persisted_log_lsn {
-                    self.replica_set_states.note_durable_lsn(
-                        *partition_id,
-                        my_node_id().as_plain(),
-                        durable_lsn,
-                    );
-                }
-
                 let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
 
                 let target_tail_lsn = if current_tail_lsn > status.target_tail_lsn {

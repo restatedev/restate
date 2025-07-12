@@ -7987,6 +7987,7 @@ dependencies = [
  "googletest",
  "humantime",
  "itertools 0.14.0",
+ "jiff",
  "metrics",
  "object_store",
  "opentelemetry",

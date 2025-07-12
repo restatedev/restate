@@ -67,6 +67,27 @@ pub struct WorkerOptions {
     /// worker nodes.
     #[serde(default)]
     pub snapshots: SnapshotsOptions,
+
+    /// # Delayed log trimming
+    ///
+    /// Log trimming normally happens immediately after the partition becomes fully durable. A
+    /// partition is considered fully durable when one of the following conditions is met:
+    ///
+    /// 1. The partition has been fully replicated and flushed to all nodes in its replica-set.
+    /// 2. The partition has been snapshotted into the snapshot repository.
+    ///
+    /// The delay interval is the time that Restate will wait before trimming the log _after_ the
+    /// durability condition is met. It's useful to set this to a non-zero duration if you want to
+    /// cover the time needed for the snapshot repository (i.e. S3) to replicate the snapshot
+    /// across regions (typically a few seconds, but can take up to 15 minutes).
+    ///
+    /// This setting is only effective if `features.experimental-partition-driven-log-trimming` is
+    /// set to `true`.
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    // todo: remove in v1.6
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trim_delay_interval: Option<humantime::Duration>,
 }
 
 impl WorkerOptions {
@@ -85,6 +106,10 @@ impl WorkerOptions {
     pub fn cleanup_interval(&self) -> Duration {
         self.cleanup_interval.into()
     }
+
+    pub fn trim_delay_interval(&self) -> Duration {
+        self.trim_delay_interval.unwrap_or_default().into()
+    }
 }
 
 impl Default for WorkerOptions {
@@ -97,6 +122,7 @@ impl Default for WorkerOptions {
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
             snapshots: SnapshotsOptions::default(),
+            trim_delay_interval: None,
         }
     }
 }

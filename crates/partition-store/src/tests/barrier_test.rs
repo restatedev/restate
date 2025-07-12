@@ -37,10 +37,9 @@ async fn barrier_fsm() -> googletest::Result<()> {
         )
         .await?;
 
-    let mut txn = partition_store.transaction();
     // we default to unknown if FSM doesn't have a min version, in that case, any "real" version
     // should be greater.
-    let current_min = txn.get_min_restate_version().await?;
+    let current_min = partition_store.get_min_restate_version().await?;
     // current_min should be equal to unknown
     assert_that!(current_min, eq(SemanticRestateVersion::unknown()));
     assert_that!(
@@ -48,19 +47,16 @@ async fn barrier_fsm() -> googletest::Result<()> {
         eq(true)
     );
 
+    let mut txn = partition_store.transaction();
     // lets update it to current.
     txn.put_min_restate_version(SemanticRestateVersion::current())
         .await?;
-
-    let current_min = txn.get_min_restate_version().await?;
-    assert_that!(&current_min, eq(SemanticRestateVersion::current()));
 
     // commit.
     txn.commit().await?;
 
     // did it persist?
-    let mut txn = partition_store.transaction();
-    let current_min = txn.get_min_restate_version().await?;
+    let current_min = partition_store.get_min_restate_version().await?;
     // it's actually persisted
     assert_that!(&current_min, eq(SemanticRestateVersion::current()));
 

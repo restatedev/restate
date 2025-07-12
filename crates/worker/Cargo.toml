@@ -56,6 +56,7 @@ futures = { workspace = true }
 enumset = { workspace = true }
 humantime = { workspace = true }
 itertools = { workspace = true }
+jiff = { workspace = true }
 metrics = { workspace = true }
 object_store = { workspace = true }
 opentelemetry = { workspace = true }

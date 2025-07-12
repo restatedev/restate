@@ -25,6 +25,7 @@ use rocksdb::{
 };
 use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::trace;
 
@@ -40,6 +41,8 @@ use restate_types::partitions::Partition;
 use restate_types::storage::StorageCodec;
 
 use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
+use crate::durable_lsn_tracking::DurableLsnTracker;
+use crate::fsm_table::get_locally_durable_lsn;
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
 use crate::scan::PhysicalScan;
@@ -194,12 +197,16 @@ pub enum BuildError {
 }
 
 pub struct PartitionStore {
-    rocksdb: Arc<RocksDb>,
+    durable_lsn_tracker: DurableLsnTracker,
     partition_id: PartitionId,
     data_cf_name: CfName,
     key_range: RangeInclusive<PartitionKey>,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
+    /// Please keep this at the end to ensure that the Arc is dropped last.
+    /// This is to future-proof against the possiblity of caching references into
+    /// the rocksdb instance.
+    rocksdb: Arc<RocksDb>,
 }
 
 impl std::fmt::Debug for PartitionStore {
@@ -216,6 +223,7 @@ impl std::fmt::Debug for PartitionStore {
 impl Clone for PartitionStore {
     fn clone(&self) -> Self {
         PartitionStore {
+            durable_lsn_tracker: self.durable_lsn_tracker.clone(),
             rocksdb: self.rocksdb.clone(),
             partition_id: self.partition_id,
             data_cf_name: self.data_cf_name.clone(),
@@ -277,11 +285,13 @@ fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize)
 impl PartitionStore {
     pub(crate) fn new(
         rocksdb: Arc<RocksDb>,
+        durable_lsn_tracker: DurableLsnTracker,
         data_cf_name: CfName,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
         Self {
+            durable_lsn_tracker,
             rocksdb,
             partition_id,
             data_cf_name,
@@ -487,6 +497,35 @@ impl PartitionStore {
         self.transaction_with_isolation(IsolationLevel::Committed)
     }
 
+    /// Returns the durably persisted applied LSN, if any.
+    pub async fn get_durable_lsn(&mut self) -> Result<watch::Receiver<Option<Lsn>>> {
+        let sender = self.durable_lsn_tracker.get_sender(self.partition_id);
+
+        // we only use the value in cache if it's not INVALID since INVALID is the default value we
+        // put in cache at store creation time.
+        if sender.borrow().is_some() {
+            let mut rx = sender.subscribe();
+            rx.mark_changed();
+            return Ok(rx);
+        }
+
+        let local = get_locally_durable_lsn(self).await?;
+        if let Some(lsn) = local {
+            sender.send_if_modified(|current_mut| {
+                if current_mut.is_none_or(|c| c < lsn) {
+                    *current_mut = Some(lsn);
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+
+        let mut rx = sender.subscribe();
+        rx.mark_changed();
+        Ok(rx)
+    }
+
     pub fn transaction_with_isolation(
         &mut self,
         isolation_level: IsolationLevel,
@@ -656,6 +695,22 @@ impl StorageAccess for PartitionStore {
             .inner()
             .as_raw_db()
             .get_pinned_cf(&table, key)
+            .map_err(|error| StorageError::Generic(error.into()))
+    }
+
+    fn get_durable<K: AsRef<[u8]>>(
+        &self,
+        table: TableKind,
+        key: K,
+    ) -> Result<Option<DBPinnableSlice>> {
+        let table = self.table_handle(table)?;
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_read_tier(rocksdb::ReadTier::Persisted);
+
+        self.rocksdb
+            .inner()
+            .as_raw_db()
+            .get_pinned_cf_opt(&table, key, &read_opts)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
@@ -896,6 +951,14 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
+    fn get_durable<K: AsRef<[u8]>>(
+        &self,
+        _table: TableKind,
+        _key: K,
+    ) -> Result<Option<DBPinnableSlice>> {
+        unreachable!("ReadTier::Persisted is not meant to be used in WBI");
+    }
+
     #[inline]
     fn put_cf(
         &mut self,
@@ -931,6 +994,16 @@ pub(crate) trait StorageAccess {
     fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>>;
+
+    /// Forces a read from persistent storage, bypassing memtables and block cache.
+    ///
+    /// This means that that you might not get the latest value, but the value that was persisted
+    /// (flushed) at the time of the call.
+    fn get_durable<K: AsRef<[u8]>>(
+        &self,
+        table: TableKind,
+        key: K,
+    ) -> Result<Option<DBPinnableSlice>>;
 
     fn put_cf(
         &mut self,
@@ -993,6 +1066,35 @@ pub(crate) trait StorageAccess {
         let buf = buf.split();
 
         match self.get(K::TABLE, &buf) {
+            Ok(value) => {
+                let slice = value.as_ref().map(|v| v.as_ref());
+
+                if let Some(mut slice) = slice {
+                    Ok(Some(V::decode(&mut slice)?))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Forces a read rom persistent storage, bypassing memtables and block cache.
+    /// This means that that you might not get the latest value, but the value that was
+    /// persisted (flushed) at the time of the call.
+    #[inline]
+    fn get_durable_value<K, V>(&mut self, key: K) -> Result<Option<V>>
+    where
+        K: TableKey,
+        V: PartitionStoreProtobufValue,
+        <<V as PartitionStoreProtobufValue>::ProtobufType as TryInto<V>>::Error:
+            Into<anyhow::Error>,
+    {
+        let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(&mut buf);
+        let buf = buf.split();
+
+        match self.get_durable(K::TABLE, &buf) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
 

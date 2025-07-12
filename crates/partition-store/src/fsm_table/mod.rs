@@ -51,6 +51,21 @@ where
     storage.get_value(key)
 }
 
+/// Forces a read from persistent storage, bypassing memtables and block cache.
+fn get_durable<T: PartitionStoreProtobufValue, S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    state_id: u64,
+) -> Result<Option<T>>
+where
+    <<T as PartitionStoreProtobufValue>::ProtobufType as TryInto<T>>::Error: Into<anyhow::Error>,
+{
+    let key = PartitionStateMachineKey::default()
+        .partition_id(partition_id.into())
+        .state_id(state_id);
+    storage.get_durable_value(key)
+}
+
 fn put<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
@@ -63,41 +78,16 @@ fn put<S: StorageAccess>(
     storage.put_kv(key, state_value)
 }
 
-impl ReadOnlyFsmTable for PartitionStore {
-    async fn get_inbox_seq_number(&mut self) -> Result<MessageIndex> {
-        get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::INBOX_SEQ_NUMBER)
-            .map(|opt| opt.map(Into::into).unwrap_or_default())
-    }
-
-    async fn get_outbox_seq_number(&mut self) -> Result<MessageIndex> {
-        get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::OUTBOX_SEQ_NUMBER)
-            .map(|opt| opt.map(Into::into).unwrap_or_default())
-    }
-
-    async fn get_applied_lsn(&mut self) -> Result<Option<Lsn>> {
-        get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::APPLIED_LSN)
-            .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
-    }
-
-    async fn get_min_restate_version(&mut self) -> Result<SemanticRestateVersion> {
-        get::<SemanticRestateVersion, _>(
-            self,
-            self.partition_id(),
-            fsm_variable::RESTATE_VERSION_BARRIER,
-        )
-        .map(|opt| opt.unwrap_or_default())
-    }
-
-    async fn get_partition_durability(&mut self) -> Result<Option<PartitionDurability>> {
-        get::<PartitionDurability, _>(
-            self,
-            self.partition_id(),
-            fsm_variable::PARTITION_DURABILITY,
-        )
-    }
+pub async fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Result<Option<Lsn>> {
+    get_durable::<SequenceNumber, _>(
+        partition_store,
+        partition_store.partition_id(),
+        fsm_variable::APPLIED_LSN,
+    )
+    .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
 }
 
-impl ReadOnlyFsmTable for PartitionStoreTransaction<'_> {
+impl ReadOnlyFsmTable for PartitionStore {
     async fn get_inbox_seq_number(&mut self) -> Result<MessageIndex> {
         get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::INBOX_SEQ_NUMBER)
             .map(|opt| opt.map(Into::into).unwrap_or_default())
