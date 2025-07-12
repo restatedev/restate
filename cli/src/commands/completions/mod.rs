@@ -38,9 +38,10 @@ pub struct Install {
     shell: Option<Shell>,
 }
 
-/// Get shell from options or detect it
-fn get_shell_or_detect(shell: Option<Shell>) -> Shell {
-    shell.unwrap_or_else(|| detect_shell().unwrap_or(Shell::Bash))
+/// Get shell from options or detect it, defaulting to `Shell::Bash`
+fn get_or_detect_shell(shell: Option<Shell>) -> Shell {
+    // Fall back on clap_complete's env-based auto-detection (defaults to PowerShell on Windows):
+    shell.unwrap_or_else(|| Shell::from_env().unwrap_or(Shell::Bash))
 }
 
 /// Get the binary name for completion generation
@@ -52,7 +53,7 @@ fn get_binary_name() -> String {
 }
 
 pub async fn run_generate(State(_env): State<CliEnv>, opts: &Generate) -> Result<()> {
-    let detected_shell = get_shell_or_detect(opts.shell);
+    let detected_shell = get_or_detect_shell(opts.shell);
 
     let mut cmd = CliApp::command();
     let binary_name = get_binary_name();
@@ -62,30 +63,9 @@ pub async fn run_generate(State(_env): State<CliEnv>, opts: &Generate) -> Result
 }
 
 pub async fn run_install(State(_env): State<CliEnv>, opts: &Install) -> Result<()> {
-    let detected_shell = get_shell_or_detect(opts.shell);
+    let detected_shell = get_or_detect_shell(opts.shell);
     install_completions(detected_shell)?;
     Ok(())
-}
-
-fn detect_shell() -> Result<Shell> {
-    // Use clap_complete's built-in shell detection
-    let detected = Shell::from_env()
-        .or_else(|| {
-            // Fallback to parsing SHELL variable with from_shell_path
-            std::env::var("SHELL")
-                .ok()
-                .and_then(|path| Shell::from_shell_path(&path))
-        })
-        .unwrap_or({
-            // Platform-specific defaults
-            if cfg!(target_os = "windows") {
-                Shell::PowerShell
-            } else {
-                Shell::Bash
-            }
-        });
-
-    Ok(detected)
 }
 
 /// Generate and write completion file
@@ -222,22 +202,22 @@ mod tests {
     fn test_detect_shell_from_env() {
         // Test bash detection
         unsafe { env::set_var("SHELL", "/bin/bash") };
-        let shell = detect_shell().unwrap();
+        let shell = get_or_detect_shell(None);
         assert_eq!(shell, Shell::Bash);
 
         // Test zsh detection
         unsafe { env::set_var("SHELL", "/usr/bin/zsh") };
-        let shell = detect_shell().unwrap();
+        let shell = get_or_detect_shell(None);
         assert_eq!(shell, Shell::Zsh);
 
         // Test fish detection
         unsafe { env::set_var("SHELL", "/usr/local/bin/fish") };
-        let shell = detect_shell().unwrap();
+        let shell = get_or_detect_shell(None);
         assert_eq!(shell, Shell::Fish);
 
         // Test default fallback
         unsafe { env::set_var("SHELL", "/some/unknown/shell") };
-        let shell = detect_shell().unwrap();
+        let shell = get_or_detect_shell(None);
         assert_eq!(shell, Shell::Bash);
     }
 
@@ -245,7 +225,7 @@ mod tests {
     fn test_detect_shell_no_env() {
         // Remove SHELL env var
         unsafe { env::remove_var("SHELL") };
-        let shell = detect_shell().unwrap();
+        let shell = get_or_detect_shell(None);
         // Should default to bash (or PowerShell on Windows)
         if cfg!(target_os = "windows") {
             assert_eq!(shell, Shell::PowerShell);
