@@ -8,6 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod cleaner;
+pub mod invoker_storage_reader;
+mod leadership;
+pub mod shuffle;
+pub mod snapshots;
+mod state_machine;
+pub mod types;
+
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -31,7 +39,7 @@ use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
     ReadOnlyDeduplicationTable,
 };
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
+use restate_storage_api::fsm_table::{FsmTable, PartitionDurability, ReadOnlyFsmTable};
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
@@ -70,6 +78,7 @@ use restate_types::{GenerationalNodeId, SemanticRestateVersion, invocation};
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
+use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
     PARTITION_BLOCKED_FLARE, PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
     PARTITION_RECORD_READ_COUNT,
@@ -77,14 +86,6 @@ use crate::metric_definitions::{
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, StateMachine};
-
-mod cleaner;
-pub mod invoker_storage_reader;
-mod leadership;
-pub mod shuffle;
-pub mod snapshots;
-mod state_machine;
-pub mod types;
 
 /// Target leader state of the partition processor.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -147,6 +148,11 @@ where
         let state_machine =
             Self::create_state_machine(&mut partition_store, partition.key_range.clone()).await?;
 
+        let trim_queue = TrimQueue::default();
+        if let Some(ref partition_durability) = partition_store.get_partition_durability().await? {
+            trim_queue.push(partition_durability);
+        }
+
         let last_seen_leader_epoch = partition_store
             .get_dedup_sequence_number(&ProducerId::self_producer())
             .await?
@@ -174,6 +180,7 @@ where
             invoker_tx,
             bifrost.clone(),
             last_seen_leader_epoch,
+            trim_queue.clone(),
         );
 
         Ok(PartitionProcessor {
@@ -187,6 +194,7 @@ where
             status_watch_tx,
             status,
             replica_set_states,
+            trim_queue,
         })
     }
 
@@ -234,6 +242,7 @@ pub struct PartitionProcessor<InvokerSender> {
     replica_set_states: PartitionReplicaSetStates,
 
     partition_store: PartitionStore,
+    trim_queue: TrimQueue,
 }
 
 #[derive(Debug, derive_more::Display, thiserror::Error)]
@@ -929,11 +938,16 @@ where
                     );
                     return Ok(None);
                 }
-                // todos:
-                // - call put_partition_durability after validating that durability point is
-                // monotonically increasing. `transaction.put_partition_durability(durability)`
-                // - inform the leadership state machine about the new durability point, the leader
-                // state will schedule the trim if/when necessary.
+
+                let partition_durability = PartitionDurability {
+                    modification_time: partition_durability.modification_time,
+                    durable_point: partition_durability.durable_point,
+                };
+                if self.trim_queue.push(&partition_durability) {
+                    transaction
+                        .put_partition_durability(&partition_durability)
+                        .await?;
+                }
             } else {
                 self.state_machine
                     .apply(

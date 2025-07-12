@@ -8,17 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::leadership::self_proposer::SelfProposer;
-use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
-use crate::partition::shuffle;
-use crate::partition::shuffle::HintSender;
-use crate::partition::state_machine::Action;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
+use std::future;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, ready};
+use std::time::{Duration, SystemTime};
+
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use metrics::counter;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::{debug, trace};
+
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{TaskCenter, TaskHandle, TaskId};
@@ -34,15 +38,14 @@ use restate_types::net::partition_processor::{
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyValue;
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
-use std::future;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll, ready};
-use std::time::{Duration, SystemTime};
-use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, trace};
+
+use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
+use crate::partition::invoker_storage_reader::InvokerStorageReader;
+use crate::partition::leadership::self_proposer::SelfProposer;
+use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
+use crate::partition::shuffle;
+use crate::partition::shuffle::HintSender;
+use crate::partition::state_machine::Action;
 
 const BATCH_READY_UP_TO: usize = 10;
 
@@ -70,6 +73,7 @@ pub struct LeaderState {
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
     pub pending_cleanup_timers_to_schedule: VecDeque<(InvocationId, Duration)>,
     cleaner_task_id: TaskId,
+    trimmer_task_id: TaskId,
 }
 
 impl LeaderState {
@@ -80,6 +84,7 @@ impl LeaderState {
         own_partition_key: PartitionKey,
         shuffle_task_handle: TaskHandle<anyhow::Result<()>>,
         cleaner_task_id: TaskId,
+        trimmer_task_id: TaskId,
         shuffle_hint_tx: HintSender,
         timer_service: TimerService,
         self_proposer: SelfProposer,
@@ -92,6 +97,7 @@ impl LeaderState {
             own_partition_key,
             shuffle_task_handle: Some(shuffle_task_handle),
             cleaner_task_id,
+            trimmer_task_id,
             shuffle_hint_tx,
             timer_service: Box::pin(timer_service),
             self_proposer,
@@ -186,8 +192,10 @@ impl LeaderState {
         // re-use of the self proposer
         self.self_proposer.mark_as_non_leader().await;
 
-        let cleaner_handle =
-            OptionFuture::from(TaskCenter::current().cancel_task(self.cleaner_task_id));
+        let cleaner_handle = OptionFuture::from(TaskCenter::cancel_task(self.cleaner_task_id));
+
+        // We don't really care about waiting for the trimmer to finish cancelling
+        TaskCenter::cancel_task(self.trimmer_task_id);
 
         // It's ok to not check the abort_result because either it succeeded or the invoker
         // is not running. If the invoker is not running, and we are not shutting down, then
