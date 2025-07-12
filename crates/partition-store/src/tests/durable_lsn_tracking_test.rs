@@ -111,9 +111,9 @@ async fn partition_durability_fsm() -> googletest::Result<()> {
         )
         .await?;
 
-    let mut txn = partition_store.transaction();
     // by default, we don't have partition durability.
-    assert_that!(txn.get_partition_durability().await?, none());
+    assert_that!(partition_store.get_partition_durability().await?, none());
+    let mut txn = partition_store.transaction();
 
     // lets update it to current.
     let now = MillisSinceEpoch::now();
@@ -123,21 +123,11 @@ async fn partition_durability_fsm() -> googletest::Result<()> {
     })
     .await?;
 
-    let inflight_dur = txn.get_partition_durability().await?;
-    assert_that!(
-        inflight_dur,
-        some(eq(PartitionDurability {
-            durable_point: Lsn::new(100),
-            modification_time: now,
-        }))
-    );
-
     // commit.
     txn.commit().await?;
 
     // did it persist?
-    let mut txn = partition_store.transaction();
-    let current_dur = txn.get_partition_durability().await?;
+    let current_dur = partition_store.get_partition_durability().await?;
     assert_that!(
         current_dur,
         some(eq(PartitionDurability {

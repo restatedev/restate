@@ -123,8 +123,7 @@ mod tests {
         assert_that!(result, ok(eq(Vec::<Action>::new())));
 
         {
-            let mut txn = test_env.storage().transaction();
-            let applied = txn.get_min_restate_version().await.unwrap();
+            let applied = test_env.storage().get_min_restate_version().await.unwrap();
             assert_that!(&applied, eq(SemanticRestateVersion::current()));
         }
         // re-apply the same version, no-op
@@ -138,8 +137,7 @@ mod tests {
 
         assert_that!(result, ok(eq(Vec::<Action>::new())));
         {
-            let mut txn = test_env.storage().transaction();
-            let applied = txn.get_min_restate_version().await.unwrap();
+            let applied = test_env.storage().get_min_restate_version().await.unwrap();
             assert_that!(&applied, eq(SemanticRestateVersion::current()));
         }
 
@@ -155,8 +153,7 @@ mod tests {
         assert_that!(result, ok(eq(Vec::<Action>::new())));
 
         {
-            let mut txn = test_env.storage().transaction();
-            let applied = txn.get_min_restate_version().await.unwrap();
+            let applied = test_env.storage().get_min_restate_version().await.unwrap();
             assert_that!(&applied, eq(SemanticRestateVersion::current()));
         }
 

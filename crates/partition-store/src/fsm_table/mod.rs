@@ -97,40 +97,6 @@ impl ReadOnlyFsmTable for PartitionStore {
     }
 }
 
-impl ReadOnlyFsmTable for PartitionStoreTransaction<'_> {
-    async fn get_inbox_seq_number(&mut self) -> Result<MessageIndex> {
-        get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::INBOX_SEQ_NUMBER)
-            .map(|opt| opt.map(Into::into).unwrap_or_default())
-    }
-
-    async fn get_outbox_seq_number(&mut self) -> Result<MessageIndex> {
-        get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::OUTBOX_SEQ_NUMBER)
-            .map(|opt| opt.map(Into::into).unwrap_or_default())
-    }
-
-    async fn get_applied_lsn(&mut self) -> Result<Option<Lsn>> {
-        get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::APPLIED_LSN)
-            .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
-    }
-
-    async fn get_min_restate_version(&mut self) -> Result<SemanticRestateVersion> {
-        get::<SemanticRestateVersion, _>(
-            self,
-            self.partition_id(),
-            fsm_variable::RESTATE_VERSION_BARRIER,
-        )
-        .map(|opt| opt.unwrap_or_default())
-    }
-
-    async fn get_partition_durability(&mut self) -> Result<Option<PartitionDurability>> {
-        get::<PartitionDurability, _>(
-            self,
-            self.partition_id(),
-            fsm_variable::PARTITION_DURABILITY,
-        )
-    }
-}
-
 impl FsmTable for PartitionStoreTransaction<'_> {
     async fn put_applied_lsn(&mut self, lsn: Lsn) -> Result<()> {
         put(

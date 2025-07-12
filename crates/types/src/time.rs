@@ -10,7 +10,7 @@
 
 use std::fmt;
 use std::fmt::Display;
-use std::ops::Add;
+use std::ops::{Add, Sub};
 use std::time::{Duration, SystemTime};
 
 use restate_encoding::{BilrostNewType, NetSerde};
@@ -71,6 +71,16 @@ impl Add<Duration> for MillisSinceEpoch {
 
     fn add(self, rhs: Duration) -> Self::Output {
         MillisSinceEpoch(self.0.saturating_add(
+            u64::try_from(rhs.as_millis()).expect("millis since Unix epoch should fit in u64"),
+        ))
+    }
+}
+
+impl Sub<Duration> for MillisSinceEpoch {
+    type Output = MillisSinceEpoch;
+
+    fn sub(self, rhs: Duration) -> Self::Output {
+        MillisSinceEpoch(self.0.saturating_sub(
             u64::try_from(rhs.as_millis()).expect("millis since Unix epoch should fit in u64"),
         ))
     }
