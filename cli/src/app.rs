@@ -71,6 +71,10 @@ pub enum Command {
     #[clap(subcommand)]
     State(state::ServiceState),
 
+    /// Generate shell completions
+    #[clap(subcommand)]
+    Completions(completions::Completions),
+
     /// Manage CLI config
     #[clap(subcommand, alias = "conf")]
     Config(config::Config),

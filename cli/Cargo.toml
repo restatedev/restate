@@ -41,6 +41,7 @@ chrono = { workspace = true }
 chrono-humanize = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
 clap-verbosity-flag = { workspace = true }
+clap_complete = { workspace = true }
 cling = { workspace = true }
 comfy-table = { workspace = true }
 const_format = "0.2.32"
