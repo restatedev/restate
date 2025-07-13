@@ -62,7 +62,6 @@ pub trait CompletionProvider: CommandFactory {
             .or_else(Self::default_binary_name)
             // Fallback to command name if bin name is the same as package name
             .unwrap_or_else(|| Self::command().get_name().to_string())
-            .into()
     }
 
     fn default_binary_name() -> Option<String> {
