@@ -53,7 +53,21 @@ macro_rules! completion_commands {
 /// Trait that CLI applications must implement to support shell completions
 pub trait CompletionProvider: CommandFactory {
     /// Get the binary name for completion generation
-    fn completion_binary_name() -> String;
+    fn completion_binary_name() -> String {
+        Self::command()
+            // Get the binary name from the command factory (if specified)
+            .get_bin_name()
+            .map(|name| name.to_string())
+            // Fallback to custom binary name (if defined)
+            .or_else(Self::default_binary_name)
+            // Fallback to command name if bin name is the same as package name
+            .unwrap_or_else(|| Self::command().get_name().to_string())
+            .into()
+    }
+
+    fn default_binary_name() -> Option<String> {
+        None
+    }
 }
 
 /// Configuration for shell completion installation
@@ -223,7 +237,7 @@ fn install_completions_for_shell<T: CompletionProvider>(shell: Shell) -> Result<
             // PowerShell is special - just print to stdout
             let mut output = Vec::new();
             let mut cmd = T::command();
-            generate(Shell::PowerShell, &mut cmd, name.to_string(), &mut output);
+            generate(Shell::PowerShell, &mut cmd, name, &mut output);
 
             let completion_script = String::from_utf8(output)
                 .context("Failed to convert PowerShell completions to string")?;

@@ -1,16 +1,12 @@
 use crate::CliApp;
-use clap::CommandFactory;
+use restate_cli_util::{completion_commands, completions::CompletionProvider};
 
 // Use the completion_commands macro to generate standard completion structures
-restate_cli_util::completion_commands!(CliApp);
-
-// Implement CompletionProvider for CliApp
-impl restate_cli_util::completions::CompletionProvider for CliApp {
-    fn completion_binary_name() -> String {
-        Self::command()
-            .get_bin_name()
-            .unwrap_or("restate")
-            .to_string()
+completion_commands!(CliApp);
+impl CompletionProvider for CliApp {
+    // for cases when the package name differs from the binary name
+    fn default_binary_name() -> Option<String> {
+        Some("restate".into())
     }
 }
 
