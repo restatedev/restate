@@ -21,21 +21,21 @@ use tracing::{debug, info, warn};
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
-use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_types::config::{RocksDbOptions, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
 use restate_types::live::LiveLoad;
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Lsn;
-use restate_types::logs::SequenceNumber;
 
 use crate::PartitionStore;
 use crate::cf_options;
-use crate::durable_lsn_tracking::{DurableLsnEventListener, DurableLsnLookup};
+use crate::durable_lsn_tracking::{DurableLsnEventListener, DurableLsnTracker};
 use crate::snapshots::{LocalPartitionSnapshot, SnapshotError, SnapshotErrorKind};
 
 const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
+
+type PartitionLookup = HashMap<PartitionId, PartitionStore>;
 
 /// Controls how a partition store is opened
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,15 +44,15 @@ pub enum OpenMode {
     OpenExisting,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct PartitionStoreManager {
     lookup: Arc<RwLock<PartitionLookup>>,
-    durable_lsns: Arc<DurableLsnLookup>,
+    #[debug(skip)]
+    durable_lsns: DurableLsnTracker,
     rocksdb: Arc<RocksDb>,
+    #[debug(skip)]
     snapshot_limiter: Arc<Semaphore>,
 }
-
-type PartitionLookup = HashMap<PartitionId, PartitionStore>;
 
 impl PartitionStoreManager {
     pub async fn create(
@@ -208,42 +208,25 @@ impl PartitionStoreManager {
         partition_key_range: RangeInclusive<PartitionKey>,
         cf_name: CfName,
     ) -> Result<PartitionStore, RocksError> {
-        let mut partition_store = PartitionStore::new(
+        let partition_store = PartitionStore::new(
             self.rocksdb.clone(),
+            self.durable_lsns.clone(),
             cf_name,
             partition_id,
             partition_key_range,
         );
 
-        // This method assumes that it is the only path to construct a partition store, and there
-        // are no unflushed writes to the underlying column family on open. This holds as long as
-        // all writes to the underlying CF happen through a partition store tracked in the lookup
-        // map, and one partition store handles all writes to the underlying CF. If this changes,
-        // the durable LSN determination logic below must be updated appropriately.
         let live_store = guard.insert(partition_id, partition_store.clone());
         assert!(
             live_store.is_none(),
             "create_partition_store found an open partition"
         );
 
-        let applied_lsn = match partition_store.get_applied_lsn().await {
-            Ok(Some(applied_lsn)) => applied_lsn,
-            Ok(None) => Lsn::INVALID,
-            Err(err) => {
-                debug!(
-                    %partition_id,
-                    "Failed reading the applied LSN for partition store: {}", err
-                );
-                Lsn::INVALID
-            }
-        };
-        self.durable_lsns.insert(partition_id, applied_lsn);
+        // Make sure we have a `None` LSN entry in the lookup table to allow the
+        // event listener to update the durable LSN when it sees a flush.
+        self.durable_lsns.insert_partition(partition_id);
 
         Ok(partition_store)
-    }
-
-    pub fn get_durable_lsn(&self, partition_id: PartitionId) -> Option<Lsn> {
-        self.durable_lsns.get(&partition_id).map(|lsn| *lsn)
     }
 
     pub async fn export_partition_snapshot(
@@ -283,8 +266,8 @@ impl PartitionStoreManager {
             .drop_cf(&cf_for_partition(partition_id))
             .unwrap();
 
+        self.durable_lsns.close_partition(partition_id);
         guard.remove(&partition_id);
-        self.durable_lsns.remove(&partition_id);
     }
 
     #[cfg(test)]
@@ -293,13 +276,8 @@ impl PartitionStoreManager {
         partition_id: PartitionId,
     ) -> Result<(), restate_storage_api::StorageError> {
         let mut guard = self.lookup.write().await;
-        let live_store = guard.remove(&partition_id);
-        // It's critical that we flush the CF, as we assume that all written
-        // data are fully persisted if we reopen this partition store.
-        if let Some(partition_store) = live_store {
-            partition_store.flush_memtables(true).await?;
-        }
-        self.durable_lsns.remove(&partition_id);
+        self.durable_lsns.close_partition(partition_id);
+        guard.remove(&partition_id);
         Ok(())
     }
 }
