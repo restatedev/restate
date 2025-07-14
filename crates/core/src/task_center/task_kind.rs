@@ -115,6 +115,7 @@ pub enum TaskKind {
     LocalReactor,
     Shuffle,
     Cleaner,
+    LogTrimmer,
     MetadataServer,
     Background,
     // -- Bifrost Tasks
