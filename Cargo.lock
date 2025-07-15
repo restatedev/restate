@@ -7140,6 +7140,7 @@ dependencies = [
  "restate-futures-util",
  "restate-invoker-api",
  "restate-queue",
+ "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
  "restate-service-protocol-v4",
@@ -7156,6 +7157,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "toml",
  "tracing",
 ]
 
@@ -7530,13 +7532,16 @@ dependencies = [
  "bytesize",
  "http 1.3.1",
  "http-serde",
+ "humantime",
  "jiff",
  "prost",
+ "restate-types",
  "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_with",
+ "toml",
 ]
 
 [[package]]

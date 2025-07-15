@@ -19,9 +19,13 @@ restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-queue = { workspace = true }
+restate-serde-util = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message", "codec"] }
-restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "entry-codec"] }
+restate-service-protocol-v4 = { workspace = true, features = [
+	"message-codec",
+	"entry-codec",
+] }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }
 
@@ -43,6 +47,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+toml.workspace = true
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }

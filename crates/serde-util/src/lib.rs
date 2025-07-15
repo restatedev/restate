@@ -12,6 +12,7 @@ mod byte_count;
 mod header_map;
 #[cfg(feature = "proto")]
 mod proto;
+mod toml;
 
 pub mod authority;
 pub mod default;
@@ -27,4 +28,5 @@ pub use header_value::HeaderValueSerde;
 pub use map_as_vec::{MapAsVec, MapAsVecItem};
 #[cfg(feature = "proto")]
 pub use proto::ProtobufEncoded;
+pub use toml::patch_toml;
 pub use version::VersionSerde;

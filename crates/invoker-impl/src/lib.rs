@@ -60,6 +60,7 @@ use error::InvokerError;
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
 use restate_invoker_api::invocation_reader::InvocationReader;
+use restate_serde_util::patch_toml;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
@@ -435,7 +436,7 @@ where
                             invocation_epoch,
                             notification
                         ).await
-                    },
+                    }
                     InvocationTaskOutputInner::Closed => {
                         self.handle_invocation_task_closed(partition, invocation_id, invocation_epoch).await
                     },
@@ -563,6 +564,9 @@ where
                 }
             }
 
+            let retry_policy = patch_toml(&options.retry_policy, r#"foo = bar"#)
+                .unwrap_or(options.retry_policy.clone());
+
             let storage_reader = self
                 .invocation_state_machine_manager
                 .partition_storage_reader(partition)
@@ -574,11 +578,7 @@ where
                 storage_reader.clone(),
                 invocation_id,
                 journal,
-                InvocationStateMachine::create(
-                    invocation_target,
-                    invocation_epoch,
-                    options.retry_policy.clone(),
-                ),
+                InvocationStateMachine::create(invocation_target, invocation_epoch, retry_policy),
             )
         } else {
             trace!(
