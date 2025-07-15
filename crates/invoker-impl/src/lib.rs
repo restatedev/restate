@@ -34,7 +34,7 @@ use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::identifiers::PartitionLeaderEpoch;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::{Completion, EntryIndex};
+use restate_types::journal::{Completion, Entry as JournalEntry, EntryIndex, InputEntry};
 use restate_types::live::{Live, LiveLoad};
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::deployment::DeploymentResolver;
@@ -564,8 +564,59 @@ where
                 }
             }
 
-            let retry_policy = patch_toml(&options.retry_policy, r#"foo = bar"#)
-                .unwrap_or(options.retry_policy.clone());
+            let retry_policy = if let InvokeInputJournal::CachedJournal(_md, jes) = &journal {
+                jes
+                .iter()
+                .filter_map(|e| {
+                    match e {
+                        restate_invoker_api::invocation_reader::JournalEntry::JournalV1(plain_entry) => {
+                            plain_entry.clone()
+                                .deserialize_entry::<restate_service_protocol::codec::ProtobufRawEntryCodec>()
+                                .ok()
+                                .and_then(|entry| match entry {
+                                    JournalEntry::Input(input_entry) => Some(input_entry),
+                                    _ => None,
+                                })
+                        }
+                        restate_invoker_api::invocation_reader::JournalEntry::JournalV2(stored_entry) => {
+                            // Only process Input commands
+                            if stored_entry.ty() != restate_types::journal_v2::EntryType::Command(restate_types::journal_v2::CommandType::Input) {
+                                return None;
+                            }
+
+                            stored_entry.decode::<restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec, restate_types::journal_v2::command::InputCommand>()
+                                .ok()
+                                .map(|input_command| InputEntry {
+                                    headers: input_command.headers,
+                                    value: input_command.payload,
+                                })
+                        }
+                    }
+                })
+                .find_map(|input_entry| {
+                    input_entry.headers.iter()
+                        .find(|header| header.name == "x-restate-retry-policy" && !header.value.is_empty())
+                        .map(|header| header.value.clone())
+                })
+                .map(|retry_policy_str| {
+                    // We expect the retry policy to be a semicolon-separated list of key-value pairs
+                    retry_policy_str
+                        .split(';')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .and_then(|retry_policy_str| {
+                    patch_toml(&options.retry_policy, &retry_policy_str).ok()
+                })
+                .unwrap_or_else(|| options.retry_policy.clone())
+            } else {
+                options.retry_policy.clone()
+            };
+
+            //let retry_policy = patch_toml(&options.retry_policy, r#"foo = bar"#)
+            //    .unwrap_or(options.retry_policy.clone());
 
             let storage_reader = self
                 .invocation_state_machine_manager
