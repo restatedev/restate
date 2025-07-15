@@ -46,7 +46,7 @@ pub trait RocksAccess {
         &self,
         name: CfName,
         default_cf_options: rocksdb::Options,
-        cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
+        cf_patterns: &[(BoxedCfMatcher, BoxedCfOptionUpdater)],
     ) -> Result<(), RocksError>;
     /// Create a column family from a snapshot. The data files referenced by
     /// `metadata` will be moved into the RocksDB data directory.
@@ -54,7 +54,7 @@ pub trait RocksAccess {
         &self,
         name: CfName,
         default_cf_options: rocksdb::Options,
-        cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
+        cf_patterns: &[(BoxedCfMatcher, BoxedCfOptionUpdater)],
         metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError>;
     fn cfs(&self) -> Vec<CfName>;
@@ -151,9 +151,9 @@ impl RocksAccess for rocksdb::DB {
         &self,
         name: CfName,
         default_cf_options: rocksdb::Options,
-        cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
+        cf_patterns: &[(BoxedCfMatcher, BoxedCfOptionUpdater)],
     ) -> Result<(), RocksError> {
-        let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
+        let options = prepare_cf_options(cf_patterns, default_cf_options, &name)?;
         Ok(Self::create_cf(self, name.as_str(), &options)?)
     }
 
@@ -161,10 +161,10 @@ impl RocksAccess for rocksdb::DB {
         &self,
         name: CfName,
         default_cf_options: rocksdb::Options,
-        cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
+        cf_patterns: &[(BoxedCfMatcher, BoxedCfOptionUpdater)],
         metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError> {
-        let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
+        let options = prepare_cf_options(cf_patterns, default_cf_options, &name)?;
 
         let mut import_opts = ImportColumnFamilyOptions::default();
         import_opts.set_move_files(true);
