@@ -27,7 +27,7 @@ use std::time::Duration;
 
 pub type ActionCollector = Vec<Action>;
 
-#[derive(Debug, Eq, PartialEq, strum::IntoStaticStr)]
+#[derive(Debug, PartialEq, strum::IntoStaticStr)]
 pub enum Action {
     Invoke {
         invocation_id: InvocationId,

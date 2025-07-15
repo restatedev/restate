@@ -29,7 +29,7 @@ pub mod control;
 pub mod timer;
 
 /// The primary envelope for all messages in the system.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Envelope {
     pub header: Header,
@@ -126,7 +126,7 @@ pub enum Destination {
 }
 
 /// State machine input commands
-#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants, strum::VariantNames)]
+#[derive(Debug, Clone, PartialEq, strum::EnumDiscriminants, strum::VariantNames)]
 #[strum_discriminants(derive(strum::IntoStaticStr))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Command {

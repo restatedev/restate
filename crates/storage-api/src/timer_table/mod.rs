@@ -179,7 +179,7 @@ impl restate_types::timer::TimerKey for TimerKey {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Timer {
     // TODO remove this variant when removing the old invocation status table
     Invoke(Box<ServiceInvocation>),

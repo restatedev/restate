@@ -2687,6 +2687,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         idempotency_key: request.idempotency_key,
                         submit_notification_sink: None,
                         restate_version: RestateVersion::current(),
+                        retry_policy: None,
                     });
 
                     self.handle_outgoing_message(OutboxMessage::ServiceInvocation(
@@ -2754,6 +2755,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     idempotency_key: request.idempotency_key,
                     submit_notification_sink: None,
                     restate_version: RestateVersion::current(),
+                    retry_policy: None,
                 });
 
                 self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))

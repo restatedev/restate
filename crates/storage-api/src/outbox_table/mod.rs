@@ -20,7 +20,7 @@ use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 
 /// Types of outbox messages.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OutboxMessage {
     /// Service invocation to send to another partition processor
     ServiceInvocation(Box<ServiceInvocation>),

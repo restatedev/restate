@@ -31,6 +31,28 @@ use std::str::FromStr;
 use std::time::Duration;
 use std::{cmp, fmt};
 
+// Core types for invocation retention configuration
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvocationRetention {
+    pub completion_retention: Duration,
+    pub journal_retention: Duration,
+}
+
+impl Default for InvocationRetention {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+impl InvocationRetention {
+    pub fn none() -> Self {
+        Self {
+            completion_retention: Duration::ZERO,
+            journal_retention: Duration::ZERO,
+        }
+    }
+}
+
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry::trace::TraceId;
 
@@ -278,108 +300,78 @@ impl fmt::Display for InvocationTarget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvocationRetention {
-    /// Retention duration of the completed status. If zero, the completed status is not retained, and invocation won't be deduplicated.
-    pub completion_retention: Duration,
-    /// Retention duration of the journal. If zero, the journal is not retained.
-    pub journal_retention: Duration,
+#[derive(Debug, derive_more::Display)]
+/// Short is used to create a short [`Display`] implementation
+/// for InvocationRequest. it's mainly use for tracing purposes
+pub enum ShortRequest<'a> {
+    #[display("{id}/{{key}}/{target}")]
+    Keyed { id: &'a str, key: &'a str, target: &'a str },
+    #[display("{id}/{target}")]
+    UnKeyed { id: &'a str, target: &'a str },
 }
 
-impl InvocationRetention {
-    pub fn none() -> Self {
-        Self {
-            completion_retention: Duration::ZERO,
-            journal_retention: Duration::ZERO,
-        }
-    }
+#[derive(PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct InvocationRequest {
+    pub header: InvocationRequestHeader,
+    pub body: Bytes,
 }
 
-impl Default for InvocationRetention {
-    fn default() -> Self {
-        Self::none()
-    }
-}
-
-#[serde_as]
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct InvocationRequestHeader {
     pub id: InvocationId,
     pub target: InvocationTarget,
-    pub headers: Vec<Header>,
     pub span_context: ServiceInvocationSpanContext,
-
-    /// Key to use for idempotent request. If none, this request is not idempotent, or it's a workflow call. See [`InvocationRequestHeader::is_idempotent`].
-    pub idempotency_key: Option<ByteString>,
-
-    /// Time when the request should be executed. If none, it's executed immediately.
+    pub headers: Vec<Header>,
     pub execution_time: Option<MillisSinceEpoch>,
-
-    /// Retention duration of the completed status.
-    /// If zero, the completed status is not retained.
-    #[serde(default)]
-    #[serde_as(deserialize_as = "serde_with::DefaultOnNull")]
-    completion_retention_duration: Duration,
-    /// Retention duration of the journal.
-    /// If zero, the journal is not retained.
-    /// If `completion_retention_duration < journal_retention_duration`, then completion retention is used as journal retention.
-    #[serde(default, skip_serializing_if = "Duration::is_zero")]
-    journal_retention_duration: Duration,
+    pub completion_retention_duration: Duration,
+    pub journal_retention_duration: Duration,
+    pub idempotency_key: Option<ByteString>,
+    pub submit_notification_sink: Option<SubmitNotificationSink>,
+    /// Per-invocation retry policy override. If None, the system default retry policy is used.
+    pub retry_policy: Option<crate::retries::RetryPolicy>,
 }
 
 impl InvocationRequestHeader {
-    pub fn initialize(id: InvocationId, target: InvocationTarget) -> Self {
+    /// Invocations are idempotent if they have an idempotency key specified or are of type workflow
+    pub fn is_idempotent(&self) -> bool {
+        self.idempotency_key.is_some() || matches!(self.target, InvocationTarget::Workflow { .. })
+    }
+
+    pub fn invocation_id(&self) -> InvocationId {
+        self.id
+    }
+
+    /// Set the retry policy for this invocation
+    pub fn with_retry_policy(&mut self, retry_policy: Option<crate::retries::RetryPolicy>) {
+        self.retry_policy = retry_policy;
+    }
+
+    /// Initialize a new InvocationRequestHeader
+    pub fn initialize(invocation_id: InvocationId, target: InvocationTarget) -> Self {
         Self {
-            id,
+            id: invocation_id,
             target,
-            headers: vec![],
             span_context: ServiceInvocationSpanContext::empty(),
-            idempotency_key: None,
+            headers: vec![],
             execution_time: None,
             completion_retention_duration: Duration::ZERO,
             journal_retention_duration: Duration::ZERO,
+            idempotency_key: None,
+            submit_notification_sink: None,
+            retry_policy: None,
         }
     }
 
+    /// Set the span relation for tracing
     pub fn with_related_span(&mut self, span_relation: SpanRelation) {
         self.span_context = ServiceInvocationSpanContext::start(&self.id, span_relation);
     }
 
-    pub fn with_headers(&mut self, headers: Vec<Header>) {
-        self.headers.extend(headers);
-    }
-
+    /// Set retention configuration
     pub fn with_retention(&mut self, invocation_retention: InvocationRetention) {
         self.completion_retention_duration = invocation_retention.completion_retention;
         self.journal_retention_duration = invocation_retention.journal_retention;
     }
-
-    /// Invocations are idempotent if they have an idempotency key specified or are of type workflow
-    pub fn is_idempotent(&self) -> bool {
-        self.idempotency_key.is_some() || matches!(self.target.service_ty(), ServiceType::Workflow)
-    }
-
-    pub fn completion_retention_duration(&self) -> Duration {
-        self.completion_retention_duration
-    }
-
-    pub fn journal_retention_duration(&self) -> Duration {
-        self.journal_retention_duration
-    }
-}
-
-impl WithInvocationId for InvocationRequestHeader {
-    fn invocation_id(&self) -> InvocationId {
-        self.id
-    }
-}
-
-/// Struct representing an invocation request.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct InvocationRequest {
-    pub header: InvocationRequestHeader,
-    pub body: Bytes,
 }
 
 impl InvocationRequest {
@@ -400,7 +392,7 @@ impl WithInvocationId for InvocationRequest {
 }
 
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(
     from = "serde_hacks::ServiceInvocation",
     into = "serde_hacks::ServiceInvocation"
@@ -432,6 +424,10 @@ pub struct ServiceInvocation {
 
     /// Restate version at the moment of the invocation creation.
     pub restate_version: RestateVersion,
+
+    /// Per-invocation retry policy override. If None, the system default retry policy is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_policy: Option<crate::retries::RetryPolicy>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -464,6 +460,7 @@ impl ServiceInvocation {
             response_sink: None,
             submit_notification_sink: None,
             restate_version: RestateVersion::current(),
+            retry_policy: request.header.retry_policy,
         }
     }
 
@@ -486,6 +483,7 @@ impl ServiceInvocation {
             idempotency_key: None,
             submit_notification_sink: None,
             restate_version: RestateVersion::current(),
+            retry_policy: None,
         }
     }
 
@@ -537,7 +535,7 @@ pub struct JournalCompletionTarget {
 }
 
 impl JournalCompletionTarget {
-    /// MUST be used only for v3 journals/invocations, which have no concept of epoch
+    /// MUST be used only for v3 complitions/invocations, which have no concept of epoch
     pub fn for_v3_completions(caller_id: InvocationId, caller_entry_index: EntryIndex) -> Self {
         Self {
             caller_id,
@@ -1119,7 +1117,7 @@ mod serde_hacks {
 
     use super::*;
 
-    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
     pub(super) struct ServiceInvocation {
         pub invocation_id: InvocationId,
         pub invocation_target: InvocationTarget,
@@ -1191,6 +1189,7 @@ mod serde_hacks {
                     Source::Internal => super::Source::Internal,
                 },
                 restate_version,
+                retry_policy: None,
             }
         }
     }
@@ -1211,6 +1210,7 @@ mod serde_hacks {
                 response_sink,
                 submit_notification_sink,
                 restate_version,
+                retry_policy: _, // Ignored for now - not serialized in legacy format
             }: super::ServiceInvocation,
         ) -> Self {
             let source_ingress_rpc_id = if let super::Source::Ingress(rpc_id) = &source {
@@ -1462,6 +1462,7 @@ mod mocks {
                 idempotency_key: None,
                 submit_notification_sink: None,
                 restate_version: RestateVersion::current(),
+                retry_policy: None,
             }
         }
     }

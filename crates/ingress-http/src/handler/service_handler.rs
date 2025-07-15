@@ -33,6 +33,7 @@ use restate_types::invocation::{
     Header, InvocationRequest, InvocationRequestHeader, InvocationTarget, InvocationTargetType,
     SpanRelation, WorkflowHandlerType,
 };
+use restate_types::retries::RetryPolicy;
 use restate_types::schema::invocation_target::{
     InvocationTargetMetadata, InvocationTargetResolver,
 };
@@ -41,6 +42,13 @@ use restate_types::time::MillisSinceEpoch;
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const DELAY_QUERY_PARAM: &str = "delay";
 const X_RESTATE_INGRESS_PATH: ByteString = ByteString::from_static("x-restate-ingress-path");
+
+// Retry policy headers
+pub(crate) const X_RESTATE_RETRY_POLICY_TYPE: HeaderName = HeaderName::from_static("x-restate-retry-policy-type");
+pub(crate) const X_RESTATE_RETRY_MAX_ATTEMPTS: HeaderName = HeaderName::from_static("x-restate-retry-max-attempts");
+pub(crate) const X_RESTATE_RETRY_INITIAL_INTERVAL: HeaderName = HeaderName::from_static("x-restate-retry-initial-interval");
+pub(crate) const X_RESTATE_RETRY_FACTOR: HeaderName = HeaderName::from_static("x-restate-retry-factor");
+pub(crate) const X_RESTATE_RETRY_MAX_INTERVAL: HeaderName = HeaderName::from_static("x-restate-retry-max-interval");
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
@@ -180,6 +188,9 @@ where
             // Parse delay query parameter
             let delay = parse_delay(parts.uri.query())?;
 
+            // Parse retry policy from headers
+            let retry_policy = parse_retry_policy(&parts.headers)?;
+
             // Get headers
             let headers = parse_headers(parts)?;
 
@@ -192,6 +203,9 @@ where
             );
             if let Some(key) = idempotency_key {
                 invocation_request_header.idempotency_key = Some(key);
+            }
+            if let Some(policy) = retry_policy {
+                invocation_request_header.with_retry_policy(Some(policy));
             }
             invocation_request_header.headers = headers;
 
@@ -312,6 +326,11 @@ fn parse_headers(parts: http::request::Parts) -> Result<Vec<Header>, HandlerErro
             || k == header::HOST
             || k == IDEMPOTENCY_KEY
             || k == IDEMPOTENCY_EXPIRES
+            || k == X_RESTATE_RETRY_POLICY_TYPE
+            || k == X_RESTATE_RETRY_MAX_ATTEMPTS
+            || k == X_RESTATE_RETRY_INITIAL_INTERVAL
+            || k == X_RESTATE_RETRY_FACTOR
+            || k == X_RESTATE_RETRY_MAX_INTERVAL
         {
             continue;
         }
@@ -362,6 +381,88 @@ fn parse_idempotency(headers: &HeaderMap) -> Result<Option<ByteString>, HandlerE
     };
 
     Ok(Some(idempotency_key))
+}
+
+fn parse_retry_policy(headers: &HeaderMap) -> Result<Option<RetryPolicy>, HandlerError> {
+    // Check if any retry policy headers are present
+    let has_retry_headers = headers.contains_key(&X_RESTATE_RETRY_POLICY_TYPE)
+        || headers.contains_key(&X_RESTATE_RETRY_MAX_ATTEMPTS)
+        || headers.contains_key(&X_RESTATE_RETRY_INITIAL_INTERVAL)
+        || headers.contains_key(&X_RESTATE_RETRY_FACTOR)
+        || headers.contains_key(&X_RESTATE_RETRY_MAX_INTERVAL);
+
+    if !has_retry_headers {
+        return Ok(None);
+    }
+
+    // Parse max attempts if present
+    let max_attempts = if let Some(max_attempts_header) = headers.get(&X_RESTATE_RETRY_MAX_ATTEMPTS) {
+        let max_attempts_str = max_attempts_header
+            .to_str()
+            .map_err(|e| HandlerError::BadHeader(X_RESTATE_RETRY_MAX_ATTEMPTS.clone(), e))?;
+        Some(max_attempts_str.parse::<usize>()
+            .map_err(|e| HandlerError::BadDelayDuration(format!("Invalid max-attempts value: {}", e)))?)
+    } else {
+        None
+    };
+
+    // Parse policy type and create appropriate policy
+    if let Some(policy_type_header) = headers.get(&X_RESTATE_RETRY_POLICY_TYPE) {
+        let policy_type = policy_type_header
+            .to_str()
+            .map_err(|e| HandlerError::BadHeader(X_RESTATE_RETRY_POLICY_TYPE.clone(), e))?;
+
+        match policy_type.to_lowercase().as_str() {
+            "fixed-delay" | "fixed" => {
+                let interval = parse_duration_header(headers, &X_RESTATE_RETRY_INITIAL_INTERVAL, "1s")?;
+                Ok(Some(RetryPolicy::fixed_delay(interval, max_attempts)))
+            }
+            "exponential" => {
+                let initial_interval = parse_duration_header(headers, &X_RESTATE_RETRY_INITIAL_INTERVAL, "50ms")?;
+                let factor = if let Some(factor_header) = headers.get(&X_RESTATE_RETRY_FACTOR) {
+                    let factor_str = factor_header
+                        .to_str()
+                        .map_err(|e| HandlerError::BadHeader(X_RESTATE_RETRY_FACTOR.clone(), e))?;
+                    factor_str.parse::<f32>()
+                        .map_err(|e| HandlerError::BadDelayDuration(format!("Invalid retry factor: {}", e)))?
+                } else {
+                    2.0
+                };
+                let max_interval = if headers.contains_key(&X_RESTATE_RETRY_MAX_INTERVAL) {
+                    Some(parse_duration_header(headers, &X_RESTATE_RETRY_MAX_INTERVAL, "10s")?)
+                } else {
+                    None
+                };
+                Ok(Some(RetryPolicy::exponential(initial_interval, factor, max_attempts, max_interval)))
+            }
+            "none" => Ok(Some(RetryPolicy::None)),
+            _ => Err(HandlerError::BadDelayDuration(format!("Unsupported retry policy type: {}", policy_type)))
+        }
+    } else if max_attempts.is_some() {
+        // If only max_attempts is specified, use a default exponential policy
+        let initial_interval = parse_duration_header(headers, &X_RESTATE_RETRY_INITIAL_INTERVAL, "50ms")?;
+        Ok(Some(RetryPolicy::exponential(initial_interval, 2.0, max_attempts, Some(Duration::from_secs(10)))))
+    } else {
+        // No policy type specified, but other retry headers present - this is an error
+        Err(HandlerError::BadDelayDuration("Retry policy headers present but no policy type specified".to_string()))
+    }
+}
+
+fn parse_duration_header(headers: &HeaderMap, header_name: &HeaderName, default_value: &str) -> Result<Duration, HandlerError> {
+    let duration_str = if let Some(header_value) = headers.get(header_name) {
+        header_value
+            .to_str()
+            .map_err(|e| HandlerError::BadHeader(header_name.clone(), e))?
+    } else {
+        default_value
+    };
+
+    // Use the same duration parsing logic as the delay parameter
+    DurationQueryParam::deserialize(duration_str.into_deserializer())
+        .map_err(|e: serde::de::value::Error| {
+            HandlerError::BadDelayDuration(format!("Invalid duration in header {}: {}", header_name, e))
+        })
+        .map(|d| d.0)
 }
 
 #[cfg(test)]

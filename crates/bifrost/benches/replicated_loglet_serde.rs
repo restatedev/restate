@@ -96,6 +96,7 @@ fn invoke_cmd() -> Command {
         submit_notification_sink: Some(
             restate_types::invocation::SubmitNotificationSink::Ingress { request_id },
         ),
+        retry_policy: Default::default(),
         restate_version: RestateVersion::current(),
     }))
 }
