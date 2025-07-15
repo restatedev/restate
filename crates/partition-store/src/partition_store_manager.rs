@@ -16,6 +16,7 @@ use ahash::HashMap;
 use rocksdb::ExportImportFilesMetaData;
 use rocksdb::event_listener::EventListenerExt;
 use tokio::sync::{RwLock, RwLockWriteGuard, Semaphore};
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use restate_rocksdb::{
