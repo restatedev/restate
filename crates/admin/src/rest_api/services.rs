@@ -10,7 +10,6 @@
 
 use super::create_envelope_header;
 use super::error::*;
-use crate::schema_registry::ModifyServiceChange;
 use crate::state::AdminServiceState;
 use std::sync::Arc;
 
@@ -26,6 +25,7 @@ use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::schema::service::ServiceMetadata;
+use restate_types::schema::updater::ModifyServiceChange;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{Command, Envelope};
 use tracing::{debug, warn};

@@ -8,10 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Schema;
 use crate::invocation::{InvocationRetention, InvocationTargetType, WorkflowHandlerType};
 
-use crate::config::Configuration;
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
@@ -23,6 +21,7 @@ use std::{cmp, fmt};
 pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 pub const DEFAULT_WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 
+// TODO this type is not supposed to be serde!!! PLEASE DON'T USE THEM IN A SERIALIZEABLE DATA STRUCTURE.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     from = "serde_hacks::InvocationTargetMetadata",
@@ -72,31 +71,6 @@ pub trait InvocationTargetResolver {
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
     ) -> Option<InvocationTargetMetadata>;
-}
-
-impl InvocationTargetResolver for Schema {
-    fn resolve_latest_invocation_target(
-        &self,
-        service_name: impl AsRef<str>,
-        handler_name: impl AsRef<str>,
-    ) -> Option<InvocationTargetMetadata> {
-        self.use_service_schema(service_name.as_ref(), |service_schemas| {
-            service_schemas
-                .handlers
-                .get(handler_name.as_ref())
-                .map(|handler_schemas| handler_schemas.target_meta.clone())
-        })
-        .flatten()
-        .map(|mut meta| {
-            if let Some(journal_retention_override) = Configuration::pinned()
-                .admin
-                .experimental_feature_force_journal_retention
-            {
-                meta.journal_retention = journal_retention_override
-            }
-            meta
-        })
-    }
 }
 
 // --- Input rules

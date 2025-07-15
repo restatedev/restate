@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::schema_registry::error::{SchemaError, SchemaRegistryError, ServiceError};
+use crate::schema_registry::SchemaRegistryError;
 use anyhow::bail;
 use axum::Json;
 use axum::http::StatusCode;
@@ -20,9 +20,9 @@ use okapi_operation::{Components, ToMediaTypes, ToResponses, okapi};
 use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::ServiceType;
+use restate_types::schema::updater;
 use schemars::JsonSchema;
 use serde::Serialize;
-
 // --- Few helpers to define Admin API errors.
 
 /// Macro to generate an Admin API Error enum with the given variants.
@@ -193,7 +193,7 @@ pub enum MetaApiError {
     #[error("Cannot {0} for service type {1}")]
     UnsupportedOperation(&'static str, ServiceType),
     #[error(transparent)]
-    Schema(#[from] SchemaError),
+    Schema(#[from] updater::SchemaError),
     #[error(transparent)]
     Discovery(#[from] restate_service_protocol::discovery::DiscoveryError),
     #[error("Internal server error: {0}")]
@@ -223,13 +223,13 @@ impl IntoResponse for MetaApiError {
                 StatusCode::BAD_REQUEST
             }
             MetaApiError::Schema(schema_error) => match schema_error {
-                SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
-                SchemaError::Override(_)
-                | SchemaError::Service(ServiceError::DifferentType { .. })
-                | SchemaError::Service(ServiceError::RemovedHandlers { .. }) => {
-                    StatusCode::CONFLICT
-                }
-                SchemaError::Service(_) => StatusCode::BAD_REQUEST,
+                updater::SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
+                updater::SchemaError::Override(_)
+                | updater::SchemaError::Service(updater::ServiceError::DifferentType { .. })
+                | updater::SchemaError::Service(updater::ServiceError::RemovedHandlers {
+                    ..
+                }) => StatusCode::CONFLICT,
+                updater::SchemaError::Service(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::BAD_REQUEST,
             },
             _ => StatusCode::INTERNAL_SERVER_ERROR,

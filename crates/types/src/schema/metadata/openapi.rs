@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use super::Handler;
+
 use crate::identifiers::ServiceRevision;
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::schema::invocation_target::{InputValidationRule, OutputContentTypeRule};
-use crate::schema::service::HandlerSchemas;
 use restate_utoipa::openapi::extensions::Extensions;
 use restate_utoipa::openapi::path::{Operation, Parameter, ParameterIn};
 use restate_utoipa::openapi::request_body::RequestBody;
@@ -21,7 +22,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceOpenAPI {
+pub(super) struct ServiceOpenAPI {
     rpc_paths: Paths,
     send_paths: Paths,
     attach_paths: Paths,
@@ -31,11 +32,11 @@ pub struct ServiceOpenAPI {
 }
 
 impl ServiceOpenAPI {
-    pub fn infer(
+    pub(super) fn infer(
         service_name: &str,
         service_type: ServiceType,
         service_metadata: &HashMap<String, String>,
-        handlers: &HashMap<String, HandlerSchemas>,
+        handlers: &HashMap<String, Handler>,
     ) -> Self {
         let mut schemas_collector = Vec::new();
 
@@ -65,7 +66,7 @@ impl ServiceOpenAPI {
             let operation_id = handler_name;
             let summary = Some(handler_name.clone());
 
-            if !handler_schemas.target_meta.public {
+            if !handler_schemas.public.unwrap_or(true) {
                 // We don't generate the OpenAPI route for that.
                 continue;
             }
@@ -146,7 +147,7 @@ impl ServiceOpenAPI {
 
             if service_type == ServiceType::Workflow {
                 // We add attach/get output only for workflow run
-                if handler_schemas.target_meta.target_ty
+                if handler_schemas.target_ty
                     == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
                 {
                     let attach_item = PathItem::builder()
@@ -311,7 +312,7 @@ impl ServiceOpenAPI {
     }
 
     /// Returns the OpenAPI contract of this individual service
-    pub(crate) fn to_openapi_contract(
+    pub(super) fn to_openapi_contract(
         &self,
         service_name: &str,
         ingress_url: Option<&str>,
@@ -360,17 +361,6 @@ impl ServiceOpenAPI {
         )
         .expect("Mapping OpenAPI to JSON should never fail")
     }
-
-    pub fn empty() -> Self {
-        Self {
-            rpc_paths: Default::default(),
-            send_paths: Default::default(),
-            attach_paths: Default::default(),
-            get_output_paths: Default::default(),
-            extensions: Default::default(),
-            components: Default::default(),
-        }
-    }
 }
 
 fn request_schema_name(operation_id: &str) -> String {
@@ -397,12 +387,11 @@ fn response_schema_ref(operation_id: &str) -> Ref {
 
 fn infer_handler_request_body(
     operation_id: &str,
-    handler_schemas: &HandlerSchemas,
+    handler_schemas: &Handler,
     schemas_collector: &mut Vec<(String, Schema)>,
 ) -> Option<RequestBody> {
     let mut is_required = true;
     if handler_schemas
-        .target_meta
         .input_rules
         .input_validation_rules
         .contains(&InputValidationRule::NoBodyAndContentType)
@@ -412,7 +401,6 @@ fn infer_handler_request_body(
 
     // This whole thing is a byproduct of how we store
     let content_type_and_schema = if let Some(r) = handler_schemas
-        .target_meta
         .input_rules
         .input_validation_rules
         .iter()
@@ -425,7 +413,6 @@ fn infer_handler_request_body(
             _ => unreachable!(),
         }
     } else if let Some(r) = handler_schemas
-        .target_meta
         .input_rules
         .input_validation_rules
         .iter()
@@ -474,12 +461,12 @@ fn infer_handler_request_body(
 
 fn infer_handler_response(
     operation_id: &str,
-    handler_schemas: &HandlerSchemas,
+    handler_schemas: &Handler,
     schemas_collector: &mut Vec<(String, Schema)>,
 ) -> Response {
     match (
-        &handler_schemas.target_meta.output_rules.json_schema,
-        &handler_schemas.target_meta.output_rules.content_type_rule,
+        &handler_schemas.output_rules.json_schema,
+        &handler_schemas.output_rules.content_type_rule,
     ) {
         (_, OutputContentTypeRule::None) => Response::builder().description("Empty").build(),
         (None, OutputContentTypeRule::Set { content_type, .. }) => Response::builder()
