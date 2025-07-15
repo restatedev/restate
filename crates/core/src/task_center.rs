@@ -870,7 +870,6 @@ impl TaskCenterInner {
             return;
         }
         self.health.node_status().merge(NodeStatus::ShuttingDown);
-        let start = Instant::now();
         self.current_exit_code.store(exit_code, Ordering::Relaxed);
 
         if exit_code != 0 {
@@ -894,7 +893,6 @@ impl TaskCenterInner {
         self.cancel_tasks(None, None).await;
         // notify outer components that we have completed the shutdown.
         self.global_cancel_token.cancel();
-        info!("** Shutdown completed in {:?}", start.elapsed());
     }
 
     /// Take control over the running task from task-center. This returns None if the task was not
