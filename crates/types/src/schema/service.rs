@@ -9,25 +9,20 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
-use arc_swap::ArcSwapOption;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
 
 use restate_serde_util::DurationString;
 
-use super::Schema;
-use super::invocation_target::{DEFAULT_WORKFLOW_COMPLETION_RETENTION, InvocationTargetMetadata};
-use crate::config::Configuration;
 use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
-use crate::schema::openapi::ServiceOpenAPI;
 
+// TODO this type should not be serde, the actual type we need in the Admin API should be moved there.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -190,6 +185,7 @@ impl From<InvocationTargetType> for Option<HandlerMetadataType> {
     }
 }
 
+// TODO this type should not be serde, the actual type we need in the Admin API should be moved there.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct HandlerMetadata {
@@ -357,209 +353,6 @@ pub trait ServiceMetadataResolver {
     fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType>;
 
     fn list_services(&self) -> Vec<ServiceMetadata>;
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HandlerSchemas {
-    pub target_meta: InvocationTargetMetadata,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub idempotency_retention: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub workflow_completion_retention: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub journal_retention: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub inactivity_timeout: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub abort_timeout: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub enable_lazy_state: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub documentation: Option<String>,
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub metadata: HashMap<String, String>,
-}
-
-impl HandlerSchemas {
-    pub fn as_handler_metadata(&self, name: String) -> HandlerMetadata {
-        HandlerMetadata {
-            name,
-            ty: self.target_meta.target_ty.into(),
-            documentation: self.documentation.clone(),
-            metadata: self.metadata.clone(),
-            idempotency_retention: self.idempotency_retention,
-            workflow_completion_retention: self.workflow_completion_retention,
-            journal_retention: self.journal_retention,
-            inactivity_timeout: self.inactivity_timeout,
-            abort_timeout: self.abort_timeout,
-            enable_lazy_state: self.enable_lazy_state,
-            public: self.target_meta.public,
-            input_description: self.target_meta.input_rules.to_string(),
-            output_description: self.target_meta.output_rules.to_string(),
-            input_json_schema: self.target_meta.input_rules.json_schema(),
-            output_json_schema: self.target_meta.output_rules.json_schema(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ServiceSchemas {
-    pub revision: ServiceRevision,
-    pub handlers: HashMap<String, HandlerSchemas>,
-    pub ty: ServiceType,
-    pub location: ServiceLocation,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub idempotency_retention: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub workflow_completion_retention: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub journal_retention: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub inactivity_timeout: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub abort_timeout: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub enable_lazy_state: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub documentation: Option<String>,
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub metadata: HashMap<String, String>,
-
-    /// This is a cache for the computed value of ServiceOpenAPI
-    #[serde(skip)]
-    pub service_openapi_cache: Arc<ArcSwapOption<ServiceOpenAPI>>,
-}
-
-impl ServiceSchemas {
-    pub fn as_service_metadata(&self, name: String) -> ServiceMetadata {
-        ServiceMetadata {
-            name,
-            handlers: self
-                .handlers
-                .iter()
-                .map(|(h_name, h_schemas)| {
-                    (
-                        h_name.clone(),
-                        h_schemas.as_handler_metadata(h_name.clone()),
-                    )
-                })
-                .collect(),
-            ty: self.ty,
-            documentation: self.documentation.clone(),
-            metadata: self.metadata.clone(),
-            deployment_id: self.location.latest_deployment,
-            revision: self.revision,
-            public: self.location.public,
-            idempotency_retention: self.idempotency_retention,
-            workflow_completion_retention: if self.ty == ServiceType::Workflow {
-                Some(
-                    self.handlers
-                        .iter()
-                        .find(|(_, h)| h.workflow_completion_retention.is_some())
-                        .and_then(|(_, h)| h.workflow_completion_retention)
-                        .or(self.workflow_completion_retention)
-                        .unwrap_or(DEFAULT_WORKFLOW_COMPLETION_RETENTION),
-                )
-            } else {
-                None
-            },
-            journal_retention: self.journal_retention,
-            inactivity_timeout: self.inactivity_timeout,
-            abort_timeout: self.abort_timeout,
-            enable_lazy_state: self.enable_lazy_state,
-        }
-    }
-
-    pub fn openapi_spec(&self, name: &str) -> serde_json::Value {
-        let service_openapi = {
-            let cached_openapi = self.service_openapi_cache.load();
-            if let Some(result) = cached_openapi.as_ref() {
-                Arc::clone(result)
-            } else {
-                // Not present, compute it!
-                let computed = Arc::new(ServiceOpenAPI::infer(
-                    name,
-                    self.ty,
-                    &self.metadata,
-                    &self.handlers,
-                ));
-                self.service_openapi_cache.store(Some(computed.clone()));
-                computed
-            }
-        };
-
-        let advertised_ingress_endpoint = Configuration::pinned()
-            .ingress
-            .advertised_ingress_endpoint
-            .as_ref()
-            .map(|u| u.to_string());
-        service_openapi.to_openapi_contract(
-            name,
-            advertised_ingress_endpoint.as_deref(),
-            self.documentation.as_deref(),
-            self.revision,
-        )
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ServiceLocation {
-    pub latest_deployment: DeploymentId,
-    pub public: bool,
-}
-
-impl ServiceMetadataResolver for Schema {
-    fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
-        let name = service_name.as_ref();
-        self.use_service_schema(name, |service_schemas| {
-            service_schemas.as_service_metadata(name.to_owned())
-        })
-    }
-
-    fn resolve_invocation_attempt_options(
-        &self,
-        deployment_id: &DeploymentId,
-        service_name: impl AsRef<str>,
-        handler_name: impl AsRef<str>,
-    ) -> Option<InvocationAttemptOptions> {
-        let service_name = service_name.as_ref();
-        let handler_name = handler_name.as_ref();
-        self.find_existing_deployment_by_id(deployment_id)
-            .and_then(|(_, dep)| {
-                dep.services.get(service_name).and_then(|svc| {
-                    svc.handlers
-                        .get(handler_name)
-                        .map(|handler| InvocationAttemptOptions {
-                            abort_timeout: handler.abort_timeout.or(svc.abort_timeout),
-                            inactivity_timeout: handler
-                                .inactivity_timeout
-                                .or(svc.inactivity_timeout),
-                            enable_lazy_state: handler.enable_lazy_state.or(svc.enable_lazy_state),
-                        })
-                })
-            })
-    }
-
-    fn resolve_latest_service_openapi(
-        &self,
-        service_name: impl AsRef<str>,
-    ) -> Option<serde_json::Value> {
-        let name = service_name.as_ref();
-        self.use_service_schema(name, |service_schemas| service_schemas.openapi_spec(name))
-    }
-
-    fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType> {
-        self.use_service_schema(service_name.as_ref(), |service_schemas| service_schemas.ty)
-    }
-
-    fn list_services(&self) -> Vec<ServiceMetadata> {
-        self.services
-            .iter()
-            .map(|(service_name, service_schemas)| {
-                service_schemas.as_service_metadata(service_name.clone())
-            })
-            .collect()
-    }
 }
 
 #[cfg(feature = "test-util")]
