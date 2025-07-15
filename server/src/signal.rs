@@ -66,8 +66,7 @@ pub(super) async fn sighup_compact() {
             db.compact_all().await;
             let _ = writeln!(
                 std::io::stderr(),
-                "Database '{}' compaction requested",
-                db_name
+                "Database '{db_name}' compaction requested",
             );
         }
     }
