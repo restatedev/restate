@@ -8,25 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod error;
-mod updater;
-
-use anyhow::Context;
-use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderValue, Uri};
-use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Duration;
+
+use http::Uri;
 use tracing::subscriber::NoSubscriber;
 use tracing::trace;
 
-use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
-use restate_service_client::HttpClient;
+use restate_core::{Metadata, MetadataWriter, ShutdownError};
+use restate_metadata_store::ReadModifyWriteError;
 use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
-use restate_types::schema::Schema;
 use restate_types::schema::deployment::{
     DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver,
 };
@@ -34,44 +27,37 @@ use restate_types::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMe
 use restate_types::schema::subscriptions::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
 };
+use restate_types::schema::{Schema, updater};
 
-use crate::schema_registry::error::{SchemaError, SchemaRegistryError, ServiceError};
-use crate::schema_registry::updater::SchemaUpdater;
-
-/// Whether to force the registration of an existing endpoint or not
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Force {
-    Yes,
-    No,
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+pub enum SchemaRegistryError {
+    #[error(transparent)]
+    Schema(
+        #[from]
+        #[code]
+        updater::SchemaError,
+    ),
+    #[error(transparent)]
+    Discovery(
+        #[from]
+        #[code]
+        restate_service_protocol::discovery::DiscoveryError,
+    ),
+    #[error("internal error: {0}")]
+    #[code(unknown)]
+    Internal(String),
+    #[error(transparent)]
+    #[code(unknown)]
+    Shutdown(#[from] ShutdownError),
 }
 
-impl Force {
-    pub fn force_enabled(&self) -> bool {
-        *self == Self::Yes
+impl From<ReadModifyWriteError<updater::SchemaError>> for SchemaRegistryError {
+    fn from(value: ReadModifyWriteError<updater::SchemaError>) -> Self {
+        match value {
+            ReadModifyWriteError::FailedOperation(err) => SchemaRegistryError::Schema(err),
+            err => SchemaRegistryError::Internal(err.to_string()),
+        }
     }
-}
-
-/// Whether to apply the changes or not
-#[derive(Clone, Default, PartialEq, Eq, Debug)]
-pub enum ApplyMode {
-    DryRun,
-    #[default]
-    Apply,
-}
-
-impl ApplyMode {
-    pub fn should_apply(&self) -> bool {
-        *self == Self::Apply
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ModifyServiceChange {
-    Public(bool),
-    IdempotencyRetention(Duration),
-    WorkflowCompletionRetention(Duration),
-    InactivityTimeout(Duration),
-    AbortTimeout(Duration),
 }
 
 /// Responsible for updating the registered schema information. This includes the discovery of
@@ -102,8 +88,8 @@ impl<V> SchemaRegistry<V> {
     pub async fn register_deployment(
         &self,
         discover_endpoint: DiscoverEndpoint,
-        force: Force,
-        apply_mode: ApplyMode,
+        force: updater::Force,
+        apply_mode: updater::ApplyMode,
     ) -> Result<(Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
         // The number of concurrent discovery calls is bound by the number of concurrent
         // {register,update}_deployment calls. If it should become a problem that a user tries to register
@@ -131,7 +117,7 @@ impl<V> SchemaRegistry<V> {
 
         let (deployment, services) = if !apply_mode.should_apply() {
             let mut updater =
-                SchemaUpdater::new(Metadata::with_current(|m| m.schema()).deref().clone());
+                updater::SchemaUpdater::new(Metadata::with_current(|m| m.schema()).deref().clone());
 
             // suppress logging output in case of a dry run
             let id = tracing::subscriber::with_default(NoSubscriber::new(), || {
@@ -154,7 +140,7 @@ impl<V> SchemaRegistry<V> {
                 .metadata_writer
                 .global_metadata()
                 .read_modify_write(|schema_information: Option<Arc<Schema>>| {
-                    let mut updater = SchemaUpdater::new(
+                    let mut updater = updater::SchemaUpdater::new(
                         schema_information
                             .map(|s| s.as_ref().clone())
                             .unwrap_or_default(),
@@ -241,7 +227,7 @@ impl<V> SchemaRegistry<V> {
         &self,
         deployment_id: DeploymentId,
         discover_endpoint: DiscoverEndpoint,
-        apply_mode: ApplyMode,
+        apply_mode: updater::ApplyMode,
     ) -> Result<(Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
         // The number of concurrent discovery calls is bound by the number of concurrent
         // {register,update}_deployment calls. If it should become a problem that a user tries to register
@@ -269,7 +255,7 @@ impl<V> SchemaRegistry<V> {
 
         if !apply_mode.should_apply() {
             let mut updater =
-                SchemaUpdater::new(Metadata::with_current(|m| m.schema()).deref().clone());
+                updater::SchemaUpdater::new(Metadata::with_current(|m| m.schema()).deref().clone());
 
             // suppress logging output in case of a dry run
             tracing::subscriber::with_default(NoSubscriber::new(), || {
@@ -289,7 +275,7 @@ impl<V> SchemaRegistry<V> {
                 .metadata_writer
                 .global_metadata()
                 .read_modify_write(|schema_information: Option<Arc<Schema>>| {
-                    let mut updater = SchemaUpdater::new(
+                    let mut updater = updater::SchemaUpdater::new(
                         schema_information
                             .map(|s| s.as_ref().clone())
                             .unwrap_or_default(),
@@ -324,11 +310,11 @@ impl<V> SchemaRegistry<V> {
                     .unwrap_or_default();
 
                 if schema_information.get_deployment(&deployment_id).is_some() {
-                    let mut updater = SchemaUpdater::new(schema_information);
+                    let mut updater = updater::SchemaUpdater::new(schema_information);
                     updater.remove_deployment(deployment_id);
                     Ok(updater.into_inner())
                 } else {
-                    Err(SchemaError::NotFound(format!(
+                    Err(updater::SchemaError::NotFound(format!(
                         "deployment with id '{deployment_id}'"
                     )))
                 }
@@ -341,7 +327,7 @@ impl<V> SchemaRegistry<V> {
     pub async fn modify_service(
         &self,
         service_name: String,
-        changes: Vec<ModifyServiceChange>,
+        changes: Vec<updater::ModifyServiceChange>,
     ) -> Result<ServiceMetadata, SchemaRegistryError> {
         let schema_information = self
             .metadata_writer
@@ -355,11 +341,11 @@ impl<V> SchemaRegistry<V> {
                     .resolve_latest_service(&service_name)
                     .is_some()
                 {
-                    let mut updater = SchemaUpdater::new(schema_information);
+                    let mut updater = updater::SchemaUpdater::new(schema_information);
                     updater.modify_service(service_name.clone(), changes.clone())?;
                     Ok(updater.into_inner())
                 } else {
-                    Err(SchemaError::NotFound(format!(
+                    Err(updater::SchemaError::NotFound(format!(
                         "service with name '{service_name}'"
                     )))
                 }
@@ -388,11 +374,11 @@ impl<V> SchemaRegistry<V> {
                     .get_subscription(subscription_id)
                     .is_some()
                 {
-                    let mut updater = SchemaUpdater::new(schema_information);
+                    let mut updater = updater::SchemaUpdater::new(schema_information);
                     updater.remove_subscription(subscription_id);
                     Ok(updater.into_inner())
                 } else {
-                    Err(SchemaError::NotFound(format!(
+                    Err(updater::SchemaError::NotFound(format!(
                         "subscription with id '{subscription_id}'"
                     )))
                 }
@@ -469,7 +455,7 @@ where
             .metadata_writer
             .global_metadata()
             .read_modify_write(|schema_information: Option<Arc<Schema>>| {
-                let mut updater = SchemaUpdater::new(
+                let mut updater = updater::SchemaUpdater::new(
                     schema_information
                         .map(|s| s.as_ref().clone())
                         .unwrap_or_default(),
@@ -482,7 +468,7 @@ where
                     &self.subscription_validator,
                 )?);
 
-                Ok::<_, SchemaError>(updater.into_inner())
+                Ok::<_, updater::SchemaError>(updater.into_inner())
             })
             .await?;
 
@@ -530,5 +516,3 @@ impl Borrow<String> for ServiceName {
         &self.0
     }
 }
-
-static TELEMETRY_URI_PREFIX: &str = "https://restate.gateway.scarf.sh/sdk-registration/";

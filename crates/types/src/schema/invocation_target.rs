@@ -8,10 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Schema;
 use crate::invocation::{InvocationRetention, InvocationTargetType, WorkflowHandlerType};
 
-use crate::config::Configuration;
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
@@ -23,11 +21,7 @@ use std::{cmp, fmt};
 pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 pub const DEFAULT_WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(
-    from = "serde_hacks::InvocationTargetMetadata",
-    into = "serde_hacks::InvocationTargetMetadata"
-)]
+#[derive(Debug, Clone)]
 pub struct InvocationTargetMetadata {
     pub public: bool,
 
@@ -72,31 +66,6 @@ pub trait InvocationTargetResolver {
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
     ) -> Option<InvocationTargetMetadata>;
-}
-
-impl InvocationTargetResolver for Schema {
-    fn resolve_latest_invocation_target(
-        &self,
-        service_name: impl AsRef<str>,
-        handler_name: impl AsRef<str>,
-    ) -> Option<InvocationTargetMetadata> {
-        self.use_service_schema(service_name.as_ref(), |service_schemas| {
-            service_schemas
-                .handlers
-                .get(handler_name.as_ref())
-                .map(|handler_schemas| handler_schemas.target_meta.clone())
-        })
-        .flatten()
-        .map(|mut meta| {
-            if let Some(journal_retention_override) = Configuration::pinned()
-                .admin
-                .experimental_feature_force_journal_retention
-            {
-                meta.journal_retention = journal_retention_override
-            }
-            meta
-        })
-    }
 }
 
 // --- Input rules
@@ -528,95 +497,6 @@ pub mod test_util {
     }
 }
 
-mod serde_hacks {
-    use super::*;
-
-    /// Some good old serde hacks here to make sure we can parse the old data structure.
-    /// See the tests for more details on the old data structure and the various cases.
-    /// Revisit this for Restate 1.5
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct InvocationTargetMetadata {
-        pub public: bool,
-
-        #[serde(default)]
-        pub completion_retention: Option<Duration>,
-        /// This is unused at this point, we just write it for backward compatibility.
-        #[serde(default)]
-        pub idempotency_retention: Duration,
-        #[serde(default, skip_serializing_if = "Duration::is_zero")]
-        pub journal_retention: Duration,
-
-        pub target_ty: InvocationTargetType,
-        pub input_rules: InputRules,
-        pub output_rules: OutputRules,
-    }
-
-    impl From<super::InvocationTargetMetadata> for InvocationTargetMetadata {
-        fn from(
-            super::InvocationTargetMetadata {
-                public,
-                completion_retention,
-                journal_retention,
-                target_ty,
-                input_rules,
-                output_rules,
-            }: super::InvocationTargetMetadata,
-        ) -> Self {
-            // This is the 1.3 business logic we need to please here.
-            // Note that completion_retention was set only for Workflow methods anyway
-            //   if has_idempotency_key {
-            //     Some(cmp::max(
-            //       self.completion_retention.unwrap_or_default(),
-            //       self.idempotency_retention,
-            //     ))
-            //   } else {
-            //     self.completion_retention
-            //   }
-            let completion_retention_old =
-                if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
-                    Some(completion_retention)
-                } else {
-                    None
-                };
-            Self {
-                public,
-                completion_retention: completion_retention_old,
-                // Just always set it, won't hurt and doesn't violate the code below.
-                idempotency_retention: completion_retention,
-                journal_retention,
-                target_ty,
-                input_rules,
-                output_rules,
-            }
-        }
-    }
-
-    impl From<InvocationTargetMetadata> for super::InvocationTargetMetadata {
-        fn from(
-            InvocationTargetMetadata {
-                public,
-                completion_retention,
-                idempotency_retention,
-                journal_retention,
-                target_ty,
-                input_rules,
-                output_rules,
-            }: InvocationTargetMetadata,
-        ) -> Self {
-            Self {
-                public,
-                // In the old data structure, either completion_retention was filled and used, or idempotency retention was filled.
-                // So just try to pick first the one, then the other
-                completion_retention: completion_retention.unwrap_or(idempotency_retention),
-                journal_retention,
-                target_ty,
-                input_rules,
-                output_rules,
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,124 +694,6 @@ mod tests {
 
             assert_eq!(input_rules.infer_content_type(false), None);
             assert_eq!(input_rules.infer_content_type(true), None);
-        }
-    }
-
-    mod invocation_target_metadata {
-        use super::*;
-
-        pub const IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(1);
-        pub const WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(2);
-
-        #[derive(Debug, Clone, Serialize, Deserialize)]
-        pub struct OldInvocationTargetMetadata {
-            pub public: bool,
-            pub completion_retention: Option<Duration>,
-            pub idempotency_retention: Duration,
-            pub target_ty: InvocationTargetType,
-            pub input_rules: InputRules,
-            pub output_rules: OutputRules,
-        }
-
-        impl OldInvocationTargetMetadata {
-            pub fn compute_retention(&self, has_idempotency_key: bool) -> Option<Duration> {
-                if has_idempotency_key {
-                    Some(cmp::max(
-                        self.completion_retention.unwrap_or_default(),
-                        self.idempotency_retention,
-                    ))
-                } else {
-                    self.completion_retention
-                }
-            }
-        }
-
-        #[test]
-        fn workflow_invoke_forward_compatibility() {
-            let expected_retention = InvocationRetention {
-                completion_retention: WORKFLOW_COMPLETION_RETENTION,
-                journal_retention: Default::default(),
-            };
-
-            let old = OldInvocationTargetMetadata {
-                public: false,
-                completion_retention: Some(WORKFLOW_COMPLETION_RETENTION),
-                target_ty: InvocationTargetType::Workflow(WorkflowHandlerType::Workflow),
-                input_rules: Default::default(),
-                output_rules: Default::default(),
-                idempotency_retention: IDEMPOTENCY_RETENTION,
-            };
-
-            let new: InvocationTargetMetadata =
-                flexbuffers::from_slice(flexbuffers::to_vec(old).unwrap().as_slice()).unwrap();
-            assert_eq!(new.compute_retention(false), expected_retention);
-
-            // Roundtrip should work fine
-            let new: InvocationTargetMetadata =
-                flexbuffers::from_slice(flexbuffers::to_vec(new).unwrap().as_slice()).unwrap();
-            assert_eq!(new.compute_retention(false), expected_retention);
-        }
-
-        #[test]
-        fn idempotent_invoke_forward_compatibility() {
-            let expected_retention = InvocationRetention {
-                completion_retention: IDEMPOTENCY_RETENTION,
-                journal_retention: Default::default(),
-            };
-
-            let old = OldInvocationTargetMetadata {
-                public: false,
-                completion_retention: None,
-                target_ty: InvocationTargetType::Workflow(WorkflowHandlerType::Workflow),
-                input_rules: Default::default(),
-                output_rules: Default::default(),
-                idempotency_retention: IDEMPOTENCY_RETENTION,
-            };
-
-            let new: InvocationTargetMetadata =
-                flexbuffers::from_slice(flexbuffers::to_vec(old).unwrap().as_slice()).unwrap();
-            assert_eq!(new.compute_retention(true), expected_retention);
-
-            // Roundtrip should work fine
-            let new: InvocationTargetMetadata =
-                flexbuffers::from_slice(flexbuffers::to_vec(new).unwrap().as_slice()).unwrap();
-            assert_eq!(new.compute_retention(true), expected_retention);
-        }
-
-        #[test]
-        fn workflow_invoke_backward_compatibility() {
-            let new = InvocationTargetMetadata {
-                public: false,
-                target_ty: InvocationTargetType::Workflow(WorkflowHandlerType::Workflow),
-                completion_retention: WORKFLOW_COMPLETION_RETENTION,
-                journal_retention: Default::default(),
-                input_rules: Default::default(),
-                output_rules: Default::default(),
-            };
-
-            let old: OldInvocationTargetMetadata =
-                flexbuffers::from_slice(flexbuffers::to_vec(new).unwrap().as_slice()).unwrap();
-            assert_eq!(
-                old.compute_retention(false),
-                Some(WORKFLOW_COMPLETION_RETENTION)
-            );
-        }
-
-        #[test]
-        fn idempotent_invoke_backward_compatibility() {
-            let new = InvocationTargetMetadata {
-                public: false,
-                completion_retention: IDEMPOTENCY_RETENTION,
-                journal_retention: Default::default(),
-                target_ty: InvocationTargetType::Service,
-                input_rules: Default::default(),
-                output_rules: Default::default(),
-            };
-
-            let old: OldInvocationTargetMetadata =
-                flexbuffers::from_slice(flexbuffers::to_vec(new).unwrap().as_slice()).unwrap();
-            assert_eq!(old.compute_retention(true), Some(IDEMPOTENCY_RETENTION));
-            assert_eq!(old.compute_retention(false), None);
         }
     }
 }
