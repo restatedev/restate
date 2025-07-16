@@ -123,8 +123,7 @@ impl Worker {
         health_status.update(WorkerStatus::StartingUp);
 
         let partition_store_manager =
-            PartitionStoreManager::create(live_config.clone().map(|c| &c.worker.storage), &[])
-                .await?;
+            PartitionStoreManager::create(live_config.clone().map(|c| &c.worker.storage)).await?;
 
         let live_config_clone = live_config.clone();
         let config = live_config.live_load();

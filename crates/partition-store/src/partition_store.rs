@@ -1224,7 +1224,7 @@ mod tests {
     async fn concurrent_writes_and_reads() -> googletest::Result<()> {
         let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
         let partition_store_manager =
-            PartitionStoreManager::create(Constant::new(StorageOptions::default()), &[]).await?;
+            PartitionStoreManager::create(Constant::new(StorageOptions::default())).await?;
         let mut partition_store = partition_store_manager
             .open_partition_store(
                 PartitionId::MIN,
