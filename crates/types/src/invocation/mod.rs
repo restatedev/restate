@@ -305,7 +305,11 @@ impl fmt::Display for InvocationTarget {
 /// for InvocationRequest. it's mainly use for tracing purposes
 pub enum ShortRequest<'a> {
     #[display("{id}/{{key}}/{target}")]
-    Keyed { id: &'a str, key: &'a str, target: &'a str },
+    Keyed {
+        id: &'a str,
+        key: &'a str,
+        target: &'a str,
+    },
     #[display("{id}/{target}")]
     UnKeyed { id: &'a str, target: &'a str },
 }
@@ -327,8 +331,6 @@ pub struct InvocationRequestHeader {
     pub journal_retention_duration: Duration,
     pub idempotency_key: Option<ByteString>,
     pub submit_notification_sink: Option<SubmitNotificationSink>,
-    /// Per-invocation retry policy override. If None, the system default retry policy is used.
-    pub retry_policy: Option<crate::retries::RetryPolicy>,
 }
 
 impl InvocationRequestHeader {
@@ -339,11 +341,6 @@ impl InvocationRequestHeader {
 
     pub fn invocation_id(&self) -> InvocationId {
         self.id
-    }
-
-    /// Set the retry policy for this invocation
-    pub fn with_retry_policy(&mut self, retry_policy: Option<crate::retries::RetryPolicy>) {
-        self.retry_policy = retry_policy;
     }
 
     /// Initialize a new InvocationRequestHeader
@@ -358,7 +355,6 @@ impl InvocationRequestHeader {
             journal_retention_duration: Duration::ZERO,
             idempotency_key: None,
             submit_notification_sink: None,
-            retry_policy: None,
         }
     }
 
@@ -424,10 +420,6 @@ pub struct ServiceInvocation {
 
     /// Restate version at the moment of the invocation creation.
     pub restate_version: RestateVersion,
-
-    /// Per-invocation retry policy override. If None, the system default retry policy is used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry_policy: Option<crate::retries::RetryPolicy>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -460,7 +452,6 @@ impl ServiceInvocation {
             response_sink: None,
             submit_notification_sink: None,
             restate_version: RestateVersion::current(),
-            retry_policy: request.header.retry_policy,
         }
     }
 
@@ -483,7 +474,6 @@ impl ServiceInvocation {
             idempotency_key: None,
             submit_notification_sink: None,
             restate_version: RestateVersion::current(),
-            retry_policy: None,
         }
     }
 
@@ -1189,7 +1179,6 @@ mod serde_hacks {
                     Source::Internal => super::Source::Internal,
                 },
                 restate_version,
-                retry_policy: None,
             }
         }
     }
@@ -1210,7 +1199,6 @@ mod serde_hacks {
                 response_sink,
                 submit_notification_sink,
                 restate_version,
-                retry_policy: _, // Ignored for now - not serialized in legacy format
             }: super::ServiceInvocation,
         ) -> Self {
             let source_ingress_rpc_id = if let super::Source::Ingress(rpc_id) = &source {
@@ -1462,7 +1450,6 @@ mod mocks {
                 idempotency_key: None,
                 submit_notification_sink: None,
                 restate_version: RestateVersion::current(),
-                retry_policy: None,
             }
         }
     }

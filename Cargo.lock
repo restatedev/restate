@@ -7138,6 +7138,7 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-futures-util",
+ "restate-ingress-http",
  "restate-invoker-api",
  "restate-queue",
  "restate-serde-util",

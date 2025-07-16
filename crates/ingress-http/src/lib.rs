@@ -14,6 +14,7 @@ mod metric_definitions;
 mod rpc_request_dispatcher;
 mod server;
 
+pub use handler::X_RESTATE_RETRY_POLICY;
 pub use rpc_request_dispatcher::InvocationClientRequestDispatcher;
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 

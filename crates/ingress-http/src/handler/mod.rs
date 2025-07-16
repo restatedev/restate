@@ -20,6 +20,8 @@ mod tests;
 mod tracing;
 mod workflow;
 
+pub use service_handler::X_RESTATE_RETRY_POLICY;
+
 use std::convert::Infallible;
 use std::task::{Context, Poll};
 

@@ -10,22 +10,26 @@
 
 //! Retry policy extraction utilities for the invoker implementation.
 
+use restate_ingress_http::X_RESTATE_RETRY_POLICY;
 use restate_invoker_api::InvokeInputJournal;
 use restate_serde_util::patch_toml;
 use restate_types::journal::{Entry as JournalEntry, InputEntry};
 use restate_types::journal_v2::EntryMetadata;
 use restate_types::retries::RetryPolicy;
 
-/// Extracts retry policy configuration from the x-restate-retry-policy header in the journal
 pub(crate) fn extract_retry_policy_from_journal(
     journal: &InvokeInputJournal,
     default_retry_policy: &RetryPolicy,
 ) -> RetryPolicy {
-    if let InvokeInputJournal::CachedJournal(_md, jes) = journal {
-        jes
+    let journal_entries = match journal {
+        InvokeInputJournal::CachedJournal(_, journal_entries) => journal_entries,
+        _ => return default_retry_policy.clone(),
+    };
+
+    journal_entries
         .iter()
-        .filter_map(|e| {
-            match e {
+        .filter_map(|journal_entry| {
+            match journal_entry {
                 restate_invoker_api::invocation_reader::JournalEntry::JournalV1(plain_entry) => {
                     plain_entry.clone()
                         .deserialize_entry::<restate_service_protocol::codec::ProtobufRawEntryCodec>()
@@ -52,15 +56,29 @@ pub(crate) fn extract_retry_policy_from_journal(
         })
         .find_map(|input_entry| {
             input_entry.headers.iter()
-                .find(|header| header.name == "x-restate-retry-policy" && !header.value.is_empty())
+                .find(|header| header.name == X_RESTATE_RETRY_POLICY.as_str() && !header.value.is_empty())
                 .map(|header| header.value.clone())
         })
         .map(|retry_policy_str| {
-            // We expect the retry policy to be a semicolon-separated list of key-value pairs
             retry_policy_str
                 .split(';')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
+                .map(|line| {
+                    line
+                    .split_once('=')
+                    .map_or_else(
+                        || line.to_string(),
+                        |(k, v)| {
+                            let k = k.trim();
+                            let v = v.trim();
+                            match format!("{} = {}", k, v).parse::<toml::Table>() {
+                                Ok(_) => format!("{} = {}", k, v),  // Valid TOML, use as-is
+                                Err(_) => format!("{} = \"{}\"", k, v),  // Invalid, quote it
+                            }
+                        }
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         })
@@ -68,9 +86,6 @@ pub(crate) fn extract_retry_policy_from_journal(
             patch_toml(default_retry_policy, &retry_policy_str).ok()
         })
         .unwrap_or_else(|| default_retry_policy.clone())
-    } else {
-        default_retry_policy.clone()
-    }
 }
 
 #[cfg(test)]
@@ -119,8 +134,8 @@ mod tests {
         // Create an input entry with the x-restate-retry-policy header
         let input_entry = ProtobufRawEntryCodec::serialize_as_input_entry(
             vec![Header::new(
-                "x-restate-retry-policy",
-                "initial-interval=\"250ms\"",
+                X_RESTATE_RETRY_POLICY.as_str(),
+                "initial-interval=250ms;max-interval=\"3s\"",
             )],
             Bytes::from("test payload"),
         );
@@ -160,7 +175,7 @@ mod tests {
                 assert_eq!(max_attempts, Some(std::num::NonZeroUsize::new(5).unwrap()));
                 assert_eq!(
                     max_interval,
-                    Some(humantime::Duration::from(Duration::from_secs(10)))
+                    Some(humantime::Duration::from(Duration::from_secs(3)))
                 );
             }
             _ => panic!("Expected Exponential policy, got {:?}", result),

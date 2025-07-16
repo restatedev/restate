@@ -1883,7 +1883,6 @@ pub mod v1 {
                     idempotency_key,
                     submit_notification_sink,
                     restate_version: restate_version_from_pb(restate_version),
-                    retry_policy: None, // Protobuf stored invocations don't have per-invocation retry policy
                 })
             }
         }
