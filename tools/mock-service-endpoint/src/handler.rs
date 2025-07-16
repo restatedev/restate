@@ -137,6 +137,7 @@ pub async fn serve(
 pub enum Handler {
     Get,
     Add,
+    Bad,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -150,6 +151,7 @@ impl FromStr for Handler {
         match s {
             "get" => Ok(Self::Get),
             "add" => Ok(Self::Add),
+            "bad" => Ok(Self::Bad),
             _ => Err(InvalidHandler),
         }
     }
@@ -160,6 +162,7 @@ impl Display for Handler {
         match self {
             Self::Get => write!(f, "get"),
             Self::Add => write!(f, "add"),
+            Self::Bad => write!(f, "bad"),
         }
     }
 }
@@ -195,6 +198,11 @@ impl Handler {
                         },
                         Handler::Add => {
                             for await message in Self::handle_add(start_message, input, replayed, incoming) {
+                                yield message?
+                            }
+                        },
+                        Handler::Bad => {
+                            for await message in Self::handle_bad(start_message, input, replayed, incoming) {
                                 yield message?
                             }
                         },
@@ -238,8 +246,6 @@ impl Handler {
         _incoming: impl Stream<Item = Result<ProtocolMessage, FrameError>>,
     ) -> impl Stream<Item = Result<ProtocolMessage, FrameError>> {
         try_stream! {
-                yield error(FrameError::User(GenericError::from("kaboom")));
-
                 let counter = read_counter(&start_message.state_map);
                 match replayed.len() {
                     0 => {
@@ -293,6 +299,17 @@ impl Handler {
                     }
                     _ => {Err(FrameError::InvalidJournal)?; return},
                 }
+        }
+    }
+
+    fn handle_bad(
+        _start_message: StartMessage,
+        _input: InputEntry,
+        _replayed: Vec<ProtocolMessage>,
+        _incoming: impl Stream<Item = Result<ProtocolMessage, FrameError>>,
+    ) -> impl Stream<Item = Result<ProtocolMessage, FrameError>> {
+        try_stream! {
+            yield error(FrameError::User(GenericError::from("bad handler: kaboom")));
         }
     }
 }

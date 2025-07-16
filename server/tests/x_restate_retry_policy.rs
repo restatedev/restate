@@ -77,6 +77,7 @@ async fn test_x_restate_retry_policy_header() -> googletest::Result<()> {
     };
 
     info!("Provisioning the cluster");
+
     cluster.nodes[0]
         .provision_cluster(
             None,
@@ -176,44 +177,39 @@ async fn test_x_restate_retry_policy_header() -> googletest::Result<()> {
 
     info!("Ingress address: {}", ingress_address);
 
-    {
-        let policy = "---";
+    let policies = [
+        "(default)",
+        "type=none",
+        "max-attempts=2",
+        "max-attempts=4",
+        "max-attempts=8",
+        "max-attempts=16",
+        "max-attempts=16;interval=100ms",
+        "max-attempts=16;interval=500ms",
+    ];
 
-        info!("----------------------");
-        info!("X-Restate-Retry-Policy: {}", policy);
+    for policy in policies {
+        //info!("----------------------");
+        //info!("X-Restate-Retry-Policy: {}", policy);
         let start_time = std::time::Instant::now();
         let response = client
-            .post(format!("http://{ingress_address}/Counter/1/add"))
+            .post(format!("http://{ingress_address}/Counter/1/bad"))
             .header(CONTENT_TYPE, "application/json")
             .header("X-Restate-Retry-Policy", policy)
             .body("1")
             .send()
             .await?;
         let elapsed = start_time.elapsed();
-        info!("status: {}", response.status());
-        let response_body = response.text().await?;
-        info!("body: {}", response_body);
-        info!("ms: {}", elapsed.as_millis());
-    }
+        //info!("status: {}", response.status());
+        //let response_body = response.text().await?;
+        //info!("body: {}", response_body);
+        //info!("ms: {}", elapsed.as_millis());
 
-    {
-        let policy = "max-attempts=16";
-
-        info!("----------------------");
-        info!("X-Restate-Retry-Policy: {}", policy);
-        let start_time = std::time::Instant::now();
-        let response = client
-            .post(format!("http://{ingress_address}/Counter/1/add"))
-            .header(CONTENT_TYPE, "application/json")
-            .header("X-Restate-Retry-Policy", policy)
-            .body("1")
-            .send()
-            .await?;
-        let elapsed = start_time.elapsed();
-        info!("status: {}", response.status());
-        let response_body = response.text().await?;
-        info!("body: {}", response_body);
-        info!("ms: {}", elapsed.as_millis());
+        info!(
+            "{:8}   X-Restate-Retry-Policy: {}",
+            elapsed.as_millis(),
+            policy,
+        );
     }
 
     //
