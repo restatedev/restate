@@ -135,7 +135,7 @@ mod tests {
         let input_entry = ProtobufRawEntryCodec::serialize_as_input_entry(
             vec![Header::new(
                 X_RESTATE_RETRY_POLICY.as_str(),
-                "initial-interval=250ms;max-interval=\"3s\"",
+                "initial-interval=250ms; max-interval=\"3s\"",
             )],
             Bytes::from("test payload"),
         );

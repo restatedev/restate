@@ -24,7 +24,7 @@ use tracing::{debug, error};
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{Decoder, Encoder, EncodingError, ProtocolMessage};
-use restate_types::errors::codes;
+use restate_types::errors::{GenericError, codes};
 use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryCodecError};
 use restate_types::journal::{Entry, EntryType, InputEntry};
 use restate_types::service_protocol::start_message::StateEntry;
@@ -46,6 +46,8 @@ enum FrameError {
     RawEntryCodecError(#[from] RawEntryCodecError),
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
+    #[error(transparent)]
+    User(#[from] restate_types::errors::GenericError),
 }
 
 pub async fn serve(
@@ -236,6 +238,8 @@ impl Handler {
         _incoming: impl Stream<Item = Result<ProtocolMessage, FrameError>>,
     ) -> impl Stream<Item = Result<ProtocolMessage, FrameError>> {
         try_stream! {
+                yield error(FrameError::User(GenericError::from("kaboom")));
+
                 let counter = read_counter(&start_message.state_map);
                 match replayed.len() {
                     0 => {
@@ -370,6 +374,7 @@ fn error(err: FrameError) -> ProtocolMessage {
         FrameError::InvalidJournal => codes::JOURNAL_MISMATCH,
         FrameError::RawEntryCodecError(_) => codes::PROTOCOL_VIOLATION,
         FrameError::Serde(_) => codes::INTERNAL,
+        FrameError::User(_) => codes::INTERNAL,
     };
     ProtocolMessage::Error(service_protocol::ErrorMessage {
         code: code.into(),

@@ -29,7 +29,10 @@ options_schema = [
 ]
 memory-loglet = ["restate-node/memory-loglet"]
 crate_per_service = ["restate-tracing-instrumentation/service_per_crate"]
-no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
+no-trace-logging = [
+    "tracing/max_level_trace",
+    "tracing/release_max_level_debug",
+]
 metadata-api = ["restate-admin/metadata-api"]
 
 [dependencies]
@@ -42,11 +45,24 @@ restate-metadata-server = { workspace = true }
 restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
-restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio", "prometheus"] }
+restate-tracing-instrumentation = { workspace = true, features = [
+    "rt-tokio",
+    "prometheus",
+] }
 restate-types = { workspace = true, features = ["clap"] }
 restate-admin = { workspace = true }
 
-clap = { workspace = true, features = ["derive", "env", "color", "help", "wrap_help", "usage", "suggestions", "error-context", "std"] }
+clap = { workspace = true, features = [
+    "derive",
+    "env",
+    "color",
+    "help",
+    "wrap_help",
+    "usage",
+    "suggestions",
+    "error-context",
+    "std",
+] }
 codederror = { workspace = true }
 enumset = { workspace = true }
 futures-util = { workspace = true }
@@ -59,6 +75,7 @@ rustls = { workspace = true, features = ["aws-lc-rs"] }
 schemars = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+humantime = { workspace = true }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
 ulid = { workspace = true }
@@ -79,7 +96,7 @@ mock-service-endpoint = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
-bytestring = { workspace = true}
+bytestring = { workspace = true }
 googletest = { workspace = true }
 hyper-util = { workspace = true }
 tempfile = { workspace = true }
