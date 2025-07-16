@@ -131,6 +131,7 @@ pub async fn modify_service<V, IC>(
         public,
         idempotency_retention,
         workflow_completion_retention,
+        journal_retention,
         inactivity_timeout,
         abort_timeout,
     }): Json<ModifyServiceRequest>,
@@ -148,6 +149,9 @@ pub async fn modify_service<V, IC>(
         modify_request.push(ModifyServiceChange::WorkflowCompletionRetention(
             new_workflow_completion_retention,
         ));
+    }
+    if let Some(new_journal_retention) = journal_retention {
+        modify_request.push(ModifyServiceChange::JournalRetention(new_journal_retention));
     }
     if let Some(inactivity_timeout) = inactivity_timeout {
         modify_request.push(ModifyServiceChange::InactivityTimeout(inactivity_timeout));
