@@ -285,14 +285,6 @@ fn cf_for_partition(partition_id: PartitionId) -> CfName {
     CfName::from(format!("{PARTITION_CF_PREFIX}{partition_id}"))
 }
 
-#[inline]
-fn partition_ids_to_cfs<T>(partition_ids: &[(PartitionId, T)]) -> Vec<CfName> {
-    partition_ids
-        .iter()
-        .map(|(partition, _)| cf_for_partition(*partition))
-        .collect()
-}
-
 fn db_options() -> rocksdb::Options {
     let mut db_options = rocksdb::Options::default();
     // we always enable manual wal flushing in case that the user enables wal at runtime

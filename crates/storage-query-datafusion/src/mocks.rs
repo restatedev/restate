@@ -10,7 +10,6 @@
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use super::context::QueryContext;
