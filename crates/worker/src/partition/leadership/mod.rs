@@ -657,11 +657,8 @@ mod tests {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
 
-        let partition_store_manager = PartitionStoreManager::create(
-            Constant::new(storage_options.clone()).boxed(),
-            &[(PARTITION_ID, PARTITION_KEY_RANGE)],
-        )
-        .await?;
+        let partition_store_manager =
+            PartitionStoreManager::create(Constant::new(storage_options.clone()).boxed()).await?;
 
         let invoker_tx = MockInvokerHandle::default();
         let mut state = LeadershipState::new(

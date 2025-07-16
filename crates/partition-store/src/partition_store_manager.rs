@@ -57,7 +57,6 @@ pub struct PartitionStoreManager {
 impl PartitionStoreManager {
     pub async fn create(
         mut storage_opts: impl LiveLoad<Live = StorageOptions> + 'static,
-        initial_partition_set: &[(PartitionId, RangeInclusive<PartitionKey>)],
     ) -> Result<Self, RocksError> {
         let options = storage_opts.live_load();
 
@@ -78,7 +77,6 @@ impl PartitionStoreManager {
                 CfPrefixPattern::new(PARTITION_CF_PREFIX),
                 cf_options(per_partition_memory_budget),
             )
-            .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
             // This is added as an experiment. We might make this configurable to let users decide
             // on the trade-off between shutdown time and startup catchup time.
             .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
@@ -285,14 +283,6 @@ impl PartitionStoreManager {
 
 fn cf_for_partition(partition_id: PartitionId) -> CfName {
     CfName::from(format!("{PARTITION_CF_PREFIX}{partition_id}"))
-}
-
-#[inline]
-fn partition_ids_to_cfs<T>(partition_ids: &[(PartitionId, T)]) -> Vec<CfName> {
-    partition_ids
-        .iter()
-        .map(|(partition, _)| cf_for_partition(*partition))
-        .collect()
 }
 
 fn db_options() -> rocksdb::Options {
