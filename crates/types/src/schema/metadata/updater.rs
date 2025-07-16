@@ -67,6 +67,7 @@ impl ApplyMode {
 pub enum ModifyServiceChange {
     Public(bool),
     IdempotencyRetention(Duration),
+    JournalRetention(Duration),
     WorkflowCompletionRetention(Duration),
     InactivityTimeout(Duration),
     AbortTimeout(Duration),
