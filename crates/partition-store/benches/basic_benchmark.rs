@@ -54,12 +54,9 @@ fn basic_writing_reading_benchmark(c: &mut Criterion) {
         //
         // setup
         //
-        let manager = PartitionStoreManager::create(
-            Constant::new(worker_options.storage.clone()),
-            &[(PartitionId::MIN, RangeInclusive::new(0, PartitionKey::MAX))],
-        )
-        .await
-        .expect("DB creation succeeds");
+        let manager = PartitionStoreManager::create(Constant::new(worker_options.storage.clone()))
+            .await
+            .expect("DB creation succeeds");
         manager
             .open_partition_store(
                 PartitionId::MIN,

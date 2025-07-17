@@ -25,7 +25,7 @@ async fn barrier_fsm() -> googletest::Result<()> {
     let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
 
     let partition_store_manager =
-        PartitionStoreManager::create(Constant::new(StorageOptions::default()), &[]).await?;
+        PartitionStoreManager::create(Constant::new(StorageOptions::default())).await?;
 
     let partition_id = PartitionId::MIN;
     let mut partition_store = partition_store_manager

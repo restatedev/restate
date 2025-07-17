@@ -1392,7 +1392,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{CommonOptions, Configuration, StorageOptions};
     use restate_types::health::HealthStatus;
-    use restate_types::identifiers::{PartitionId, PartitionKey};
+    use restate_types::identifiers::PartitionId;
     use restate_types::live::{Constant, Live};
     use restate_types::logs::{Lsn, SequenceNumber};
     use restate_types::net::AdvertisedAddress;
@@ -1433,11 +1433,8 @@ mod tests {
 
         let replica_set_states = PartitionReplicaSetStates::default();
 
-        let partition_store_manager = PartitionStoreManager::create(
-            Constant::new(StorageOptions::default()),
-            &[(PartitionId::MIN, 0..=PartitionKey::MAX)],
-        )
-        .await?;
+        let partition_store_manager =
+            PartitionStoreManager::create(Constant::new(StorageOptions::default())).await?;
 
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,

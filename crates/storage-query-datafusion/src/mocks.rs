@@ -10,7 +10,6 @@
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use super::context::QueryContext;
@@ -158,17 +157,14 @@ impl MockQueryEngine {
         // Prepare Rocksdb
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let storage_options = StorageOptions::default();
-        let manager = PartitionStoreManager::create(
-            Constant::new(storage_options.clone()),
-            &[(PartitionId::MIN, RangeInclusive::new(0, PartitionKey::MAX))],
-        )
-        .await
-        .expect("DB creation succeeds");
+        let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()))
+            .await
+            .expect("DB creation succeeds");
         let partition_store = manager
             .open_partition_store(
                 PartitionId::MIN,
                 PartitionKey::MIN..=PartitionKey::MAX,
-                OpenMode::OpenExisting,
+                OpenMode::CreateIfMissing,
                 &storage_options.rocksdb,
             )
             .await
