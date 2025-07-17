@@ -824,7 +824,7 @@ mod serde_hacks {
                     uri,
                     protocol_type,
                     http_version: http_version
-                        .unwrap_or_else(|| DeploymentType::backfill_http_version(protocol_type)),
+                        .unwrap_or_else(|| protocol_type.default_http_version()),
                     additional_headers,
                     created_at,
                     min_protocol_version,
