@@ -52,7 +52,7 @@ async fn storage_test_environment_with_manager() -> (PartitionStoreManager, Part
     //
     RocksDbManager::init(Constant::new(CommonOptions::default()));
     let storage_options = StorageOptions::default();
-    let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()), &[])
+    let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()))
         .await
         .expect("DB storage creation succeeds");
     // A single partition store that spans all keys.
