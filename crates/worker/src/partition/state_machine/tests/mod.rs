@@ -130,7 +130,7 @@ impl TestEnv {
             "Using RocksDB temp directory {}",
             storage_options.data_dir().display()
         );
-        let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()), &[])
+        let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()))
             .await
             .unwrap();
         let rocksdb_storage = manager
