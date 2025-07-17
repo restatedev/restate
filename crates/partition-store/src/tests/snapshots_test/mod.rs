@@ -15,10 +15,9 @@ use tempfile::tempdir;
 
 use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
-use restate_types::config::WorkerOptions;
 use restate_types::identifiers::{PartitionKey, SnapshotId};
-use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn};
+use restate_types::partitions::Partition;
 use restate_types::time::MillisSinceEpoch;
 
 use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
@@ -32,7 +31,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
     let partition_id = partition_store.partition_id();
 
     let snapshot = partition_store
-        .create_snapshot(snapshots_dir.path(), None, SnapshotId::new())
+        .create_local_snapshot(snapshots_dir.path(), None, SnapshotId::new())
         .await
         .unwrap();
 
@@ -56,7 +55,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
     drop(partition_store);
     drop(snapshot);
 
-    manager.drop_partition(partition_id).await;
+    manager.drop_partition(partition_id).await.unwrap();
 
     let snapshot_meta: PartitionSnapshotMetadata = serde_json::from_str(&metadata_json).unwrap();
 
@@ -69,14 +68,10 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
         key_range,
     };
 
-    let worker_options = Live::from_value(WorkerOptions::default());
-
     let mut new_partition_store = manager
-        .open_partition_store_from_snapshot(
-            partition_id,
-            RangeInclusive::new(0, PartitionKey::MAX - 1),
+        .open_from_snapshot(
+            &Partition::new(partition_id, RangeInclusive::new(0, PartitionKey::MAX - 1)),
             snapshot,
-            &worker_options.pinned().storage.rocksdb,
         )
         .await
         .unwrap();

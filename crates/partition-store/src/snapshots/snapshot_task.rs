@@ -13,16 +13,15 @@ use std::time::SystemTime;
 
 use tracing::{debug, info, instrument, warn};
 
-use restate_partition_store::PartitionStoreManager;
-use restate_partition_store::snapshots::{
-    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotError, SnapshotErrorKind,
-    SnapshotFormatVersion,
-};
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
 use restate_types::nodes_config::ClusterFingerprint;
 
-use crate::partition::snapshots::SnapshotRepository;
+use super::{
+    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotError, SnapshotErrorKind,
+    SnapshotFormatVersion, SnapshotRepository,
+};
+use crate::PartitionStoreManager;
 
 /// Creates a partition store snapshot along with Restate snapshot metadata.
 pub struct SnapshotPartitionTask {
@@ -59,7 +58,7 @@ impl SnapshotPartitionTask {
     async fn create_snapshot_inner(&self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
         let snapshot = self
             .partition_store_manager
-            .export_partition_snapshot(
+            .export_partition(
                 self.partition_id,
                 self.min_target_lsn,
                 self.snapshot_id,
@@ -76,6 +75,7 @@ impl SnapshotPartitionTask {
                 partition_id: self.partition_id,
                 kind: SnapshotErrorKind::RepositoryIo(e),
             })?;
+        // todo: update partition_store archived lsn if this one is higher
 
         Ok(metadata)
     }
