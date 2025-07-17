@@ -39,7 +39,6 @@ use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
 use crate::metric_definitions::{NUM_PARTITIONS, PARTITION_APPLIED_LSN};
 use crate::partition::ProcessorError;
-use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
@@ -61,7 +60,8 @@ use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::{
-    PartitionSnapshotMetadata, SnapshotCreated, SnapshotError, SnapshotErrorKind,
+    PartitionSnapshotMetadata, SnapshotError, SnapshotErrorKind, SnapshotPartitionTask,
+    SnapshotRepository,
 };
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
@@ -71,7 +71,7 @@ use restate_types::health::HealthStatus;
 use restate_types::identifiers::SnapshotId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
-use restate_types::logs::{Lsn, SequenceNumber};
+use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor::PartitionLeaderService;
@@ -87,6 +87,25 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString};
+
+// ASOLI: move this somewhere else
+#[derive(Debug, Clone, derive_more::Display)]
+#[display("{}", snapshot_id)]
+pub struct SnapshotCreated {
+    pub snapshot_id: SnapshotId,
+    pub log_id: LogId,
+    pub min_applied_lsn: Lsn,
+}
+
+impl From<&PartitionSnapshotMetadata> for SnapshotCreated {
+    fn from(metadata: &PartitionSnapshotMetadata) -> SnapshotCreated {
+        SnapshotCreated {
+            snapshot_id: metadata.snapshot_id,
+            log_id: metadata.log_id,
+            min_applied_lsn: metadata.min_applied_lsn,
+        }
+    }
+}
 
 pub struct PartitionProcessorManager {
     health_status: HealthStatus<WorkerStatus>,

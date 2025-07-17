@@ -31,6 +31,7 @@ use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
+use restate_partition_store::snapshots::SnapshotRepository;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
@@ -47,7 +48,6 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::snapshots::SnapshotRepository;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
 pub use self::error::*;
