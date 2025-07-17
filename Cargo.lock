@@ -7522,6 +7522,7 @@ dependencies = [
  "threadpool",
  "tikv-jemalloc-sys",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

@@ -210,7 +210,7 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
     for db in &all_dbs {
         labels.push(format!(
             "db=\"{}\"",
-            formatting::sanitize_label_value(&db.name)
+            formatting::sanitize_label_value(db.name())
         ));
 
         // Tickers (Counters)
