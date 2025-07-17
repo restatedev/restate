@@ -29,7 +29,6 @@ use crate::snapshots::LocalPartitionSnapshot;
 pub struct PartitionDb {
     meta: Arc<Partition>,
     durable_lsn: watch::Sender<Option<Lsn>>,
-    #[allow(dead_code)]
     archived_lsn: watch::Sender<Option<Lsn>>,
     cf: ManuallyDrop<PartitionBoundCfHandle>,
     rocksdb: ManuallyDrop<Arc<RocksDb>>,
@@ -61,6 +60,17 @@ impl PartitionDb {
 
     pub fn cf_handle(&self) -> &Arc<BoundColumnFamily> {
         &self.cf.0
+    }
+
+    pub(crate) fn note_archived_lsn(&self, lsn: Lsn) -> bool {
+        self.archived_lsn.send_if_modified(|current| {
+            if current.is_none_or(|c| lsn > c) {
+                *current = Some(lsn);
+                true
+            } else {
+                false
+            }
+        })
     }
 
     pub(crate) fn durable_lsn_sender(&self) -> &watch::Sender<Option<Lsn>> {
