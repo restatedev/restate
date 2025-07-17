@@ -18,7 +18,7 @@ use tracing::{debug, info, instrument, warn};
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind};
 use restate_invoker_impl::Service as InvokerService;
-use restate_partition_store::snapshots::LocalPartitionSnapshot;
+use restate_partition_store::snapshots::{LocalPartitionSnapshot, SnapshotRepository};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_types::SharedString;
@@ -33,7 +33,6 @@ use restate_types::schema::Schema;
 use crate::PartitionProcessorBuilder;
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::snapshots::SnapshotRepository;
 use crate::partition::{ProcessorError, TargetLeaderState};
 use crate::partition_processor_manager::processor_state::StartedProcessor;
 
