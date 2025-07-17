@@ -68,7 +68,7 @@ pub enum BuildError {
         restate_storage_query_datafusion::BuildError,
     ),
     #[error("failed creating worker: {0}")]
-    RocksDB(
+    PartitionStore(
         #[from]
         #[code]
         restate_partition_store::BuildError,
@@ -122,8 +122,7 @@ impl Worker {
         metric_definitions::describe_metrics();
         health_status.update(WorkerStatus::StartingUp);
 
-        let partition_store_manager =
-            PartitionStoreManager::create(live_config.clone().map(|c| &c.worker.storage)).await?;
+        let partition_store_manager = PartitionStoreManager::create().await?;
 
         let live_config_clone = live_config.clone();
         let config = live_config.live_load();
