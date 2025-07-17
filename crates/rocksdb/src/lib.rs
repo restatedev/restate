@@ -85,7 +85,7 @@ pub enum IoMode {
     Default,
 }
 
-#[derive(derive_more::Display, derive_more::Debug, Clone)]
+#[derive(derive_more::Display, derive_more::Debug)]
 #[display("{}", name)]
 #[debug("RocksDb({} at {}", name, path.display())]
 pub struct RocksDb {
