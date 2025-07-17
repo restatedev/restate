@@ -31,7 +31,7 @@ use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat, property};
 use restate_core::TaskCenter;
 use restate_invoker_api::{Effect, EffectKind, InvokeInputJournal};
-use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::Transaction;
@@ -133,12 +133,12 @@ impl TestEnv {
         );
         let manager = PartitionStoreManager::create().await.unwrap();
         let rocksdb_storage = manager
-            .open_local_partition_store(
+            .open(
                 &Partition::new(
                     PartitionId::MIN,
                     RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
                 ),
-                OpenMode::CreateIfMissing,
+                None,
             )
             .await
             .unwrap();
