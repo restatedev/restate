@@ -440,7 +440,7 @@ impl PartitionStore {
                 assert!(table.has_key_kind(&prefix));
                 let prefix = prefix.freeze();
                 let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
-                self.rocksdb.run_background_iterator(
+                self.rocksdb.clone().run_background_iterator(
                     self.data_cf_name.clone(),
                     name,
                     priority,
@@ -454,7 +454,7 @@ impl PartitionStore {
                 let start = start.freeze();
                 let end = end.freeze();
                 let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
-                self.rocksdb.run_background_iterator(
+                self.rocksdb.clone().run_background_iterator(
                     self.data_cf_name.clone(),
                     name,
                     priority,
@@ -480,7 +480,7 @@ impl PartitionStore {
                 let start = start.freeze();
                 let end = end.freeze();
                 let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
-                self.rocksdb.run_background_iterator(
+                self.rocksdb.clone().run_background_iterator(
                     self.data_cf_name.clone(),
                     name,
                     priority,
@@ -561,6 +561,7 @@ impl PartitionStore {
 
     pub async fn flush_memtables(&self, wait: bool) -> Result<()> {
         self.rocksdb
+            .clone()
             .flush_memtables(slice::from_ref(&self.data_cf_name), wait)
             .await
             .map_err(|err| StorageError::Generic(err.into()))?;
@@ -613,6 +614,7 @@ impl PartitionStore {
 
         let export_files = self
             .rocksdb
+            .clone()
             .export_cf(self.data_cf_name.clone(), snapshot_dir.clone())
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
