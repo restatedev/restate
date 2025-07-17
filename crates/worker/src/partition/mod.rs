@@ -12,7 +12,6 @@ mod cleaner;
 pub mod invoker_storage_reader;
 mod leadership;
 pub mod shuffle;
-pub mod snapshots;
 mod state_machine;
 pub mod types;
 
@@ -260,6 +259,7 @@ pub enum ProcessorError {
     Storage(#[from] StorageError),
     Decode(#[from] StorageDecodeError),
     Bifrost(#[from] restate_bifrost::Error),
+    StoreOpen(#[from] restate_partition_store::OpenError),
     StateMachine(#[from] state_machine::Error),
     ActionEffect(#[from] leadership::Error),
     ShutdownError(#[from] ShutdownError),

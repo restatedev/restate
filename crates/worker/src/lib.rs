@@ -31,6 +31,7 @@ use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
+use restate_partition_store::snapshots::SnapshotRepository;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
@@ -47,7 +48,6 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
-use crate::partition::snapshots::SnapshotRepository;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
 pub use self::error::*;
@@ -68,7 +68,7 @@ pub enum BuildError {
         restate_storage_query_datafusion::BuildError,
     ),
     #[error("failed creating worker: {0}")]
-    RocksDB(
+    PartitionStore(
         #[from]
         #[code]
         restate_partition_store::BuildError,
@@ -122,8 +122,7 @@ impl Worker {
         metric_definitions::describe_metrics();
         health_status.update(WorkerStatus::StartingUp);
 
-        let partition_store_manager =
-            PartitionStoreManager::create(live_config.clone().map(|c| &c.worker.storage)).await?;
+        let partition_store_manager = PartitionStoreManager::create().await?;
 
         let live_config_clone = live_config.clone();
         let config = live_config.live_load();
