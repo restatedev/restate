@@ -128,7 +128,7 @@ impl PartitionStoreManager {
         if !already_exists {
             if open_mode == OpenMode::CreateIfMissing {
                 debug!("Initializing storage for partition {}", partition_id);
-                self.rocksdb.open_cf(cf_name.clone(), opts).await?;
+                self.rocksdb.clone().open_cf(cf_name.clone(), opts).await?;
             } else {
                 return Err(RocksError::AlreadyOpen);
             }
@@ -192,6 +192,7 @@ impl PartitionStoreManager {
         );
 
         self.rocksdb
+            .clone()
             .import_cf(cf_name.clone(), opts, import_metadata)
             .await?;
 

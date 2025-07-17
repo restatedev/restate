@@ -54,8 +54,9 @@ pub(super) async fn sighup_compact() {
         warn!("Received SIGHUP, flushing and compacting all databases");
         let manager = RocksDbManager::get();
         for db in manager.get_all_dbs() {
-            let _ = match db.flush_all().await {
-                Ok(_) => writeln!(std::io::stderr(), "Database '{}' flushed", db.name),
+            let db_name = db.name.clone();
+            let _ = match db.clone().flush_all().await {
+                Ok(_) => writeln!(std::io::stderr(), "Database '{}' flushed", db_name),
                 Err(e) => writeln!(
                     std::io::stderr(),
                     "Database '{}' flush failed: {e}",
@@ -66,7 +67,7 @@ pub(super) async fn sighup_compact() {
             let _ = writeln!(
                 std::io::stderr(),
                 "Database '{}' compaction requested",
-                db.name
+                db_name
             );
         }
     }
