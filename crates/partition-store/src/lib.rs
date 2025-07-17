@@ -20,6 +20,7 @@ pub mod journal_table_v2;
 pub mod keys;
 pub mod outbox_table;
 mod owned_iter;
+mod partition_db;
 mod partition_store;
 mod partition_store_manager;
 pub mod promise_table;
