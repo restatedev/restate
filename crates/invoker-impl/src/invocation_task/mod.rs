@@ -13,7 +13,7 @@ mod service_protocol_runner_v4;
 
 use super::Notification;
 
-use crate::error::InvokerError;
+use crate::error::{InvokerError, InvokerErrorKind};
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::INVOKER_TASK_DURATION;
 use bytes::Bytes;
@@ -154,19 +154,34 @@ pub(super) struct InvocationTask<IR, EE, DMR> {
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
-enum TerminalLoopState<T> {
+enum TerminalLoopState<T, E = InvokerErrorKind> {
     Continue(T),
     Closed,
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
-    Failed(InvokerError),
+    Failed(E),
 }
 
-impl<T, E: Into<InvokerError>> From<Result<T, E>> for TerminalLoopState<T> {
+impl<T, E> TerminalLoopState<T, E> {
+    pub fn map_err<F>(self, f: impl FnOnce(E) -> F) -> TerminalLoopState<T, F> {
+        match self {
+            TerminalLoopState::Failed(e) => TerminalLoopState::Failed(f(e)),
+            TerminalLoopState::Closed => TerminalLoopState::Closed,
+            TerminalLoopState::Continue(v) => TerminalLoopState::Continue(v),
+            TerminalLoopState::Suspended(v) => TerminalLoopState::Suspended(v),
+            TerminalLoopState::SuspendedV2(v) => TerminalLoopState::SuspendedV2(v),
+        }
+    }
+}
+
+impl<T, E, F> From<Result<T, E>> for TerminalLoopState<T, F>
+where
+    F: From<E>,
+{
     fn from(value: Result<T, E>) -> Self {
         match value {
             Ok(v) => TerminalLoopState::Continue(v),
-            Err(e) => TerminalLoopState::Failed(e.into()),
+            Err(e) => TerminalLoopState::Failed(F::from(e)),
         }
     }
 }
@@ -256,7 +271,7 @@ where
             TerminalLoopState::Closed => InvocationTaskOutputInner::Closed,
             TerminalLoopState::Suspended(v) => InvocationTaskOutputInner::Suspended(v),
             TerminalLoopState::SuspendedV2(v) => InvocationTaskOutputInner::SuspendedV2(v),
-            TerminalLoopState::Failed(e) => InvocationTaskOutputInner::Failed(e),
+            TerminalLoopState::Failed(err) => InvocationTaskOutputInner::Failed(err),
         };
 
         self.send_invoker_tx(inner);
@@ -266,7 +281,7 @@ where
     async fn select_protocol_version_and_run(
         &mut self,
         input_journal: InvokeInputJournal,
-    ) -> TerminalLoopState<()> {
+    ) -> TerminalLoopState<(), InvokerError> {
         let mut txn = self.invocation_reader.transaction();
         // Resolve journal and its metadata
         let (journal_metadata, journal_stream) = match input_journal {
@@ -274,8 +289,8 @@ where
                 let (journal_meta, journal_stream) = shortcircuit!(
                     txn.read_journal(&self.invocation_id)
                         .await
-                        .map_err(|e| InvokerError::JournalReader(e.into()))
-                        .and_then(|opt| opt.ok_or_else(|| InvokerError::NotInvoked))
+                        .map_err(|e| InvokerErrorKind::JournalReader(e.into()))
+                        .and_then(|opt| opt.ok_or_else(|| InvokerErrorKind::NotInvoked))
                 );
                 (journal_meta, future::Either::Left(journal_stream))
             }
@@ -286,7 +301,7 @@ where
         };
 
         if self.invocation_epoch != journal_metadata.invocation_epoch {
-            shortcircuit!(Err(InvokerError::StaleJournalRead {
+            shortcircuit!(Err(InvokerErrorKind::StaleJournalRead {
                 actual: journal_metadata.invocation_epoch,
                 expected: self.invocation_epoch
             }));
@@ -298,20 +313,28 @@ where
             if let Some(pinned_deployment) = &journal_metadata.pinned_deployment {
                 // We have a pinned deployment that we can't change even if newer
                 // deployments have been registered for the same service.
+
+                // TODO(azmy): remove the deployment IDs from the error kind
+                // since now we have some variants in the InvokerErrorKind that already hold the deployment ID
+                // and we don't want to duplicate the deployment ID in the error kind
                 let deployment_metadata = shortcircuit!(
                     schemas
                         .get_deployment(&pinned_deployment.deployment_id)
-                        .ok_or_else(|| InvokerError::UnknownDeployment(
+                        .ok_or_else(|| InvokerErrorKind::UnknownDeployment(
                             pinned_deployment.deployment_id
-                        ))
+                        )
+                        .into_invoker_error(pinned_deployment.deployment_id))
                 );
 
                 // todo: We should support resuming an invocation with a newer protocol version if
                 //  the endpoint supports it
                 if !pinned_deployment.service_protocol_version.is_supported() {
-                    shortcircuit!(Err(InvokerError::ResumeWithWrongServiceProtocolVersion(
-                        pinned_deployment.service_protocol_version
-                    )));
+                    shortcircuit!(Err(
+                        InvokerErrorKind::ResumeWithWrongServiceProtocolVersion(
+                            pinned_deployment.service_protocol_version
+                        )
+                        .into_invoker_error(pinned_deployment.deployment_id)
+                    ));
                 }
 
                 (
@@ -327,7 +350,7 @@ where
                         .resolve_latest_deployment_for_service(
                             self.invocation_target.service_name()
                         )
-                        .ok_or(InvokerError::NoDeploymentForService)
+                        .ok_or(InvokerErrorKind::NoDeploymentForService)
                 );
 
                 let chosen_service_protocol_version = shortcircuit!(
@@ -335,7 +358,7 @@ where
                         &deployment.metadata.supported_protocol_versions,
                     )
                     .ok_or_else(|| {
-                        InvokerError::IncompatibleServiceEndpoint(
+                        InvokerErrorKind::IncompatibleServiceEndpoint(
                             deployment.id,
                             deployment.metadata.supported_protocol_versions.clone(),
                         )
@@ -376,7 +399,7 @@ where
             shortcircuit!(
                 txn.read_state(&keyed_service_id.unwrap())
                     .await
-                    .map_err(|e| InvokerError::StateReader(e.into()))
+                    .map_err(|e| InvokerErrorKind::StateReader(e.into()))
                     .map(|r| r.map(itertools::Either::Left))
             )
         };
@@ -384,8 +407,9 @@ where
         // No need to read from Rocksdb anymore
         drop(txn);
 
+        let deployment_id = deployment.id;
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
-            PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
+            PinnedDeployment::new(deployment_id, chosen_service_protocol_version),
             deployment_changed,
         ));
 
@@ -396,6 +420,7 @@ where
             service_protocol_runner
                 .run(journal_metadata, deployment, journal_stream, state_iter)
                 .await
+                .map_err(|f| f.into_invoker_error(deployment_id))
         } else {
             // Protocol runner for service protocol v4+
             let service_protocol_runner = service_protocol_runner_v4::ServiceProtocolRunner::new(
@@ -405,6 +430,7 @@ where
             service_protocol_runner
                 .run(journal_metadata, deployment, journal_stream, state_iter)
                 .await
+                .map_err(|f| f.into_invoker_error(deployment_id))
         }
     }
 }
@@ -468,16 +494,16 @@ impl ResponseStreamState {
     fn poll_only_headers(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<ResponseParts, InvokerError>> {
+    ) -> Poll<Result<ResponseParts, InvokerErrorKind>> {
         match self {
             ResponseStreamState::WaitingHeaders(join_handle) => {
                 let http_response = match ready!(join_handle.poll_unpin(cx)) {
                     Ok(Ok(res)) => res,
                     Ok(Err(hyper_err)) => {
-                        return Poll::Ready(Err(InvokerError::Client(Box::new(hyper_err))));
+                        return Poll::Ready(Err(InvokerErrorKind::Client(Box::new(hyper_err))));
                     }
                     Err(join_err) => {
-                        return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)));
+                        return Poll::Ready(Err(InvokerErrorKind::UnexpectedJoinError(join_err)));
                     }
                 };
 
@@ -499,7 +525,7 @@ impl ResponseStreamState {
     fn poll_next_chunk(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<ResponseChunk, InvokerError>> {
+    ) -> Poll<Result<ResponseChunk, InvokerErrorKind>> {
         // Could be replaced by a Stream implementation
         loop {
             match self {
@@ -507,10 +533,12 @@ impl ResponseStreamState {
                     let http_response = match ready!(join_handle.poll_unpin(cx)) {
                         Ok(Ok(res)) => res,
                         Ok(Err(hyper_err)) => {
-                            return Poll::Ready(Err(InvokerError::Client(Box::new(hyper_err))));
+                            return Poll::Ready(Err(InvokerErrorKind::Client(Box::new(hyper_err))));
                         }
                         Err(join_err) => {
-                            return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)));
+                            return Poll::Ready(Err(InvokerErrorKind::UnexpectedJoinError(
+                                join_err,
+                            )));
                         }
                     };
 
@@ -533,7 +561,7 @@ impl ResponseStreamState {
                             Ok(ResponseChunk::Data(frame.into_data().unwrap()))
                         }
                         Ok(_) => Ok(ResponseChunk::End),
-                        Err(err) => Err(InvokerError::ClientBody(err)),
+                        Err(err) => Err(InvokerErrorKind::ClientBody(err)),
                     });
                 }
             }
