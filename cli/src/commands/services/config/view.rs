@@ -96,18 +96,16 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     }
 
     if service.ty == ServiceType::Workflow {
-        let mut table = Table::new_styled();
-        table.add_kv_row(
-            "Workflow retention time:",
-            DurationString::display(
-                service
-                    .workflow_completion_retention
-                    .expect("Workflows must have a well defined retention"),
-            ),
-        );
-        c_println!("{table}");
-        c_tip!("{}", WORKFLOW_RETENTION);
-        c_println!();
+        if let Some(workflow_retention) = service.workflow_completion_retention {
+            let mut table = Table::new_styled();
+            table.add_kv_row(
+                "Workflow retention time:",
+                DurationString::display(workflow_retention),
+            );
+            c_println!("{table}");
+            c_tip!("{}", WORKFLOW_RETENTION);
+            c_println!();
+        }
     }
 
     let mut table = Table::new_styled();
