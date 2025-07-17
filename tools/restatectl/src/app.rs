@@ -13,6 +13,7 @@ use cling::prelude::*;
 use restate_cli_util::CliContext;
 use restate_cli_util::CommonOpts;
 
+use crate::commands::completions::Completions;
 use crate::commands::config::ConfigOpts;
 use crate::commands::log::Logs;
 use crate::commands::metadata::Metadata;
@@ -80,6 +81,9 @@ pub enum Command {
     Sql(SqlOpts),
     /// Run a AWS Lambda server
     Lambda(restate_cli_util::lambda::LambdaOpts),
+    /// Generate or install shell completions
+    #[clap(subcommand)]
+    Completions(Completions),
 }
 
 fn init(common_opts: &CommonOpts) {

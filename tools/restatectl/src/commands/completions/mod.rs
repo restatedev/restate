@@ -3,12 +3,7 @@ use restate_cli_util::{completion_commands, completions::CompletionProvider};
 
 // Use the completion_commands macro to generate standard completion structures
 completion_commands!(CliApp);
-impl CompletionProvider for CliApp {
-    // for cases when the package name differs from the binary name
-    fn default_binary_name() -> Option<String> {
-        Some("restate".into())
-    }
-}
+impl CompletionProvider for CliApp {}
 
 #[cfg(test)]
 mod tests {
@@ -18,6 +13,6 @@ mod tests {
     #[test]
     fn test_completion_provider() {
         let binary_name = CliApp::completion_binary_name();
-        assert_eq!(binary_name, "restate");
+        assert_eq!(binary_name, "restatectl");
     }
 }

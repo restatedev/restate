@@ -16,6 +16,7 @@ use tracing::info;
 use restate_cli_util::{CliContext, CommonOpts};
 
 use crate::cli_env::{CliEnv, EnvironmentSource};
+use crate::commands::completions::Completions;
 use crate::commands::*;
 
 /// Restate Command Line Interface
@@ -73,7 +74,7 @@ pub enum Command {
 
     /// Generate shell completions
     #[clap(subcommand)]
-    Completions(completions::Completions),
+    Completions(Completions),
 
     /// Manage CLI config
     #[clap(subcommand, alias = "conf")]

@@ -21,8 +21,10 @@ arc-swap = { workspace = true }
 chrono = { workspace = true }
 chrono-humanize = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color"] }
+clap_complete = { workspace = true }
 clap-verbosity-flag = { workspace = true }
 cling = { workspace = true }
+dirs = { version = "5.0" }
 comfy-table = { workspace = true }
 crossterm = { workspace = true }
 dialoguer = { workspace = true }
@@ -34,3 +36,6 @@ tracing = { workspace = true }
 tracing-log = { version = "0.2.0" }
 tracing-subscriber = { workspace = true }
 unicode-width = { version = "0.1.11" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
