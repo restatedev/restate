@@ -18,6 +18,7 @@ use std::time::Duration;
 use clap::Parser;
 use codederror::CodedError;
 use rustls::crypto::aws_lc_rs;
+use tokio::time::Instant;
 use tracing::error;
 use tracing::{info, trace, warn};
 
@@ -253,6 +254,7 @@ fn main() {
                         shutdown = true;
                         let signal_reason = format!("received signal {signal_name}");
 
+                        let start = Instant::now();
                         let shutdown_with_timeout = tokio::time::timeout(
                             Configuration::pinned().common.shutdown_grace_period(),
                             async {
@@ -265,9 +267,10 @@ fn main() {
                         let shutdown_result = shutdown_with_timeout.await;
 
                         if shutdown_result.is_err() {
-                            warn!("Could not gracefully shut down Restate, terminating now.");
+                            warn!("Could not gracefully shutdown Restate, shutdown took {:?}",
+                                start.elapsed());
                         } else {
-                            info!("Restate has been gracefully shut down.");
+                            info!("Restate has been gracefully shutdown in {:?}", start.elapsed());
                         }
                     },
                     _ = config_update_watcher.changed() => {
