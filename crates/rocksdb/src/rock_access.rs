@@ -9,67 +9,29 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rocksdb::perf::MemoryUsageBuilder;
 use rocksdb::{ColumnFamilyDescriptor, ImportColumnFamilyOptions};
 use rocksdb::{CompactOptions, ExportImportFilesMetaData};
-use tracing::trace;
+use tokio::time::Instant;
+use tracing::{debug, info, trace, warn};
 
-use crate::BoxedCfMatcher;
-use crate::BoxedCfOptionUpdater;
-use crate::CfName;
 use crate::DbSpec;
 use crate::RocksError;
+use crate::{BoxedCfMatcher, RawRocksDb};
+use crate::{BoxedCfOptionUpdater, DbName};
+use crate::{CfName, RocksDbPerfGuard};
 
-/// Operations in this trait can be IO blocking, prefer using `RocksDb` for efficient async access
-/// to the database.
-pub trait RocksAccess {
-    fn open_db(db_spec: &DbSpec, default_cf_options: rocksdb::Options) -> Result<Self, RocksError>
-    where
-        Self: Sized;
-    fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily>>;
-    // todo: remove when we no longer need access to the raw db
-    fn as_raw_db(&self) -> &rocksdb::DB;
-    fn flush_all(&self) -> Result<(), RocksError>;
-    fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError>;
-    fn flush_wal(&self, sync: bool) -> Result<(), RocksError>;
-    fn compact_all(&self);
-    fn cancel_all_background_work(&self, wait: bool);
-    fn set_options_cf(&self, cf: &CfName, opts: &[(&str, &str)]) -> Result<(), RocksError>;
-    fn get_property_int_cf(&self, cf: &CfName, property: &str) -> Result<Option<u64>, RocksError>;
-    fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder);
-    /// This is a blocking operation and it's not meant to be called concurrently on the same
-    /// database, although it's not dangerous to do so. The only impact would be the one of the
-    /// callers will get an error.
-    fn open_cf(
-        &self,
-        name: CfName,
-        default_cf_options: rocksdb::Options,
-        cf_patterns: &[(BoxedCfMatcher, BoxedCfOptionUpdater)],
-    ) -> Result<(), RocksError>;
-    /// Create a column family from a snapshot. The data files referenced by
-    /// `metadata` will be moved into the RocksDB data directory.
-    fn import_cf(
-        &self,
-        name: CfName,
-        default_cf_options: rocksdb::Options,
-        cf_patterns: &[(BoxedCfMatcher, BoxedCfOptionUpdater)],
-        metadata: ExportImportFilesMetaData,
-    ) -> Result<(), RocksError>;
-    fn cfs(&self) -> Vec<CfName>;
-
-    fn write_batch(
-        &self,
-        batch: &rocksdb::WriteBatch,
-        write_options: &rocksdb::WriteOptions,
-    ) -> Result<(), rocksdb::Error>;
-
-    fn write_batch_with_index(
-        &self,
-        batch: &rocksdb::WriteBatchWithIndex,
-        write_options: &rocksdb::WriteOptions,
-    ) -> Result<(), rocksdb::Error>;
+/// Operations in this wrapper can be IO blocking, prefer using [`crate::RocksDb`]
+/// for async access to the database.
+#[derive(derive_more::Display, derive_more::Debug)]
+#[display("{}", db_spec.name)]
+#[debug("RocksDb({} at {}", db_spec.name, db_spec.path.display())]
+pub struct RocksAccess {
+    db_spec: DbSpec,
+    db: RawRocksDb,
 }
 
 fn prepare_cf_options(
@@ -112,8 +74,23 @@ fn prepare_descriptors(
     Ok(descriptors)
 }
 
-impl RocksAccess for rocksdb::DB {
-    fn open_db(db_spec: &DbSpec, default_cf_options: rocksdb::Options) -> Result<Self, RocksError> {
+impl RocksAccess {
+    pub(crate) fn db_options(&self) -> &rocksdb::Options {
+        &self.db_spec.db_options
+    }
+
+    pub fn path(&self) -> &PathBuf {
+        &self.db_spec.path
+    }
+
+    pub fn name(&self) -> &DbName {
+        &self.db_spec.name
+    }
+
+    pub fn open_db(
+        db_spec: DbSpec,
+        default_cf_options: rocksdb::Options,
+    ) -> Result<Self, RocksError> {
         let mut all_cfs: HashSet<CfName> =
             match rocksdb::DB::list_cf(&db_spec.db_options, &db_spec.path) {
                 Ok(existing) => existing.into_iter().map(Into::into).collect(),
@@ -133,44 +110,99 @@ impl RocksAccess for rocksdb::DB {
                 }
             };
 
-        let descriptors = prepare_descriptors(db_spec, default_cf_options, &mut all_cfs)?;
+        let descriptors = prepare_descriptors(&db_spec, default_cf_options, &mut all_cfs)?;
 
         rocksdb::DB::open_cf_descriptors(&db_spec.db_options, &db_spec.path, descriptors)
+            .map(|db| RocksAccess { db, db_spec })
             .map_err(RocksError::from_rocksdb_error)
     }
 
-    fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily>> {
-        self.cf_handle(cf)
+    pub fn spec(&self) -> &DbSpec {
+        &self.db_spec
     }
 
-    fn as_raw_db(&self) -> &rocksdb::DB {
-        self
+    pub fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily>> {
+        self.db.cf_handle(cf)
     }
 
-    fn open_cf(
+    pub fn as_raw_db(&self) -> &RawRocksDb {
+        &self.db
+    }
+
+    pub fn open_cf(
         &self,
         name: CfName,
         default_cf_options: rocksdb::Options,
-        cf_patterns: &[(BoxedCfMatcher, BoxedCfOptionUpdater)],
     ) -> Result<(), RocksError> {
-        let options = prepare_cf_options(cf_patterns, default_cf_options, &name)?;
-        Ok(Self::create_cf(self, name.as_str(), &options)?)
+        let options = prepare_cf_options(&self.db_spec.cf_patterns, default_cf_options, &name)?;
+        Ok(RawRocksDb::create_cf(&self.db, name.as_str(), &options)?)
     }
 
-    fn import_cf(
+    #[tracing::instrument(skip_all, fields(db = %self.name()))]
+    pub(crate) fn shutdown(&self) {
+        let _x = RocksDbPerfGuard::new("shutdown");
+        if let Err(e) = self.db.flush_wal(true) {
+            warn!(
+                db = %self.name(),
+                "Failed to flush rocksdb WAL: {}",
+                e
+            );
+        }
+
+        let cfs_to_flush = self
+            .cfs()
+            .into_iter()
+            .filter(|c| {
+                self.db_spec
+                    .flush_on_shutdown
+                    .iter()
+                    .any(|matcher| matcher.cf_matches(c))
+            })
+            .collect::<Vec<_>>();
+        if cfs_to_flush.is_empty() {
+            debug!(
+                db = %self.name(),
+                "No column families to flush for db on shutdown"
+            );
+            return;
+        } else {
+            let start = Instant::now();
+
+            debug!(
+        db = %self.name(),
+        "Number of column families to flush on shutdown: {}", cfs_to_flush.len());
+            if let Err(e) = self.flush_memtables(cfs_to_flush.as_slice(), true) {
+                warn!(
+                    db = %self.name(),
+                    "Failed to flush memtables: {}",
+                    e
+                );
+            } else {
+                info!(
+                    db = %self.name(),
+                    "{} column families flushed in {:?}",
+                    cfs_to_flush.len(),
+                    start.elapsed(),
+                );
+            }
+        }
+        self.db.cancel_all_background_work(true);
+        info!("Rocksdb '{}' was gracefully closed", self.name());
+    }
+
+    pub(crate) fn import_cf(
         &self,
         name: CfName,
         default_cf_options: rocksdb::Options,
-        cf_patterns: &[(BoxedCfMatcher, BoxedCfOptionUpdater)],
         metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError> {
-        let options = prepare_cf_options(cf_patterns, default_cf_options, &name)?;
+        let options = prepare_cf_options(&self.db_spec.cf_patterns, default_cf_options, &name)?;
 
         let mut import_opts = ImportColumnFamilyOptions::default();
         import_opts.set_move_files(true);
 
-        Ok(Self::create_column_family_with_import(
-            self,
+        Ok(RawRocksDb::create_column_family_with_import(
+            &self.db,
             &options,
             name.as_str(),
             &import_opts,
@@ -178,7 +210,7 @@ impl RocksAccess for rocksdb::DB {
         )?)
     }
 
-    fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
+    pub fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
         let mut flushopts = rocksdb::FlushOptions::default();
         flushopts.set_wait(wait);
         let cfs = cfs
@@ -187,14 +219,14 @@ impl RocksAccess for rocksdb::DB {
             .collect::<Vec<_>>();
         // a side effect of the awkward rust-rocksdb interface!
         let cf_refs = cfs.iter().collect::<Vec<_>>();
-        Ok(self.flush_cfs_opt(&cf_refs, &flushopts)?)
+        Ok(self.db.flush_cfs_opt(&cf_refs, &flushopts)?)
     }
 
-    fn flush_wal(&self, sync: bool) -> Result<(), RocksError> {
-        Ok(self.flush_wal(sync)?)
+    pub fn flush_wal(&self, sync: bool) -> Result<(), RocksError> {
+        Ok(self.db.flush_wal(sync)?)
     }
 
-    fn flush_all(&self) -> Result<(), RocksError> {
+    pub fn flush_all(&self) -> Result<(), RocksError> {
         self.flush_wal(true)?;
 
         let mut flushopts = rocksdb::FlushOptions::default();
@@ -206,56 +238,59 @@ impl RocksAccess for rocksdb::DB {
             .collect::<Vec<_>>();
         // a side effect of the awkward rust-rocksdb interface!
         let cf_refs = cfs.iter().collect::<Vec<_>>();
-        Ok(self.flush_cfs_opt(&cf_refs, &flushopts)?)
+        Ok(self.db.flush_cfs_opt(&cf_refs, &flushopts)?)
     }
 
-    fn compact_all(&self) {
+    pub fn compact_all(&self) {
         let opts = CompactOptions::default();
         self.cfs()
             .iter()
             .filter_map(|name| self.cf_handle(name))
-            .for_each(|cf| self.compact_range_cf_opt::<&str, &str>(&cf, None, None, &opts));
+            .for_each(|cf| {
+                self.db
+                    .compact_range_cf_opt::<&str, &str>(&cf, None, None, &opts)
+            });
     }
 
-    fn cancel_all_background_work(&self, wait: bool) {
-        self.cancel_all_background_work(wait)
-    }
-
-    fn set_options_cf(&self, cf: &CfName, opts: &[(&str, &str)]) -> Result<(), RocksError> {
+    pub fn set_options_cf(&self, cf: &CfName, opts: &[(&str, &str)]) -> Result<(), RocksError> {
         let Some(handle) = self.cf_handle(cf) else {
             return Err(RocksError::UnknownColumnFamily(cf.clone()));
         };
-        Ok(self.set_options_cf(&handle, opts)?)
+        Ok(self.db.set_options_cf(&handle, opts)?)
     }
 
-    fn get_property_int_cf(&self, cf: &CfName, property: &str) -> Result<Option<u64>, RocksError> {
+    pub fn get_property_int_cf(
+        &self,
+        cf: &CfName,
+        property: &str,
+    ) -> Result<Option<u64>, RocksError> {
         let Some(handle) = self.cf_handle(cf) else {
             return Err(RocksError::UnknownColumnFamily(cf.clone()));
         };
-        Ok(self.property_int_value_cf(&handle, property)?)
+        Ok(self.db.property_int_value_cf(&handle, property)?)
     }
 
-    fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder) {
-        builder.add_db(self)
+    pub fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder) {
+        builder.add_db(&self.db)
     }
 
-    fn cfs(&self) -> Vec<CfName> {
-        self.cf_names().into_iter().map(CfName::from).collect()
+    pub fn cfs(&self) -> Vec<CfName> {
+        self.db.cf_names().into_iter().map(CfName::from).collect()
     }
 
-    fn write_batch(
+    pub fn write_batch(
         &self,
         batch: &rocksdb::WriteBatch,
         write_options: &rocksdb::WriteOptions,
     ) -> Result<(), rocksdb::Error> {
-        self.write_opt(batch, write_options)
+        self.db.write_opt(batch, write_options)
     }
 
-    fn write_batch_with_index(
+    pub fn write_batch_with_index(
         &self,
         batch: &rocksdb::WriteBatchWithIndex,
         write_options: &rocksdb::WriteOptions,
     ) -> Result<(), rocksdb::Error> {
-        self.write_wbwi_opt(batch, write_options)
+        self.db.write_wbwi_opt(batch, write_options)
     }
 }

@@ -48,13 +48,9 @@ pub async fn build_rocksdb(
         .build()
         .expect("valid spec");
 
-    let db_name = db_spec.name().clone();
-    let _ = db_manager
+    db_manager
         .open_db(options.map(|options| &options.rocksdb), db_spec)
-        .await?;
-    Ok(db_manager
-        .get_db(db_name)
-        .expect("raft metadata store db is open"))
+        .await
 }
 
 pub fn db_options(_options: &MetadataServerOptions) -> rocksdb::Options {

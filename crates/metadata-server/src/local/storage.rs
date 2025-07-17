@@ -360,10 +360,6 @@ impl RocksDbStorage {
             Ok(())
         }
     }
-
-    pub async fn close(self) {
-        self.rocksdb.close().await
-    }
 }
 
 pub fn db_options(_options: &MetadataServerOptions) -> rocksdb::Options {
