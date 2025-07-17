@@ -60,9 +60,9 @@ use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::{
-    PartitionSnapshotMetadata, SnapshotError, SnapshotErrorKind, SnapshotPartitionTask,
-    SnapshotRepository,
+    PartitionSnapshotMetadata, SnapshotPartitionTask, SnapshotRepository,
 };
+use restate_partition_store::{SnapshotError, SnapshotErrorKind};
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
@@ -88,7 +88,6 @@ use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString};
 
-// ASOLI: move this somewhere else
 #[derive(Debug, Clone, derive_more::Display)]
 #[display("{}", snapshot_id)]
 pub struct SnapshotCreated {

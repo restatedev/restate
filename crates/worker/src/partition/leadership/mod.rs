@@ -629,7 +629,7 @@ mod tests {
     use restate_bifrost::Bifrost;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_invoker_api::test_util::MockInvokerHandle;
-    use restate_partition_store::{OpenMode, PartitionStoreManager};
+    use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::GenerationalNodeId;
     use restate_types::config::{CommonOptions, Configuration};
@@ -692,9 +692,7 @@ mod tests {
             }
         );
 
-        let mut partition_store = partition_store_manager
-            .open_local_partition_store(&PARTITION, OpenMode::CreateIfMissing)
-            .await?;
+        let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
         state
             .on_announce_leader(
                 &announce_leader,

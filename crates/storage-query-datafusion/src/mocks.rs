@@ -26,7 +26,7 @@ use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
 use restate_invoker_api::StatusHandle;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
-use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_types::NodeId;
 use restate_types::config::{CommonOptions, QueryEngineOptions};
@@ -160,9 +160,9 @@ impl MockQueryEngine {
             .await
             .expect("DB creation succeeds");
         let partition_store = manager
-            .open_local_partition_store(
+            .open(
                 &Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX),
-                OpenMode::CreateIfMissing,
+                None,
             )
             .await
             .unwrap();

@@ -7460,6 +7460,7 @@ dependencies = [
  "humantime",
  "num-bigint",
  "object_store",
+ "parking_lot",
  "paste",
  "prost",
  "rand 0.9.1",
