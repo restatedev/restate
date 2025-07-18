@@ -13,7 +13,8 @@ use std::pin;
 use bytestring::ByteString;
 use restate_types::Version;
 use tokio::sync::oneshot::Sender;
-use tracing::warn;
+use tracing;
+use tracing::{debug, warn};
 
 use restate_core::{ShutdownError, cancellation_watcher};
 use restate_metadata_store::{ProvisionedMetadataStore, ReadError, WriteError};
@@ -80,6 +81,8 @@ impl Server {
                             return Ok(());
                 }
                 Some(cmd) = receiver.recv() => {
+                    debug!(?cmd, "received command");
+
                     match cmd {
                         Commands::Get{key,tx  } => {
                                let res = delegate.get(key).await;
@@ -115,6 +118,8 @@ impl Client {
 #[async_trait::async_trait]
 impl ProvisionedMetadataStore for Client {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
+        debug!(?key, "sending Get");
+
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         self.sender
@@ -125,6 +130,8 @@ impl ProvisionedMetadataStore for Client {
     }
 
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
+        debug!(?key, "sending GetVersion");
+
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         self.sender
@@ -140,6 +147,8 @@ impl ProvisionedMetadataStore for Client {
         value: VersionedValue,
         precondition: Precondition,
     ) -> Result<(), WriteError> {
+        debug!(?key, "sending Put");
+
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         self.sender
@@ -155,6 +164,8 @@ impl ProvisionedMetadataStore for Client {
     }
 
     async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
+        debug!(?key, %precondition, "sending Delete");
+
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         self.sender
