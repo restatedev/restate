@@ -84,27 +84,30 @@ impl TrimLogsTask {
         ),
     )]
     async fn trim_logs(&mut self) {
-        let cluster_state = self.cluster_state_watcher.current();
-        if tracing::level_enabled!(tracing::Level::DEBUG) {
-            tracing::Span::current().record(
-                "logs_metadata_version",
-                tracing::field::display(cluster_state.logs_metadata_version),
-            );
-        }
+        // do nothing if features.partition-driven-log-trimming is enabled
+        tracing::info!("Trimming logs from cluster controller is disabled");
 
-        let trim_points = TrimMode::from(self.snapshots_repository_configured, &cluster_state)
-            .calculate_safe_trim_points();
-        trace!(?trim_points, "Calculated safe log trim points");
-
-        for (log_id, (trim_point, partition_id)) in trim_points {
-            let result = self.bifrost.admin().trim(log_id, trim_point).await;
-            if let Err(err) = result {
-                warn!(
-                    %partition_id,
-                    "Failed to trim log {log_id}. This can lead to increased disk usage: {err}"
-                );
-            }
-        }
+        // let cluster_state = self.cluster_state_watcher.current();
+        // if tracing::level_enabled!(tracing::Level::DEBUG) {
+        //     tracing::Span::current().record(
+        //         "logs_metadata_version",
+        //         tracing::field::display(cluster_state.logs_metadata_version),
+        //     );
+        // }
+        //
+        // let trim_points = TrimMode::from(self.snapshots_repository_configured, &cluster_state)
+        //     .calculate_safe_trim_points();
+        // trace!(?trim_points, "Calculated safe log trim points");
+        //
+        // for (log_id, (trim_point, partition_id)) in trim_points {
+        //     let result = self.bifrost.admin().trim(log_id, trim_point).await;
+        //     if let Err(err) = result {
+        //         warn!(
+        //             %partition_id,
+        //             "Failed to trim log {log_id}. This can lead to increased disk usage: {err}"
+        //         );
+        //     }
+        // }
     }
 
     fn create_log_trim_check_interval(options: &AdminOptions) -> Option<Interval> {

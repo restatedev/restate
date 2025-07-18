@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod durability_tracker;
 mod leader_state;
 mod self_proposer;
 pub mod trim_queue;
@@ -16,6 +17,7 @@ use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::mem;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
@@ -30,6 +32,7 @@ use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
+use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::invocation_status_table::{
     InvokedInvocationStatusLite, ScanInvocationStatusTable,
 };
@@ -47,9 +50,11 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
 use restate_types::partitions::Partition;
+use restate_types::partitions::state::PartitionReplicaSetStates;
+use restate_types::retries::with_jitter;
 use restate_types::storage::StorageEncodeError;
 use restate_wal_protocol::Command;
-use restate_wal_protocol::control::AnnounceLeader;
+use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability};
 use restate_wal_protocol::timer::TimerKeyValue;
 
 use crate::partition::cleaner::Cleaner;
@@ -61,6 +66,7 @@ use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
 
+use self::durability_tracker::DurabilityTracker;
 use self::trim_queue::{LogTrimmer, TrimQueue};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
@@ -117,6 +123,7 @@ pub(crate) enum ActionEffect {
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
     ScheduleCleanupTimer(InvocationId, Duration),
+    PartitionMaintenance(PartitionDurability),
     AwaitingRpcSelfProposeDone,
 }
 enum State {
@@ -143,7 +150,7 @@ pub(crate) struct LeadershipState<I> {
     state: State,
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
-    partition: Partition,
+    partition: Arc<Partition>,
     invoker_tx: I,
     bifrost: Bifrost,
     #[allow(unused)]
@@ -156,7 +163,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        partition: Partition,
+        partition: Arc<Partition>,
         invoker_tx: I,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
@@ -277,6 +284,7 @@ where
         &mut self,
         announce_leader: &AnnounceLeader,
         partition_store: &mut PartitionStore,
+        replica_set_states: &PartitionReplicaSetStates,
         config: &Configuration,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
@@ -293,7 +301,8 @@ where
                     }
                     Ordering::Equal => {
                         debug!("Won the leadership campaign. Becoming the strong leader now.");
-                        self.become_leader(partition_store, config).await?
+                        self.become_leader(partition_store, replica_set_states.clone(), config)
+                            .await?
                     }
                     Ordering::Greater => {
                         debug!(
@@ -332,6 +341,7 @@ where
     async fn become_leader(
         &mut self,
         partition_store: &mut PartitionStore,
+        replica_set_states: PartitionReplicaSetStates,
         config: &Configuration,
     ) -> Result<(), Error> {
         if let State::Candidate {
@@ -390,6 +400,19 @@ where
             let mut self_proposer = self_proposer.take().expect("must be present");
             self_proposer.mark_as_leader().await;
 
+            let last_reported_durable_lsn = partition_store
+                .get_partition_durability()
+                .await?
+                .map(|d| d.durable_point);
+
+            let durability_tracker = DurabilityTracker::new(
+                self.partition.partition_id,
+                last_reported_durable_lsn,
+                replica_set_states,
+                partition_store.partition_db().watch_archived_lsn(),
+                with_jitter(Duration::from_secs(5), 0.5),
+            );
+
             self.state = State::Leader(LeaderState::new(
                 self.partition.partition_id,
                 *leader_epoch,
@@ -402,6 +425,7 @@ where
                 self_proposer,
                 invoker_rx,
                 shuffle_rx,
+                durability_tracker,
             ));
 
             Ok(())
@@ -637,9 +661,11 @@ mod tests {
     use restate_types::live::Constant;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_types::partitions::Partition;
+    use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
     use std::ops::RangeInclusive;
+    use std::sync::Arc;
     use test_log::test;
     use tokio_stream::StreamExt;
 
@@ -654,12 +680,13 @@ mod tests {
 
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let replica_set_states = PartitionReplicaSetStates::default();
 
         let partition_store_manager = PartitionStoreManager::create().await?;
 
         let invoker_tx = MockInvokerHandle::default();
         let mut state = LeadershipState::new(
-            PARTITION,
+            Arc::new(PARTITION),
             invoker_tx,
             bifrost.clone(),
             None,
@@ -697,6 +724,7 @@ mod tests {
             .on_announce_leader(
                 &announce_leader,
                 &mut partition_store,
+                &replica_set_states,
                 &Configuration::pinned(),
             )
             .await?;
