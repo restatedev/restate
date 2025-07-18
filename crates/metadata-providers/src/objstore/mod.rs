@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 mod glue;
+#[cfg(test)]
+mod in_memory_version_repository;
 mod object_store_version_repository;
 mod optimistic_store;
 mod version_repository;
