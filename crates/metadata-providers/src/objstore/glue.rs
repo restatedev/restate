@@ -313,7 +313,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             WriteError::FailedPrecondition(_) => {} // Expected
-            other => panic!("Expected FailedPrecondition, got {:?}", other),
+            other => panic!("Expected FailedPrecondition, got {other:?}"),
         }
     }
 }
