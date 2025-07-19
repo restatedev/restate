@@ -16,7 +16,6 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
-use codederror::CodedError;
 use enum_map::Enum;
 use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{
@@ -29,7 +28,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::trace;
 
-use restate_core::{Metadata, ShutdownError};
+use restate_core::ShutdownError;
 use restate_rocksdb::{CfName, IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
@@ -41,10 +40,10 @@ use restate_types::partitions::Partition;
 use restate_types::storage::StorageCodec;
 
 use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
-use crate::durable_lsn_tracking::DurableLsnTracker;
 use crate::fsm_table::get_locally_durable_lsn;
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
+use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::LocalPartitionSnapshot;
@@ -177,43 +176,17 @@ impl TableKind {
     }
 }
 
-#[derive(Debug, thiserror::Error, CodedError)]
-pub enum BuildError {
-    #[error(transparent)]
-    RocksDbManager(
-        #[from]
-        #[code]
-        RocksError,
-    ),
-    #[error("db contains no storage format version")]
-    #[code(restate_errors::RT0009)]
-    MissingStorageFormatVersion,
-    #[error(transparent)]
-    #[code(unknown)]
-    Other(#[from] rocksdb::Error),
-    #[error(transparent)]
-    #[code(unknown)]
-    Shutdown(#[from] ShutdownError),
-}
-
 pub struct PartitionStore {
-    durable_lsn_tracker: DurableLsnTracker,
-    partition_id: PartitionId,
-    data_cf_name: CfName,
-    key_range: RangeInclusive<PartitionKey>,
+    db: PartitionDb,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
-    /// Please keep this at the end to ensure that the Arc is dropped last.
-    /// This is to future-proof against the possiblity of caching references into
-    /// the rocksdb instance.
-    rocksdb: Arc<RocksDb>,
 }
 
 impl std::fmt::Debug for PartitionStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PartitionStore")
-            .field("partition_id", &self.partition_id)
-            .field("cf", &self.data_cf_name)
+            .field("partition_id", &self.db.partition().partition_id)
+            .field("cf", &self.db.partition().cf_name())
             .field("key_buffer", &self.key_buffer.len())
             .field("value_buffer", &self.value_buffer.len())
             .finish()
@@ -223,11 +196,7 @@ impl std::fmt::Debug for PartitionStore {
 impl Clone for PartitionStore {
     fn clone(&self) -> Self {
         PartitionStore {
-            durable_lsn_tracker: self.durable_lsn_tracker.clone(),
-            rocksdb: self.rocksdb.clone(),
-            partition_id: self.partition_id,
-            data_cf_name: self.data_cf_name.clone(),
-            key_range: self.key_range.clone(),
+            db: self.db.clone(),
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
         }
@@ -282,45 +251,49 @@ fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize)
     opts.set_max_bytes_for_level_base(memtables_budget as u64);
 }
 
+impl From<PartitionDb> for PartitionStore {
+    fn from(db: PartitionDb) -> Self {
+        Self::new(db)
+    }
+}
+
 impl PartitionStore {
-    pub(crate) fn new(
-        rocksdb: Arc<RocksDb>,
-        durable_lsn_tracker: DurableLsnTracker,
-        data_cf_name: CfName,
-        partition_id: PartitionId,
-        key_range: RangeInclusive<PartitionKey>,
-    ) -> Self {
+    pub(crate) fn new(db: PartitionDb) -> Self {
         Self {
-            durable_lsn_tracker,
-            rocksdb,
-            partition_id,
-            data_cf_name,
-            key_range,
+            db,
             key_buffer: BytesMut::new(),
             value_buffer: BytesMut::new(),
         }
     }
 
+    pub fn partition_db(&self) -> &PartitionDb {
+        &self.db
+    }
+
+    pub fn into_inner(self) -> PartitionDb {
+        self.db
+    }
+
     #[inline]
     pub fn partition_id(&self) -> PartitionId {
-        self.partition_id
+        self.db.partition().partition_id
     }
 
     pub fn partition_key_range(&self) -> &RangeInclusive<PartitionKey> {
-        &self.key_range
+        &self.db.partition().key_range
     }
 
     #[inline]
     pub fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
-        assert_partition_key_or_err(&self.key_range, partition_key)
+        assert_partition_key_or_err(&self.db.partition().key_range, partition_key)
     }
 
     pub fn contains_partition_key(&self, key: PartitionKey) -> bool {
-        self.key_range.contains(&key)
+        self.db.partition().key_range.contains(&key)
     }
 
-    fn table_handle(&self, table_kind: TableKind) -> Result<Arc<BoundColumnFamily>> {
-        find_cf_handle(&self.rocksdb, &self.data_cf_name, table_kind)
+    fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily> {
+        self.db.cf_handle()
     }
 
     fn new_prefix_iterator_opts(&self, _key_kind: KeyKind, prefix: Bytes) -> ReadOptions {
@@ -353,12 +326,13 @@ impl PartitionStore {
                 assert!(table.has_key_kind(&prefix));
                 let prefix = prefix.freeze();
                 let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
-                let table = self.table_handle(table)?;
+                let table = self.table_handle(table);
                 let mut it = self
-                    .rocksdb
+                    .db
+                    .rocksdb()
                     .inner()
                     .as_raw_db()
-                    .raw_iterator_cf_opt(&table, opts);
+                    .raw_iterator_cf_opt(table, opts);
                 it.seek(prefix);
                 Ok(it)
             }
@@ -367,12 +341,13 @@ impl PartitionStore {
                 let start = start.freeze();
                 let end = end.freeze();
                 let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
-                let table = self.table_handle(table)?;
+                let table = self.table_handle(table);
                 let mut it = self
-                    .rocksdb
+                    .db
+                    .rocksdb()
                     .inner()
                     .as_raw_db()
-                    .raw_iterator_cf_opt(&table, opts);
+                    .raw_iterator_cf_opt(table, opts);
                 it.seek(start);
                 Ok(it)
             }
@@ -393,12 +368,13 @@ impl PartitionStore {
                 let start = start.freeze();
                 let end = end.freeze();
                 let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
-                let table = self.table_handle(table)?;
+                let table = self.table_handle(table);
                 let mut it = self
-                    .rocksdb
+                    .db
+                    .rocksdb()
                     .inner()
                     .as_raw_db()
-                    .raw_iterator_cf_opt(&table, opts);
+                    .raw_iterator_cf_opt(table, opts);
                 it.seek(start);
                 Ok(it)
             }
@@ -440,8 +416,9 @@ impl PartitionStore {
                 assert!(table.has_key_kind(&prefix));
                 let prefix = prefix.freeze();
                 let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
-                self.rocksdb.clone().run_background_iterator(
-                    self.data_cf_name.clone(),
+                self.db.rocksdb().clone().run_background_iterator(
+                    // todo(asoli): Pass an owned cf handle instead of name
+                    self.db.partition().cf_name().into(),
                     name,
                     priority,
                     IterAction::Seek(prefix),
@@ -454,8 +431,8 @@ impl PartitionStore {
                 let start = start.freeze();
                 let end = end.freeze();
                 let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
-                self.rocksdb.clone().run_background_iterator(
-                    self.data_cf_name.clone(),
+                self.db.rocksdb().clone().run_background_iterator(
+                    self.db.partition().cf_name().as_ref().into(),
                     name,
                     priority,
                     IterAction::Seek(start),
@@ -480,8 +457,8 @@ impl PartitionStore {
                 let start = start.freeze();
                 let end = end.freeze();
                 let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
-                self.rocksdb.clone().run_background_iterator(
-                    self.data_cf_name.clone(),
+                self.db.rocksdb().clone().run_background_iterator(
+                    self.db.partition().cf_name().into(),
                     name,
                     priority,
                     IterAction::Seek(start),
@@ -499,15 +476,17 @@ impl PartitionStore {
 
     /// Returns the durably persisted applied LSN, if any.
     pub async fn get_durable_lsn(&mut self) -> Result<watch::Receiver<Option<Lsn>>> {
-        let sender = self.durable_lsn_tracker.get_sender(self.partition_id);
-
-        if sender.borrow().is_some() {
-            let mut rx = sender.subscribe();
-            rx.mark_changed();
-            return Ok(rx);
+        {
+            let sender = self.db.durable_lsn_sender();
+            if sender.borrow().is_some() {
+                let mut rx = self.db.durable_lsn_sender().subscribe();
+                rx.mark_changed();
+                return Ok(rx);
+            }
         }
 
         let local = get_locally_durable_lsn(self).await?;
+        let sender = self.db.durable_lsn_sender();
         if let Some(lsn) = local {
             sender.send_if_modified(|current_mut| {
                 if current_mut.is_none_or(|c| c < lsn) {
@@ -528,41 +507,35 @@ impl PartitionStore {
         &mut self,
         isolation_level: IsolationLevel,
     ) -> PartitionStoreTransaction {
-        let rocksdb = self.rocksdb.clone();
         // An optimization to avoid looking up the cf handle everytime, if we split into more
         // column families, we will need to cache those cfs here as well.
-        let data_cf_handle = self
-            .rocksdb
-            .inner()
-            .cf_handle(&self.data_cf_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "Access a column family that must exist: {}",
-                    &self.data_cf_name
-                )
-            });
-
+        let data_cf_handle = self.db.cf_handle();
         let snapshot = match isolation_level {
             IsolationLevel::Committed => None,
-            IsolationLevel::RepeatableReads => Some(self.rocksdb.inner().as_raw_db().snapshot()),
+            IsolationLevel::RepeatableReads => {
+                Some(self.db.rocksdb().inner().as_raw_db().snapshot())
+            }
         };
 
         PartitionStoreTransaction {
             write_batch_with_index: rocksdb::WriteBatchWithIndex::new(0, true),
             data_cf_handle,
-            rocksdb,
+            rocksdb: self.db.rocksdb(),
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
-            partition_id: self.partition_id,
-            partition_key_range: &self.key_range,
+            meta: self.db.partition(),
             snapshot,
         }
     }
 
     pub async fn flush_memtables(&self, wait: bool) -> Result<()> {
-        self.rocksdb
+        self.db
+            .rocksdb()
             .clone()
-            .flush_memtables(slice::from_ref(&self.data_cf_name), wait)
+            .flush_memtables(
+                slice::from_ref(&CfName::from(self.db.partition().cf_name())),
+                wait,
+            )
             .await
             .map_err(|err| StorageError::Generic(err.into()))?;
         Ok(())
@@ -577,19 +550,12 @@ impl PartitionStore {
     /// *NB:* Creating a snapshot causes an implicit flush of the column family!
     ///
     /// See [rocksdb::checkpoint::Checkpoint::export_column_family] for additional implementation details.
-    pub async fn create_snapshot(
+    pub(crate) async fn create_local_snapshot(
         &mut self,
         snapshot_base_path: &Path,
         min_target_lsn: Option<Lsn>,
         snapshot_id: SnapshotId,
     ) -> Result<LocalPartitionSnapshot> {
-        let log_id = Metadata::with_current(|m| {
-            m.partition_table_ref()
-                .get(&self.partition_id)
-                .map(Partition::log_id)
-        })
-        .expect("partition is in partition table");
-
         let applied_lsn = self
             .get_applied_lsn()
             .await
@@ -613,14 +579,15 @@ impl PartitionStore {
         let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
 
         let export_files = self
-            .rocksdb
+            .db
+            .rocksdb()
             .clone()
-            .export_cf(self.data_cf_name.clone(), snapshot_dir.clone())
+            .export_cf(self.db.partition().cf_name().into(), snapshot_dir.clone())
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
         trace!(
-            cf_name = ?self.data_cf_name,
+            cf_name = %self.db.partition().cf_name(),
             %applied_lsn,
             "Exported column family snapshot to {:?}",
             snapshot_dir
@@ -630,24 +597,15 @@ impl PartitionStore {
             base_dir: snapshot_dir,
             files: export_files.get_files(),
             db_comparator_name: export_files.get_db_comparator_name(),
-            log_id,
+            log_id: self.db.partition().log_id(),
             min_applied_lsn: applied_lsn,
-            key_range: self.key_range.clone(),
+            key_range: self.db.partition().key_range.clone(),
         })
     }
-}
 
-fn find_cf_handle<'a>(
-    db: &'a Arc<RocksDb>,
-    data_cf_name: &CfName,
-    _table_kind: TableKind,
-) -> Result<Arc<BoundColumnFamily<'a>>> {
-    // At the moment, everything is in one cf
-    db.inner().cf_handle(data_cf_name).ok_or_else(|| {
-        StorageError::Generic(anyhow!(
-            "Access a column family that must exist: {data_cf_name}"
-        ))
-    })
+    pub fn partition(&self) -> &Arc<Partition> {
+        self.db.partition()
+    }
 }
 
 impl Storage for PartitionStore {
@@ -690,11 +648,12 @@ impl StorageAccess for PartitionStore {
 
     #[inline]
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
-        let table = self.table_handle(table)?;
-        self.rocksdb
+        let table = self.table_handle(table);
+        self.db
+            .rocksdb()
             .inner()
             .as_raw_db()
-            .get_pinned_cf(&table, key)
+            .get_pinned_cf(table, key)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
@@ -703,14 +662,15 @@ impl StorageAccess for PartitionStore {
         table: TableKind,
         key: K,
     ) -> Result<Option<DBPinnableSlice>> {
-        let table = self.table_handle(table)?;
+        let table = self.table_handle(table);
         let mut read_opts = ReadOptions::default();
         read_opts.set_read_tier(rocksdb::ReadTier::Persisted);
 
-        self.rocksdb
+        self.db
+            .rocksdb()
             .inner()
             .as_raw_db()
-            .get_pinned_cf_opt(&table, key, &read_opts)
+            .get_pinned_cf_opt(table, key, &read_opts)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
@@ -721,21 +681,23 @@ impl StorageAccess for PartitionStore {
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> Result<()> {
-        let table = self.table_handle(table)?;
-        self.rocksdb
+        let table = self.table_handle(table);
+        self.db
+            .rocksdb()
             .inner()
             .as_raw_db()
-            .put_cf(&table, key, value)
+            .put_cf(table, key, value)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
     #[inline]
     fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) -> Result<()> {
-        let table = self.table_handle(table)?;
-        self.rocksdb
+        let table = self.table_handle(table);
+        self.db
+            .rocksdb()
             .inner()
             .as_raw_db()
-            .delete_cf(&table, key)
+            .delete_cf(table, key)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 }
@@ -751,11 +713,10 @@ pub enum ScanMode {
 }
 
 pub struct PartitionStoreTransaction<'a> {
-    partition_id: PartitionId,
-    partition_key_range: &'a RangeInclusive<PartitionKey>,
+    meta: &'a Arc<Partition>,
     write_batch_with_index: rocksdb::WriteBatchWithIndex,
-    rocksdb: Arc<RocksDb>,
-    data_cf_handle: Arc<BoundColumnFamily<'a>>,
+    rocksdb: &'a Arc<RocksDb>,
+    data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
     snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
@@ -821,17 +782,17 @@ impl PartitionStoreTransaction<'_> {
 
     pub(crate) fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily> {
         // Right now, everything is in one cf, return a reference and save CPU.
-        &self.data_cf_handle
+        self.data_cf_handle
     }
 
     #[inline]
     pub(crate) fn partition_id(&self) -> PartitionId {
-        self.partition_id
+        self.meta.partition_id
     }
 
     #[inline]
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
-        assert_partition_key_or_err(self.partition_key_range, partition_key)
+        assert_partition_key_or_err(&self.meta.key_range, partition_key)
     }
 }
 
@@ -967,14 +928,14 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
         value: impl AsRef<[u8]>,
     ) -> Result<()> {
         self.write_batch_with_index
-            .put_cf(&self.data_cf_handle, key, value);
+            .put_cf(self.data_cf_handle, key, value);
         Ok(())
     }
 
     #[inline]
     fn delete_cf(&mut self, _table: TableKind, key: impl AsRef<[u8]>) -> Result<()> {
         self.write_batch_with_index
-            .delete_cf(&self.data_cf_handle, key);
+            .delete_cf(self.data_cf_handle, key);
         Ok(())
     }
 }
@@ -1179,13 +1140,14 @@ pub(crate) trait StorageAccess {
 mod tests {
     use crate::keys::{KeyKind, TableKey};
     use crate::partition_store::StorageAccess;
-    use crate::{OpenMode, PartitionStoreManager, TableKind};
+    use crate::{PartitionStoreManager, TableKind};
     use bytes::{Buf, BufMut};
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::{IsolationLevel, StorageError, Transaction};
-    use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
+    use restate_types::config::CommonOptions;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::Constant;
+    use restate_types::partitions::Partition;
 
     impl TableKey for String {
         const TABLE: TableKind = TableKind::State;
@@ -1223,14 +1185,11 @@ mod tests {
     #[restate_core::test]
     async fn concurrent_writes_and_reads() -> googletest::Result<()> {
         let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let partition_store_manager =
-            PartitionStoreManager::create(Constant::new(StorageOptions::default())).await?;
+        let partition_store_manager = PartitionStoreManager::create().await?;
         let mut partition_store = partition_store_manager
-            .open_partition_store(
-                PartitionId::MIN,
-                PartitionKey::MIN..=PartitionKey::MAX,
-                OpenMode::CreateIfMissing,
-                &RocksDbOptions::default(),
+            .open(
+                &Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX),
+                None,
             )
             .await?;
         let key_a = "a".to_owned();

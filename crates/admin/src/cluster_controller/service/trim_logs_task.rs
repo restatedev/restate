@@ -84,6 +84,20 @@ impl TrimLogsTask {
         ),
     )]
     async fn trim_logs(&mut self) {
+        // do nothing if worker.partition-driven-log-trimming is enabled
+        // remove the entire block in v1.5 or v1.6 when the experimental feature is
+        // stabilized.
+        if Configuration::pinned()
+            .worker
+            .experimental_partition_driven_log_trimming
+        {
+            tracing::debug!(
+                "Trimming logs from cluster controller is disabled, \
+                'worker.experimental-partition-driven-log-trimming' is set to 'true'"
+            );
+            return;
+        }
+
         let cluster_state = self.cluster_state_watcher.current();
         if tracing::level_enabled!(tracing::Level::DEBUG) {
             tracing::Span::current().record(

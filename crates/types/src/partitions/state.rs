@@ -138,6 +138,66 @@ impl PartitionReplicaSetStates {
         }
     }
 
+    /// Returns the minimum durable lsn of the given partition by looking at
+    /// the union of the current and next membership configuration.
+    ///
+    /// This returns `Lsn::INVALID` if we can't establish a reasonable view of the
+    /// durable lsns from replica-set members.
+    pub fn get_min_durable_lsn(&self, partition_id: PartitionId) -> Lsn {
+        let Some(state) = self.inner.partitions.get(&partition_id) else {
+            return Lsn::INVALID;
+        };
+        let min_durable_in_current = state
+            .observed_current_membership
+            .members
+            .iter()
+            .map(|m| m.durable_lsn)
+            .min()
+            .unwrap_or(Lsn::INVALID);
+
+        if let Some(next) = &state.observed_next_membership {
+            let next_min_durable = next
+                .members
+                .iter()
+                .map(|m| m.durable_lsn)
+                .min()
+                .unwrap_or(Lsn::INVALID);
+            min_durable_in_current.min(next_min_durable)
+        } else {
+            min_durable_in_current
+        }
+    }
+
+    /// Returns the maximum durable lsn of the given partition by looking at
+    /// the union of the current and next membership configuration.
+    ///
+    /// This returns `Lsn::INVALID` if we can't establish a reasonable view of the
+    /// durable lsns from replica-set members.
+    pub fn get_max_durable_lsn(&self, partition_id: PartitionId) -> Lsn {
+        let Some(state) = self.inner.partitions.get(&partition_id) else {
+            return Lsn::INVALID;
+        };
+        let max_durable_in_current = state
+            .observed_current_membership
+            .members
+            .iter()
+            .map(|m| m.durable_lsn)
+            .max()
+            .unwrap_or(Lsn::INVALID);
+
+        if let Some(next) = &state.observed_next_membership {
+            let next_max_durable = next
+                .members
+                .iter()
+                .map(|m| m.durable_lsn)
+                .max()
+                .unwrap_or(Lsn::INVALID);
+            max_durable_in_current.max(next_max_durable)
+        } else {
+            max_durable_in_current
+        }
+    }
+
     pub fn watch_leadership_state(
         &self,
         partition_id: PartitionId,
