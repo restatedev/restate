@@ -156,7 +156,7 @@ mod compatibility {
         leader_metadata: Option<LeaderMetadata>,
 
         // those fields were added in version 1.3.3
-        next_epoch: Option<LeaderEpoch>,
+        epoch: Option<LeaderEpoch>,
         current: Option<PartitionConfiguration>,
         next: Option<PartitionConfiguration>,
     }
@@ -167,7 +167,7 @@ mod compatibility {
                 version: value.version,
                 leader_metadata: value.leader_metadata,
 
-                epoch: value.next_epoch.unwrap_or_else(|| {
+                epoch: value.epoch.unwrap_or_else(|| {
                     // in Restate <= 1.3.2 we used the version as the epoch
                     let version: u32 = value.version.into();
                     LeaderEpoch::from(u64::from(version))
@@ -185,6 +185,9 @@ mod tests {
     use crate::epoch::{EpochMetadata, PartitionConfiguration};
     use crate::identifiers::{LeaderEpoch, PartitionId};
     use crate::replication::ReplicationProperty;
+    use crate::storage::StorageCodec;
+    use crate::version::Versioned;
+    use bytes::BytesMut;
     use std::collections::HashMap;
 
     #[test]
@@ -208,5 +211,34 @@ mod tests {
         let next_epoch = epoch.claim_leadership(other_node_id, PartitionId::from(1));
 
         assert_eq!(next_epoch.epoch(), LeaderEpoch::from(2));
+    }
+
+    #[test]
+    fn epoch_field_is_maintained() {
+        let epoch_metadata = EpochMetadata::new(PartitionConfiguration::default(), None);
+        // bump the version field (version == MIN + 1)
+        let epoch_metadata =
+            epoch_metadata.set_initial_current_configuration(PartitionConfiguration::default());
+        // bump the epoch field which also bumps the version field
+        let epoch_metadata =
+            epoch_metadata.claim_leadership(GenerationalNodeId::INITIAL_NODE_ID, PartitionId::MIN);
+
+        let version = epoch_metadata.version();
+        let epoch = epoch_metadata.epoch();
+
+        // check that epoch and version are different
+        assert_ne!(u64::from(u32::from(version)), u64::from(epoch));
+
+        let mut buffer = BytesMut::default();
+        StorageCodec::encode(&epoch_metadata, &mut buffer).unwrap();
+
+        let deserialized_epoch_metadata =
+            StorageCodec::decode::<EpochMetadata, _>(&mut buffer).unwrap();
+
+        assert_eq!(
+            epoch_metadata.version(),
+            deserialized_epoch_metadata.version()
+        );
+        assert_eq!(epoch_metadata.epoch(), deserialized_epoch_metadata.epoch());
     }
 }
