@@ -33,7 +33,7 @@ strum = { workspace = true }
 thiserror = { workspace = true }
 threadpool = { version = "1.8" }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
