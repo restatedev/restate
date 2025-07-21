@@ -522,7 +522,7 @@ impl PartitionProcessorManager {
                                     trim_gap_end: to_lsn,
                                     read_pointer: sequence_number,
                                 }) => {
-                                    if self.snapshot_repository.is_some() {
+                                    if self.partition_store_manager.is_repository_configured() {
                                         info!(
                                             %partition_id,
                                             trim_gap_to_lsn = ?to_lsn,
@@ -937,7 +937,7 @@ impl PartitionProcessorManager {
             });
 
         for partition_id in unknown_archived_lsn {
-            self.spawn_update_archived_lsn_task(partition_id, snapshot_repository.clone());
+            self.spawn_update_archived_lsn_task(partition_id);
         }
 
         // Limit the number of snapshots we schedule automatically
@@ -1073,25 +1073,17 @@ impl PartitionProcessorManager {
         }
     }
 
-    fn spawn_update_archived_lsn_task(
-        &mut self,
-        partition_id: PartitionId,
-        snapshot_repository: SnapshotRepository,
-    ) {
+    fn spawn_update_archived_lsn_task(&mut self, partition_id: PartitionId) {
+        let psm = self.partition_store_manager.clone();
         self.asynchronous_operations
             .build_task()
             .name(&format!("update-archived-lsn-{partition_id}"))
             .spawn(
                 async move {
-                    let archived_lsn = snapshot_repository
-                        .get_latest_archived_lsn(partition_id)
+                    let archived_lsn = psm
+                        .refresh_latest_archived_lsn(partition_id)
                         .await
-                        .inspect(|lsn| debug!(?partition_id, "Latest archived LSN: {}", lsn))
-                        .inspect_err(|err| {
-                            warn!(?partition_id, "Unable to get latest archived LSN: {}", err)
-                        })
-                        .ok()
-                        .unwrap_or(Lsn::INVALID);
+                        .expect("repository must be configured here");
 
                     AsynchronousEvent {
                         partition_id,
@@ -1249,7 +1241,6 @@ impl PartitionProcessorManager {
             self.bifrost.clone(),
             self.replica_set_states.clone(),
             self.partition_store_manager.clone(),
-            self.snapshot_repository.clone(),
             self.fast_forward_on_startup.remove(&partition_id),
         );
 
@@ -1409,7 +1400,7 @@ mod tests {
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{CommonOptions, Configuration, StorageOptions};
+    use restate_types::config::{CommonOptions, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::{Constant, Live};
@@ -1452,8 +1443,7 @@ mod tests {
 
         let replica_set_states = PartitionReplicaSetStates::default();
 
-        let partition_store_manager =
-            PartitionStoreManager::create(Constant::new(StorageOptions::default())).await?;
+        let partition_store_manager = PartitionStoreManager::create().await?;
 
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,

@@ -7,9 +7,10 @@ use restate_storage_api::{
 };
 use restate_types::{
     SemanticRestateVersion,
-    config::{CommonOptions, RocksDbOptions, StorageOptions},
+    config::CommonOptions,
     identifiers::{PartitionId, PartitionKey},
     live::Constant,
+    partitions::Partition,
 };
 
 use crate::{OpenMode, PartitionStoreManager};
@@ -24,17 +25,11 @@ async fn barrier_fsm() -> googletest::Result<()> {
 
     let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-    let partition_store_manager =
-        PartitionStoreManager::create(Constant::new(StorageOptions::default())).await?;
+    let partition_store_manager = PartitionStoreManager::create().await?;
 
-    let partition_id = PartitionId::MIN;
+    let partition = Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX);
     let mut partition_store = partition_store_manager
-        .open_partition_store(
-            partition_id,
-            PartitionKey::MIN..=PartitionKey::MAX,
-            OpenMode::CreateIfMissing,
-            &RocksDbOptions::default(),
-        )
+        .open_local_partition_store(&partition, OpenMode::CreateIfMissing)
         .await?;
 
     // we default to unknown if FSM doesn't have a min version, in that case, any "real" version
