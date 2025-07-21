@@ -18,7 +18,7 @@ use restate_core::TestCoreEnv;
 use restate_types::partitions::Partition;
 use tokio_stream::StreamExt;
 
-use crate::{OpenMode, PartitionStore, PartitionStoreManager};
+use crate::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
 use restate_types::config::CommonOptions;
@@ -57,12 +57,12 @@ async fn storage_test_environment_with_manager() -> (PartitionStoreManager, Part
         .expect("DB storage creation succeeds");
     // A single partition store that spans all keys.
     let store = manager
-        .open_local_partition_store(
+        .open(
             &Partition::new(
                 PartitionId::MIN,
                 RangeInclusive::new(0, PartitionKey::MAX - 1),
             ),
-            OpenMode::CreateIfMissing,
+            None,
         )
         .await
         .expect("DB storage creation succeeds");

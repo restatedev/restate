@@ -64,6 +64,13 @@ impl From<&str> for CfName {
     }
 }
 
+impl From<restate_types::partitions::CfName> for CfName {
+    fn from(name: restate_types::partitions::CfName) -> Self {
+        let inner: SmartString = name.into();
+        Self(inner)
+    }
+}
+
 impl From<String> for CfName {
     fn from(name: String) -> Self {
         Self(name.into())
