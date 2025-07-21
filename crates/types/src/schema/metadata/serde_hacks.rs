@@ -116,19 +116,10 @@ impl From<super::Schema> for Schema {
             ..
         }: super::Schema,
     ) -> Self {
-        let conversions::V1Schemas {
-            services,
-            deployments,
-        } = conversions::V2Schemas {
-            deployments: deployments.into_values().collect(),
-        }
-        .into_v1();
-
-        // TODO(slinkydeveloper) Switch the default to write the new data structure in 1.5
         Self {
-            services: Some(services),
-            deployments: Some(deployments),
-            deployments_v2: None,
+            services: None,
+            deployments: None,
+            deployments_v2: Some(deployments.into_values().collect()),
             version,
             subscriptions,
         }
@@ -228,7 +219,6 @@ mod conversions {
     }
 
     impl V1Schemas {
-        #[allow(dead_code)]
         pub fn into_v2(self) -> V2Schemas {
             let V1Schemas {
                 services,
@@ -337,6 +327,7 @@ mod conversions {
     }
 
     impl V2Schemas {
+        #[allow(dead_code)]
         pub fn into_v1(self) -> V1Schemas {
             let V2Schemas { deployments } = self;
 
