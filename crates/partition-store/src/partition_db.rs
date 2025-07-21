@@ -74,6 +74,15 @@ impl PartitionDb {
         })
     }
 
+    /// The last (locally) known archived LSN for this partition
+    pub fn get_archived_lsn(&self) -> Option<Lsn> {
+        *self.archived_lsn.borrow()
+    }
+
+    pub fn watch_archived_lsn(&self) -> watch::Receiver<Option<Lsn>> {
+        self.archived_lsn.subscribe()
+    }
+
     pub(crate) fn durable_lsn_sender(&self) -> &watch::Sender<Option<Lsn>> {
         &self.durable_lsn
     }
