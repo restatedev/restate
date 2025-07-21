@@ -7459,11 +7459,13 @@ dependencies = [
  "googletest",
  "humantime",
  "num-bigint",
+ "object_store",
  "paste",
  "prost",
  "rand 0.9.1",
  "restate-core",
  "restate-errors",
+ "restate-object-store-util",
  "restate-rocksdb",
  "restate-service-protocol-v4",
  "restate-storage-api",
@@ -7480,7 +7482,10 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -7993,7 +7998,6 @@ dependencies = [
  "itertools 0.14.0",
  "jiff",
  "metrics",
- "object_store",
  "opentelemetry",
  "parking_lot",
  "pin-project",
@@ -8008,7 +8012,6 @@ dependencies = [
  "restate-invoker-impl",
  "restate-metadata-server",
  "restate-metadata-store",
- "restate-object-store-util",
  "restate-partition-store",
  "restate-rocksdb",
  "restate-service-protocol",
@@ -8039,7 +8042,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "ulid",
- "url",
 ]
 
 [[package]]
