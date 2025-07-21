@@ -590,7 +590,10 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         cluster_state: &ClusterState,
     ) -> bool {
-        let next_requires_reconfiguration = partition_state.next.as_ref().map(|next| {
+        // We only need to check current if next == None. If next != None, then there is a
+        // reconfiguration ongoing, and we need to check whether this target configuration requires
+        // reconfiguration.
+        if let Some(next) = partition_state.next.as_ref() {
             next.replication() != default_replication ||
                 // check if a different replica-set is eminent
                 Self::choose_partition_configuration(
@@ -600,29 +603,26 @@ impl<T: TransportConnect> Scheduler<T> {
                     NodeSet::default(),
                     cluster_state,
                 )
-                .map(|new_config|
-                    !new_config.replica_set().is_equivalent(next.replica_set()))
+                    .map(|new_config|
+                        !new_config.replica_set().is_equivalent(next.replica_set()))
+                    .unwrap_or(false)
+        } else {
+            // if we are here then there is no reconfiguration ongoing
+            partition_state.current.replication() != default_replication
+                || Self::choose_partition_configuration(
+                    partition_id,
+                    nodes_config,
+                    default_replication.clone(),
+                    NodeSet::default(),
+                    cluster_state,
+                )
+                .map(|new_config| {
+                    !new_config
+                        .replica_set()
+                        .is_equivalent(partition_state.current.replica_set())
+                })
                 .unwrap_or(false)
-        });
-
-        if next_requires_reconfiguration.is_some_and(|c| c) {
-            return true;
         }
-
-        partition_state.current.replication() != default_replication
-            || Self::choose_partition_configuration(
-                partition_id,
-                nodes_config,
-                default_replication.clone(),
-                NodeSet::default(),
-                cluster_state,
-            )
-            .map(|new_config| {
-                !new_config
-                    .replica_set()
-                    .is_equivalent(partition_state.current.replica_set())
-            })
-            .unwrap_or(false)
     }
 
     fn choose_partition_configuration(
