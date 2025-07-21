@@ -173,6 +173,11 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     if self.current_wave >= TONE_ESCALATION_THRESHOLD {
                         warn!(
                             wave = %self.current_wave,
+                            loglet_id=%self.sequencer_shared_state.loglet_id(),
+                            first_offset=%self.first_offset,
+                            to_offset=%self.records.last_offset(self.first_offset).unwrap(),
+                            length=%self.records.len(),
+                            otel.name="replicated_loglet::sequencer::appender: run",
                             "Append wave failed, retrying with a new wave after {:?}. Status is {}", delay, self.nodeset_status
                         );
                     } else {
