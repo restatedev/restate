@@ -273,6 +273,11 @@ fn get_command_by_completion_id<S: StorageAccess>(
 }
 
 impl ReadOnlyJournalTable for PartitionStore {
+    async fn has_journal(&mut self, invocation_id: InvocationId) -> Result<bool> {
+        self.assert_partition_key(&invocation_id)?;
+        Ok(self.get_journal_entry(invocation_id, 0).await?.is_some())
+    }
+
     async fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
@@ -345,6 +350,11 @@ impl ScanJournalTable for PartitionStore {
 }
 
 impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
+    async fn has_journal(&mut self, invocation_id: InvocationId) -> Result<bool> {
+        self.assert_partition_key(&invocation_id)?;
+        Ok(self.get_journal_entry(invocation_id, 0).await?.is_some())
+    }
+
     async fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
