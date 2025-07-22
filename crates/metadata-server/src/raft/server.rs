@@ -1034,6 +1034,14 @@ impl Member {
 
         trace!("Handle join request from node '{}'", joining_member_id);
 
+        if self.is_member(joining_member_id) {
+            let _ = response_tx.send(Ok(self
+                .kv_storage
+                .last_seen_nodes_configuration()
+                .version()));
+            return;
+        }
+
         // sanity checks
 
         if !self.is_leader {
@@ -1045,14 +1053,6 @@ impl Member {
 
         if self.raw_node.raft.has_pending_conf() {
             let _ = response_tx.send(Err(JoinClusterError::PendingReconfiguration));
-            return;
-        }
-
-        if self.is_member(joining_member_id) {
-            let _ = response_tx.send(Ok(self
-                .kv_storage
-                .last_seen_nodes_configuration()
-                .version()));
             return;
         }
 
