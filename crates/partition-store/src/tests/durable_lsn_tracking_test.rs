@@ -7,30 +7,27 @@ use restate_storage_api::{
     fsm_table::{FsmTable, PartitionDurability, ReadOnlyFsmTable},
 };
 use restate_types::{
-    config::{CommonOptions, RocksDbOptions, StorageOptions},
+    config::CommonOptions,
     identifiers::{PartitionId, PartitionKey},
     live::Constant,
     logs::Lsn,
+    partitions::Partition,
     time::MillisSinceEpoch,
 };
 
 use crate::{OpenMode, PartitionStoreManager};
 
+const PARTITION: Partition =
+    Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX);
+
 #[restate_core::test]
 async fn track_latest_applied_lsn() -> googletest::Result<()> {
     let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-    let partition_store_manager =
-        PartitionStoreManager::create(Constant::new(StorageOptions::default())).await?;
+    let partition_store_manager = PartitionStoreManager::create().await?;
 
-    let partition_id = PartitionId::MIN;
     let mut partition_store = partition_store_manager
-        .open_partition_store(
-            partition_id,
-            PartitionKey::MIN..=PartitionKey::MAX,
-            OpenMode::CreateIfMissing,
-            &RocksDbOptions::default(),
-        )
+        .open_local_partition_store(&PARTITION, OpenMode::CreateIfMissing)
         .await?;
 
     let watch_durable_lsn = partition_store.get_durable_lsn().await?;
@@ -52,17 +49,12 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 
     drop(partition_store);
     partition_store_manager
-        .close_partition_store(partition_id)
+        .close_partition_store(PARTITION.partition_id)
         .await?;
     assert_eq!(None, *watch_durable_lsn.borrow());
 
     let mut partition_store = partition_store_manager
-        .open_partition_store(
-            PartitionId::MIN,
-            PartitionKey::MIN..=PartitionKey::MAX,
-            OpenMode::CreateIfMissing,
-            &RocksDbOptions::default(),
-        )
+        .open_local_partition_store(&PARTITION, OpenMode::CreateIfMissing)
         .await?;
     assert_eq!(
         Some(Lsn::new(100)),
@@ -103,17 +95,10 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 async fn partition_durability_fsm() -> googletest::Result<()> {
     let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-    let partition_store_manager =
-        PartitionStoreManager::create(Constant::new(StorageOptions::default())).await?;
+    let partition_store_manager = PartitionStoreManager::create().await?;
 
-    let partition_id = PartitionId::MIN;
     let mut partition_store = partition_store_manager
-        .open_partition_store(
-            partition_id,
-            PartitionKey::MIN..=PartitionKey::MAX,
-            OpenMode::CreateIfMissing,
-            &RocksDbOptions::default(),
-        )
+        .open_local_partition_store(&PARTITION, OpenMode::CreateIfMissing)
         .await?;
 
     // by default, we don't have partition durability.
