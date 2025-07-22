@@ -104,7 +104,7 @@ impl LookupIndex {
             entry
                 .get_mut()
                 .references
-                .retain(|(l, s)| *l != log_id && *s != segment_index);
+                .retain(|(l, s)| (*l, *s) != (log_id, segment_index));
             if entry.get().references.is_empty() {
                 entry.remove();
             }

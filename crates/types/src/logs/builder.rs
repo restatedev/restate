@@ -224,7 +224,8 @@ impl ChainBuilder<'_> {
                     // needed if other loglets than the replicated one are enabled
                     #[allow(irrefutable_let_patterns)]
                     if let ProviderKind::Replicated = old.kind {
-                        let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
+                        let params =
+                            ReplicatedLogletParams::deserialize_from(old.params.as_bytes())?;
                         self.lookup_index.rm_replicated_loglet_reference(
                             self.log_id,
                             old.index(),
@@ -261,6 +262,8 @@ impl Deref for ChainBuilder<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU8;
+
     use crate::logs::SequenceNumber;
     use crate::logs::metadata::{LogletParams, MaybeSegment, ProviderKind, Segment};
     use crate::{Version, Versioned};
@@ -637,6 +640,157 @@ mod tests {
         assert_eq!(Lsn::from(550), chain.tail().base_lsn);
 
         assert_eq!(SegmentIndex(5), chain.tail_index());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_lookup_index() -> googletest::Result<()> {
+        use crate::GenerationalNodeId;
+        use crate::logs::LogletId;
+        use crate::replicated_loglet::ReplicatedLogletParams;
+        use crate::replication::{NodeSet, ReplicationProperty};
+
+        let mut builder = LogsBuilder::default();
+
+        let loglet1 = ReplicatedLogletParams {
+            loglet_id: LogletId::from(1),
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            nodeset: NodeSet::new(),
+        };
+
+        let loglet2 = ReplicatedLogletParams {
+            loglet_id: LogletId::from(2),
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
+            nodeset: NodeSet::new(),
+        };
+
+        let loglet1_params = LogletParams::from(loglet1.serialize()?);
+        let loglet2_params = LogletParams::from(loglet2.serialize()?);
+
+        // log-1 -> [replicated-loglet-1]
+        let chain1 = builder.add_log(
+            LogId::new(1),
+            Chain::new(ProviderKind::Replicated, loglet1_params.clone()),
+        )?;
+        assert_eq!(Lsn::OLDEST, chain1.head().base_lsn);
+        let _ = chain1;
+
+        let found1 = builder
+            .inner
+            .lookup_index
+            .get_replicated_loglet(&LogletId::from(1))
+            .unwrap();
+        assert_that!(found1.references.len(), eq(1));
+        assert_that!(found1.params, eq(loglet1));
+
+        assert_that!(
+            builder
+                .inner
+                .lookup_index
+                .get_replicated_loglet(&LogletId::from(2)),
+            none()
+        );
+
+        // log-2 -> [replicated-loglet-1]
+        builder.add_log(
+            LogId::new(2),
+            Chain::new(ProviderKind::Replicated, loglet1_params),
+        )?;
+
+        let found1 = builder
+            .inner
+            .lookup_index
+            .get_replicated_loglet(&LogletId::from(1))
+            .unwrap();
+
+        // should be referenced twice
+        assert_that!(found1.references.len(), eq(2));
+        let _ = found1;
+
+        // let's add loglet2 to chain1 and check that after removing it, it is removed from the
+        // lookup index.
+        //
+        // log-1 -> [replicated-loglet-1, replicated-loglet-2]
+        builder.chain(LogId::new(1)).unwrap().append_segment(
+            Lsn::from(10),
+            ProviderKind::Replicated,
+            loglet2_params.clone(),
+        )?;
+
+        // add a loglet of another type at the end to allow the replicated loglet to be trimmed
+        // later
+        //
+        // log-1 -> [replicated-loglet-1, replicated-loglet-2, in-memory-loglet]
+        builder.chain(LogId::new(1)).unwrap().append_segment(
+            Lsn::from(100),
+            ProviderKind::InMemory,
+            LogletParams::from("test".to_string()),
+        )?;
+
+        let found2 = builder
+            .inner
+            .lookup_index
+            .get_replicated_loglet(&LogletId::from(2))
+            .unwrap();
+        assert_that!(found2.references.len(), eq(1));
+
+        let found1 = builder
+            .inner
+            .lookup_index
+            .get_replicated_loglet(&LogletId::from(1))
+            .unwrap();
+
+        // should be referenced twice
+        assert_that!(found1.references.len(), eq(2));
+        let _ = found1;
+        // log-1 -> [in-memory-loglet]
+        builder.chain(LogId::new(1)).unwrap().trim_prefix(Lsn::MAX);
+        assert_that!(builder.chain(LogId::new(1)).unwrap().chain.len(), eq(1));
+
+        // log-1 -> [in-memory-loglet]
+        // log-2 -> [replicated-loglet-1]
+        assert_that!(
+            builder
+                .inner
+                .lookup_index
+                .get_replicated_loglet(&LogletId::from(2)),
+            none()
+        );
+
+        let found1 = builder
+            .inner
+            .lookup_index
+            .get_replicated_loglet(&LogletId::from(1))
+            .unwrap();
+        // down to one reference
+        assert_that!(found1.references.len(), eq(1));
+
+        // Replacing the tail segment of chain2 should remove the remaining reference to loglet
+        //
+        // log-2 -> [replicated-loglet-2]
+        builder.chain(LogId::new(2)).unwrap().append_segment(
+            Lsn::OLDEST,
+            ProviderKind::Replicated,
+            loglet2_params.clone(),
+        )?;
+
+        let found2 = builder
+            .inner
+            .lookup_index
+            .get_replicated_loglet(&LogletId::from(2))
+            .unwrap();
+        assert_that!(found2.references.len(), eq(1));
+
+        assert_that!(
+            builder
+                .inner
+                .lookup_index
+                .get_replicated_loglet(&LogletId::from(1)),
+            none()
+        );
 
         Ok(())
     }
