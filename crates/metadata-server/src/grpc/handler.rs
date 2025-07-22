@@ -42,7 +42,7 @@ use crate::metric_definitions::{
 use crate::{
     MetadataCommand, MetadataCommandSender, MetadataServerSummary, MetadataStoreRequest,
     ProvisionError, ProvisionRequest, ProvisionSender, RequestError, RequestSender, StatusWatch,
-    prepare_initial_nodes_configuration,
+    nodes_configuration_for_metadata_cluster_seed,
 };
 
 /// Grpc svc handler for the metadata server.
@@ -278,9 +278,12 @@ impl MetadataServerSvc for MetadataServerHandler {
                 StorageCodec::decode(&mut request.nodes_configuration)
                     .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
-            // Make sure that the NodesConfiguration our node and has the right metadata server state set.
-            prepare_initial_nodes_configuration(&Configuration::pinned(), &mut nodes_configuration)
-                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+            // Make sure that the NodesConfiguration contains our node and has the MetadataServerState::Member
+            nodes_configuration_for_metadata_cluster_seed(
+                &Configuration::pinned(),
+                &mut nodes_configuration,
+            )
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
             let versioned_value = serialize_value(&nodes_configuration)
                 .map_err(|err| Status::invalid_argument(err.to_string()))?;
