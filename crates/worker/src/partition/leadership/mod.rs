@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod durability_tracker;
 mod leader_state;
 mod self_proposer;
 pub mod trim_queue;
@@ -31,6 +32,7 @@ use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
+use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::invocation_status_table::{
     InvokedInvocationStatusLite, ScanInvocationStatusTable,
 };
@@ -48,9 +50,11 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
 use restate_types::partitions::Partition;
+use restate_types::partitions::state::PartitionReplicaSetStates;
+use restate_types::retries::with_jitter;
 use restate_types::storage::StorageEncodeError;
 use restate_wal_protocol::Command;
-use restate_wal_protocol::control::AnnounceLeader;
+use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability};
 use restate_wal_protocol::timer::TimerKeyValue;
 
 use crate::partition::cleaner::Cleaner;
@@ -62,6 +66,7 @@ use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
 
+use self::durability_tracker::DurabilityTracker;
 use self::trim_queue::{LogTrimmer, TrimQueue};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
@@ -118,6 +123,7 @@ pub(crate) enum ActionEffect {
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
     ScheduleCleanupTimer(InvocationId, Duration),
+    PartitionMaintenance(PartitionDurability),
     AwaitingRpcSelfProposeDone,
 }
 enum State {
@@ -127,7 +133,7 @@ enum State {
         // to be able to move out of it
         self_proposer: Option<SelfProposer>,
     },
-    Leader(LeaderState),
+    Leader(Box<LeaderState>),
 }
 
 impl State {
@@ -278,6 +284,7 @@ where
         &mut self,
         announce_leader: &AnnounceLeader,
         partition_store: &mut PartitionStore,
+        replica_set_states: &PartitionReplicaSetStates,
         config: &Configuration,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
@@ -294,7 +301,8 @@ where
                     }
                     Ordering::Equal => {
                         debug!("Won the leadership campaign. Becoming the strong leader now.");
-                        self.become_leader(partition_store, config).await?
+                        self.become_leader(partition_store, replica_set_states.clone(), config)
+                            .await?
                     }
                     Ordering::Greater => {
                         debug!(
@@ -333,6 +341,7 @@ where
     async fn become_leader(
         &mut self,
         partition_store: &mut PartitionStore,
+        replica_set_states: PartitionReplicaSetStates,
         config: &Configuration,
     ) -> Result<(), Error> {
         if let State::Candidate {
@@ -391,7 +400,20 @@ where
             let mut self_proposer = self_proposer.take().expect("must be present");
             self_proposer.mark_as_leader().await;
 
-            self.state = State::Leader(LeaderState::new(
+            let last_reported_durable_lsn = partition_store
+                .get_partition_durability()
+                .await?
+                .map(|d| d.durable_point);
+
+            let durability_tracker = DurabilityTracker::new(
+                self.partition.partition_id,
+                last_reported_durable_lsn,
+                replica_set_states,
+                partition_store.partition_db().watch_archived_lsn(),
+                with_jitter(Duration::from_secs(5), 0.5),
+            );
+
+            self.state = State::Leader(Box::new(LeaderState::new(
                 self.partition.partition_id,
                 *leader_epoch,
                 *self.partition.key_range.start(),
@@ -403,7 +425,8 @@ where
                 self_proposer,
                 invoker_rx,
                 shuffle_rx,
-            ));
+                durability_tracker,
+            )));
 
             Ok(())
         } else {
@@ -638,6 +661,7 @@ mod tests {
     use restate_types::live::Constant;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_types::partitions::Partition;
+    use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
     use std::ops::RangeInclusive;
@@ -656,6 +680,7 @@ mod tests {
 
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let replica_set_states = PartitionReplicaSetStates::default();
 
         let partition_store_manager = PartitionStoreManager::create().await?;
 
@@ -699,6 +724,7 @@ mod tests {
             .on_announce_leader(
                 &announce_leader,
                 &mut partition_store,
+                &replica_set_states,
                 &Configuration::pinned(),
             )
             .await?;
