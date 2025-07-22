@@ -14,7 +14,7 @@ use bytestring::ByteString;
 use restate_types::Version;
 use tokio::sync::oneshot::Sender;
 use tracing::{self, instrument};
-use tracing::{debug, warn};
+use tracing::{trace, warn};
 
 use restate_core::{ShutdownError, cancellation_watcher};
 use restate_metadata_store::{ProvisionedMetadataStore, ReadError, WriteError};
@@ -81,7 +81,7 @@ impl Server {
                             return Ok(());
                 }
                 Some(cmd) = receiver.recv() => {
-                    debug!("server delegating {}", cmd);
+                    trace!("server delegating {}", cmd);
                     match cmd {
                         Commands::Get{key, tx} => {
                             let res = delegate.get(key).await;
@@ -118,7 +118,7 @@ impl Client {
 impl ProvisionedMetadataStore for Client {
     #[instrument(level = "trace", skip_all, err)]
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
-        debug!(%key, "client sending Get");
+        trace!(%key, "client sending Get");
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 
@@ -131,7 +131,7 @@ impl ProvisionedMetadataStore for Client {
 
     #[instrument(level = "trace", skip_all, err)]
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
-        debug!(%key, "client sending GetVersion");
+        trace!(%key, "client sending GetVersion");
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 
@@ -149,7 +149,7 @@ impl ProvisionedMetadataStore for Client {
         value: VersionedValue,
         precondition: Precondition,
     ) -> Result<(), WriteError> {
-        debug!(%key, "client sending Put");
+        trace!(%key, "client sending Put");
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 
@@ -167,7 +167,7 @@ impl ProvisionedMetadataStore for Client {
 
     #[instrument(level = "trace", skip_all, err)]
     async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
-        debug!(%key, %precondition, "client sending Delete");
+        trace!(%key, %precondition, "client sending Delete");
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 

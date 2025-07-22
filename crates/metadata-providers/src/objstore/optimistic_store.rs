@@ -61,7 +61,7 @@ struct SaltedVersionedValue {
     value: VersionedValue,
 }
 
-#[instrument(level = "debug", skip(tagged_value), err)]
+#[instrument(level = "trace", skip(tagged_value), err)]
 fn tagged_value_to_versioned_value(
     tagged_value: TaggedValue,
 ) -> anyhow::Result<(Tag, VersionedValue)> {
