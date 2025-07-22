@@ -85,6 +85,7 @@ async fn list_nodes_configuration(
     let mut header = vec!["NODE", "GEN", "NAME", "ADDRESS", "ROLES"];
     if opts.extra {
         header.extend(vec![
+            "LOCATION",
             "STORAGE-STATE",
             "WORKER-STATE",
             "UPTIME",
@@ -120,6 +121,7 @@ async fn list_nodes_configuration(
 
         if opts.extra {
             node_row.extend(vec![
+                Cell::new(node_config.location.clone()),
                 Cell::new(node_config.log_server_config.storage_state),
                 Cell::new(node_config.worker_config.worker_state),
             ]);
