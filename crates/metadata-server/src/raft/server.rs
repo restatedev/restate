@@ -2026,8 +2026,8 @@ impl Standby {
                             my_member_id = Some(member_id);
                         }
 
-                        if join_cluster.is_terminated() && matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
-                            debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
+                        if join_cluster.is_terminated() && matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member | MetadataServerState::Provisioning) {
+                            debug!("Node's metadata server state: {}. Trying to join the raft cluster.", node_config.metadata_server_config.metadata_server_state);
 
                             // Persist the latest NodesConfiguration so that we know about the MetadataServerState at least
                             // as of now when restarting.
